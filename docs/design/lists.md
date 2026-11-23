@@ -3,7 +3,7 @@
 A list is a frame that repeats a component instance, its **template**, once per row of one of
 the document's **data sets**, each copy's component properties filled from its row's cells. The
 copies are ordinary instances, saved and drawn as any layer is, and made again whenever the
-template, the list's description or its data set changes. Core: `mastik_core::list`; app:
+template, the list's description, its data set or a variable its filter reads changes. Core: `mastik_core::list`; app:
 `list_data.rs` and the List card, `panels/list.rs`.
 
 ## Model
@@ -36,14 +36,20 @@ template, the list's description or its data set changes. Core: `mastik_core::li
 - **`Node::list: Option<Box<List>>`**, on a frame only, a flag on a frame as a chart is
   (`charts.md`, *A chart is a frame with a description*). `SetList` writes it whole (`None`
   detaches), refused off a frame (`ListRule::NotAFrame`) or with a copy named twice or the frame
-  named as its own copy (`ListRule::BadCopies`). It keeps nothing of the description it replaces.
+  named as its own copy (`ListRule::BadCopies`), or past the filter and sort limits
+  (`ListRule::BadFilter`). It keeps nothing of the description it replaces.
 - **`data`** — the data set it reads.
-- **`rows`** — `Rows::All` (every row, up to `MAX_DRAWN`), `Rows::First(n)`, or `Rows::Opened`:
-  the one row opened in play (*Play*, below), row 1 in the document.
+- **`rows`** — `Rows::All` (every row, up to `MAX_DRAWN`), `Rows::First(n)`, `Rows::Row(n)`: one
+  fixed row counted from 1, held by position and the same in play, the last row when `n` is past
+  the table's end; or `Rows::Opened`: the one row opened in play (*Play*, below), row 1 in the
+  document. `Rows::is_one_row` is true for `Row` and `Opened`.
+- **`filter: Filter { any, tests }`** — `Test { column, op, value }`s joined by all (`any`
+  false) or any. `sort: Vec<SortKey { column, descending }>` — a column and at most one *Then by*.
+  Both are described under *Filter and sort*.
 - **`fill: Vec<Fill { target, column }>`** — which column fills which property.
   `Target::Prop(ItemId)` names a text, boolean or image component property of the template's main;
   `Target::Variant(name)` a variant property of its set. Columns are named by `ColumnId`.
-- **`copies`** — the copies the last regeneration made, in row order; written only by
+- **`copies`** — the copies the last regeneration made, in the order their rows are drawn; written only by
   `list::regenerate`.
 - **`opened`** — the row an `Opened` list shows: 0 in the document, set on the played copy.
 - **The template is the frame's first child that is not a copy** (`list::template`). A copy and
@@ -79,13 +85,13 @@ list's description as it drops a misplaced one.
   variant whose value the cell names. Swap and nested properties are not filled.
 - **A cell naming no value takes the component's own**: a variant cell naming no value of its
   property gives the row the default variant's value of it, and an unread boolean or picture
-  cell resets the property to the main's. Never the template's: row 1 fills the template, so
-  what it shows is the last fill, and the result would depend on history. A combination of
+  cell resets the property to the main's. Never the template's: the first row drawn fills the
+  template, so what it shows is the last fill, and the result would depend on history. A combination of
   values no variant of the set has leaves the row's variant as it was captured.
   `list::unmatched_variant_cells` answers each such cell of the drawn rows (property, row,
   column, cell); the List card counts them (`list::unmatched_variants`, built from it) and the
   data window draws them in the warning ink.
-- **Row 1 is the template, filled like every row**, so an edit to a filled property there would
+- **The first row drawn is the template, filled like every row**, so an edit to a filled property there would
   be lost at the next regeneration without a word. The instance card shows such a property's
   column, read-only (`components.md`, *Variants chrome*).
 - **By name** (`list::fill_by_name`): a column fills the property whose name matches its own,
@@ -111,6 +117,31 @@ list's description as it drops a misplaced one.
   A browser drop's file has no folder, so nothing is read for it.
 - **The reads run on the UI thread** at those moments, not on the chart import's worker.
 
+### Filter and sort
+
+- **Order: the filter, then the sort, then the rows mode**, so *First 3* is the top three after
+  the sort. `List::shown_rows(table, read)` answers the drawn table rows in order, `List::passing`
+  the rows passing the filter, and `list::shown(doc, id)` a list's drawn rows with its variables
+  read in the mode in force at the list's frame (`doc.resolve_var(list frame, var)`). A one-row
+  mode (`Row`, `Opened`) shows a row of the table as it stands, so filter and sort do not apply
+  to it. The table itself is never reordered.
+- **A test** is a column, a `TestOp` and a value: *is*, *is not*, *contains*, *starts with*,
+  *less than*, *at most*, *more than*, *at least*, *is empty*, *is not empty*. Text tests ignore
+  case. The four number tests are offered on a number column only (`Table::is_numeric`) and fail a
+  cell that is no number. An empty value passes every row, so a search not yet typed into shows
+  everything.
+- **A value naming no `{…}` is literal text**, so `2024-01` and `12` mean what they say; one naming
+  any is an expression in the stored id form (`list::test_value`), and one that does not evaluate
+  reads as empty, which passes.
+- **A test whose column the table lacks is kept and passes every row**; the card says so under
+  the test.
+- **Sort** compares by `list::sort_order` over `list::cell_order`: a number column by value, text
+  ignoring case, empty cells last whichever way it runs; stable, so equal rows keep table order.
+  The data window's *Sort ascending* / *descending* sorts by the same function
+  (`chart_data::sorted`).
+- **Limits**: `MAX_TESTS` (8) tests and `MAX_SORT` (2) sort keys; `List::validate` refuses more
+  (`ListRule::BadFilter`).
+
 ## Regeneration and undo
 
 - **`list::regenerate`** brings a list's copies to what its description and data set make of its
@@ -125,11 +156,15 @@ list's description as it drops a misplaced one.
   overwrite what they fill. It does nothing (`false`) when the frame is not a list or its data
   set or template is missing.
 - **`list::touched`** says which lists a committed transaction left out of date: its `SetList`s,
-  the lists over a data set its `SetDataSet`s wrote, and a list whose template subtree it
-  dirtied, a main's edit reaching the template through the propagation included.
+  the lists over a data set its `SetDataSet`s wrote, a list whose template subtree it
+  dirtied, a main's edit reaching the template through the propagation included, and, when it
+  carries a `SetVariable`, `SetVariableCell`, `RemoveVariable`, `RemoveMode`, `SetModes`,
+  `SetQueries` or `SetBreakpoints`, every list not in a one-row mode whose filter reads a variable.
+  A filter checked again when a value it reads changes is a redraw of the list, not a constraint
+  (`non-goals.md`, *Constraints or reactivity*).
 - **In the app the rows are made inside the edit's undo step.** `EditorSession::commit_inner`
-  reads the edit's `SetList`, `SetDataSet` and `SetChart { chart: Some }` ops before committing
-  it, then `list::regenerate_in_history` commits, each joined onto the edit's step
+  takes the edit's ops `list::follow_ops` keeps (those `touched` reads, and `SetChart { chart:
+  Some }`) before committing it, then `list::regenerate_in_history` commits, each joined onto the edit's step
   (`History::join_last(2)`): first the charts brought onto their sets' tables
   (`list::chart_follow_ops`), then each regeneration step. One undo takes the edit, its rows and the charts' copies back together and redo
   puts them back. The edit's run stays open across the joins (`History::current_run`,
@@ -152,6 +187,9 @@ list's description as it drops a misplaced one.
   row switched to.
 - **Each step joins the edit's step.** Dropping the join leaves the rows as undo steps of their
   own (`tests/lists.rs · a_list_repeats_its_template_per_row_and_undoes_whole`).
+- **`follow_ops` keeps the variable and mode ops.** `touched` sees only what it is handed, so
+  dropping them leaves a filtered list on its old rows after a variable edit
+  (`tests/lists.rs · a_filter_follows_the_variable_it_reads`).
 - **A copy is edited only by regeneration.** The canvas picks a copy as its list and the layers
   panel does not list it. A verb naming a layer of a copy as its `node`, `nodes` or `parent` is
   refused, pointing at the template (`verbs::refuse_list_copies`), so an agent's or a script's
@@ -228,14 +266,36 @@ step.
   (`data_set_link_rows`, which the Chart card shows for a chart reading a set, painted by
   `chart_import::link_rows`, the Chart card's own source line's painter too). The card's warnings
   are `ui::note_line`s, the `WARNING` glyph in the warning ink and the words muted: *No rows: the
-  template is hidden in play* over an empty table; *Showing 200 of N rows* when `All` is cut at
-  `MAX_DRAWN` (*First* asks for 200 at most, so it is never cut). A data set the document lacks
+  template is hidden in play* over an empty table; *No row passes the filter: the template is
+  hidden in play* when the table has rows but none is drawn; *Showing 200 of N rows*, N the
+  passing rows, when `All` is cut at `MAX_DRAWN` (*First* asks for 200 at most, so it is never
+  cut). A data set the document lacks
   reads *Missing data* with *Its table is not in this document: pick one*
   (`panels::list::MISSING_TABLE`, the Chart card's too).
-- **Rows** (a `ui::fold_rule` section) — `ui::segmented` *All* / *First* / *Opened row*. *First*
-  starts at 3 and shows a *Rows* count field (1 to 200) half the column wide, as the cards'
-  number fields; *Opened row* says *Shows the row opened in play, row 1 here*
+- **Rows** (a `ui::fold_rule` section) — `ui::segmented` *All* / *First* / *Row* / *Opened row*
+  (*Row*'s tooltip *One row of the table, the same in play*). *First* starts at 3 and shows a
+  *Rows* count field (1 to 200) half the column wide, as the cards' number fields. *Row* starts
+  at 1 and shows a full-width `ui::fitted_combo` of the table's rows as *N · first cell*, its face
+  *Row 3 · Linen shirt*, up to `list_data::ROWS_LISTED` (200) listed and then a menu note
+  *Showing 200 of N rows*; the words are `list_data::row_words`, which the player's *Opened rows*
+  dropdown uses too. *Opened row* says *Shows the row opened in play, row 1 here*
   (`ui::selection_note`). Undo step *List rows*.
+- **Filter** (`MastikApp::card_fold_noted`, its head carrying the test count) — *All* / *Any*
+  (`ui::segmented`, half width, shown with two tests or more); each test a column combo and a
+  test-word combo side by side, half width each, then the value field, the Prototype card's
+  expression field with its `@` list (`expr_field` with `ExprWant::LiteralOr`, hint *A value, or
+  @ for a variable*; none for the two emptiness tests), and an `icon::X` `ui::field_button`
+  *Remove this test*. A test reading a gone column carries *This test reads a column the table no
+  longer has, so it passes every row*. *Add test* (`ui::action_button`, `icon::PLUS`) adds *is*
+  on the first column, offered under `MAX_TESTS`; then *6 of 24 rows pass here*
+  (`ui::selection_note`). Undo step *List filter*.
+- **Sort** (its head noting the first sort column's name, `ui::fold_rule_noted`) — `ui::labelled`
+  *Sort by* and *Then by* rows, each a column combo with *None*, which removes that key and any
+  after it, and a two-cell `ui::segmented` direction, `icon::SORT_ASCENDING` /
+  `SORT_DESCENDING` (*Low to high, A to Z* / *High to low, Z to A*). *Then by* shows once *Sort
+  by* is set. Undo step *List sort*.
+- **Under a one-row mode** Filter and Sort keep what they hold, say *One row shows: filter and
+  sort apply to All and First* (`ui::selection_note`) and are disabled (`ui::disable_unless`).
 - **Fill · ‹component›** (a fold) — one labelled `ui::fitted_combo` per text, boolean and image
   property, then per variant property: *None* and the data set's columns. Under a variant row,
   *N values name no ‹X› variant*, the cells its tooltip (an empty one as *an empty cell*); under
@@ -352,12 +412,13 @@ the document's data sets, which it calls tables. Named *Data tables*, not *Conte
 
 - **A copy picks as its list.** `query::hit_test` answers a copy, or anything inside one, with the
   list frame (`list::copy_owner`); the template is a layer like any other, so editing it edits
-  every row, save a filled property, which row 1's cells set (*What a column fills*). A double-click on a copy selects the template and enters the list frame
+  every row, save a filled property, which the first drawn row's cells set (*What a column fills*). A double-click on a copy selects the template and enters the list frame
   (`copy_template_at`, asked first in `double_click_pick`).
 - **The list's tag is a component set's tab** (`canvas_tags`, `frame_label`): card ground,
   rounded top corners, without the set's resting outline, the `TABLE` glyph, the frame's name and
-  the rows it draws from `list_data::list_count` (*· 24 rows*, *200 of 1240 rows*, *Opened row*,
-  or *No rows* and *Missing data* in the warning ink). It shows while the list is selected, and
+  the rows it draws from `list_data::list_count` (*· 24 rows*, *200 of 1240 rows*, *6 of 24 rows*
+  under a filter, *row 3*, *Opened row*, or *No rows*, *0 of 24 rows* when no row passes, and
+  *Missing data* in the warning ink). It shows while the list is selected, and
   always while its table is empty, wherever the frame sits on the page.
 - **The layers tree lists the template and not the copies.** A list frame's row shows
   `list_count`'s words as its badge, in place of the frame size.
@@ -378,24 +439,34 @@ the document's data sets, which it calls tables. Named *Data tables*, not *Conte
   dropdown of its rows as *N · first cell* (up to 200 listed), the open one ticked. A pick is
   `Input::OpenRow { data, row }`, which a take records, and opens the row as a tap does
   (`Player::open_data_row`, which `open_row` calls).
-- **A list over an empty table draws no row in play.** `Player::hide_empty_templates`, run from
-  `prepare`, hides its template on the played copy and shows it again as the document has it
-  once a live edit gives the table rows. The canvas keeps the template, the one row to edit. The
-  exported page plays through `mastik-play` and does the same. A list whose data set is missing
-  keeps its rows.
+- **A filter follows its variables in play.** When a variable's value changes
+  (`Player::changed`), `refilter` regenerates on the played copy each list not in a one-row mode
+  whose filter reads it (`Player::regenerate_list`, the step `open_data_row` shares), then hides
+  or shows templates as below: a search field or a chip narrows the list. A mode set on the copy
+  (`put_modes`: *Set mode*, the state card, a flow's start) regenerates every list whose filter
+  reads any variable. An *Opened row* list keeps its row.
+- **A list drawing no row draws nothing in play**: an empty table, or no row passing its filter.
+  `Player::hide_empty_templates`, run from `prepare` and after `refilter`, hides its template on
+  the played copy and shows it again as the document has it once a row is drawn. The canvas
+  keeps the template, the one row to edit. The exported page plays through `mastik-play` and
+  does the same. A list whose data set is missing keeps its rows.
 
 ## Save format
 
 `DocumentDto::data` (the data sets in order, skipped when none; a set's `pictures` skipped when
 empty) and `NodeDto::list` (skipped when none; `fill` and `copies` skipped when empty, `opened` at
-0), in v21 (`io.md`, the ladder). `DataSet.pictures` and `PropKind::Image` are additive in v21,
-with no version bump. The loader refuses a data set id twice or a data set `DataSet::validate`
-refuses, and drops a list off a frame, with bad copies or standing where a list may not
-(*Where a list may stand*). A duplicated list's copies follow their new ids
+0, `filter` and `sort` when empty, a filter's `any` when false, a test's `value` when empty, a
+sort key's `descending` when false), in v21 (`io.md`, the ladder). `DataSet.pictures`,
+`PropKind::Image`, `Rows::Row`, `filter` and `sort` are additive in v21, with no version bump.
+The loader refuses a data set id twice or a data set `DataSet::validate` refuses, and drops a
+list off a frame, with bad copies, past the filter or sort limits, or standing where a list may
+not (*Where a list may stand*). A duplicated list's copies follow their new ids
 (`document::remap_subtree`); a copy not copied is dropped from `copies`.
 
 ## Limits
 
 A list draws at most 200 rows, the template included (`list::MAX_DRAWN`). A data set holds the
-chart table's limits: 10,000 rows, 64 columns, 256 characters a cell. An empty table deletes the
-copies and leaves the template showing its own values on the canvas; play hides it (*Play*).
+chart table's limits: 10,000 rows, 64 columns, 256 characters a cell. A filter holds at most 8
+tests and a sort 2 columns (*Filter and sort*). An empty table, or a filter no row passes,
+deletes the copies and leaves the template showing its own values on the canvas; play hides it
+(*Play*).

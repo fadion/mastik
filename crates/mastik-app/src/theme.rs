@@ -738,6 +738,11 @@ pub mod icon {
     /// Not [`ARROWS_CLOCKWISE`], which means *reverse*: the button steps to the
     /// next key, and arrows passing each other read as "ordered by".
     pub const ARROWS_DOWN_UP: &str = "\u{e098}";
+    /// A list's sort direction: bars growing downward with an arrow up, low to
+    /// high. [`SORT_DESCENDING`] is the same drawing mirrored.
+    pub const SORT_ASCENDING: &str = "\u{e444}";
+    /// A list's sort direction, high to low.
+    pub const SORT_DESCENDING: &str = "\u{e446}";
     /// The **inner shadow**'s row glyph. It is the same droplet as
     /// [`DROP_HALF_BOTTOM`], split vertically rather than horizontally, so the
     /// inner and drop shadow read as two states of one picture.
@@ -1459,6 +1464,8 @@ pub mod icon {
         ("flip-vertical", FLIP_VERTICAL),
         ("arrows-clockwise", ARROWS_CLOCKWISE),
         ("arrows-down-up", ARROWS_DOWN_UP),
+        ("sort-ascending", SORT_ASCENDING),
+        ("sort-descending", SORT_DESCENDING),
         ("drop-half", DROP_HALF),
         ("drop-half-bottom", DROP_HALF_BOTTOM),
         ("sun", SUN),

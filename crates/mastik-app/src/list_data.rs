@@ -141,9 +141,22 @@ pub(crate) fn list_is_empty(doc: &mastik_core::Document, id: NodeId) -> bool {
         .is_some_and(|d| d.table.rows.is_empty())
 }
 
+/// The rows a row dropdown lists, as many as a list draws.
+pub(crate) const ROWS_LISTED: usize = list::MAX_DRAWN;
+
+/// Row `n` (from 0) as a row dropdown names it, by its first cell, the one a
+/// person reads it by: *3 · Linen shirt*, or *Row 3* when that cell is empty.
+pub(crate) fn row_words(n: usize, first: Option<&str>) -> String {
+    match first.map(str::trim).filter(|c| !c.is_empty()) {
+        Some(cell) => format!("{} \u{b7} {cell}", n + 1),
+        None => format!("Row {}", n + 1),
+    }
+}
+
 /// What list `id` draws, in the words its canvas tab and layers badge show,
-/// with the ink: *24 rows*, *200 of 1240 rows*, *Opened row*, or *No rows* and
-/// *Missing data* in the warning ink.
+/// with the ink: *24 rows*, *200 of 1240 rows*, *6 of 24 rows* under a
+/// filter, *Opened row*, *row 3*, or *No rows*, *0 of 24 rows* and *Missing
+/// data* in the warning ink.
 pub(crate) fn list_count(doc: &mastik_core::Document, id: NodeId) -> (String, egui::Color32) {
     use crate::theme::{color, text};
     let Some(l) = doc.get(id).and_then(|n| n.list()) else {
@@ -156,11 +169,20 @@ pub(crate) fn list_count(doc: &mastik_core::Document, id: NodeId) -> (String, eg
     if rows == 0 {
         return ("No rows".into(), color::warn());
     }
-    if l.rows == list::Rows::Opened {
-        return ("Opened row".into(), text::dim());
+    let shown = list::shown(doc, id);
+    match l.rows {
+        list::Rows::Opened => return ("Opened row".into(), text::dim()),
+        list::Rows::Row(_) => {
+            let n = shown.first().map_or(1, |r| r + 1);
+            return (format!("row {n}"), text::dim());
+        }
+        _ => {}
     }
-    let drawn = l.shown_rows(rows).len();
-    let said = if drawn < rows && drawn == list::MAX_DRAWN {
+    let drawn = shown.len();
+    if drawn == 0 {
+        return (format!("0 of {rows} rows"), color::warn());
+    }
+    let said = if drawn < rows && (drawn == list::MAX_DRAWN || !l.filter.is_empty()) {
         format!("{drawn} of {rows} rows")
     } else {
         crate::ui::count_as(drawn, "row", "rows")

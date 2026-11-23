@@ -71,6 +71,8 @@
  { "name": "flip-vertical", "codepoint": "U+ED6C", "stroke": "M8 2.5V2.5M8 6.17V6.17M8 9.83V9.83M8 13.5V13.5M5.5 3.5L1.5 12.5H5.5ZM10.5 3.5L14.5 12.5H10.5Z", "fill": "M10.5 3.5L14.5 12.5H10.5Z", "transform": "rotate(90 8 8)" },
  { "name": "arrows-clockwise", "codepoint": "U+E094", "stroke": "M12.98 5.68A5.5 5.5 0 0 0 3.02 5.68M3.02 10.32A5.5 5.5 0 0 0 12.98 10.32M13.5 2.5V5.5H10.5M2.5 13.5V10.5H5.5" },
  { "name": "arrows-down-up", "codepoint": "U+E098", "stroke": "M4.5 2.5V13.5M2 11L4.5 13.5L7 11M11.5 13.5V2.5M9 5L11.5 2.5L14 5" },
+ { "name": "sort-ascending", "codepoint": "U+E444", "stroke": "M2.5 3.5H5.5M2.5 7.5H7.5M2.5 11.5H9.5M12.5 13.5V2.5M10.5 4.5L12.5 2.5L14.5 4.5" },
+ { "name": "sort-descending", "codepoint": "U+E446", "stroke": "M2.5 3.5H5.5M2.5 7.5H7.5M2.5 11.5H9.5M12.5 13.5V2.5M10.5 4.5L12.5 2.5L14.5 4.5", "transform": "matrix(1 0 0 -1 0 15)" },
  { "name": "drop-half", "codepoint": "U+E566", "stroke": "M8 1.5C8 1.5 3.25 6.25 3.25 9.75A4.75 4.75 0 0 0 12.75 9.75C12.75 6.25 8 1.5 8 1.5Z", "fill": "M8 1.5C8 1.5 12.75 6.25 12.75 9.75A4.75 4.75 0 0 1 8 14.5Z" },
  { "name": "drop-half-bottom", "codepoint": "U+EB40", "stroke": "M8 1.5C8 1.5 3.25 6.25 3.25 9.75A4.75 4.75 0 0 0 12.75 9.75C12.75 6.25 8 1.5 8 1.5Z", "fill": "M3.26 10H12.74A4.75 4.75 0 0 1 3.26 10Z" },
  { "name": "sun", "codepoint": "U+E472", "stroke": "M5 7.5a2.5 2.5 0 1 0 5 0a2.5 2.5 0 1 0 -5 0ZM7.5 1V2.5M7.5 12.5V14M1 7.5H2.5M12.5 7.5H14M2.9 2.9L3.96 3.96M11.04 11.04L12.1 12.1M12.1 2.9L11.04 3.96M3.96 11.04L2.9 12.1" },

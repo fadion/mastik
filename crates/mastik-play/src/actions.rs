@@ -393,6 +393,8 @@ impl Player {
         }]);
         if self.commit(tx).is_ok() {
             self.modes.insert(id, modes);
+            // A filter's variable may read another value in the new mode.
+            self.refilter(None);
         }
     }
 

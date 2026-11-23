@@ -119,6 +119,18 @@ pub(crate) enum DraftKey {
     FlowValue(ItemId, usize),
     /// A snap point's name: the layer, and the point (`None` where it is drawn).
     PointName(NodeId, Option<ItemId>),
+    /// A list filter test's value: the list frame, and the test's place.
+    ListTest(NodeId, usize),
+}
+
+/// What an expression field stores.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ExprWant {
+    /// An expression, of this kind when named.
+    Kind(Option<VarKind>),
+    /// Literal text when it names no `{…}`, else an expression: a list
+    /// filter's value, where `2024-01` and `12` mean what they say.
+    LiteralOr,
 }
 
 /// Where in a reaction a new action goes.
@@ -4819,7 +4831,13 @@ impl MastikApp {
                 }
                 match change {
                     VarChange::Set { to } => {
-                        if let Some(e) = self.expr_field(ui, DraftKey::Expr(k.id, 0), to, w, kind) {
+                        if let Some(e) = self.expr_field(
+                            ui,
+                            DraftKey::Expr(k.id, 0),
+                            to,
+                            w,
+                            ExprWant::Kind(kind),
+                        ) {
                             out = Some((
                                 Action::SetVariable {
                                     var: *var,
@@ -4889,7 +4907,7 @@ impl MastikApp {
                                 DraftKey::Expr(k.id, i),
                                 &b.when,
                                 fw,
-                                Some(VarKind::Boolean),
+                                ExprWant::Kind(Some(VarKind::Boolean)),
                             ) {
                                 next_branches[i].when = e;
                                 changed = true;
@@ -5559,14 +5577,18 @@ impl MastikApp {
     /// An expression's field: the source with variables by name, refused (kept,
     /// ringed, the reason under it) when it does not read. Answers what to store
     /// once it commits.
-    fn expr_field(
+    pub(super) fn expr_field(
         &mut self,
         ui: &mut egui::Ui,
         key: DraftKey,
         e: &Expr,
         w: f32,
-        want: Option<VarKind>,
+        want: ExprWant,
     ) -> Option<Expr> {
+        let (want, literal) = match want {
+            ExprWant::Kind(k) => (k, false),
+            ExprWant::LiteralOr => (None, true),
+        };
         let shown = expr_shown(&self.session.doc, e);
         let ctx = ui.ctx().clone();
         let live = ui::Draft::live(&mut self.proto.draft, &ctx, key);
@@ -5576,11 +5598,16 @@ impl MastikApp {
         // keys move through the list under it rather than commit.
         let at_id = ui.id().with(("expr-at", key));
         let (pick_key, pressed_in) = self.at_list_keys(ui, at_id, &text);
+        let hint = if literal {
+            "A value, or @ for a variable"
+        } else {
+            "An expression, such as {count} + 1, or @ for a variable"
+        };
         let resp = ui::refusable_field(
             ui,
             egui::vec2(w, ui::CONTROL_H),
             &mut text,
-            "An expression, such as {count} + 1, or @ for a variable",
+            hint,
             refused.as_deref(),
         );
         if refused.is_some()
@@ -5611,6 +5638,10 @@ impl MastikApp {
         let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
         if typed == shown {
             return None;
+        }
+        if literal && mastik_core::prototype::expr::var_tokens(&typed).is_empty() {
+            self.proto.expr_fault = None;
+            return Some(Expr(typed));
         }
         match expr_stored(&self.session.doc, &typed, want) {
             Ok(e) => {

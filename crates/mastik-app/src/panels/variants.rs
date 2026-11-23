@@ -694,7 +694,7 @@ fn filled_column_of(
     (mastik_core::list::template(doc, frame)? == root).then_some(())?;
     let fill = list.fill.iter().find(|f| f.target == *target)?;
     let set = doc.data_set(list.data)?;
-    (!list.shown_rows(set.table.rows.len()).is_empty()).then_some(())?;
+    (!mastik_core::list::shown(doc, frame).is_empty()).then_some(())?;
     Some((
         set.table.column(fill.column)?.name.clone(),
         set.name.clone(),

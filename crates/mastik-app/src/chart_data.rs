@@ -479,27 +479,13 @@ fn without_column(chart: &Chart, col: usize) -> Chart {
     next
 }
 
-/// `table` sorted by column `col`, numbers by value when the column is a
-/// number column, text otherwise; empty cells last either way.
+/// `table` sorted by column `col` in a list sort's order (`list::sort_order`):
+/// numbers by value in a number column, text otherwise, empty cells last.
 fn sorted(table: &chart::Table, col: usize, ascending: bool) -> chart::Table {
     let mut t = table.clone();
     let numeric = t.columns.get(col).is_some_and(|c| table.is_numeric(c.id));
-    t.rows.sort_by(|a, b| {
-        let (x, y) = (a[col].trim(), b[col].trim());
-        match (x.is_empty(), y.is_empty()) {
-            (true, true) => return std::cmp::Ordering::Equal,
-            (true, false) => return std::cmp::Ordering::Greater,
-            (false, true) => return std::cmp::Ordering::Less,
-            _ => {}
-        }
-        let o = if numeric {
-            let (p, q) = (chart::parse_number(x), chart::parse_number(y));
-            p.partial_cmp(&q).unwrap_or(std::cmp::Ordering::Equal)
-        } else {
-            x.to_lowercase().cmp(&y.to_lowercase())
-        };
-        if ascending { o } else { o.reverse() }
-    });
+    t.rows
+        .sort_by(|a, b| mastik_core::list::sort_order(&a[col], &b[col], numeric, ascending));
     t
 }
 

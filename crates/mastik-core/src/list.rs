@@ -98,6 +98,8 @@ pub enum ListRule {
     NotAFrame,
     /// A copy named twice, or the list's own frame named as its copy.
     BadCopies,
+    /// More filter tests or sort columns than a list holds.
+    BadFilter,
 }
 
 impl std::fmt::Display for ListRule {
@@ -107,6 +109,7 @@ impl std::fmt::Display for ListRule {
             ListRule::DuplicateColumn => "a data set names a column twice",
             ListRule::NotAFrame => "a list sits only on a frame",
             ListRule::BadCopies => "a list names a copy twice, or its own frame as a copy",
+            ListRule::BadFilter => "a list holds at most 8 filter tests and 2 sort columns",
         })
     }
 }
@@ -164,6 +167,12 @@ pub struct List {
     /// opened while playing.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub opened: usize,
+    /// Which rows pass, before the sort and the rows mode.
+    #[serde(default, skip_serializing_if = "Filter::is_empty")]
+    pub filter: Filter,
+    /// The order the passing rows are drawn in; empty keeps the table's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sort: Vec<SortKey>,
 }
 
 fn is_zero(v: &usize) -> bool {
@@ -202,6 +211,184 @@ pub enum Rows {
     /// The one row opened in play by a tap on a row of a list over the same data
     /// set: a detail screen. Row 1 on the canvas.
     Opened,
+    /// One fixed row, counted from 1 and held by position, the same in play: a
+    /// stat card or a featured item. Past the table's end, its last row.
+    Row(u32),
+}
+
+impl Rows {
+    /// Whether it shows one row of the table as it stands, which a filter and a
+    /// sort do not apply to.
+    pub fn is_one_row(self) -> bool {
+        matches!(self, Rows::Opened | Rows::Row(_))
+    }
+}
+
+/// The most tests a filter holds; mixed groups are a script.
+pub const MAX_TESTS: usize = 8;
+/// The most columns a sort compares by: one and a *Then by*.
+pub const MAX_SORT: usize = 2;
+
+/// Which rows of the table pass before the rows mode applies: tests on columns,
+/// joined by all or any.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Filter {
+    /// Any test passing passes the row; else every test must.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub any: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<Test>,
+}
+
+impl Filter {
+    pub fn is_empty(&self) -> bool {
+        self.tests.is_empty()
+    }
+}
+
+/// One filter test: a column, a test word and a value.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Test {
+    pub column: ColumnId,
+    pub op: TestOp,
+    /// Literal text when it names no `{…}`, else an expression in the stored
+    /// form, its variables read in the mode the list's frame is in.
+    #[serde(default, skip_serializing_if = "is_empty_expr")]
+    pub value: crate::prototype::expr::Expr,
+}
+
+fn is_empty_expr(e: &crate::prototype::expr::Expr) -> bool {
+    e.0.is_empty()
+}
+
+/// A filter test's word. Text tests ignore case; the number tests read both
+/// sides with `chart::parse_number` and fail a cell that is not a number.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestOp {
+    Is,
+    IsNot,
+    Contains,
+    StartsWith,
+    Less,
+    AtMost,
+    More,
+    AtLeast,
+    Empty,
+    NotEmpty,
+}
+
+impl TestOp {
+    /// Every test, in the order the dropdown lists them.
+    pub const ALL: [TestOp; 10] = [
+        TestOp::Is,
+        TestOp::IsNot,
+        TestOp::Contains,
+        TestOp::StartsWith,
+        TestOp::Less,
+        TestOp::AtMost,
+        TestOp::More,
+        TestOp::AtLeast,
+        TestOp::Empty,
+        TestOp::NotEmpty,
+    ];
+
+    /// The words the List card shows.
+    pub fn words(self) -> &'static str {
+        match self {
+            TestOp::Is => "is",
+            TestOp::IsNot => "is not",
+            TestOp::Contains => "contains",
+            TestOp::StartsWith => "starts with",
+            TestOp::Less => "less than",
+            TestOp::AtMost => "at most",
+            TestOp::More => "more than",
+            TestOp::AtLeast => "at least",
+            TestOp::Empty => "is empty",
+            TestOp::NotEmpty => "is not empty",
+        }
+    }
+
+    /// Whether it compares numbers, offered on a number column only.
+    pub fn is_number(self) -> bool {
+        matches!(
+            self,
+            TestOp::Less | TestOp::AtMost | TestOp::More | TestOp::AtLeast
+        )
+    }
+
+    /// Whether it reads a value; the two emptiness tests do not.
+    pub fn takes_value(self) -> bool {
+        !matches!(self, TestOp::Empty | TestOp::NotEmpty)
+    }
+
+    /// Whether `cell` passes against `value`. An empty value passes every row,
+    /// so a search not yet typed into shows everything.
+    pub fn passes(self, cell: &str, value: &str) -> bool {
+        let (cell, value) = (cell.trim(), value.trim());
+        match self {
+            TestOp::Empty => return cell.is_empty(),
+            TestOp::NotEmpty => return !cell.is_empty(),
+            _ if value.is_empty() => return true,
+            _ => {}
+        }
+        if self.is_number() {
+            let (Some(c), Some(v)) = (
+                crate::chart::parse_number(cell),
+                crate::chart::parse_number(value),
+            ) else {
+                return false;
+            };
+            return match self {
+                TestOp::Less => c < v,
+                TestOp::AtMost => c <= v,
+                TestOp::More => c > v,
+                _ => c >= v,
+            };
+        }
+        let (c, v) = (cell.to_lowercase(), value.to_lowercase());
+        match self {
+            TestOp::Is => c == v,
+            TestOp::IsNot => c != v,
+            TestOp::Contains => c.contains(&v),
+            _ => c.starts_with(&v),
+        }
+    }
+}
+
+/// One column a list's rows are sorted by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SortKey {
+    pub column: ColumnId,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub descending: bool,
+}
+
+/// Two cells in the data window's *Sort ascending* order: a number column by
+/// value, text ignoring case. Empty cells are not ordered here; callers put
+/// them last whichever way the sort runs.
+pub fn cell_order(x: &str, y: &str, numeric: bool) -> std::cmp::Ordering {
+    let (x, y) = (x.trim(), y.trim());
+    if numeric {
+        let (p, q) = (crate::chart::parse_number(x), crate::chart::parse_number(y));
+        p.partial_cmp(&q).unwrap_or(std::cmp::Ordering::Equal)
+    } else {
+        x.to_lowercase().cmp(&y.to_lowercase())
+    }
+}
+
+/// `a` against `b` sorted by column `col`, empty cells last either way.
+pub fn sort_order(a: &str, b: &str, numeric: bool, ascending: bool) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a.trim().is_empty(), b.trim().is_empty()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        _ => {
+            let o = cell_order(a, b, numeric);
+            if ascending { o } else { o.reverse() }
+        }
+    }
 }
 
 /// One column filling one property of the template.
@@ -233,6 +420,8 @@ impl List {
             fill: Vec::new(),
             copies: Vec::new(),
             opened: 0,
+            filter: Filter::default(),
+            sort: Vec::new(),
         }
     }
 
@@ -242,7 +431,19 @@ impl List {
         if !self.copies.iter().all(|c| *c != id && seen.insert(*c)) {
             return Err(ListRule::BadCopies);
         }
+        if self.filter.tests.len() > MAX_TESTS || self.sort.len() > MAX_SORT {
+            return Err(ListRule::BadFilter);
+        }
         Ok(())
+    }
+
+    /// The variables its filter reads.
+    pub fn filter_vars(&self) -> Vec<crate::variable::VarId> {
+        self.filter
+            .tests
+            .iter()
+            .flat_map(|t| t.value.vars())
+            .collect()
     }
 
     /// The column filling `target`, if any.
@@ -253,14 +454,84 @@ impl List {
             .map(|f| f.column)
     }
 
-    /// The table rows this list draws, in order, given a table of `len` rows.
-    pub fn shown_rows(&self, len: usize) -> Vec<usize> {
+    /// The table rows this list draws, in order: the filter, then the sort,
+    /// then the rows mode. A one-row mode shows a row of the table as it
+    /// stands, so the filter and sort do not apply to it. `read` answers a
+    /// variable a test's value reads.
+    pub fn shown_rows(
+        &self,
+        table: &Table,
+        read: &dyn Fn(crate::variable::VarId) -> Option<crate::variable::Value>,
+    ) -> Vec<usize> {
+        let len = table.rows.len();
         match self.rows {
-            Rows::All => (0..len.min(MAX_DRAWN)).collect(),
-            Rows::First(n) => (0..len.min(n as usize).min(MAX_DRAWN)).collect(),
-            Rows::Opened if len > 0 => vec![self.opened.min(len - 1)],
-            Rows::Opened => Vec::new(),
+            Rows::Opened | Rows::Row(_) if len == 0 => return Vec::new(),
+            Rows::Opened => return vec![self.opened.min(len - 1)],
+            Rows::Row(n) => return vec![(n.max(1) as usize - 1).min(len - 1)],
+            _ => {}
         }
+        let mut rows = self.passing(table, read);
+        self.sort_rows(table, &mut rows);
+        let cap = match self.rows {
+            Rows::First(n) => (n as usize).min(MAX_DRAWN),
+            _ => MAX_DRAWN,
+        };
+        rows.truncate(cap);
+        rows
+    }
+
+    /// The rows of `table` passing the filter, in table order. A test whose
+    /// column the table lacks passes every row; a value that does not evaluate
+    /// reads as empty, which passes too.
+    pub fn passing(
+        &self,
+        table: &Table,
+        read: &dyn Fn(crate::variable::VarId) -> Option<crate::variable::Value>,
+    ) -> Vec<usize> {
+        let tests: Vec<(Option<usize>, TestOp, String)> = self
+            .filter
+            .tests
+            .iter()
+            .map(|t| (table.index_of(t.column), t.op, test_value(&t.value, read)))
+            .collect();
+        (0..table.rows.len())
+            .filter(|r| {
+                if tests.is_empty() {
+                    return true;
+                }
+                let mut each = tests.iter().map(|(col, op, value)| {
+                    col.is_none_or(|c| op.passes(&table.rows[*r][c], value))
+                });
+                if self.filter.any {
+                    each.any(|p| p)
+                } else {
+                    each.all(|p| p)
+                }
+            })
+            .collect()
+    }
+
+    /// `rows` put in the sort's order; stable, so equal rows keep table order.
+    fn sort_rows(&self, table: &Table, rows: &mut [usize]) {
+        let keys: Vec<(usize, bool, bool)> = self
+            .sort
+            .iter()
+            .filter_map(|k| {
+                let c = table.index_of(k.column)?;
+                Some((c, table.is_numeric(k.column), !k.descending))
+            })
+            .collect();
+        if keys.is_empty() {
+            return;
+        }
+        rows.sort_by(|a, b| {
+            keys.iter()
+                .map(|(c, numeric, up)| {
+                    sort_order(&table.rows[*a][*c], &table.rows[*b][*c], *numeric, *up)
+                })
+                .find(|o| o.is_ne())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
     }
 
     /// Whether `other` describes the same list, whatever copies either holds.
@@ -269,7 +540,37 @@ impl List {
             && self.rows == other.rows
             && self.fill == other.fill
             && self.opened == other.opened
+            && self.filter == other.filter
+            && self.sort == other.sort
     }
+}
+
+/// A test's value as text: a value naming no variable is literal, so `2024-01`
+/// and `12` mean what they say; one naming any is an expression, read through
+/// `read`, empty when it does not evaluate.
+pub fn test_value(
+    value: &crate::prototype::expr::Expr,
+    read: &dyn Fn(crate::variable::VarId) -> Option<crate::variable::Value>,
+) -> String {
+    if crate::prototype::expr::var_tokens(&value.0).is_empty() {
+        return value.0.clone();
+    }
+    value
+        .eval(read)
+        .map(|v| crate::prototype::expr::format_value(&v))
+        .unwrap_or_default()
+}
+
+/// The table rows list `id` draws, its filter's variables read in the mode in
+/// force at the list's frame. Empty when it is no list or its set is missing.
+pub fn shown(doc: &Document, id: NodeId) -> Vec<usize> {
+    let Some(list) = doc.get(id).and_then(|n| n.list()) else {
+        return Vec::new();
+    };
+    let Some(set) = doc.data_set(list.data) else {
+        return Vec::new();
+    };
+    list.shown_rows(&set.table, &|v| doc.resolve_var(id, v))
 }
 
 /// The template of list `id`: its first child that is not a copy.
@@ -300,9 +601,7 @@ pub fn row_at(doc: &Document, id: NodeId) -> Option<(NodeId, usize, usize)> {
     let mut at = Some(id);
     while let Some(n) = at.and_then(|a| doc.get(a)) {
         if let Some((list, place)) = row_of(doc, n.id) {
-            let l = doc.get(list)?.list()?;
-            let len = doc.data_set(l.data).map_or(0, |d| d.table.rows.len());
-            let row = *l.shown_rows(len).get(place)?;
+            let row = *shown(doc, list).get(place)?;
             return Some((list, place, row));
         }
         at = n.parent;
@@ -351,6 +650,8 @@ pub fn touched(doc: &Document, tx: &Transaction, dirty: &DirtySet) -> Vec<NodeId
     }
     let mut out: FxHashSet<NodeId> = FxHashSet::default();
     let mut sets: FxHashSet<DataSetId> = FxHashSet::default();
+    // A value or a mode changed: a filter reading a variable may pass other rows.
+    let mut values = false;
     for op in &tx.0 {
         match op {
             Operation::SetList { id, .. } => {
@@ -359,8 +660,22 @@ pub fn touched(doc: &Document, tx: &Transaction, dirty: &DirtySet) -> Vec<NodeId
             Operation::SetDataSet { id, .. } => {
                 sets.insert(*id);
             }
+            Operation::SetVariable { .. }
+            | Operation::SetVariableCell { .. }
+            | Operation::RemoveVariable { .. }
+            | Operation::RemoveMode { .. }
+            | Operation::SetModes { .. }
+            | Operation::SetQueries { .. }
+            | Operation::SetBreakpoints { .. } => values = true,
             _ => {}
         }
+    }
+    if values {
+        out.extend(all.iter().copied().filter(|l| {
+            doc.get(*l)
+                .and_then(|n| n.list())
+                .is_some_and(|x| !x.rows.is_one_row() && !x.filter_vars().is_empty())
+        }));
     }
     if !sets.is_empty() {
         for l in &all {
@@ -446,7 +761,7 @@ pub fn unmatched_variant_cells(
         return Vec::new();
     };
     let props = variant_props(doc, t);
-    let rows = list.shown_rows(set.table.rows.len());
+    let rows = shown(doc, list_id);
     let mut out = Vec::new();
     for f in &list.fill {
         let Target::Variant(name) = &f.target else {
@@ -478,7 +793,7 @@ pub fn unmatched_pictures(doc: &Document, list_id: NodeId) -> Vec<(String, Vec<S
         return Vec::new();
     };
     let props = crate::variant::instance_properties(doc, t);
-    let rows = list.shown_rows(set.table.rows.len());
+    let rows = shown(doc, list_id);
     let mut out = Vec::new();
     for f in &list.fill {
         let Target::Prop(item) = &f.target else {
@@ -812,7 +1127,7 @@ pub fn regenerate<E>(
     let Some(tpl) = template(doc, id) else {
         return Ok(false);
     };
-    let rows = list.shown_rows(set.table.rows.len());
+    let rows = list.shown_rows(&set.table, &|v| doc.resolve_var(id, v));
 
     // The old copies out, then the new ones in after the template, the list
     // naming them in the same step.
@@ -997,7 +1312,8 @@ pub fn chart_follow_ops(doc: &Document, tx: &Transaction, dirty: &DirtySet) -> V
 }
 
 /// The ops of `tx` that [`regenerate_in_history`] reads beside the dirty set: a
-/// list's description, a data set and a chart's description, taken before `tx`
+/// list's description, a data set, a chart's description, and a variable's
+/// value or a mode in force (which a list filter may read), taken before `tx`
 /// moves into the history.
 pub fn follow_ops(tx: &Transaction) -> Transaction {
     Transaction(
@@ -1008,6 +1324,13 @@ pub fn follow_ops(tx: &Transaction) -> Transaction {
                     Operation::SetList { .. }
                         | Operation::SetDataSet { .. }
                         | Operation::SetChart { chart: Some(_), .. }
+                        | Operation::SetVariable { .. }
+                        | Operation::SetVariableCell { .. }
+                        | Operation::RemoveVariable { .. }
+                        | Operation::RemoveMode { .. }
+                        | Operation::SetModes { .. }
+                        | Operation::SetQueries { .. }
+                        | Operation::SetBreakpoints { .. }
                 )
             })
             .cloned()
@@ -1089,18 +1412,110 @@ pub fn regenerate_outside_history(doc: &mut Document, lists: &[NodeId]) -> Dirty
 mod tests {
     use super::*;
 
+    /// A table of `rows`, its columns named by the first row.
+    fn table(head: &[&str], rows: &[&[&str]]) -> Table {
+        let mut t = Table::default();
+        for h in head {
+            let id = t.next_column_id();
+            t.columns.push(crate::chart::Column {
+                id,
+                name: (*h).into(),
+            });
+        }
+        t.rows = rows
+            .iter()
+            .map(|r| r.iter().map(|c| (*c).to_string()).collect())
+            .collect();
+        t
+    }
+
+    fn no_vars(_: crate::variable::VarId) -> Option<crate::variable::Value> {
+        None
+    }
+
     /// `shown_rows` caps every mode at the table and at `MAX_DRAWN`.
     #[test]
     fn shown_rows_follow_the_mode() {
+        let rows = |n: usize| table(&["A"], &vec![&["x"][..]; n]);
         let mut l = List::new(DataSetId(NodeId { actor: 1, seq: 1 }));
-        assert_eq!(l.shown_rows(3), vec![0, 1, 2]);
-        assert_eq!(l.shown_rows(500).len(), MAX_DRAWN);
+        assert_eq!(l.shown_rows(&rows(3), &no_vars), vec![0, 1, 2]);
+        assert_eq!(l.shown_rows(&rows(500), &no_vars).len(), MAX_DRAWN);
         l.rows = Rows::First(2);
-        assert_eq!(l.shown_rows(3), vec![0, 1]);
+        assert_eq!(l.shown_rows(&rows(3), &no_vars), vec![0, 1]);
         l.rows = Rows::Opened;
         l.opened = 7;
-        assert_eq!(l.shown_rows(3), vec![2]);
-        assert!(l.shown_rows(0).is_empty());
+        assert_eq!(l.shown_rows(&rows(3), &no_vars), vec![2]);
+        assert!(l.shown_rows(&rows(0), &no_vars).is_empty());
+        l.rows = Rows::Row(2);
+        assert_eq!(l.shown_rows(&rows(3), &no_vars), vec![1]);
+        l.rows = Rows::Row(9);
+        assert_eq!(
+            l.shown_rows(&rows(3), &no_vars),
+            vec![2],
+            "past the end: the last row"
+        );
+    }
+
+    /// Filter, then sort, then the mode: *First 2* is the top two after the
+    /// sort, and a one-row mode ignores both.
+    #[test]
+    fn a_filter_and_sort_run_before_the_mode() {
+        let t = table(
+            &["Name", "Category", "Price"],
+            &[
+                &["Scarf", "Knits", "28"],
+                &["Linen shirt", "Shirts", "42"],
+                &["Oxford shirt", "shirts", "58"],
+                &["Camp shirt", "Shirts", ""],
+            ],
+        );
+        let (cat, price) = (t.columns[1].id, t.columns[2].id);
+        let mut l = List::new(DataSetId(NodeId { actor: 1, seq: 1 }));
+        l.filter.tests.push(Test {
+            column: cat,
+            op: TestOp::Is,
+            value: crate::prototype::expr::Expr("Shirts".into()),
+        });
+        l.sort.push(SortKey {
+            column: price,
+            descending: true,
+        });
+        assert_eq!(
+            l.shown_rows(&t, &no_vars),
+            vec![2, 1, 3],
+            "empty price last"
+        );
+        l.rows = Rows::First(1);
+        assert_eq!(l.shown_rows(&t, &no_vars), vec![2]);
+        l.rows = Rows::Row(1);
+        assert_eq!(
+            l.shown_rows(&t, &no_vars),
+            vec![0],
+            "a fixed row ignores the filter"
+        );
+        l.rows = Rows::All;
+        l.filter.tests[0].value.0.clear();
+        assert_eq!(
+            l.shown_rows(&t, &no_vars).len(),
+            4,
+            "an empty value passes all"
+        );
+    }
+
+    /// A value naming a variable reads it; one naming none is literal text.
+    #[test]
+    fn a_test_value_is_literal_unless_it_names_a_variable() {
+        use crate::prototype::expr::Expr;
+        use crate::variable::{Value, VarId};
+        let v = VarId(NodeId { actor: 9, seq: 4 });
+        let read = move |x: VarId| (x == v).then(|| Value::String("Knits".into()));
+        assert_eq!(test_value(&Expr("2024-01".into()), &read), "2024-01");
+        let e = Expr(format!("{{{}}}", v.0.to_wire()));
+        assert_eq!(test_value(&e, &read), "Knits");
+        assert!(TestOp::Contains.passes("Linen Shirt", "shirt"));
+        assert!(TestOp::AtLeast.passes("12", "12"));
+        assert!(!TestOp::Less.passes("abc", "12"), "a word is no number");
+        assert!(TestOp::Empty.passes("  ", "ignored"));
     }
 
     /// A boolean cell reads the usual spellings and leaves anything else alone.

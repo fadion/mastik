@@ -2463,6 +2463,72 @@ fn a_row_picked_in_the_state_card_opens() {
     assert_eq!(p.opened_rows()[0].current, 2, "picked");
 }
 
+/// A list filtered by a variable is drawn again on the copy when the variable
+/// changes, and hides its template while no row passes.
+/// flip: `changed` not calling `refilter` → fails at "narrowed".
+#[test]
+fn a_filter_reading_a_variable_narrows_the_list_in_play() {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    use mastik_core::list::{DataSet, List, Source, Test, TestOp};
+    use mastik_core::prototype::Expr;
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 200.0);
+    let main = fx.frame("Row", 600.0, 180.0, 30.0);
+    fx.apply(vec![Operation::SetComponent {
+        id: main,
+        component: true,
+    }]);
+    let item = row_instance(&mut fx, main, a);
+    let category = fx.var("Category", VarKind::String, Cell::String(String::new()));
+    let set = DataSet {
+        id: fx.ids.mint_data_set(),
+        name: "products".into(),
+        table: Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "kind".into(),
+            }],
+            rows: vec![
+                vec!["Shirts".into()],
+                vec!["Knits".into()],
+                vec!["Shirts".into()],
+            ],
+        },
+        source: None,
+        pictures: Vec::new(),
+    };
+    let l = listed(&mut fx, item, Source::New(set));
+    let mut filtered: List = fx.doc.get(l).unwrap().list().unwrap().clone();
+    filtered.filter.tests.push(Test {
+        column: ColumnId(0),
+        op: TestOp::Is,
+        value: Expr(format!("{{{}}}", category.0.to_wire())),
+    });
+    fx.apply(vec![Operation::SetList {
+        id: l,
+        list: Some(Box::new(filtered)),
+    }]);
+    mastik_core::list::regenerate_outside_history(&mut fx.doc, &[l]);
+    let copies = |p: &crate::Player| p.document().get(l).unwrap().list().unwrap().copies.len();
+
+    let mut p = fx.play(a);
+    assert_eq!(copies(&p), 2, "an empty value passes every row");
+    p.set_value(category, Value::String("Knits".into()))
+        .unwrap();
+    assert_eq!(copies(&p), 0, "narrowed to one row");
+    assert!(p.document().get(item).unwrap().visible());
+    p.set_value(category, Value::String("Hats".into())).unwrap();
+    assert!(
+        !p.document().get(item).unwrap().visible(),
+        "no row passes: hidden in play"
+    );
+    assert_eq!(
+        fx.doc.get(l).unwrap().list().unwrap().copies.len(),
+        2,
+        "the file untouched"
+    );
+}
+
 /// A list over an empty table hides its template in play while the document
 /// keeps it, and a live edit giving the table rows shows it again.
 /// flip: `prepare` not calling `hide_empty_templates` → fails at "hidden in play".

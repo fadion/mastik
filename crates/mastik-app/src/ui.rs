@@ -1818,6 +1818,18 @@ pub fn fold_head(ui: &mut egui::Ui, label: &str, open: bool) -> (egui::Response,
 /// are ([`override_count`]): how many things the fold holds that are not at rest,
 /// so a folded section is never silently changed.
 pub fn fold_rule(ui: &mut egui::Ui, label: &str, open: bool, count: usize) -> egui::Response {
+    fold_rule_noted(ui, label, open, count, None)
+}
+
+/// [`fold_rule`] with a short `note` after the title in the muted ink, where a
+/// count would not say enough: the column a sort runs by.
+pub fn fold_rule_noted(
+    ui: &mut egui::Ui,
+    label: &str,
+    open: bool,
+    count: usize,
+    note: Option<&str>,
+) -> egui::Response {
     // Nothing laid out above it in this column yet, or nothing since its card's
     // head ([`section_head_full`] notes where the body starts).
     let top = ui.cursor().top();
@@ -1861,6 +1873,26 @@ pub fn fold_rule(ui: &mut egui::Ui, label: &str, open: bool, count: usize) -> eg
     p.galley(egui::pos2(row.left(), word_top), word, title_ink);
     if count > 0 {
         override_count(p, word_end + CARD_COL_GAP, row.center().y, count);
+    } else if let Some(note) = note.filter(|n| !n.is_empty()) {
+        // Short of the caret, so a long column name never runs under it.
+        let room = row.right() - FOLD_CARET_PT - CARD_COL_GAP - (word_end + CARD_COL_GAP);
+        let mut job = egui::text::LayoutJob::single_section(
+            note.to_owned(),
+            egui::TextFormat::simple(egui::FontId::proportional(SMALL_PT), theme::text::muted()),
+        );
+        job.wrap = egui::text::TextWrapping {
+            max_width: room.max(0.0),
+            max_rows: 1,
+            break_anywhere: true,
+            overflow_character: Some('…'),
+        };
+        let galley = p.layout_job(job);
+        let top = ((row.center().y - galley.size().y / 2.0) * ppp).round() / ppp;
+        p.galley(
+            egui::pos2(word_end + CARD_COL_GAP, top),
+            galley,
+            theme::text::muted(),
+        );
     }
     let caret = if open {
         icon::CARET_DOWN

@@ -276,6 +276,72 @@ fn rows_follow_the_data_the_mode_and_the_template() {
     assert_eq!(titles(&doc, l), ["A", "B", "C"]);
 }
 
+/// A list filtered by a variable on the canvas follows an edit of the
+/// variable's value in that edit's step, and undo puts its rows back; a sort
+/// orders the rows that pass.
+/// flip: `follow_ops` dropping the variable ops → fails at "follows the value".
+#[test]
+fn a_filter_follows_the_variable_it_reads() {
+    use mastik_core::list::{SortKey, Test, TestOp};
+    let (mut doc, mut ids, page) = blank();
+    let (_, inst) = row_component(&mut doc, &mut ids, page);
+    let set = data(
+        &mut ids,
+        &[("Linen", "yes"), ("Wool", "no"), ("Camp", "yes")],
+    );
+    let res = Resolved::rebuild(&doc);
+    let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).unwrap();
+    let mut history = History::default();
+    commit(&mut history, &mut doc, &mut ids, tx);
+    let yes = serde_json::to_value(mastik_core::Cell::String("yes".into())).unwrap();
+    run(
+        &mut doc,
+        &mut ids,
+        "add_variable",
+        json!({ "kind": "string", "name": "Badge", "value": yes }),
+    );
+    let var = doc.variables().by_name("Badge").unwrap().id;
+    let mut filtered = doc.get(l).unwrap().list().unwrap().clone();
+    filtered.filter.tests.push(Test {
+        column: ColumnId(1),
+        op: TestOp::Is,
+        value: mastik_core::prototype::Expr(format!("{{{}}}", var.0.to_wire())),
+    });
+    filtered.sort.push(SortKey {
+        column: ColumnId(0),
+        descending: false,
+    });
+    let edit = Transaction(vec![Operation::SetList {
+        id: l,
+        list: Some(Box::new(filtered)),
+    }]);
+    commit(&mut history, &mut doc, &mut ids, edit);
+    assert_eq!(titles(&doc, l), ["Camp", "Linen"]);
+
+    let no = serde_json::to_value(mastik_core::Cell::String("no".into())).unwrap();
+    let res = Resolved::rebuild(&doc);
+    let done = verbs::call(
+        &mut Ctx {
+            doc: &doc,
+            res: &res,
+            ids: &mut ids,
+            images: None,
+            contrast: None,
+        },
+        "set_variable_value",
+        &json!({ "variable": var.0.to_wire(), "value": no }),
+    )
+    .unwrap();
+    commit(&mut history, &mut doc, &mut ids, done.tx);
+    assert_eq!(titles(&doc, l), ["Wool"], "follows the value");
+    history.undo(&mut doc).unwrap();
+    assert_eq!(
+        titles(&doc, l),
+        ["Camp", "Linen"],
+        "undo puts the rows back"
+    );
+}
+
 /// A boolean cell that reads as neither shown nor hidden gives its row the
 /// main's value, not the one row 1 last filled into the template.
 /// flip: `regenerate` skipping the property on an unread cell → fails at "made again".

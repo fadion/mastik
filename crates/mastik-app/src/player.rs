@@ -1023,24 +1023,18 @@ fn mode_row(ui: &mut egui::Ui, p: &mut Playing, i: usize, row: &mastik_play::Mod
     }
 }
 
-/// The rows *Opened rows* offers a data set, as many as a list draws.
-const OPENED_ROWS_LISTED: usize = mastik_core::list::MAX_DRAWN;
-
 /// One data set's row in *Opened rows*: its name, and a dropdown of its rows
 /// by number and first cell, the open one ticked. A pick opens the row as a tap
 /// on it would.
 fn opened_row(ui: &mut egui::Ui, p: &mut Playing, i: usize, row: &mastik_play::OpenedRow) {
     let field = state_control_w(ui);
     let mut pick = None;
-    let label = |n: usize| match row.rows.get(n).filter(|c| !c.is_empty()) {
-        Some(cell) => format!("{} \u{b7} {cell}", n + 1),
-        None => format!("Row {}", n + 1),
-    };
+    let label = |n: usize| crate::list_data::row_words(n, row.rows.get(n).map(String::as_str));
     ui::label_row(ui, &row.name, theme::text::muted(), |ui| {
         let shown = label(row.current);
         ui::fitted_combo(ui, ("play-opened", i), field, &shown, &shown, |ui| {
             ui::menu_rows(ui);
-            for n in 0..row.rows.len().min(OPENED_ROWS_LISTED) {
+            for n in 0..row.rows.len().min(crate::list_data::ROWS_LISTED) {
                 let on = n == row.current;
                 if ui.selectable_label(on, label(n)).clicked() && !on {
                     pick = Some(n);

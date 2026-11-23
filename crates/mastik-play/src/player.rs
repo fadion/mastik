@@ -667,18 +667,46 @@ impl Player {
             if self.commit(tx).is_err() {
                 continue;
             }
-            let (doc, res, ids, dirty) =
-                (&mut self.doc, &mut self.res, &mut self.ids, &mut self.dirty);
-            // A regeneration the rules refuse leaves the list showing its last row.
-            let _ = list::regenerate(doc, l, ids, |doc, tx| {
-                let out = doc.apply(&tx)?;
-                res.update(doc, &out.dirty);
-                dirty.extend(out.dirty.0);
-                Ok::<(), OpError>(())
-            });
-            let settled = self.res.settle(&mut self.doc);
-            self.dirty.extend(settled.0);
+            self.regenerate_list(l);
         }
+    }
+
+    /// List `l` made again on the copy from its description and data set.
+    pub(crate) fn regenerate_list(&mut self, l: NodeId) {
+        use mastik_core::list;
+        let (doc, res, ids, dirty) = (&mut self.doc, &mut self.res, &mut self.ids, &mut self.dirty);
+        // A regeneration the rules refuse leaves the list showing its last rows.
+        let _ = list::regenerate(doc, l, ids, |doc, tx| {
+            let out = doc.apply(&tx)?;
+            res.update(doc, &out.dirty);
+            dirty.extend(out.dirty.0);
+            Ok::<(), OpError>(())
+        });
+        let settled = self.res.settle(&mut self.doc);
+        self.dirty.extend(settled.0);
+    }
+
+    /// Every list whose filter reads `var` (any variable, for `None`: a mode
+    /// changed) made again on the copy, so a chip or a search narrows it. An
+    /// *Opened row* list keeps its row.
+    pub(crate) fn refilter(&mut self, var: Option<VarId>) {
+        use mastik_core::list;
+        let lists: Vec<NodeId> = list::lists(&self.doc)
+            .into_iter()
+            .filter(|l| {
+                self.doc.get(*l).and_then(|n| n.list()).is_some_and(|x| {
+                    let vars = x.filter_vars();
+                    !x.rows.is_one_row() && var.map_or(!vars.is_empty(), |v| vars.contains(&v))
+                })
+            })
+            .collect();
+        if lists.is_empty() {
+            return;
+        }
+        for l in lists {
+            self.regenerate_list(l);
+        }
+        self.hide_empty_templates();
     }
 
     /// Each row play opened, opened again on the copy; a data set the copy no
@@ -736,10 +764,10 @@ impl Player {
         self.hide_empty_templates();
     }
 
-    /// A list over an empty table draws no row in play: its template, kept on
-    /// the canvas to be edited, is hidden on the copy, and shown again as the
-    /// document has it once the table has rows (a live edit). A list whose data
-    /// set is missing keeps the rows it has.
+    /// A list drawing no row — an empty table, or no row passing its filter —
+    /// draws nothing in play: its template, kept on the canvas to be edited, is
+    /// hidden on the copy, and shown again as the document has it once a row
+    /// shows. A list whose data set is missing keeps the rows it has.
     fn hide_empty_templates(&mut self) {
         use mastik_core::list;
         let mut shows = Vec::new();
@@ -750,10 +778,11 @@ impl Player {
             let Some(t) = list::template(&self.doc, l) else {
                 continue;
             };
-            let Some(set) = self.doc.data_set(x.data) else {
+            if self.doc.data_set(x.data).is_none() {
                 continue;
-            };
-            let want = !set.table.rows.is_empty() && self.base.get(t).is_none_or(|n| n.visible());
+            }
+            let want = !list::shown(&self.doc, l).is_empty()
+                && self.base.get(t).is_none_or(|n| n.visible());
             if self.doc.get(t).is_some_and(|n| n.visible() != want) {
                 shows.push(mastik_core::Operation::SetVisible {
                     id: t,
@@ -962,6 +991,7 @@ impl Player {
 
     fn changed(&mut self, var: VarId) {
         self.sync_inputs(var);
+        self.refilter(Some(var));
         let mut fire = Vec::new();
         for frame in self.shown() {
             for id in subtree_nodes(&self.doc, &[frame]) {

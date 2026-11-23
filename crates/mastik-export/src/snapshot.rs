@@ -1275,9 +1275,7 @@ fn list_summary(doc: &Document, id: NodeId, l: &mastik_core::list::List) -> List
         data: set.map(|s| s.name.clone()),
         template: template.map(|t| t.to_wire()),
         // A list whose table is missing keeps the rows it was copied with.
-        rows: set.map_or(1 + l.copies.len(), |s| {
-            l.shown_rows(s.table.rows.len()).len()
-        }),
+        rows: set.map_or(1 + l.copies.len(), |_| list::shown(doc, id).len()),
         fill,
     }
 }

@@ -13,14 +13,18 @@ use mastik_core::variant::PropKind;
 use mastik_core::{NodeId, Operation, Transaction};
 
 /// The rows modes in the segmented control's order, with their words.
-const ROWS: [(&str, &str); 3] = [
+const ROWS: [(&str, &str); 4] = [
     ("All", ALL_TIP),
     ("First", "The first rows only"),
+    ("Row", "One row of the table, the same in play"),
     (
         "Opened row",
         "The row opened in play by a tap on a list over the same data",
     ),
 ];
+
+/// What the Filter and Sort sections say under a one-row mode.
+const ONE_ROW: &str = "One row shows: filter and sort apply to All and First";
 
 /// *All*'s tooltip. The segmented control's tips are `&'static str`, so the
 /// number is written out and held to `list::MAX_DRAWN` when built.
@@ -87,6 +91,8 @@ impl MastikApp {
             ui.spacing_mut().item_spacing.y = ui::CARD_ROW_GAP;
             app.list_data_rows(ui, id, &now);
             app.list_rows_rows(ui, id, &now);
+            app.list_filter_rows(ui, id, &now);
+            app.list_sort_rows(ui, id, &now);
             app.list_fill_rows(ui, id, &now);
             let size = egui::vec2(ui.available_width(), ui::CONTROL_H);
             let tip = crate::input::keys("Keep the rows as instances and drop the list (Ctrl+E)");
@@ -214,19 +220,24 @@ impl MastikApp {
             self.open_list_data(id);
         }
         self.data_set_link_rows(ui, &set);
-        let drawn = now.shown_rows(rows).len();
+        let doc = &self.session.doc;
+        let drawn = list::shown(doc, id).len();
+        let passing = now.passing(&set.table, &|v| doc.resolve_var(id, v)).len();
         if rows == 0 {
             let said = "No rows: the template is hidden in play";
+            ui::note_line(ui, icon::WARNING, color::warn(), said, None);
+        } else if drawn == 0 {
+            let said = "No row passes the filter: the template is hidden in play";
             ui::note_line(ui, icon::WARNING, color::warn(), said, None);
         }
         // Cut only when the cap stops short of what the mode asked for.
         let asked = match now.rows {
-            Rows::All => rows,
-            Rows::First(n) => rows.min(n as usize),
-            Rows::Opened => 0,
+            Rows::All => passing,
+            Rows::First(n) => passing.min(n as usize),
+            Rows::Opened | Rows::Row(_) => 0,
         };
         if drawn < asked {
-            let said = format!("Showing {drawn} of {rows} rows");
+            let said = format!("Showing {drawn} of {passing} rows");
             ui::note_line(ui, icon::WARNING, color::warn(), &said, None);
         }
     }
@@ -255,7 +266,8 @@ impl MastikApp {
         }
     }
 
-    /// *Rows*: every row, the first few, or the row opened in play.
+    /// *Rows*: every row, the first few, one fixed row, or the row opened in
+    /// play.
     fn list_rows_rows(&mut self, ui: &mut egui::Ui, id: NodeId, now: &List) {
         if !self.card_fold(ui, "List rows", "Rows") {
             return;
@@ -263,7 +275,8 @@ impl MastikApp {
         let at = match now.rows {
             Rows::All => 0,
             Rows::First(_) => 1,
-            Rows::Opened => 2,
+            Rows::Row(_) => 2,
+            Rows::Opened => 3,
         };
         let pick = ui::segmented_tipped(
             ui,
@@ -279,6 +292,7 @@ impl MastikApp {
             let rows = match i {
                 0 => Rows::All,
                 1 => Rows::First(3),
+                2 => Rows::Row(1),
                 _ => Rows::Opened,
             };
             self.list_commit(
@@ -314,10 +328,337 @@ impl MastikApp {
                 }]);
                 self.named_valve("List rows", icon::TABLE, &resp, tx);
             }
+            Rows::Row(n) => self.list_row_pick(ui, id, now, n),
             Rows::Opened => {
                 ui::selection_note(ui, "Shows the row opened in play, row 1 here");
             }
             Rows::All => {}
+        }
+    }
+
+    /// *Row*'s dropdown: the table's rows by number and first cell, as the
+    /// player's *Opened rows* lists them.
+    fn list_row_pick(&mut self, ui: &mut egui::Ui, id: NodeId, now: &List, n: u32) {
+        use crate::list_data::{ROWS_LISTED, row_words};
+        let firsts: Vec<String> = self
+            .session
+            .doc
+            .data_set(now.data)
+            .map(|d| {
+                d.table
+                    .rows
+                    .iter()
+                    .map(|r| r.first().cloned().unwrap_or_default())
+                    .collect()
+            })
+            .unwrap_or_default();
+        // Past the end the list shows the last row, and the face says which.
+        let shown_at = (n.max(1) as usize - 1).min(firsts.len().saturating_sub(1));
+        let words = |i: usize| row_words(i, firsts.get(i).map(String::as_str));
+        let face = match words(shown_at) {
+            w if w.starts_with("Row ") => w,
+            w => format!("Row {w}"),
+        };
+        let mut pick = None;
+        let w = ui.available_width();
+        ui::fitted_combo(
+            ui,
+            ("list-row", id),
+            w,
+            ui::combo_text(&face),
+            &face,
+            |ui| {
+                ui::menu_rows(ui);
+                for i in 0..firsts.len().min(ROWS_LISTED) {
+                    let on = i == shown_at;
+                    if ui.selectable_label(on, words(i)).clicked() && !on {
+                        pick = Some(i);
+                    }
+                }
+                if firsts.len() > ROWS_LISTED {
+                    ui::menu_note(
+                        ui,
+                        &format!("Showing {ROWS_LISTED} of {} rows", firsts.len()),
+                    );
+                }
+            },
+        );
+        if let Some(i) = pick {
+            let rows = Rows::Row(i as u32 + 1);
+            self.list_commit(
+                id,
+                "List rows",
+                List {
+                    rows,
+                    ..now.clone()
+                },
+            );
+        }
+    }
+
+    /// The column dropdown of a filter test or a sort: *None* when `none` is
+    /// offered, then the table's columns; a column the table lacks shows
+    /// *Missing column*. Answers the pick (`None` for *None*).
+    #[allow(clippy::too_many_arguments)]
+    fn list_column_combo(
+        ui: &mut egui::Ui,
+        salt: impl std::hash::Hash + std::fmt::Debug,
+        w: f32,
+        columns: &[(ColumnId, String)],
+        now: Option<ColumnId>,
+        none: bool,
+    ) -> Option<Option<ColumnId>> {
+        let shown = match now {
+            None => "None".to_string(),
+            Some(c) => columns
+                .iter()
+                .find(|(i, _)| *i == c)
+                .map_or_else(|| "Missing column".to_string(), |(_, n)| n.clone()),
+        };
+        let mut pick = None;
+        ui::fitted_combo(ui, salt, w, ui::combo_text(&shown), &shown, |ui| {
+            ui::menu_rows(ui);
+            if none && ui.selectable_label(now.is_none(), "None").clicked() {
+                pick = Some(None);
+            }
+            for (c, n) in columns {
+                if ui.selectable_label(now == Some(*c), n).clicked() {
+                    pick = Some(Some(*c));
+                }
+            }
+        });
+        pick.filter(|p| *p != now)
+    }
+
+    /// *Filter*: tests on columns joined by *All* or *Any*, each a column, a
+    /// test word and a value. Dimmed under a one-row mode.
+    fn list_filter_rows(&mut self, ui: &mut egui::Ui, id: NodeId, now: &List) {
+        let count = now.filter.tests.len();
+        if !self.card_fold_noted(ui, "List filter", "Filter", count, None) {
+            return;
+        }
+        let one = now.rows.is_one_row();
+        if one {
+            ui::selection_note(ui, ONE_ROW);
+        }
+        let doc = &self.session.doc;
+        let Some(set) = doc.data_set(now.data).cloned() else {
+            return;
+        };
+        let columns: Vec<(ColumnId, String)> = set
+            .table
+            .columns
+            .iter()
+            .map(|c| (c.id, c.name.clone()))
+            .collect();
+        let passing = now.passing(&set.table, &|v| doc.resolve_var(id, v)).len();
+        let mut next: Option<List> = None;
+        ui::disable_unless(ui, !one, |ui| {
+            let w = ui.available_width();
+            let half = (w - ui::CARD_COL_GAP) / 2.0;
+            if count > 1 {
+                let at = usize::from(now.filter.any);
+                let pick = ui::segmented_tipped(
+                    ui,
+                    half,
+                    ui::SEGMENT_CELL_H,
+                    2,
+                    at,
+                    |_| true,
+                    |i| ["Every test must pass", "Any test passing will do"][i],
+                    |p, i, r, on| ui::segment_label(p, r, ["All", "Any"][i], on),
+                );
+                if let Some(i) = pick.filter(|i| *i != at) {
+                    let mut l = now.clone();
+                    l.filter.any = i == 1;
+                    next = Some(l);
+                }
+            }
+            for (i, t) in now.filter.tests.iter().enumerate() {
+                let numeric = set.table.is_numeric(t.column);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                    if let Some(Some(c)) = Self::list_column_combo(
+                        ui,
+                        ("list-test-col", id, i),
+                        half,
+                        &columns,
+                        Some(t.column),
+                        false,
+                    ) {
+                        let mut l = now.clone();
+                        l.filter.tests[i].column = c;
+                        next = Some(l);
+                    }
+                    let word = t.op.words();
+                    let mut op = None;
+                    ui::fitted_combo(
+                        ui,
+                        ("list-test-op", id, i),
+                        half,
+                        ui::combo_text(word),
+                        word,
+                        |ui| {
+                            ui::menu_rows(ui);
+                            for o in list::TestOp::ALL {
+                                if o.is_number() && !numeric {
+                                    continue;
+                                }
+                                if ui.selectable_label(o == t.op, o.words()).clicked() && o != t.op
+                                {
+                                    op = Some(o);
+                                }
+                            }
+                        },
+                    );
+                    if let Some(o) = op {
+                        let mut l = now.clone();
+                        l.filter.tests[i].op = o;
+                        next = Some(l);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                    let fw = w - ui::CONTROL_H - ui::CARD_COL_GAP;
+                    if t.op.takes_value() {
+                        let key = super::prototype::DraftKey::ListTest(id, i);
+                        let want = super::prototype::ExprWant::LiteralOr;
+                        if let Some(e) = self.expr_field(ui, key, &t.value, fw, want) {
+                            let mut l = now.clone();
+                            l.filter.tests[i].value = e;
+                            next = Some(l);
+                        }
+                    } else {
+                        ui.add_space(fw);
+                    }
+                    if ui::field_button(ui, icon::X, ui::CONTROL_H, ui::FieldButton::Off)
+                        .on_hover_text("Remove this test")
+                        .clicked()
+                    {
+                        let mut l = now.clone();
+                        l.filter.tests.remove(i);
+                        next = Some(l);
+                    }
+                });
+                if set.table.index_of(t.column).is_none() {
+                    let said =
+                        "This test reads a column the table no longer has, so it passes every row";
+                    ui::note_line(ui, icon::WARNING, color::warn(), said, None);
+                }
+            }
+            if count < list::MAX_TESTS && !columns.is_empty() {
+                let size = egui::vec2(w, ui::CONTROL_H);
+                if ui::action_button(ui, icon::PLUS, "Add test", ui::FieldButton::Off, size)
+                    .on_hover_text("Show only the rows whose cell passes a test")
+                    .clicked()
+                {
+                    let mut l = now.clone();
+                    l.filter.tests.push(list::Test {
+                        column: columns[0].0,
+                        op: list::TestOp::Is,
+                        value: Default::default(),
+                    });
+                    next = Some(l);
+                }
+            }
+            if count > 0 {
+                let said = format!(
+                    "{passing} of {} pass here",
+                    ui::count_as(set.table.rows.len(), "row", "rows")
+                );
+                ui::selection_note(ui, &said);
+            }
+        });
+        if let Some(l) = next {
+            self.list_commit(id, "List filter", l);
+        }
+    }
+
+    /// *Sort*: a column and a direction, and one *Then by*. Dimmed under a
+    /// one-row mode.
+    fn list_sort_rows(&mut self, ui: &mut egui::Ui, id: NodeId, now: &List) {
+        let doc = &self.session.doc;
+        let Some(set) = doc.data_set(now.data) else {
+            return;
+        };
+        let columns: Vec<(ColumnId, String)> = set
+            .table
+            .columns
+            .iter()
+            .map(|c| (c.id, c.name.clone()))
+            .collect();
+        let note = now
+            .sort
+            .first()
+            .and_then(|k| columns.iter().find(|(c, _)| *c == k.column))
+            .map(|(_, n)| n.clone());
+        if !self.card_fold_noted(ui, "List sort", "Sort", 0, note.as_deref()) {
+            return;
+        }
+        let one = now.rows.is_one_row();
+        if one {
+            ui::selection_note(ui, ONE_ROW);
+        }
+        let mut next: Option<List> = None;
+        ui::disable_unless(ui, !one, |ui| {
+            let w = ui.available_width();
+            // The direction takes two square cells; the column the rest.
+            let dir_w = 2.0 * ui::CONTROL_H;
+            let col_w = w - dir_w - ui::CARD_COL_GAP;
+            let shown = (now.sort.len() + 1).min(list::MAX_SORT);
+            for i in 0..shown {
+                let key = now.sort.get(i);
+                let label = if i == 0 { "Sort by" } else { "Then by" };
+                ui::labelled(ui, label, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                        let salt = ("list-sort", id, i);
+                        if let Some(c) = Self::list_column_combo(
+                            ui,
+                            salt,
+                            col_w,
+                            &columns,
+                            key.map(|k| k.column),
+                            true,
+                        ) {
+                            let mut l = now.clone();
+                            match c {
+                                Some(column) if i < l.sort.len() => l.sort[i].column = column,
+                                Some(column) => l.sort.push(list::SortKey {
+                                    column,
+                                    descending: false,
+                                }),
+                                // *None* takes this key and any after it.
+                                None => l.sort.truncate(i),
+                            }
+                            next = Some(l);
+                        }
+                        let Some(k) = key else { return };
+                        let at = usize::from(k.descending);
+                        let pick = ui::segmented_tipped(
+                            ui,
+                            dir_w,
+                            ui::SEGMENT_CELL_H,
+                            2,
+                            at,
+                            |_| true,
+                            |d| ["Low to high, A to Z", "High to low, Z to A"][d],
+                            |p, d, r, on| {
+                                let g = [icon::SORT_ASCENDING, icon::SORT_DESCENDING][d];
+                                ui::segment_glyph(p, r, g, on);
+                            },
+                        );
+                        if let Some(d) = pick.filter(|d| *d != at) {
+                            let mut l = now.clone();
+                            l.sort[i].descending = d == 1;
+                            next = Some(l);
+                        }
+                    });
+                });
+            }
+        });
+        if let Some(l) = next {
+            self.list_commit(id, "List sort", l);
         }
     }
 
@@ -444,8 +785,21 @@ impl MastikApp {
     /// A folding section of a card (List, Prototype), headed by `ui::fold_rule`,
     /// its fold kept by `key`; answers whether it is open.
     pub(super) fn card_fold(&mut self, ui: &mut egui::Ui, key: &'static str, label: &str) -> bool {
+        self.card_fold_noted(ui, key, label, 0, None)
+    }
+
+    /// [`Self::card_fold`] whose head carries a count or a short note
+    /// (`ui::fold_rule_noted`).
+    pub(super) fn card_fold_noted(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: &'static str,
+        label: &str,
+        count: usize,
+        note: Option<&str>,
+    ) -> bool {
         let open = !self.collapsed_panels.contains(key);
-        if ui::fold_rule(ui, label, open, 0).clicked() {
+        if ui::fold_rule_noted(ui, label, open, count, note).clicked() {
             if open {
                 self.collapsed_panels.insert(key);
             } else {
