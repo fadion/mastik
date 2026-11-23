@@ -41,8 +41,14 @@ const FILES_BUDGET: usize = 16 * 1024 * 1024;
 /// through the plan *Export all* and `mastik export --all` use.
 ///
 /// A raster past [`EXPORT_PIXELS`] is refused before anything is drawn, and
-/// the answer stops once its files pass [`FILES_BUDGET`].
-pub(super) fn run_exports(s: &EditorSession, ids: Option<Vec<NodeId>>) -> Result<Answer, String> {
+/// the answer stops once its files pass [`FILES_BUDGET`]. `rows` keeps a
+/// *One file per row* setting to those rows; a run of rows past the budget is
+/// refused naming how many fit.
+pub(super) fn run_exports(
+    s: &EditorSession,
+    ids: Option<Vec<NodeId>>,
+    rows: Option<std::ops::Range<usize>>,
+) -> Result<Answer, String> {
     let subjects = match ids {
         Some(ids) => mastik_core::build::all_in_document_order(&s.doc, &ids),
         None => crate::panels::exportable_layers_of(&s.doc),
@@ -52,7 +58,10 @@ pub(super) fn run_exports(s: &EditorSession, ids: Option<Vec<NodeId>>) -> Result
         scale_override: None,
         unset: None,
     };
-    let plan = mastik_export::plan(&s.doc, &s.resolved, &subjects, opts);
+    let mut plan = mastik_export::plan(&s.doc, &s.resolved, &subjects, opts);
+    if let Some(rows) = &rows {
+        plan.retain(|f| f.row.is_none_or(|r| rows.contains(&r)));
+    }
     if plan.is_empty() {
         return Err("No layer has export settings: add them with `set_exports`.".into());
     }
@@ -68,21 +77,53 @@ pub(super) fn run_exports(s: &EditorSession, ids: Option<Vec<NodeId>>) -> Result
             file.node.to_wire(),
         ));
     }
+    // A row's pictures beside a linked table, read as the export worker reads them.
+    let pictured;
+    let doc = match plan.iter().any(|f| f.row.is_some()) {
+        true => {
+            pictured = crate::panels::with_row_pictures(s.doc.clone(), &plan);
+            &pictured
+        }
+        false => &s.doc,
+    };
     let mut listed = Vec::new();
     let mut files = Vec::new();
     let mut total = 0;
+    // The rows whose files have all fit so far, for the refusal's advice.
+    let mut fitted: Vec<usize> = Vec::new();
     for file in &plan {
-        let entry = match mastik_export::plan::render(&s.doc, &s.resolved, file) {
+        let entry = match mastik_export::plan::render(doc, &s.resolved, file) {
             Some(bytes) => {
                 total += bytes.len();
                 if total > FILES_BUDGET {
-                    return Err(format!(
-                        "The files come to more than {} MB, past what one answer carries: \
-                         export fewer layers with `ids`, or look with `export_png`",
-                        FILES_BUDGET / (1024 * 1024)
-                    ));
+                    let mb = FILES_BUDGET / (1024 * 1024);
+                    let fit = fitted.iter().filter(|r| Some(**r) != file.row).count();
+                    let from = rows.as_ref().map_or(1, |r| r.start + 1);
+                    return Err(match file.row {
+                        Some(_) if fit > 0 => format!(
+                            "{} files pass {mb} MB, past what one answer carries: ask for \
+                             `rows: {{\"from\": {from}, \"count\": {fit}}}`, then the rest",
+                            plan.len()
+                        ),
+                        Some(_) => format!(
+                            "One row's files pass {mb} MB, past what one answer carries: \
+                             lower the setting's scale with `set_exports`"
+                        ),
+                        None => format!(
+                            "The files come to more than {mb} MB, past what one answer \
+                             carries: export fewer layers with `ids`, or look with `export_png`"
+                        ),
+                    });
                 }
-                let entry = json!({ "path": file.path, "layer": file.node.to_wire(), "bytes": bytes.len() });
+                if let Some(r) = file.row
+                    && !fitted.contains(&r)
+                {
+                    fitted.push(r);
+                }
+                let mut entry = json!({ "path": file.path, "layer": file.node.to_wire(), "bytes": bytes.len() });
+                if let Some(r) = file.row {
+                    entry["row"] = json!(r + 1);
+                }
                 files.push(Content::File {
                     name: file.path.clone(),
                     mime: mime(&file.path),

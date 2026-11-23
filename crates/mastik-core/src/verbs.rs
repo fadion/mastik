@@ -662,6 +662,16 @@ fn check_other(model: &str, v: &Value) -> Result<(), String> {
             Ok(())
         }
         "Region" => Err("expected [x, y, w, h]".into()),
+        "RowRange"
+            if v.as_object().is_some_and(|m| {
+                ["from", "count"]
+                    .iter()
+                    .all(|k| m.get(*k).and_then(Value::as_u64).is_some_and(|n| n >= 1))
+            }) =>
+        {
+            Ok(())
+        }
+        "RowRange" => Err("expected {from, count}, each a whole number from 1".into()),
         "Props" | "Args" if v.is_object() => Ok(()),
         "Props" | "Args" => Err("expected an object".into()),
         _ => Err(format!("no model type is called `{model}`")),

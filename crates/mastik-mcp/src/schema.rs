@@ -218,12 +218,20 @@ pub static TOOLS: &[Tool] = &[
     Tool {
         name: "run_exports",
         doc: "Render the export settings the layers carry (the Export card's rows) and return the files with their names; nothing is written to disk. With no `ids`, every layer with settings, as Export all does.",
-        params: &[param(
-            "ids",
-            ParamKind::Nodes,
-            false,
-            "The layers; all with settings when absent.",
-        )],
+        params: &[
+            param(
+                "ids",
+                ParamKind::Nodes,
+                false,
+                "The layers; all with settings when absent.",
+            ),
+            param(
+                "rows",
+                ParamKind::Model("RowRange"),
+                false,
+                "{from, count}, from 1: a file-per-row setting writes only those rows.",
+            ),
+        ],
     },
     Tool {
         name: "export_code",
@@ -965,7 +973,7 @@ fn model_type(model: &str) -> Option<&'static str> {
         "Props" | "Args" | "Tree" | "ChartMapping" | "ChartOptions" | "ChartColours"
         | "KitModeMap" | "DtcgFile" | "BlockStyle" | "ParagraphStyle" | "TextStyle"
         | "LayoutItem" | "RepeatLine" | "RepeatGrid" | "LayerPlay" | "PagePlay"
-        | "TableColumns" | "ListFill" | "ListFilter" => Some("object"),
+        | "TableColumns" | "ListFill" | "ListFilter" | "RowRange" => Some("object"),
         _ => None,
     }
 }
@@ -1145,6 +1153,7 @@ mod tests {
         let typed = [
             "Steps",
             "Region",
+            "RowRange",
             "Quad",
             "RepeatLine",
             "RepeatGrid",
@@ -1223,7 +1232,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 28_700;
-        const ALL_BUDGET: usize = 123_600;
+        const ALL_BUDGET: usize = 123_700;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

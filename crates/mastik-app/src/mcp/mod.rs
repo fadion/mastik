@@ -1110,6 +1110,15 @@ fn region(args: &Value) -> Result<Option<mastik_core::kurbo::Rect>, String> {
     }
 }
 
+/// `run_exports`' `rows`, `{from, count}` from 1, as the rows from index
+/// `from - 1` on; `None` when absent. The schema has checked its shape.
+fn row_range(args: &Value) -> Option<std::ops::Range<usize>> {
+    let v = args.get("rows").filter(|v| !v.is_null())?;
+    let at = |k: &str| v.get(k).and_then(Value::as_u64).map(|n| n as usize);
+    let (from, count) = (at("from")?.max(1), at("count")?);
+    Some(from - 1..from - 1 + count)
+}
+
 /// What the person sees of the document: the page they are on, the camera's
 /// centre and zoom, and, while it is the tab in front (`canvas`), the world
 /// rectangle the canvas shows.
@@ -1560,7 +1569,7 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
             let step = own_step(s.history.undone().next(), &agent(call), "redo")?;
             json(json!({ "redone": s.redo().then_some(step).flatten() }))
         }
-        "run_exports" => reads::run_exports(s, nodes(args, "ids")?),
+        "run_exports" => reads::run_exports(s, nodes(args, "ids")?, row_range(args)),
         "export_code" => reads::export_code(s, args, nodes(args, "ids")?),
         "list_components" => json(reads::named(reads::components(&s.doc), "components", args)),
         "list_variables" => json(reads::named(reads::variables(&s.doc), "variables", args)),
@@ -3157,6 +3166,32 @@ mod tests {
             text.contains("Badge@100x.png") && text.contains(&id),
             "{text}"
         );
+    }
+
+    /// `rows` keeps a *One file per row* setting to the rows asked for, each
+    /// file saying its row.
+    ///
+    /// flip: `run_exports` not keeping the plan to `rows` → fails at "row 2 alone".
+    #[test]
+    fn run_exports_takes_a_run_of_rows() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let id = rect(&mut engine, &mut docs, 1, "Badge");
+        let args = json!({ "name": "People", "columns": ["Name"], "rows": [["Ada"], ["Alan"], ["Grace"]] });
+        let table = ok(&call(&mut engine, &mut docs, 1, "add_table", args))["table"].clone();
+        let exports = json!([{ "format": "Png", "per_row": { "table": table } }]);
+        let args = json!({ "nodes": [id], "exports": exports });
+        ok(&call(&mut engine, &mut docs, 1, "set_exports", args));
+        let all = call(&mut engine, &mut docs, 1, "run_exports", json!({}));
+        assert_eq!(ok(&all)["files"].as_array().map(Vec::len), Some(3));
+        let args = json!({ "rows": { "from": 2, "count": 1 } });
+        let some = call(&mut engine, &mut docs, 1, "run_exports", args);
+        let listed = ok(&some)["files"].as_array().unwrap().clone();
+        assert_eq!(listed.len(), 1, "row 2 alone: {listed:?}");
+        assert_eq!(listed[0]["row"], json!(2));
+        assert_eq!(listed[0]["path"], json!("Badge/2.png"));
+        let bad = json!({ "rows": { "from": 0, "count": 1 } });
+        assert!(call(&mut engine, &mut docs, 1, "run_exports", bad).is_error);
     }
 
     /// `export_code` answers files and the three report lists.
