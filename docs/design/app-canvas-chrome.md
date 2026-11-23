@@ -825,7 +825,8 @@ a `Finding` with `kept: Some(Kept)` and its reason.
 
 A box that fills the selection's text layers with realistic names, addresses, companies, text,
 numbers and dates, and its avatar shapes with a drawn picture, a different value per layer, as one
-undo step. The tables ship inside core, so it works offline.
+undo step; or with the rows of one of the document's tables. The word lists ship inside core, so
+it works offline.
 
 ### The rule (`content_fill::plan`)
 
@@ -840,7 +841,7 @@ ImageSink>)` is the edit.
   *member*, *person*, *account*, *image*, *img*): *Profile picture* is an avatar, *Profile header bg*
   and *Product photo* are not. A hidden layer
   is passed over with all it holds; an effectively locked target is counted in `Plan::locked` and
-  skipped. With avatars off no shape is listed.
+  skipped. With avatars off no shape is listed but one reading a table column.
 - **Kinds**, in the groups *Person*, *Place*, *Company*, *Text*, *Numbers and dates* and *Image*
   (`Kind::ALL`, the lists' order; `KIND_KEYS`, the verb's and prefs' spelling). *Text* holds
   *Bio*, a third-person bio using the person's first name, and *Quote*, a first-person
@@ -862,6 +863,28 @@ ImageSink>)` is the edit.
   text does not, it reads as nothing where another layer of that kind sits beside it (same parent:
   a field's label beside its value) or in a record nested inside its own (a table's header over
   its rows). Otherwise it fills: *Name* in a card is a placeholder.
+- **Tables** (`Options::table`, `Options::columns`): a layer may take a column of one of the
+  document's tables (`Cell`, a data set and a column) over any kind. `TableContent::Column(cell)`
+  gives every text layer that column; `TableContent::ByColumnName(set)` gives a layer named like
+  one of the set's columns that column (`column_key`: lowercased, without spaces, dashes or
+  underscores, as a list's fill matches a property) and reads every other layer by its name, as
+  *By layer name*. A column chosen for one layer (`columns`) is over both; a kind chosen for it in
+  `kinds` takes it off its column, and a column chosen takes it off its kind. A text takes the
+  trimmed cell as it is. A shape takes only an image column (`DataSet::image_columns`), by name
+  too, and takes the picture its cell names
+  (`DataSet::picture`) as `Value::Picture`: one image fill through `SetFills`, dropping a photo's
+  credit as an avatar does; a cell naming no picture leaves it as is, counted in
+  `Plan::missing_pictures`. The fill is one-shot: values are written and nothing stays linked to
+  the table. Picture files beside a linked table are not read here; only the pictures the table
+  already maps and the document's own are found.
+- **Which row goes where** (`take_table_rows`, `row_order`): the rows from `Options::from_row`
+  (from 0) to the table's end, in order, or with `Options::shuffled` dealt by the seed (a shuffle
+  of that range, so *Shuffle* deals again). With records on, records come in layer order and each
+  record reading a table takes its next row, so a card's cells come from one row; `Row::table_row`
+  is the row taken. With records off each layer takes its column's next row on its own, so each
+  column starts again at the first row. A row is never repeated: records (or layers) the table has
+  no row left for are left as they are and counted in `Plan::short`. `outline` deals the rows
+  too.
 - **Records** (`Options::records`): each selected frame or group is a record, and so is each child
   of a container under the selection whose container children repeat: two or more sharing a main,
   or a name stem (*Card 1*, *Card 2*) and kind (`record_roots`). A layer's record is its nearest
@@ -875,7 +898,13 @@ ImageSink>)` is the edit.
   `Options::example_emails` is on, else at the record's company's domain when the record has a
   *Company* row, else at one domain the whole fill shares. A redraw (`Options::redraws`) of a row
   drawn from one of the three redraws all of it in that record, so the email follows the name; any
-  other kind redraws only its row.
+  other kind redraws only its row. A record whose table row gives a full name (a column named
+  like a full name by `kind_from_name` or named *Name*, or read by its layer as *Full name*; a
+  cell holding an @ is no name) has its person made from it (`Person::take_name`): split on the
+  last space into given and family names, a single word a given name with the email and username
+  forms that name no family, so the invented email and username agree with the row. Its gender is
+  guessed only from the locale's `[given-f]` and `[given-m]` lists, else the one drawn from the
+  record's seed stays.
 - **Determinism**: every value comes from `Options::seed` through splitmix64. A record's person,
   place and company are keyed by the record's own seed, a hash of what it is (its frame, its loose
   layers' parent, or its lone layer) rather than its place in the fill; a row's other draws by its
@@ -941,11 +970,15 @@ ImageSink>)` is the edit.
   `agreed_locale` is the locale the target texts that set a Language (`TextStyle::locale`) agree
   on; a text without one says nothing, and `None` when they differ, one names no shipped locale, or
   none sets one.
-- **The verb** `fill_content(nodes, locale?, kind?, records?, avatars?, seed?, example_emails?)`
-  runs the same plan: `kind` a `KIND_KEYS` word, `avatars` *initials* (the default), *pattern* or
-  *none*, records on, seed 0 and `example_emails` off unless given; the locale is the agreed one, else en-US, and a tag not shipped is refused.
-  It draws avatars only when the caller lends a sink that draws, and fills the texts either way. It
-  is an MCP Phase 2 tool (`mcp.md` §8.4).
+- **The verb** `fill_content(nodes, locale?, kind?, records?, avatars?, seed?, example_emails?,
+  table?, from_row?, shuffled?)` runs the same plan: `kind` a `KIND_KEYS` word, `avatars`
+  *initials* (the default), *pattern* or *none*, records on, seed 0 and `example_emails` off
+  unless given; the locale is the agreed one, else en-US, and a tag not shipped is refused.
+  `table` (a name or id, refused by `verbs::find_table` when it names none or two) fills by
+  column name, from row `from_row` (from 1) on, in order unless `shuffled`; a column per layer
+  (`Options::columns`) is the box's alone.
+  It draws avatars only when the caller lends a sink that draws, and fills the texts either way.
+  It is an MCP Phase 2 tool (`mcp.md` §8.4).
 
 ### The box
 
@@ -966,9 +999,17 @@ ImageSink>)` is the edit.
   that leaves: the session's buffer predates the fill, and its commit when the session ended would
   write over the value filled.
 - **Rows** (batch rename's `row`): *Locale*, a combo of the locales, the current one lit with a
-  check. *Content*, a combo of *By layer name* and each text kind under its group's eyebrow, its
-  sample in the locale as a faint tail (`MenuRow::note`, `content_fill::sample`); picking a kind
-  there drops the text rows' own choices and keeps the shapes'. *Records*, a `switch_row_noted`
+  check. *Content*, a combo of *By layer name*, then the document's tables, then each text kind
+  under its group's eyebrow, its sample in the locale as a faint tail (`MenuRow::note`,
+  `content_fill::sample`). Each table is listed inline under an eyebrow *People · 12 rows* (*no
+  rows* shows the eyebrow alone), not in a flyout: *By column name*, then its columns, each with
+  the first row's cell as its faint tail; an image column is listed dimmed, as it gives a text
+  nothing. The face reads *People · by column name* or *People ▸ Name* (`column_words`). Picking a
+  kind or a table there drops the text rows' own choices, kind or column, and keeps the shapes'.
+  *Rows*, under *Content* while any row reads a table: a *From row* `value_field` at half width
+  and an *In order* / *Shuffled* `ui::segmented_tipped` (*Each record takes the next row*, *Rows
+  dealt by the draw*); under it a `ui::note_line` warning for what the table could not give, *2
+  cards left as is: People has 12 rows* and *2 pictures not found*. *Records*, a `switch_row_noted`
   *Keep each {noun}'s values together* noted *3 rows*. *Emails*, a switch *Use example.com
   addresses*. *Avatars*, a `switch_row_noted` labelled with the shape count; each shape's style is
   picked on its preview row. Locale and Content stand 10pt apart; the three switch rows 2pt, Clean
@@ -980,10 +1021,13 @@ ImageSink>)` is the edit.
   redraws. Rows sit under a dim head naming their record's frame, scrolling past twelve with no
   bar, as Clean up's. A row is 32pt tall, the kind combo's `ui::TOOLBAR_H` and 8pt, so stacked
   combos do not read as one column of fields. A row: the layer's glyph, *Parent / Name* (masked in
-  private mode), a kind combo (a text row: *Leave as is* and every text kind; a shape row: *Leave
-  as is*, *Avatar · Initials* and *Avatar · Pattern*, the face naming the pick the same way; a
+  private mode), a kind combo (a text row: *Leave as is*, the tables' columns as under *Content*
+  without *By column name*, and every text kind; a shape row: *Leave as is*, only the tables with
+  an image column and only those columns, each with a *N pictures* tail, then *Avatar · Initials*
+  and *Avatar · Pattern*; the face names the pick the same way, a column as *People ▸ Name*; a
   shape with no pick of its own shows the box's style), then the value: a kept row's
-  current text, faint; an overflow in warn ink with *Longer than its box: no draw fitted*; an avatar
+  current text, faint; a table's cell with a faint *row 2* tail; a picture by its words; an
+  overflow in warn ink with *Longer than its box: no draw fitted*; an avatar
   as its ground swatch with the initials, then the name. A hovered row with a kind shows a `DICE`
   *Draw another*, but for a *Country* row: the locale has one country. Hovering a row rings its layer, a head its frame at a hairline
   (`canvas::draw_panel_hover`); a click selects the layer and brings it into view.
@@ -991,10 +1035,11 @@ ImageSink>)` is the edit.
   *Every layer is left as is*, or *Select text layers, or frames that hold them* when nothing is
   listed.
 - **Commit**: one undo step *Fill with content* with `FILL_CONTENT`; the status line says *Filled N
-  layers · Ctrl+Z to undo*, with *· skipped K locked* before the hint when the plan skipped any.
+  layers · Ctrl+Z to undo*, with *from People* after the count when a table gave values and
+  *· skipped K locked* before the hint when the plan skipped any.
   Locale, records, example emails and avatars are saved to `prefs.fill_content`
   (`FillContentPrefs`); the styles picked on rows become the next box's default style only when
-  they all agree.
+  they all agree. Table picks, *From row* and *Shuffled* are not saved.
 - **Doors.** *Tools ▸ Fill with content…* (after *Batch rename…*); the palette (`Item::FillContent` in
   the Text group, aliases *lorem*, *placeholder*, *fake*, *sample*, *dummy*, *names*, *data*); the
   text layers' context menu, after the sizing rows. None is dimmed for an empty or unfillable

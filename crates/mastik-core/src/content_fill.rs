@@ -1117,6 +1117,28 @@ impl Person {
         }
     }
 
+    /// This person named `full` from a table: split on its last space into
+    /// given and family names, a single word a given name. The gender is
+    /// guessed only from the locale's given-name lists; else the drawn one,
+    /// from the record's seed, stays.
+    fn take_name(&mut self, locale: &Locale, full: &str) {
+        let (given, family) = full.rsplit_once(' ').unwrap_or((full, ""));
+        self.given = given.trim().to_string();
+        self.family = family.trim().to_string();
+        if self.family.is_empty() {
+            // The forms that name the family would leave a stray dot.
+            self.email_form = 2;
+            self.handle_form = 4;
+        }
+        let first = self.given.split(' ').next().unwrap_or("");
+        let listed = |list: &str| locale.list(list).iter().any(|g| g == first);
+        if listed("given-f") && !listed("given-m") {
+            self.gender = Some(Gender::Female);
+        } else if listed("given-m") && !listed("given-f") {
+            self.gender = Some(Gender::Male);
+        }
+    }
+
     fn picks(&self) -> Picks {
         vec![
             ("given", self.given.clone()),
@@ -1126,6 +1148,8 @@ impl Person {
 
     fn full(&self) -> String {
         format!("{} {}", self.given, self.family)
+            .trim_end()
+            .to_string()
     }
 
     /// The first letter of the given name and of the family name's last word
@@ -1754,6 +1778,15 @@ pub struct Options {
     /// Every email at `example.com`, which can reach no one, instead of a
     /// domain built from a company's name, which may be someone's.
     pub example_emails: bool,
+    /// Every layer's values from a table, over [`Self::content`].
+    pub table: Option<TableContent>,
+    /// A column chosen for one layer, over the rest; a kind chosen for it in
+    /// [`Self::kinds`] takes it off its column.
+    pub columns: HashMap<NodeId, Cell>,
+    /// The row, from 0, the first record takes.
+    pub from_row: usize,
+    /// Rows dealt by the seed rather than taken in order.
+    pub shuffled: bool,
 }
 
 impl Default for Options {
@@ -1768,8 +1801,34 @@ impl Default for Options {
             kinds: HashMap::new(),
             redraws: HashMap::new(),
             example_emails: false,
+            table: None,
+            columns: HashMap::new(),
+            from_row: 0,
+            shuffled: false,
         }
     }
+}
+
+/// A column of one of the document's tables.
+pub type Cell = (crate::list::DataSetId, crate::chart::ColumnId);
+
+/// What *Content* takes from a table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableContent {
+    /// A layer named like a column (ignoring case, spaces, dashes and
+    /// underscores) takes it; every other layer is read by its name.
+    ByColumnName(crate::list::DataSetId),
+    /// Every text layer takes this column.
+    Column(Cell),
+}
+
+/// A name as a column matches it: lowercased, without spaces, dashes or
+/// underscores, as a list's fill matches a property.
+pub fn column_key(s: &str) -> String {
+    s.chars()
+        .filter(|c| !matches!(c, ' ' | '-' | '_'))
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// What a layer is given.
@@ -1779,6 +1838,8 @@ pub enum Value {
     Kept,
     Text(String),
     Avatar(Avatar),
+    /// A picture an image column names, filling a shape.
+    Picture(crate::ImageId),
 }
 
 /// One layer of the fill.
@@ -1797,6 +1858,10 @@ pub struct Row {
     /// Whether the value fits its box; an overflow is kept after
     /// [`ATTEMPTS`] draws.
     pub fits: bool,
+    /// The table column it takes its value from, over [`Self::kind`].
+    pub column: Option<Cell>,
+    /// The table row, from 0, it took its value from.
+    pub table_row: Option<usize>,
 }
 
 /// A group of rows whose values agree.
@@ -1813,6 +1878,11 @@ pub struct Plan {
     pub records: Vec<Record>,
     /// Text or avatar layers skipped because they are locked.
     pub locked: usize,
+    /// Records reading a table that it had no row left for, left as they are:
+    /// a row is never repeated.
+    pub short: usize,
+    /// Shapes whose image cell names no picture, left as they are.
+    pub missing_pictures: usize,
 }
 
 impl Plan {
@@ -1918,6 +1988,20 @@ impl Plan {
                         }]),
                     });
                     // The photo it credited is gone, as on a replace.
+                    ops.extend(crate::credit::dropped_by_replace(
+                        doc,
+                        row.node,
+                        crate::credit::Replaced::Fills,
+                    ));
+                }
+                (Value::Picture(id), _) => {
+                    ops.push(Operation::SetFills {
+                        id: row.node,
+                        fills: keyed_by_position([Fill {
+                            brush: crate::image_brush(id.clone()).into(),
+                            visible: true,
+                        }]),
+                    });
                     ops.extend(crate::credit::dropped_by_replace(
                         doc,
                         row.node,
@@ -2063,6 +2147,47 @@ fn record_of(doc: &Document, id: NodeId, roots: &HashSet<NodeId>) -> Option<Node
     None
 }
 
+/// The table column layer `t` takes its value from: one chosen for it, else the
+/// box's column for a text, else, by column name, the column named like the
+/// layer. None when a kind was chosen for it.
+fn table_column(doc: &Document, opts: &Options, t: &Target) -> Option<Cell> {
+    if opts.kinds.contains_key(&t.node) {
+        return None;
+    }
+    if let Some(c) = opts.columns.get(&t.node) {
+        return Some(*c);
+    }
+    match opts.table? {
+        TableContent::Column(c) => (!t.shape).then_some(c),
+        TableContent::ByColumnName(d) => {
+            let key = column_key(doc.get(t.node)?.name());
+            let set = doc.data_set(d)?;
+            let c = set
+                .table
+                .columns
+                .iter()
+                .find(|c| column_key(&c.name) == key)?;
+            // A shape takes only a column naming pictures.
+            (!t.shape || set.image_columns(doc).contains(&c.id)).then_some((d, c.id))
+        }
+    }
+}
+
+/// The table rows, from 0, the records reading `data` take in turn: from
+/// `opts.from_row` on, in order or dealt by the seed.
+fn row_order(doc: &Document, opts: &Options, data: crate::list::DataSetId) -> Vec<usize> {
+    let len = doc.data_set(data).map_or(0, |d| d.table.rows.len());
+    let mut order: Vec<usize> = (opts.from_row.min(len)..len).collect();
+    if opts.shuffled {
+        let mut rng = Rng::new(&[opts.seed, 0x7AB1E]);
+        for i in (1..order.len()).rev() {
+            let j = rng.below(i as u64 + 1) as usize;
+            order.swap(i, j);
+        }
+    }
+    order
+}
+
 /// A fill's rows and records before any value is drawn, with each record's
 /// seed: a hash of what it is (its frame, or its loose layers' parent or
 /// layer), so a record draws the same values wherever it falls in the list.
@@ -2080,12 +2205,15 @@ fn layout(doc: &Document, roots: &[NodeId], opts: &Options) -> Layout {
         .filter(|t| t.label_like)
         .map(|t| t.node)
         .collect();
-    // Each layer's kind: the one chosen for it, else the box's, else its own.
+    // Each layer's kind: the one chosen for it, else the box's, else its own; a
+    // table column over any of them but a kind chosen for the layer.
     let mut rows: Vec<Row> = targets
         .into_iter()
-        .filter(|t| !t.shape || opts.avatars.is_some())
-        .map(|t| {
+        .map(|t| (table_column(doc, opts, &t), t))
+        .filter(|(column, t)| !t.shape || opts.avatars.is_some() || column.is_some())
+        .map(|(column, t)| {
             let kind = match opts.kinds.get(&t.node) {
+                _ if column.is_some() => None,
                 Some(chosen) => *chosen,
                 None if t.shape => t.read,
                 None => opts.content.filter(|k| k.is_text()).or(t.read),
@@ -2098,6 +2226,8 @@ fn layout(doc: &Document, roots: &[NodeId], opts: &Options) -> Layout {
                 shape: t.shape,
                 value: Value::Kept,
                 fits: true,
+                column,
+                table_row: None,
             }
         })
         .collect();
@@ -2193,6 +2323,8 @@ struct Draw<'a> {
     locale: &'a Locale,
     /// The domain the fill's emails share when a record names no company.
     shared: &'a str,
+    /// The full name the record's table row gives its person, over the drawn one.
+    name: Option<&'a str>,
 }
 
 /// One record's values, by row index, and the list entries they took.
@@ -2293,6 +2425,9 @@ fn draw_record(
             }
         }
     }
+    if let Some(full) = d.name {
+        drawn.person.take_name(locale, full);
+    }
     // The person always counts as taken; a place or company only where a row
     // shows it, so a list of names leaves the cities to the lists that show them.
     let mut picks = drawn.person.picks();
@@ -2383,13 +2518,20 @@ pub fn plan(doc: &Document, res: &crate::Resolved, roots: &[NodeId], opts: &Opti
         opts,
         locale,
         shared: &shared.domain,
+        name: None,
     };
     let members: Vec<Vec<usize>> = (0..records.len())
         .map(|r| (0..rows.len()).filter(|i| rows[*i].record == r).collect())
         .collect();
+    let short = take_table_rows(doc, opts, &mut rows, &members);
+    let names: Vec<Option<String>> = members.iter().map(|m| table_name(doc, &rows, m)).collect();
     let mut taken = Taken::new();
     let mut draws: Vec<RecordDraw> = Vec::with_capacity(records.len());
     for r in 0..records.len() {
+        let d = Draw {
+            name: names[r].as_deref(),
+            ..d
+        };
         let draw = draw_record(&d, &rows, &members[r], seeds[r], false, &taken);
         add_picks(&mut taken, &draw.picks);
         draws.push(draw);
@@ -2408,6 +2550,10 @@ pub fn plan(doc: &Document, res: &crate::Resolved, roots: &[NodeId], opts: &Opti
             }
         }
         add_picks(&mut others, &again);
+        let d = Draw {
+            name: names[r].as_deref(),
+            ..d
+        };
         let draw = draw_record(&d, &rows, &members[r], seeds[r], true, &others);
         again.extend(draw.picks.iter().cloned());
         draws[r] = draw;
@@ -2418,11 +2564,124 @@ pub fn plan(doc: &Document, res: &crate::Resolved, roots: &[NodeId], opts: &Opti
             rows[i].fits = ok;
         }
     }
+    let missing_pictures = table_values(doc, res, &mut rows);
     Plan {
         rows,
         records,
         locked,
+        short,
+        missing_pictures,
     }
+}
+
+/// Each row reading a table given the table row it takes: with records, the
+/// next row for each record reading the table, so a card's cells agree; else
+/// each layer of a column the next row of that column. Answers how many records
+/// (or layers) found no row left, which are left as they are.
+fn take_table_rows(
+    doc: &Document,
+    opts: &Options,
+    rows: &mut [Row],
+    members: &[Vec<usize>],
+) -> usize {
+    let mut orders: HashMap<crate::list::DataSetId, Vec<usize>> = HashMap::new();
+    let mut order = |d| {
+        orders
+            .entry(d)
+            .or_insert_with(|| row_order(doc, opts, d))
+            .clone()
+    };
+    let mut short = 0;
+    if opts.records {
+        let mut next: HashMap<crate::list::DataSetId, usize> = HashMap::new();
+        for m in members {
+            let mut sets: Vec<crate::list::DataSetId> = Vec::new();
+            for i in m {
+                if let Some((d, _)) = rows[*i].column
+                    && !sets.contains(&d)
+                {
+                    sets.push(d);
+                }
+            }
+            let mut left = false;
+            for d in sets {
+                let k = next.entry(d).or_default();
+                let at = order(d).get(*k).copied();
+                *k += 1;
+                match at {
+                    Some(r) => {
+                        for i in m {
+                            if rows[*i].column.is_some_and(|c| c.0 == d) {
+                                rows[*i].table_row = Some(r);
+                            }
+                        }
+                    }
+                    None => left = true,
+                }
+            }
+            short += usize::from(left);
+        }
+    } else {
+        let mut next: HashMap<Cell, usize> = HashMap::new();
+        for row in rows.iter_mut() {
+            let Some(c) = row.column else { continue };
+            let k = next.entry(c).or_default();
+            row.table_row = order(c.0).get(*k).copied();
+            *k += 1;
+            short += usize::from(row.table_row.is_none());
+        }
+    }
+    short
+}
+
+/// The full name a record's table row gives it: the cell of a column named
+/// like a full name, or read by its layer as one, so the invented values beside
+/// it (an email, a username) are made from it.
+fn table_name(doc: &Document, rows: &[Row], members: &[usize]) -> Option<String> {
+    members.iter().find_map(|i| {
+        let row = &rows[*i];
+        let ((d, c), r) = (row.column?, row.table_row?);
+        let set = doc.data_set(d)?;
+        let column = set.table.column(c)?;
+        let named = kind_from_name(&column.name) == Some(Kind::FullName)
+            || column_key(&column.name) == "name"
+            || row.read == Some(Kind::FullName);
+        let cell = set.table.rows.get(r)?.get(set.table.index_of(c)?)?.trim();
+        (named && !cell.is_empty() && !cell.contains('@')).then(|| cell.to_string())
+    })
+}
+
+/// Each row with a table row given its cell: a text the cell as it is, a shape
+/// the picture it names. Answers how many shapes' cells named no picture.
+fn table_values(doc: &Document, res: &crate::Resolved, rows: &mut [Row]) -> usize {
+    let mut missing = 0;
+    for row in rows.iter_mut() {
+        let (Some((d, c)), Some(r)) = (row.column, row.table_row) else {
+            continue;
+        };
+        let Some(set) = doc.data_set(d) else { continue };
+        let Some(cell) = set
+            .table
+            .index_of(c)
+            .and_then(|i| set.table.rows.get(r)?.get(i))
+            .map(|c| c.trim().to_string())
+        else {
+            continue;
+        };
+        if row.shape {
+            match set.picture(doc, &cell) {
+                Some(id) => row.value = Value::Picture(id),
+                None => missing += usize::from(!cell.is_empty()),
+            }
+            continue;
+        }
+        if let Some(n) = doc.get(row.node) {
+            let kind = res.used_kind_of(n);
+            row.fits = fits(kind, room(kind), &cell);
+        }
+        row.value = Value::Text(cell);
+    }
+    missing
 }
 
 /// The rows and records [`plan`] would make, with no value drawn: a row that
@@ -2435,8 +2694,13 @@ pub fn outline(doc: &Document, roots: &[NodeId], opts: &Options) -> Plan {
         locked,
         ..
     } = layout(doc, roots, opts);
+    let members: Vec<Vec<usize>> = (0..records.len())
+        .map(|r| (0..rows.len()).filter(|i| rows[*i].record == r).collect())
+        .collect();
+    let short = take_table_rows(doc, opts, &mut rows, &members);
     for row in &mut rows {
-        if row.kind.is_some_and(|k| k.is_text() != row.shape) {
+        let table = row.column.is_some() && row.table_row.is_some();
+        if table || row.kind.is_some_and(|k| k.is_text() != row.shape) {
             row.value = Value::Text(String::new());
         }
     }
@@ -2444,6 +2708,8 @@ pub fn outline(doc: &Document, roots: &[NodeId], opts: &Options) -> Plan {
         rows,
         records,
         locked,
+        short,
+        missing_pictures: 0,
     }
 }
 

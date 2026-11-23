@@ -85,6 +85,20 @@ impl DataSet {
         let id = crate::ImageId(cell.to_string());
         doc.image(&id).is_some().then_some(id)
     }
+
+    /// The image columns: each with a cell naming a picture ([`Self::picture`]).
+    pub fn image_columns(&self, doc: &Document) -> Vec<ColumnId> {
+        self.table
+            .columns
+            .iter()
+            .filter(|c| {
+                self.table
+                    .cells(c.id)
+                    .any(|cell| self.picture(doc, cell).is_some())
+            })
+            .map(|c| c.id)
+            .collect()
+    }
 }
 
 /// Why a data set or a list may not be stored.

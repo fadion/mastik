@@ -546,6 +546,44 @@ fn the_verb_fills_in_the_locale_given() {
     assert!(content.ends_with(".nl"), "a Dutch domain: {content}");
 }
 
+/// The verb fills by column name from the table it names, from `from_row` on,
+/// and refuses a table no one has, listing the tables.
+/// flip: the verb ignoring `table` → fails at "refused".
+#[test]
+fn the_verb_fills_from_a_table_by_name() {
+    let mut f = Fixture::new();
+    let (list, rows) = f.team();
+    people(
+        &mut f,
+        &[("Ada Lovelace", "Lead"), ("Grace Hopper", "Design")],
+    );
+    let res = Resolved::rebuild(&f.doc);
+    let mut call = |args: serde_json::Value| {
+        verbs::call(
+            &mut Ctx {
+                doc: &f.doc,
+                res: &res,
+                ids: &mut f.ids,
+                images: None,
+                contrast: None,
+            },
+            "fill_content",
+            &args,
+        )
+    };
+    let missing = call(json!({ "nodes": [list.to_wire()], "table": "Staff" }));
+    let why = missing.expect_err("refused").to_string();
+    assert!(why.contains("People"), "{why}");
+    let done = call(json!({ "nodes": [list.to_wire()], "table": "People", "from_row": 2 }))
+        .expect("fill_content runs");
+    f.doc.apply(&done.tx).expect("it applies");
+    let name = f.child(rows[0], "Name");
+    let NodeKind::Text { content, .. } = f.doc.get(name).unwrap().kind() else {
+        unreachable!()
+    };
+    assert_eq!(content, "Grace Hopper", "from row 2");
+}
+
 impl Fixture {
     /// A frame of `n` rows, each a frame holding a text layer per field, named
     /// and reading as the field. Answers the list and its rows.
@@ -582,6 +620,132 @@ fn section<'a>(source: &'a str, name: &str) -> Vec<&'a str> {
         .take_while(|l| !l.starts_with('['))
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .collect()
+}
+
+/// A `People` table of `rows` (name, role), added to `f`'s document.
+fn people(f: &mut Fixture, rows: &[(&str, &str)]) -> mastik_core::list::DataSetId {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    let set = mastik_core::list::DataSet {
+        id: f.ids.mint_data_set(),
+        name: "People".into(),
+        table: Table {
+            columns: vec![
+                Column {
+                    id: ColumnId(0),
+                    name: "Name".into(),
+                },
+                Column {
+                    id: ColumnId(1),
+                    name: "Role".into(),
+                },
+            ],
+            rows: rows
+                .iter()
+                .map(|(n, r)| vec![(*n).into(), (*r).into()])
+                .collect(),
+        },
+        source: None,
+        pictures: Vec::new(),
+    };
+    let id = set.id;
+    f.commit(vec![Operation::SetDataSet {
+        id,
+        set: Some(Box::new(set)),
+    }]);
+    id
+}
+
+/// *By column name*: each row takes the next table row from *From row*, its
+/// Name and Role from the table and its email invented from that name; a row
+/// past the table's end is left as it is and counted, never repeated.
+/// flip: `take_table_rows` giving every record the same row → fails at "the next row".
+#[test]
+fn a_table_fills_a_record_a_row_and_agrees_with_the_name() {
+    let mut f = Fixture::new();
+    let (list, rows) = f.team();
+    let data = people(
+        &mut f,
+        &[
+            ("Ada Lovelace", "Engineering lead"),
+            ("Grace Hopper", "Design"),
+        ],
+    );
+    let opts = Options {
+        table: Some(fill::TableContent::ByColumnName(data)),
+        ..Options::default()
+    };
+    let plan = f.plan(&[list], &opts);
+    let name = |plan: &Plan, i: usize| Fixture::text_of(plan, f.child(rows[i], "Name"));
+    assert_eq!(name(&plan, 0), "Ada Lovelace");
+    assert_eq!(name(&plan, 1), "Grace Hopper", "the next row");
+    assert_eq!(
+        Fixture::text_of(&plan, f.child(rows[0], "Role")),
+        "Engineering lead"
+    );
+    let email = Fixture::text_of(&plan, f.child(rows[1], "Email"));
+    assert!(
+        email.starts_with("grace") || email.starts_with("g."),
+        "{email} is made from the table's name"
+    );
+    assert_eq!(plan.short, 1, "the third row has no row left");
+    let third = plan
+        .rows
+        .iter()
+        .find(|r| r.node == f.child(rows[2], "Name"))
+        .unwrap();
+    assert_eq!(third.value, Value::Kept);
+
+    let from_two = Options {
+        from_row: 1,
+        ..opts.clone()
+    };
+    assert_eq!(
+        name(&f.plan(&[list], &from_two), 0),
+        "Grace Hopper",
+        "from row 2"
+    );
+    let off = Options {
+        records: false,
+        ..opts
+    };
+    let plan = f.plan(&[list], &off);
+    assert_eq!(
+        name(&plan, 1),
+        "Grace Hopper",
+        "each Name layer takes the next row"
+    );
+    assert_eq!(
+        Fixture::text_of(&plan, f.child(rows[0], "Role")),
+        "Engineering lead",
+        "each Role layer starts again at From row"
+    );
+}
+
+/// Shuffled deals distinct rows by the seed, and a kind chosen for a layer
+/// takes it off its column.
+#[test]
+fn shuffled_rows_are_distinct_and_a_chosen_kind_wins() {
+    let mut f = Fixture::new();
+    let (list, rows) = f.team();
+    let data = people(&mut f, &[("A B", "x"), ("C D", "y"), ("E F", "z")]);
+    let mut opts = Options {
+        table: Some(fill::TableContent::ByColumnName(data)),
+        shuffled: true,
+        seed: 7,
+        ..Options::default()
+    };
+    let plan = f.plan(&[list], &opts);
+    let mut names: Vec<String> = rows
+        .iter()
+        .map(|r| Fixture::text_of(&plan, f.child(*r, "Name")))
+        .collect();
+    names.sort();
+    assert_eq!(names, ["A B", "C D", "E F"], "every row once");
+    let role = f.child(rows[0], "Role");
+    opts.kinds.insert(role, Some(Kind::Company));
+    let plan = f.plan(&[list], &opts);
+    let row = plan.rows.iter().find(|r| r.node == role).unwrap();
+    assert_eq!(row.column, None, "the chosen kind takes it off its column");
 }
 
 fn opts(locale: &str) -> Options {

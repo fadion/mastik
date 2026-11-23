@@ -6430,9 +6430,16 @@ pub static VERBS: &[Verb] = &[
                 ParamKind::Bool,
                 "every email at example.com, which reaches no one; off unless given",
             ),
+            opt(
+                "table",
+                TEXT,
+                "a table: layers named like its columns take them, a row a record",
+            ),
+            opt("from_row", INDEX, "the first record's row, from 1"),
+            opt("shuffled", ParamKind::Bool, "rows dealt by the seed"),
         ],
         run: |ctx, a| {
-            use crate::content_fill::{self as fill, AvatarStyle, Kind, Options};
+            use crate::content_fill::{self as fill, AvatarStyle, Kind, Options, TableContent};
             let nodes = a.nodes("nodes")?;
             let locale = match a.text("locale") {
                 Some(tag) => fill::locale_for(tag)
@@ -6452,6 +6459,16 @@ pub static VERBS: &[Verb] = &[
                 },
                 seed: a.index("seed").unwrap_or(0) as u64,
                 example_emails: a.bool("example_emails").unwrap_or(false),
+                table: match a.text("table") {
+                    Some(t) => Some(TableContent::ByColumnName(
+                        find_table(ctx.doc, t)
+                            .map_err(|why| a.invalid("table", why))?
+                            .id,
+                    )),
+                    None => None,
+                },
+                from_row: a.index("from_row").unwrap_or(1).saturating_sub(1),
+                shuffled: a.bool("shuffled").unwrap_or(false),
                 ..Options::default()
             };
             let plan = fill::plan(ctx.doc, ctx.res, &nodes, &opts);

@@ -13,7 +13,9 @@ use crate::clean_up_box::{SWITCH_GAP, layer_name};
 use crate::theme::{self, color, icon};
 use crate::ui::{self, FieldButton, MenuRow};
 use eframe::egui;
-use mastik_core::content_fill::{self as fill, AvatarStyle, Group, Kind, Options, Plan, Value};
+use mastik_core::content_fill::{
+    self as fill, AvatarStyle, Group, Kind, Options, Plan, TableContent, Value,
+};
 use mastik_core::{Document, NodeId, NodeKind};
 
 /// The box's width, batch rename's and Clean up's.
@@ -314,6 +316,15 @@ impl MastikApp {
             .name_step("Fill with content", icon::FILL_CONTENT);
         if self.session.commit(tx) {
             let mut said = format!("Filled {}", ui::count(changed, "layer"));
+            let table = b
+                .plan
+                .rows
+                .iter()
+                .find_map(|r| r.table_row.and(r.column))
+                .and_then(|(d, _)| self.session.doc.data_set(d));
+            if let Some(set) = table {
+                said.push_str(&format!(" from {}", set.name));
+            }
             if b.plan.locked > 0 {
                 said.push_str(&format!(" · skipped {} locked", b.plan.locked));
             }
@@ -369,7 +380,8 @@ impl MastikApp {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = GAP;
                     locale_row(ui, &mut b);
-                    content_row(ui, &mut b);
+                    content_row(ui, doc, &mut b);
+                    table_rows_row(ui, doc, &mut b);
                     // The switches stand closer, as Clean up's do; the gap above
                     // them was laid with the Content row.
                     ui.spacing_mut().item_spacing.y = SWITCH_GAP;
@@ -467,26 +479,123 @@ fn avatar_label(style: AvatarStyle) -> String {
     format!("{} · {}", Kind::Avatar.label(), style.label())
 }
 
+/// What a kind list offers from the document's tables: whether *By column
+/// name* leads each table (the Content row only), and the choice now.
+struct TableAsk<'a> {
+    doc: &'a Document,
+    by_name: bool,
+    now: Option<TableContent>,
+}
+
+/// A table column as a row's combo names it: *People ▸ Name*.
+fn column_words(doc: &Document, (d, c): fill::Cell) -> String {
+    let set = doc.data_set(d);
+    let table = set.map_or("Missing table", |s| s.name.as_str());
+    let column = set
+        .and_then(|s| s.table.column(c))
+        .map_or("Missing column", |c| c.name.as_str());
+    format!("{table} \u{25B8} {column}")
+}
+
+/// The document's tables, real data before invented: each under an eyebrow
+/// naming it and its rows, *By column name* first when asked, then its
+/// columns with the first row's cell as the faint tail. A shape's list shows
+/// only the tables and columns that name pictures; a table with no rows shows
+/// its eyebrow alone. Answers the pick.
+fn table_rows(ui: &mut egui::Ui, ask: &TableAsk<'_>, shape: bool) -> Option<TableContent> {
+    let doc = ask.doc;
+    let mut picked = None;
+    for set in doc.data_sets() {
+        let images = set.image_columns(doc);
+        let columns: Vec<&mastik_core::chart::Column> = set
+            .table
+            .columns
+            .iter()
+            .filter(|c| !shape || images.contains(&c.id))
+            .collect();
+        if columns.is_empty() {
+            continue;
+        }
+        let rows = set.table.rows.len();
+        let tail = match rows {
+            0 => "no rows".to_string(),
+            n => ui::count(n, "row"),
+        };
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.add_space(8.0);
+            ui.label(ui::eyebrow(&format!("{} \u{b7} {tail}", set.name)));
+        });
+        if rows == 0 {
+            continue;
+        }
+        if ask.by_name && !shape {
+            let on = ask.now == Some(TableContent::ByColumnName(set.id));
+            let row = MenuRow::new("", "By column name").checked(on);
+            if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
+                picked = Some(TableContent::ByColumnName(set.id));
+            }
+        }
+        for c in columns {
+            let cell = (set.id, c.id);
+            let on = ask.now == Some(TableContent::Column(cell));
+            let sample = match shape {
+                true => ui::count(
+                    set.table
+                        .cells(c.id)
+                        .filter(|v| set.picture(doc, v).is_some())
+                        .count(),
+                    "picture",
+                ),
+                false => set.table.rows[0]
+                    .get(set.table.index_of(c.id).unwrap_or(0))
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            // An image column does nothing to a text: listed, dimmed.
+            let enabled = shape || !images.contains(&c.id);
+            let row = MenuRow::new("", &c.name)
+                .checked(on)
+                .note(&sample)
+                .enabled(enabled);
+            if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() && enabled {
+                picked = Some(TableContent::Column(cell));
+            }
+        }
+    }
+    if picked.is_some() {
+        ui.close();
+    }
+    picked
+}
+
 /// The kinds a text row or the Content row can choose, under their groups'
 /// eyebrows, each with its sample as a faint tail; a shape's list is its avatar
-/// styles instead, `style` the one it is drawn in now.
+/// styles instead, `style` the one it is drawn in now. The document's tables
+/// lead the groups (`tables`), their pick answered through `table`.
 fn kind_list(
     ui: &mut egui::Ui,
     b: &FillBox,
     head: &str,
     current: Option<Kind>,
     shape: Option<AvatarStyle>,
+    tables: &TableAsk<'_>,
+    table: &mut Option<TableContent>,
 ) -> Option<Pick> {
     ui.set_min_width(KIND_LIST_W);
     let mut picked = None;
     if ui::menu_row(
         ui,
-        MenuRow::new("", head).checked(current.is_none()),
+        MenuRow::new("", head).checked(current.is_none() && tables.now.is_none()),
         ui::MENU_ROW_H,
     )
     .clicked()
     {
         picked = Some((None, None));
+    }
+    *table = table_rows(ui, tables, shape.is_some());
+    if table.is_some() {
+        return None;
     }
     if let Some(style) = shape {
         let note = b.sample(Kind::Avatar);
@@ -529,24 +638,122 @@ fn kind_list(
     picked
 }
 
-fn content_row(ui: &mut egui::Ui, b: &mut FillBox) {
-    let shown = b.opts.content.map_or("By layer name", Kind::label);
+fn content_row(ui: &mut egui::Ui, doc: &Document, b: &mut FillBox) {
+    let shown = match b.opts.table {
+        Some(TableContent::ByColumnName(d)) => {
+            let name = doc.data_set(d).map_or("Missing table", |s| s.name.as_str());
+            format!("{name} \u{b7} by column name")
+        }
+        Some(TableContent::Column(c)) => column_words(doc, c),
+        None => b
+            .opts
+            .content
+            .map_or("By layer name", Kind::label)
+            .to_string(),
+    };
     let mut picked = None;
+    let mut table = None;
+    let ask = TableAsk {
+        doc,
+        by_name: true,
+        now: b.opts.table,
+    };
     row(ui, "Content", ui::CONTROL_H, |ui| {
         combo_in_row(
             ui,
             "fill-content-kind",
-            shown,
+            &shown,
             "What every text layer is filled with",
-            |ui| picked = kind_list(ui, b, "By layer name", b.opts.content, None),
+            |ui| {
+                picked = kind_list(
+                    ui,
+                    b,
+                    "By layer name",
+                    b.opts.content,
+                    None,
+                    &ask,
+                    &mut table,
+                )
+            },
         );
     });
-    if let Some((kind, _)) = picked {
-        b.opts.content = kind;
-        // The box's choice is one for all: rows chosen one by one give way.
-        b.opts
-            .kinds
-            .retain(|id, _| b.plan.rows.iter().any(|r| r.node == *id && r.shape));
+    if picked.is_none() && table.is_none() {
+        return;
+    }
+    b.opts.table = table;
+    b.opts.content = picked.and_then(|(kind, _)| kind);
+    // The box's choice is one for all: text rows chosen one by one give way.
+    let shapes: Vec<NodeId> = b
+        .plan
+        .rows
+        .iter()
+        .filter(|r| r.shape)
+        .map(|r| r.node)
+        .collect();
+    b.opts.kinds.retain(|id, _| shapes.contains(id));
+    b.opts.columns.retain(|id, _| shapes.contains(id));
+}
+
+/// *Rows*, while anything reads a table: the row the first record takes, and
+/// whether the rows come in order or dealt by the seed; then what the table
+/// could not give.
+fn table_rows_row(ui: &mut egui::Ui, doc: &Document, b: &mut FillBox) {
+    let Some(data) = b.plan.rows.iter().find_map(|r| r.column.map(|c| c.0)) else {
+        return;
+    };
+    row(ui, "Rows", ui::CONTROL_H, |ui| {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+            let half = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
+            let len = doc.data_set(data).map_or(1, |s| s.table.rows.len().max(1));
+            let mut v = (b.opts.from_row + 1) as f64;
+            ui::value_field(
+                ui,
+                egui::vec2(half, ui::CONTROL_H),
+                ui::Prefix::Label("From row"),
+                &mut v,
+                ui::Scrub::whole(0.25).range(1.0..=len as f64),
+                |d| d.custom_formatter(ui::number(0)),
+            )
+            .on_hover_text("The row the first record takes");
+            b.opts.from_row = (v.round().clamp(1.0, len as f64) as usize) - 1;
+            let at = usize::from(b.opts.shuffled);
+            let pick = ui::segmented_tipped(
+                ui,
+                half,
+                ui::SEGMENT_CELL_H,
+                2,
+                at,
+                |_| true,
+                |i| ["Each record takes the next row", "Rows dealt by the draw"][i],
+                |p, i, r, on| ui::segment_label(p, r, ["In order", "Shuffled"][i], on),
+            );
+            if let Some(i) = pick {
+                b.opts.shuffled = i == 1;
+            }
+        });
+    });
+    let name = doc.data_set(data).map_or("", |s| s.name.as_str());
+    if b.plan.short > 0 {
+        let rows = doc.data_set(data).map_or(0, |s| s.table.rows.len());
+        // Records off, each layer takes its own row, so layers are what is short.
+        let noun = match b.opts.records {
+            true => record_noun(&b.plan, doc),
+            false => "layer".to_string(),
+        };
+        let said = format!(
+            "{} left as is: {name} has {}",
+            ui::count(b.plan.short, &noun),
+            ui::count(rows, "row")
+        );
+        ui::note_line(ui, icon::WARNING, color::warn(), &said, None);
+    }
+    if b.plan.missing_pictures > 0 {
+        let said = format!(
+            "{} not found",
+            ui::count(b.plan.missing_pictures, "picture")
+        );
+        ui::note_line(ui, icon::WARNING, color::warn(), &said, None);
     }
 }
 
@@ -636,6 +843,7 @@ fn preview(
     );
     let lines = b.lines();
     let mut chosen: Option<(NodeId, Pick)> = None;
+    let mut column: Option<(NodeId, fill::Cell)> = None;
     let mut redraw: Option<NodeId> = None;
     egui::Frame::NONE
         .inner_margin(egui::Margin {
@@ -683,6 +891,9 @@ fn preview(
                                 if let Some(kind) = out.kind {
                                     chosen = Some((b.plan.rows[*i].node, kind));
                                 }
+                                if let Some(c) = out.column {
+                                    column = Some((b.plan.rows[*i].node, c));
+                                }
                                 if out.redraw {
                                     redraw = Some(b.plan.rows[*i].node);
                                 }
@@ -693,9 +904,14 @@ fn preview(
         });
     if let Some((node, (kind, style))) = chosen {
         b.opts.kinds.insert(node, kind);
+        b.opts.columns.remove(&node);
         if let Some(style) = style {
             b.opts.styles.insert(node, style);
         }
+    }
+    if let Some((node, c)) = column {
+        b.opts.columns.insert(node, c);
+        b.opts.kinds.remove(&node);
     }
     if let Some(node) = redraw {
         *b.opts.redraws.entry(node).or_default() += 1;
@@ -725,6 +941,8 @@ struct RowOut {
     clicked: bool,
     /// A kind, and an avatar's style, picked from its list.
     kind: Option<Pick>,
+    /// A table column picked from its list.
+    column: Option<fill::Cell>,
     redraw: bool,
 }
 
@@ -797,9 +1015,15 @@ fn fill_row(ui: &mut egui::Ui, doc: &Document, b: &FillBox, i: usize) -> RowOut 
             .copied()
             .unwrap_or_else(|| b.opts.avatars.unwrap_or(b.style))
     });
-    let shown = match (r.kind, style) {
-        (Some(Kind::Avatar), Some(s)) => avatar_label(s),
-        (kind, _) => kind.map_or("Leave as is", Kind::label).to_string(),
+    let shown = match (r.column, r.kind, style) {
+        (Some(c), _, _) => column_words(doc, c),
+        (None, Some(Kind::Avatar), Some(s)) => avatar_label(s),
+        (None, kind, _) => kind.map_or("Leave as is", Kind::label).to_string(),
+    };
+    let ask = TableAsk {
+        doc,
+        by_name: false,
+        now: r.column.map(TableContent::Column),
     };
     // The combo and the die go in children that do not move the list's cursor: a
     // placed child resets it to its own bottom, above the row's, and every row
@@ -814,7 +1038,12 @@ fn fill_row(ui: &mut egui::Ui, doc: &Document, b: &FillBox, i: usize) -> RowOut 
         .selected_text(shown)
         .show_ui(&mut kind_ui, |ui| {
             ui::menu_rows(ui);
-            out.kind = kind_list(ui, b, "Leave as is", r.kind, style);
+            let mut table = None;
+            out.kind = kind_list(ui, b, "Leave as is", r.kind, style, &ask, &mut table);
+            out.column = table.and_then(|t| match t {
+                TableContent::Column(c) => Some(c),
+                TableContent::ByColumnName(_) => None,
+            });
         });
 
     // The value, and the die at its end while the row is hovered.
@@ -843,7 +1072,21 @@ fn fill_row(ui: &mut egui::Ui, doc: &Document, b: &FillBox, i: usize) -> RowOut 
                 true => color::text(),
                 false => color::warn(),
             };
-            let drawn = clipped(ui, rect, value_x, value_w, first, ink);
+            // A table's value says which row it came from, faint at the end.
+            let tail_w = match r.table_row {
+                Some(n) => {
+                    let tail = ui.painter().text(
+                        egui::pos2(value_x + value_w, y),
+                        egui::Align2::RIGHT_CENTER,
+                        format!("row {}", n + 1),
+                        egui::FontId::proportional(ui::CAPTION_PT),
+                        theme::text::faint(),
+                    );
+                    tail.width() + 6.0
+                }
+                None => 0.0,
+            };
+            let drawn = clipped(ui, rect, value_x, value_w - tail_w, first, ink);
             if !r.fits {
                 ui.interact(
                     drawn,
@@ -876,6 +1119,10 @@ fn fill_row(ui: &mut egui::Ui, doc: &Document, b: &FillBox, i: usize) -> RowOut 
                 &a.name,
                 theme::text::dim(),
             );
+        }
+        Value::Picture(id) => {
+            let words = crate::panels::picture_words(doc, id);
+            clipped(ui, rect, value_x, value_w, &words, color::text());
         }
     }
     if redrawable {
@@ -1055,6 +1302,64 @@ mod tests {
         let first = name(rows[0], "Name");
         assert!(app.session.undo());
         assert_eq!(content(&app, first), "Name", "undo puts it back");
+    }
+
+    /// *Content* from a table by column name fills each card's Name from the
+    /// next row in one step, says the table in the status line, and leaves the
+    /// document's table as it was.
+    /// flip: `table_values` skipping text rows → fails at "the table's name".
+    #[test]
+    fn a_table_fills_the_cards_by_column_name() {
+        use mastik_core::chart::{Column, ColumnId, Table};
+        let (ctx, mut app) = app();
+        let (_, rows) = team(&mut app);
+        let set = mastik_core::list::DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "People".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "Name".into(),
+                }],
+                rows: vec![vec!["Ada Lovelace".into()], vec!["Grace Hopper".into()]],
+            },
+            source: None,
+            pictures: Vec::new(),
+        };
+        let data = set.id;
+        assert!(app.session.commit(Transaction(vec![Operation::SetDataSet {
+            id: data,
+            set: Some(Box::new(set)),
+        }])));
+        pass(&ctx, &mut app);
+        app.dispatch(&ctx, crate::input::Action::FillContent);
+        pass(&ctx, &mut app);
+        let mut b = app.fill_content.take().expect("the box opened");
+        b.opts.table = Some(TableContent::ByColumnName(data));
+        b.replan(
+            &app.session.doc,
+            &app.session.resolved,
+            app.session.page,
+            app.session.revision(),
+        );
+        app.commit_fill_content(&b);
+        let name = |row: NodeId| {
+            let doc = &app.session.doc;
+            *doc.get(row)
+                .unwrap()
+                .children()
+                .iter()
+                .find(|c| doc.get(**c).unwrap().name() == "Name")
+                .unwrap()
+        };
+        assert_eq!(
+            content(&app, name(rows[0])),
+            "Ada Lovelace",
+            "the table's name"
+        );
+        assert_eq!(content(&app, name(rows[1])), "Grace Hopper");
+        let said = app.session.status().text.clone();
+        assert!(said.contains("from People"), "{said}");
     }
 
     /// With nothing fillable selected the box still opens, *Fill* dim with its
