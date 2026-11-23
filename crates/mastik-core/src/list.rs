@@ -1501,16 +1501,16 @@ pub fn row_targets(doc: &Document, frame: NodeId, table: &Table) -> Vec<RowTarge
     out
 }
 
-/// What filling a frame from one row left as it was.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// What filling a frame from rows left as it was.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RowFilled {
     /// Cells naming no picture the table or the document holds, whose layer or
     /// property kept its own.
     pub missing_pictures: usize,
-    /// Whether a shown text in the filled frame is cut, or runs outside its
-    /// fixed box, once laid out with the row's cells. Set by whoever lays the
-    /// copy out; [`fill_row`] leaves it `false`.
-    pub overflows: bool,
+    /// The rows (from 0) in which a shown text of the filled frame is cut, or
+    /// runs outside its fixed box, once laid out with the row's cells. Set by
+    /// whoever lays the copy out; [`fill_row`] leaves it empty.
+    pub overflowing: Vec<usize>,
 }
 
 /// Fill `frame` in `doc` from row `row` (from 0) of `set` through `targets`

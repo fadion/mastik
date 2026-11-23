@@ -88,13 +88,48 @@ fn pdf_framed(
     pages: &[(String, Vec<NodeId>, Option<mastik_core::kurbo::Rect>)],
     text: ExportText,
 ) -> Option<Export> {
+    let pages: Vec<PdfPage> = pages
+        .iter()
+        .map(|(name, origins, view)| PdfPage {
+            doc,
+            res,
+            name: name.clone(),
+            origins: origins.clone(),
+            view: *view,
+        })
+        .collect();
+    pdf_documents(&pages, text)
+}
+
+/// One page of [`pdf_documents`]: the subtrees it draws, from which document,
+/// framed on `view` where it names one and on their extent where it does not.
+pub struct PdfPage<'a> {
+    pub doc: &'a Document,
+    pub res: &'a Resolved,
+    /// Its bookmark; empty for none.
+    pub name: String,
+    pub origins: Vec<NodeId>,
+    pub view: Option<mastik_core::kurbo::Rect>,
+}
+
+/// [`pdf_pages`] over pages drawn from documents of their own: what *One file
+/// per row* writes as one PDF, a page from each row's filled copy.
+pub fn pdf_documents(pages: &[PdfPage], text: ExportText) -> Option<Export> {
     if pages.is_empty() {
         return None;
     }
     let mut document = krilla::Document::new();
     let mut outline = krilla::outline::Outline::new();
     let mut approximated: Vec<String> = Vec::new();
-    for (index, (name, origins, view)) in pages.iter().enumerate() {
+    for (index, page) in pages.iter().enumerate() {
+        let PdfPage {
+            doc,
+            res,
+            name,
+            origins,
+            view,
+        } = page;
+        let (doc, res) = (*doc, *res);
         if view.is_none() {
             crate::extent(res, origins)?;
         }
@@ -137,7 +172,7 @@ fn pdf_framed(
         }
     }
     // Only with a bookmark in it, so a one-page export's bytes are what they were.
-    if pages.iter().any(|(name, ..)| !name.is_empty()) {
+    if pages.iter().any(|p| !p.name.is_empty()) {
         document.set_outline(outline);
     }
     let pdf = document.finish().ok()?;

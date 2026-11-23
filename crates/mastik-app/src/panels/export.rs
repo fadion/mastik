@@ -15,7 +15,7 @@ use crate::theme::{self, icon};
 use crate::ui::{self, Prefix, Scrub, value_field};
 use mastik_core::{
     ExportBackground, ExportFormat, ExportScale, ExportSpec, ExportText, IconSet, Keyed, NodeId,
-    Operation, PerRow, SvgColour, SvgStrokes, SvgView, Transaction, chart::ColumnId,
+    Operation, PerRow, RowsAs, SvgColour, SvgStrokes, SvgView, Transaction, chart::ColumnId,
 };
 use mastik_export::{PlanOptions, PlannedFile};
 use std::sync::Arc;
@@ -1103,7 +1103,7 @@ impl MastikApp {
             let rows_warn = sizing
                 .and_then(|id| self.per_row_line(spec, id))
                 .map(|(_, warn)| warn);
-            let folder = rows_warn == Some(false)
+            let folder = (rows_warn == Some(false) && !spec.rows_as_pages())
                 || (spec.each_variant
                     && sizing
                         .is_some_and(|id| mastik_core::variant::is_set(&self.session.doc, id)));
@@ -1217,6 +1217,13 @@ impl MastikApp {
         if mastik_core::list::row_targets(doc, id, &set.table).is_empty() {
             let layer = doc.get(id).map_or("", |n| n.name());
             return Some((format!("No column fills anything in {layer}"), true));
+        }
+        if spec.rows_as_pages() {
+            let pages = ui::count(rows, "page");
+            return Some((
+                format!("One PDF \u{b7} {pages}, a row each of {}", set.name),
+                false,
+            ));
         }
         let files = format!("{}, a row each of {}", ui::count(rows, "file"), set.name);
         let size = match spec.format.is_raster() {
@@ -1598,10 +1605,7 @@ impl MastikApp {
         });
         if switch.clicked() && !blocked {
             edit(out, spec).per_row = match (&spec.per_row, first) {
-                (None, Some(table)) => Some(PerRow {
-                    table,
-                    name_by: None,
-                }),
+                (None, Some(table)) => Some(PerRow::new(table)),
                 _ => None,
             };
         }
@@ -1662,11 +1666,41 @@ impl MastikApp {
                 ..per_row.clone()
             });
         }
+        // A PDF's rows can be the pages of one file, bookmarked as they would
+        // be named.
+        if spec.format == ExportFormat::Pdf {
+            let kinds = [RowsAs::Files, RowsAs::Pages];
+            let lit = usize::from(per_row.rows_as == RowsAs::Pages);
+            let picked = ui::labelled(ui, "As", |ui| {
+                let labels = ["Files", "One PDF"];
+                let tips = [
+                    "A PDF per row, in a folder named for the layer",
+                    "One PDF with a page per row, each bookmarked as Name by names it",
+                ];
+                ui::segmented_tipped(
+                    ui,
+                    POP_INNER,
+                    ui::SEGMENT_CELL_H,
+                    2,
+                    lit,
+                    |_| true,
+                    |i| tips[i],
+                    |p, i, r, on| ui::segment_label(p, r, labels[i], on),
+                )
+            });
+            if let Some(i) = picked.filter(|i| *i != lit) {
+                edit(out, spec).per_row = Some(PerRow {
+                    rows_as: kinds[i],
+                    ..per_row.clone()
+                });
+            }
+        }
         match table {
             Some(TablePick::Set(table)) => {
                 edit(out, spec).per_row = Some(PerRow {
                     table,
                     name_by: None,
+                    ..per_row.clone()
                 });
             }
             Some(TablePick::File) => self.table_file_dialog(),
@@ -3547,7 +3581,7 @@ pub(crate) struct Delivered {
     /// the document holds, whose layers kept their own.
     missing_pictures: usize,
     /// The *One file per row* rows whose text is cut or runs outside its
-    /// fixed box ([`mastik_core::list::RowFilled::overflows`]).
+    /// fixed box ([`mastik_core::list::RowFilled::overflowing`]).
     overflowing_rows: usize,
 }
 
@@ -3695,11 +3729,10 @@ fn deliver(
         }
         let (bytes, filled) = mastik_export::plan::render_noted(doc, resolved, f);
         missing_pictures += filled.missing_pictures;
-        if let Some(row) = f.row
-            && filled.overflows
-            && !overflowing.contains(&(f.node, row))
-        {
-            overflowing.push((f.node, row));
+        for row in filled.overflowing {
+            if !overflowing.contains(&(f.node, row)) {
+                overflowing.push((f.node, row));
+            }
         }
         match bytes {
             Some(bytes) => rendered.push((f.path.clone(), bytes)),
@@ -5810,10 +5843,7 @@ mod code_export_tests {
         let file = PlannedFile {
             node: frame,
             spec: ExportSpec {
-                per_row: Some(PerRow {
-                    table,
-                    name_by: None,
-                }),
+                per_row: Some(PerRow::new(table)),
                 ..ExportSpec::new(ExportFormat::Png, ExportScale::Times(1.0))
             },
             path: "a.png".into(),
@@ -5870,10 +5900,7 @@ mod code_export_tests {
             })),
         }])));
         let spec = ExportSpec {
-            per_row: Some(PerRow {
-                table,
-                name_by: None,
-            }),
+            per_row: Some(PerRow::new(table)),
             ..ExportSpec::new(ExportFormat::Png, ExportScale::Times(1.0))
         };
         assert_eq!(
@@ -5897,6 +5924,18 @@ mod code_export_tests {
         assert_eq!(
             app.export_size_label(&spec, Some(frame)),
             format!("{w}×{h} \u{b7} 3 files, a row each of Speakers")
+        );
+        let pages = ExportSpec {
+            format: ExportFormat::Pdf,
+            per_row: Some(PerRow {
+                rows_as: RowsAs::Pages,
+                ..PerRow::new(table)
+            }),
+            ..spec.clone()
+        };
+        assert_eq!(
+            app.export_size_label(&pages, Some(frame)),
+            "One PDF \u{b7} 3 pages, a row each of Speakers"
         );
         t.rows.clear();
         assert!(app.session.commit(Transaction(vec![Operation::SetDataSet {

@@ -1814,11 +1814,10 @@ fn export_all(
     for f in &plan {
         let (data, filled) = mastik_export::plan::render_noted(&doc, &res, f);
         missing_pictures += filled.missing_pictures;
-        if let Some(row) = f.row
-            && filled.overflows
-            && !overflowing.contains(&(f.node, row))
-        {
-            overflowing.push((f.node, row));
+        for row in filled.overflowing {
+            if !overflowing.contains(&(f.node, row)) {
+                overflowing.push((f.node, row));
+            }
         }
         match data {
             Some(data) => written.push((dir.join(&f.path), data)),
@@ -3899,10 +3898,7 @@ mod tests {
                 Operation::SetExports {
                     id: frame,
                     exports: mastik_core::keyed_by_position([ExportSpec {
-                        per_row: Some(PerRow {
-                            table,
-                            name_by: None,
-                        }),
+                        per_row: Some(PerRow::new(table)),
                         ..ExportSpec::new(Fmt::Png, ExportScale::Times(1.0))
                     }]),
                 },

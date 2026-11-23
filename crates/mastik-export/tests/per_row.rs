@@ -138,7 +138,10 @@ fn fixture(rows: &[[&str; 3]]) -> Fixture {
 /// A 2× PNG row reading `table`, named by `name_by`.
 fn row_spec(table: DataSetId, name_by: Option<ColumnId>) -> ExportSpec {
     ExportSpec {
-        per_row: Some(PerRow { table, name_by }),
+        per_row: Some(PerRow {
+            name_by,
+            ..PerRow::new(table)
+        }),
         ..ExportSpec::new(ExportFormat::Png, ExportScale::Times(2.0))
     }
 }
@@ -263,10 +266,7 @@ fn a_plain_frame_fills_the_layers_named_like_a_column() {
 fn a_rows_file_is_drawn_from_a_filled_copy_and_the_document_is_untouched() {
     let mut f = fixture(&[["Ada Lovelace", "", "nowhere.jpg"], ["Alan Turing", "", ""]]);
     let spec = ExportSpec {
-        per_row: Some(PerRow {
-            table: f.table,
-            name_by: None,
-        }),
+        per_row: Some(PerRow::new(f.table)),
         ..ExportSpec::new(ExportFormat::Svg, ExportScale::Times(1.0))
     };
     set_exports(&mut f, spec.clone());
@@ -300,10 +300,44 @@ fn a_rows_file_is_drawn_from_a_filled_copy_and_the_document_is_untouched() {
     );
 }
 
+/// A PDF row writing its rows as pages plans one file, named as the layer's
+/// one file is, of a page per row, each bookmarked; an empty table plans none.
+///
+/// flip: `plan::row_pages` drawing only row 0 → fails at the page count.
+#[test]
+fn one_pdf_holds_a_page_per_row() {
+    let mut f = fixture(&[
+        ["Ada Lovelace", "", ""],
+        ["Alan Turing", "", ""],
+        ["Grace Hopper", "", ""],
+    ]);
+    let spec = ExportSpec {
+        per_row: Some(PerRow {
+            name_by: Some(f.columns[0]),
+            rows_as: mastik_core::RowsAs::Pages,
+            ..PerRow::new(f.table)
+        }),
+        ..ExportSpec::new(ExportFormat::Pdf, ExportScale::Times(1.0))
+    };
+    set_exports(&mut f, spec.clone());
+    let planned = plan(&f.doc, &f.res, &[f.frame], PlanOptions::default());
+    let named: Vec<_> = planned.iter().map(|p| (p.path.as_str(), p.row)).collect();
+    assert_eq!(named, [("Certificate.pdf", None)]);
+    let bytes = mastik_export::plan::render(&f.doc, &f.res, &planned[0]).expect("a pdf");
+    let text = String::from_utf8_lossy(&bytes);
+    let pages = text.matches("/Type/Page").count() - text.matches("/Type/Pages").count();
+    assert_eq!(pages, 3, "a page per row");
+    assert_eq!(text.matches("/Dest").count(), 3, "a bookmark each");
+
+    let mut empty = fixture(&[]);
+    set_exports(&mut empty, spec);
+    assert!(paths(&empty).is_empty(), "no rows, no file");
+}
+
 /// A row whose name no longer fits its fixed box is marked as overflowing;
 /// a short one is not.
 ///
-/// flip: `plan::filled_copy` leaving `overflows` unset → fails at "the long name".
+/// flip: `plan::filled_copy` leaving `overflowing` empty → fails at "the long name".
 #[test]
 fn a_row_whose_text_outgrows_its_fixed_box_is_marked() {
     let long = "Ada Augusta King, Countess of Lovelace, who wrote the first program";
@@ -319,10 +353,10 @@ fn a_row_whose_text_outgrows_its_fixed_box_is_marked() {
     let spec = row_spec(f.table, None);
     set_exports(&mut f, spec.clone());
     let overflows = |row: usize| {
-        mastik_export::plan::filled_copy(&f.doc, f.frame, &spec, row)
+        let filled = mastik_export::plan::filled_copy(&f.doc, f.frame, &spec, row)
             .expect("a table")
-            .2
-            .overflows
+            .2;
+        filled.overflowing == [row]
     };
     assert!(!overflows(0), "a short name fits");
     assert!(overflows(1), "the long name");

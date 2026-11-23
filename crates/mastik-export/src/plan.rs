@@ -97,6 +97,15 @@ pub fn plan(
         }
         for spec in &specs {
             if let Some(files) = row_files(doc, node, spec, &opts) {
+                // One PDF, a page per row: named as the layer's one file is.
+                if spec.rows_as_pages() {
+                    if !files.is_empty() {
+                        let stem = path_stem(&spec.compose(n.name()), &opts);
+                        let path = de_collide(format!("{stem}.pdf"), &mut taken);
+                        out.push(planned(doc, res, node, spec, path));
+                    }
+                    continue;
+                }
                 for (row, wanted) in files {
                     let path = de_collide(wanted, &mut taken);
                     out.push(PlannedFile {
@@ -222,7 +231,9 @@ pub fn filled_copy(
     let mut copy = doc.clone();
     let mut filled = mastik_core::list::fill_row(&mut copy, node, &set, row, &targets);
     let res = Resolved::rebuild(&copy);
-    filled.overflows = text_overflows(&copy, &res, node);
+    if text_overflows(&copy, &res, node) {
+        filled.overflowing.push(row);
+    }
     Some((copy, res, filled))
 }
 
@@ -457,7 +468,63 @@ pub fn render_noted(
             None => (render_plain(doc, res, &plain), Default::default()),
         };
     }
+    if file.spec.rows_as_pages()
+        && let Some(drawn) = row_pages(doc, file)
+    {
+        return drawn;
+    }
     (render_plain(doc, res, file), Default::default())
+}
+
+/// A *One PDF* file ([`ExportSpec::rows_as_pages`]): a page per table row,
+/// each drawn from that row's filled copy and bookmarked by its *Name by*
+/// cell, else its number. `None` when the table is gone or empty, for the
+/// layer to draw as it is.
+fn row_pages(
+    doc: &Document,
+    file: &PlannedFile,
+) -> Option<(Option<Vec<u8>>, mastik_core::list::RowFilled)> {
+    let per_row = file.spec.per_row.as_ref()?;
+    let set = doc.data_set(per_row.table)?;
+    let rows = set.table.rows.len();
+    if rows == 0 {
+        return None;
+    }
+    let name_col = per_row.name_by.and_then(|c| set.table.index_of(c));
+    let mut filled = mastik_core::list::RowFilled::default();
+    let mut copies = Vec::with_capacity(rows);
+    for (row, cells) in set.table.rows.iter().enumerate() {
+        let (copy, res, one) = filled_copy(doc, file.node, &file.spec, row)?;
+        filled.missing_pictures += one.missing_pictures;
+        filled.overflowing.extend(one.overflowing);
+        // Each copy keeps a flagged frame's fill out, as one file's does.
+        let roots = drawn_roots(&copy, &res, file.node, &file.spec);
+        let (copy, res) = for_export(&copy, &roots).unwrap_or((copy, res));
+        let mark = name_col
+            .and_then(|c| cells.get(c))
+            .map(|cell| cell.trim().to_string())
+            .filter(|cell| !cell.is_empty())
+            .unwrap_or_else(|| (row + 1).to_string());
+        copies.push((copy, res, mark));
+    }
+    let pages: Vec<crate::pdf::PdfPage> = copies
+        .iter()
+        .map(|(copy, res, mark)| {
+            let (view, origins) = match slice_region(copy, res, file.node) {
+                Some((view, origins)) => (Some(view), origins),
+                None => (None, vec![file.node]),
+            };
+            crate::pdf::PdfPage {
+                doc: copy,
+                res,
+                name: mark.clone(),
+                origins,
+                view,
+            }
+        })
+        .collect();
+    let pdf = crate::pdf::pdf_documents(&pages, file.spec.text).map(|e| e.pdf);
+    Some((pdf, filled))
 }
 
 /// [`render`] for a file that is no row's.

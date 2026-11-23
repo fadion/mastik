@@ -133,7 +133,7 @@ pub use effect::{
     stack_escape,
 };
 pub use export::{
-    ExportBackground, ExportFormat, ExportScale, ExportSpec, ExportText, IconSet, PerRow,
+    ExportBackground, ExportFormat, ExportScale, ExportSpec, ExportText, IconSet, PerRow, RowsAs,
     SvgColour, SvgStrokes, SvgView,
 };
 pub use guide::{

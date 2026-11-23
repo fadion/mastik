@@ -105,13 +105,45 @@ pub struct ExportSpec {
     pub per_row: Option<PerRow>,
 }
 
-/// What [`ExportSpec::per_row`] reads: the table, and the column naming each
-/// file (`None` numbers them by row).
+/// What [`ExportSpec::per_row`] reads: the table, the column naming each
+/// file (`None` numbers them by row), and for a PDF whether the rows are
+/// files or the pages of one file.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PerRow {
     pub table: crate::list::DataSetId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name_by: Option<crate::chart::ColumnId>,
+    #[serde(default, rename = "as", skip_serializing_if = "RowsAs::is_files")]
+    pub rows_as: RowsAs,
+}
+
+impl PerRow {
+    /// A file per row of `table`, numbered by row.
+    pub fn new(table: crate::list::DataSetId) -> Self {
+        Self {
+            table,
+            name_by: None,
+            rows_as: RowsAs::Files,
+        }
+    }
+}
+
+/// How a PDF row under [`ExportSpec::per_row`] writes its rows. Every other
+/// format writes files whatever this says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RowsAs {
+    /// A file per row.
+    #[default]
+    Files,
+    /// One PDF with a page per row, each bookmarked by its *Name by* cell.
+    Pages,
+}
+
+impl RowsAs {
+    fn is_files(&self) -> bool {
+        *self == RowsAs::Files
+    }
 }
 
 impl ExportSpec {
@@ -164,6 +196,16 @@ impl ExportSpec {
             .iter()
             .copied()
             .find(|set| set.sizes() == sizes.as_slice())
+    }
+
+    /// Whether this row writes one PDF with a page per table row
+    /// ([`RowsAs::Pages`]), rather than a file per row or no rows at all.
+    pub fn rows_as_pages(&self) -> bool {
+        self.format == ExportFormat::Pdf
+            && self
+                .per_row
+                .as_ref()
+                .is_some_and(|p| p.rows_as == RowsAs::Pages)
     }
 
     /// What actually goes after the name: [`Self::suffix`] when one was typed,
@@ -721,12 +763,14 @@ mod tests {
         spec.per_row = Some(PerRow {
             table,
             name_by: None,
+            rows_as: RowsAs::Files,
         });
         let json = serde_json::to_string(&spec).expect("serialize");
         assert_eq!(json, r#"{"format":"Png","per_row":{"table":"a:1"}}"#);
         spec.per_row = Some(PerRow {
             table,
             name_by: Some(crate::chart::ColumnId(2)),
+            rows_as: RowsAs::Files,
         });
         let json = serde_json::to_string(&spec).expect("serialize");
         assert_eq!(
@@ -737,6 +781,20 @@ mod tests {
             serde_json::from_str::<ExportSpec>(&json).expect("round trip"),
             spec
         );
+        spec.format = ExportFormat::Pdf;
+        spec.per_row = Some(PerRow {
+            table,
+            name_by: None,
+            rows_as: RowsAs::Pages,
+        });
+        let json = serde_json::to_string(&spec).expect("serialize");
+        assert_eq!(
+            json,
+            r#"{"format":"Pdf","per_row":{"table":"a:1","as":"pages"}}"#
+        );
+        assert!(spec.rows_as_pages());
+        spec.format = ExportFormat::Png;
+        assert!(!spec.rows_as_pages(), "pages are a PDF's alone");
     }
 
     /// `from_label` reads back what `label` writes (round trip over `COMMON`), plus
