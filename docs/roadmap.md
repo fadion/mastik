@@ -35,9 +35,6 @@ remains is below.
   - *Tables for scripts.* The table verbs are built (`lists.md`, *Verbs*); left are a Luau
     `tables` handle (`tables.People`), its writes gathered and landing as one `edit_table` per
     table at the run's end, and Command Mode's completion of table names.
-  - *Fill with content: pictures beside a linked table.* The box finds only the pictures a table
-    already maps and the document's own; it should read the picture files beside a linked table
-    for the rows it takes, as a list does.
 
 ## Next · Editing parity
 

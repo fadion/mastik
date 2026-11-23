@@ -79,6 +79,9 @@ pub(crate) struct FillBox {
     hover: (Vec<NodeId>, bool),
     /// A clicked row's layer, brought into view once drawn.
     reveal: Option<NodeId>,
+    /// The `AddImage`s of the pictures read beside linked tables when the box
+    /// opened ([`Options::pictures`]); the fill adds those it uses.
+    read: Vec<mastik_core::Operation>,
 }
 
 /// One line of the preview.
@@ -97,6 +100,47 @@ fn fresh_seed() -> u64 {
 }
 
 impl FillBox {
+    /// What the fill adds before its own edit for the pictures read beside a
+    /// linked table that it uses: each picture, and its table's (cell, picture)
+    /// pairs, so the table maps them as a list over it would.
+    fn beside_ops(&self, doc: &Document) -> Vec<mastik_core::Operation> {
+        use mastik_core::Operation;
+        let used: Vec<&mastik_core::ImageId> = self
+            .plan
+            .rows
+            .iter()
+            .filter_map(|r| match &r.value {
+                fill::Value::Picture(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        let mut ops: Vec<Operation> = self
+            .read
+            .iter()
+            .filter(|op| matches!(op, Operation::AddImage { id, .. } if used.contains(&id)))
+            .cloned()
+            .collect();
+        for set in doc.data_sets() {
+            let new: Vec<_> = self
+                .opts
+                .pictures
+                .iter()
+                .filter(|(s, _, id)| *s == set.id && used.contains(&id))
+                .map(|(_, cell, id)| (cell.clone(), id.clone()))
+                .collect();
+            if new.is_empty() {
+                continue;
+            }
+            let mut next = set.clone();
+            next.pictures.extend(new);
+            ops.push(Operation::SetDataSet {
+                id: set.id,
+                set: Some(Box::new(next)),
+            });
+        }
+        ops
+    }
+
     /// The layers the canvas rings for the hovered row, and whether softly.
     pub(crate) fn ringed(&self) -> (&[NodeId], bool) {
         (&self.hover.0, self.hover.1)
@@ -236,6 +280,7 @@ impl MastikApp {
             "pattern" => AvatarStyle::Pattern,
             _ => AvatarStyle::Initials,
         };
+        let (read, pictures) = read_beside(&self.session.doc);
         self.fill_content = Some(FillBox {
             opts: Options {
                 locale,
@@ -243,6 +288,7 @@ impl MastikApp {
                 example_emails: p.example_emails,
                 avatars: p.avatars.then_some(style),
                 seed: fresh_seed(),
+                pictures,
                 ..Options::default()
             },
             opened_locale: last,
@@ -256,6 +302,7 @@ impl MastikApp {
             samples: (String::new(), Vec::new()),
             hover: (Vec::new(), false),
             reveal: None,
+            read,
         });
     }
 
@@ -295,12 +342,13 @@ impl MastikApp {
         }
         self.prefs.save();
         let mut pictures = crate::canvas::Decoded::default();
-        let tx = b.plan.transaction(
+        let mut tx = b.plan.transaction(
             &self.session.doc,
             &self.session.resolved,
             Some(&mut pictures),
         );
         self.adopt_decoded(pictures);
+        tx.0.splice(0..0, b.beside_ops(&self.session.doc));
         // Counted from the edit: an avatar the sink could not draw is left out.
         let changed =
             tx.0.iter()
@@ -485,6 +533,57 @@ struct TableAsk<'a> {
     doc: &'a Document,
     by_name: bool,
     now: Option<TableContent>,
+    /// The pictures read beside linked tables ([`Options::pictures`]).
+    beside: &'a [Beside],
+}
+
+/// A picture read beside a linked table: (table, cell, picture).
+type Beside = (mastik_core::list::DataSetId, String, mastik_core::ImageId);
+
+/// Whether `cell` of table `set` names a picture: the set's own, or one read
+/// beside its file.
+fn names_picture(
+    doc: &Document,
+    set: &mastik_core::list::DataSet,
+    beside: &[Beside],
+    cell: &str,
+) -> bool {
+    set.picture(doc, cell).is_some()
+        || beside
+            .iter()
+            .any(|(s, c, _)| *s == set.id && c == cell.trim())
+}
+
+/// The pictures every linked table's cells name beside its file, in the rows a
+/// list reads, which its set does not map yet: each new picture's `AddImage`,
+/// and the (table, cell, picture) triples [`Options::pictures`] takes.
+fn read_beside(doc: &Document) -> (Vec<mastik_core::Operation>, Vec<Beside>) {
+    let (mut ops, mut beside) = (Vec::new(), Vec::new());
+    for set in doc.data_sets() {
+        let Some(link) = &set.source else { continue };
+        let dir = std::path::Path::new(&link.path).parent();
+        let columns: Vec<_> = set.table.columns.iter().map(|c| c.id).collect();
+        let (images, pairs) = crate::list_data::read_pictures(doc, dir, &set.table, &columns);
+        for op in images {
+            let new = !ops.iter().any(|o| match (o, &op) {
+                (
+                    mastik_core::Operation::AddImage { id: a, .. },
+                    mastik_core::Operation::AddImage { id: b, .. },
+                ) => a == b,
+                _ => false,
+            });
+            if new {
+                ops.push(op);
+            }
+        }
+        beside.extend(
+            pairs
+                .into_iter()
+                .filter(|(cell, _)| set.picture(doc, cell).is_none())
+                .map(|(cell, id)| (set.id, cell, id)),
+        );
+    }
+    (ops, beside)
 }
 
 /// A table column as a row's combo names it: *People ▸ Name*.
@@ -506,7 +605,17 @@ fn table_rows(ui: &mut egui::Ui, ask: &TableAsk<'_>, shape: bool) -> Option<Tabl
     let doc = ask.doc;
     let mut picked = None;
     for set in doc.data_sets() {
-        let images = set.image_columns(doc);
+        let images: Vec<_> = set
+            .table
+            .columns
+            .iter()
+            .filter(|c| {
+                set.table
+                    .cells(c.id)
+                    .any(|v| names_picture(doc, set, ask.beside, v))
+            })
+            .map(|c| c.id)
+            .collect();
         let columns: Vec<&mastik_core::chart::Column> = set
             .table
             .columns
@@ -543,7 +652,7 @@ fn table_rows(ui: &mut egui::Ui, ask: &TableAsk<'_>, shape: bool) -> Option<Tabl
                 true => ui::count(
                     set.table
                         .cells(c.id)
-                        .filter(|v| set.picture(doc, v).is_some())
+                        .filter(|v| names_picture(doc, set, ask.beside, v))
                         .count(),
                     "picture",
                 ),
@@ -657,6 +766,7 @@ fn content_row(ui: &mut egui::Ui, doc: &Document, b: &mut FillBox) {
         doc,
         by_name: true,
         now: b.opts.table,
+        beside: &b.opts.pictures,
     };
     row(ui, "Content", ui::CONTROL_H, |ui| {
         combo_in_row(
@@ -1024,6 +1134,7 @@ fn fill_row(ui: &mut egui::Ui, doc: &Document, b: &FillBox, i: usize) -> RowOut 
         doc,
         by_name: false,
         now: r.column.map(TableContent::Column),
+        beside: &b.opts.pictures,
     };
     // The combo and the die go in children that do not move the list's cursor: a
     // placed child resets it to its own bottom, above the row's, and every row
@@ -1360,6 +1471,79 @@ mod tests {
         assert_eq!(content(&app, name(rows[1])), "Grace Hopper");
         let said = app.session.status().text.clone();
         assert!(said.contains("from People"), "{said}");
+    }
+
+    /// A linked table's picture column fills the avatars from the files beside
+    /// it, read when the box opens, and the table then maps the pictures used.
+    /// flip: `read_beside` reading nothing → fails at "nobody.png is counted".
+    #[test]
+    fn a_linked_tables_pictures_beside_its_file_fill_the_avatars() {
+        use mastik_core::chart::{Column, ColumnId, DataLink, Table};
+        let (ctx, mut app) = app();
+        let (_, rows) = team(&mut app);
+        let dir = std::env::temp_dir().join(format!("mastik-fill-beside-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = crate::app::rgba_to_png(&[255, 0, 0, 255], (1, 1)).unwrap();
+        std::fs::write(dir.join("ada.png"), png).unwrap();
+        let set = mastik_core::list::DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "People".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "Photo".into(),
+                }],
+                rows: vec![vec!["ada.png".into()], vec!["nobody.png".into()]],
+            },
+            source: Some(DataLink {
+                path: dir.join("people.csv").to_string_lossy().into_owned(),
+                size: 0,
+                modified: 0,
+                header: None,
+            }),
+            pictures: Vec::new(),
+        };
+        let data = set.id;
+        assert!(app.session.commit(Transaction(vec![Operation::SetDataSet {
+            id: data,
+            set: Some(Box::new(set)),
+        }])));
+        pass(&ctx, &mut app);
+        app.dispatch(&ctx, crate::input::Action::FillContent);
+        pass(&ctx, &mut app);
+        let mut b = app.fill_content.take().expect("the box opened");
+        let avatar = |app: &MastikApp, row: NodeId| {
+            let doc = &app.session.doc;
+            *doc.get(row)
+                .unwrap()
+                .children()
+                .iter()
+                .find(|c| doc.get(**c).unwrap().name() == "Avatar")
+                .unwrap()
+        };
+        for row in &rows {
+            b.opts
+                .columns
+                .insert(avatar(&app, *row), (data, ColumnId(0)));
+        }
+        b.replan(
+            &app.session.doc,
+            &app.session.resolved,
+            app.session.page,
+            app.session.revision(),
+        );
+        assert_eq!(b.plan.missing_pictures, 1, "nobody.png is counted");
+        app.commit_fill_content(&b);
+        let doc = &app.session.doc;
+        let set = doc.data_set(data).unwrap();
+        let id = set.picture(doc, "ada.png").expect("the table maps it now");
+        let fill = &doc.get(avatar(&app, rows[0])).unwrap().paint().fills[0];
+        assert_eq!(
+            fill.brush.literal(),
+            Some(&mastik_core::image_brush(id)),
+            "the picture beside the file"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// With nothing fillable selected the box still opens, *Fill* dim with its

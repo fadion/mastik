@@ -1787,6 +1787,11 @@ pub struct Options {
     pub from_row: usize,
     /// Rows dealt by the seed rather than taken in order.
     pub shuffled: bool,
+    /// Pictures read beside a linked table that its set does not map yet:
+    /// (table, cell, picture). A shape's cell names one of these when
+    /// [`crate::list::DataSet::picture`] finds nothing; the caller adds the
+    /// pictures and the pairs in the fill's step.
+    pub pictures: Vec<(crate::list::DataSetId, String, crate::ImageId)>,
 }
 
 impl Default for Options {
@@ -1805,6 +1810,7 @@ impl Default for Options {
             columns: HashMap::new(),
             from_row: 0,
             shuffled: false,
+            pictures: Vec::new(),
         }
     }
 }
@@ -2564,7 +2570,7 @@ pub fn plan(doc: &Document, res: &crate::Resolved, roots: &[NodeId], opts: &Opti
             rows[i].fits = ok;
         }
     }
-    let missing_pictures = table_values(doc, res, &mut rows);
+    let missing_pictures = table_values(doc, res, &opts.pictures, &mut rows);
     Plan {
         rows,
         records,
@@ -2652,8 +2658,14 @@ fn table_name(doc: &Document, rows: &[Row], members: &[usize]) -> Option<String>
 }
 
 /// Each row with a table row given its cell: a text the cell as it is, a shape
-/// the picture it names. Answers how many shapes' cells named no picture.
-fn table_values(doc: &Document, res: &crate::Resolved, rows: &mut [Row]) -> usize {
+/// the picture it names, the set's or one of `beside` ([`Options::pictures`]).
+/// Answers how many shapes' cells named no picture.
+fn table_values(
+    doc: &Document,
+    res: &crate::Resolved,
+    beside: &[(crate::list::DataSetId, String, crate::ImageId)],
+    rows: &mut [Row],
+) -> usize {
     let mut missing = 0;
     for row in rows.iter_mut() {
         let (Some((d, c)), Some(r)) = (row.column, row.table_row) else {
@@ -2669,7 +2681,13 @@ fn table_values(doc: &Document, res: &crate::Resolved, rows: &mut [Row]) -> usiz
             continue;
         };
         if row.shape {
-            match set.picture(doc, &cell) {
+            let read = || {
+                beside
+                    .iter()
+                    .find(|(s, c, _)| *s == d && *c == cell)
+                    .map(|p| p.2.clone())
+            };
+            match set.picture(doc, &cell).or_else(read) {
                 Some(id) => row.value = Value::Picture(id),
                 None => missing += usize::from(!cell.is_empty()),
             }

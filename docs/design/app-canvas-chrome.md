@@ -870,11 +870,13 @@ ImageSink>)` is the edit.
   underscores, as a list's fill matches a property) and reads every other layer by its name, as
   *By layer name*. A column chosen for one layer (`columns`) is over both; a kind chosen for it in
   `kinds` takes it off its column, and a column chosen takes it off its kind. A text takes the
-  trimmed cell as it is. A shape takes only an image column (`DataSet::image_columns`), by name
-  too, and takes the picture its cell names
-  (`DataSet::picture`) as `Value::Picture`: one image fill through `SetFills`, dropping a photo's
+  trimmed cell as it is. A shape takes only an image column, by name too, and takes the picture
+  its cell names as `Value::Picture`: one image fill through `SetFills`, dropping a photo's
   credit as an avatar does; a cell naming no picture leaves it as is, counted in
-  `Plan::missing_pictures`. The fill is one-shot: values are written and nothing stays linked to
+  `Plan::missing_pictures`. A cell names a picture through `DataSet::picture`, or, on a linked
+  table, through `Options::pictures`: the box reads the picture files beside every linked table
+  when it opens (`list_data::read_pictures`, the rows a list reads), and the fill's step adds the
+  pictures it uses and the table's pairs for them, so the table maps them as a list over it would. The fill is one-shot: values are written and nothing stays linked to
   the table. Picture files beside a linked table are not read here; only the pictures the table
   already maps and the document's own are found.
 - **Which row goes where** (`take_table_rows`, `row_order`): the rows from `Options::from_row`
