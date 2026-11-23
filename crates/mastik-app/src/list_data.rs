@@ -230,6 +230,18 @@ pub(crate) fn read_pictures(
     table: &mastik_core::chart::Table,
     columns: &[mastik_core::chart::ColumnId],
 ) -> (Vec<Operation>, Vec<(String, mastik_core::ImageId)>) {
+    read_pictures_in(doc, dir, table, columns, list::MAX_DRAWN)
+}
+
+/// [`read_pictures`] over the first `rows` rows: every row for an export,
+/// which draws a file per row.
+pub(crate) fn read_pictures_in(
+    doc: &mastik_core::Document,
+    dir: Option<&Path>,
+    table: &mastik_core::chart::Table,
+    columns: &[mastik_core::chart::ColumnId],
+    rows: usize,
+) -> (Vec<Operation>, Vec<(String, mastik_core::ImageId)>) {
     let (mut ops, mut pairs) = (Vec::new(), Vec::<(String, mastik_core::ImageId)>::new());
     let Some(dir) = dir else {
         return (ops, pairs);
@@ -240,7 +252,7 @@ pub(crate) fn read_pictures(
         let Some(c) = table.index_of(*col) else {
             continue;
         };
-        for row in table.rows.iter().take(list::MAX_DRAWN) {
+        for row in table.rows.iter().take(rows) {
             let cell = row[c].trim();
             if cell.is_empty()
                 || !tried.insert(cell)

@@ -2511,6 +2511,7 @@ impl MastikApp {
         self.spawn_export(label, move |cancel| {
             // SVG and PDF shape live text again, with the faces the canvas used.
             mastik_core::text::register_font_data(&resolved.text_fonts());
+            let doc = with_row_pictures(doc, &files);
             Delivered {
                 asker,
                 ..deliver(&doc, &resolved, &files, destination, &turn, cancel)
@@ -3607,6 +3608,51 @@ impl ExportFlags {
         }
         true
     }
+}
+
+/// `doc` with the pictures named beside each linked table a *One file per row*
+/// file reads, for every row, added and mapped in the table, outside history:
+/// the worker's throwaway copy, so a row's photo draws without a list over the
+/// table having read it first.
+fn with_row_pictures(
+    mut doc: mastik_core::Document,
+    files: &[PlannedFile],
+) -> mastik_core::Document {
+    let mut sets: Vec<mastik_core::list::DataSetId> = Vec::new();
+    for f in files.iter().filter(|f| f.row.is_some()) {
+        if let Some(p) = &f.spec.per_row
+            && !sets.contains(&p.table)
+        {
+            sets.push(p.table);
+        }
+    }
+    for id in sets {
+        let Some(set) = doc.data_set(id).cloned() else {
+            continue;
+        };
+        let Some(link) = &set.source else { continue };
+        let dir = std::path::Path::new(&link.path).parent();
+        let columns: Vec<_> = set.table.columns.iter().map(|c| c.id).collect();
+        let rows = set.table.rows.len();
+        let (mut ops, pairs) =
+            crate::list_data::read_pictures_in(&doc, dir, &set.table, &columns, rows);
+        let pairs: Vec<_> = pairs
+            .into_iter()
+            .filter(|(cell, _)| set.picture(&doc, cell).is_none())
+            .collect();
+        if pairs.is_empty() {
+            continue;
+        }
+        let mut next = set.clone();
+        next.pictures.extend(pairs);
+        ops.push(Operation::SetDataSet {
+            id,
+            set: Some(Box::new(next)),
+        });
+        // A picture that does not apply leaves the cell missing, as before.
+        let _ = doc.apply(&Transaction(ops));
+    }
+    doc
 }
 
 /// A planned path's file name, folders and all left off.
@@ -5700,6 +5746,66 @@ mod code_export_tests {
             app.export_size_label(&spec, Some(set)),
             "2 files in arrow-icons/"
         );
+    }
+
+    /// The worker's copy reads the pictures beside a linked table for every row,
+    /// past the 200 a list reads, and the table maps them.
+    /// flip: `with_row_pictures` reading `list::MAX_DRAWN` rows → fails at "row 201".
+    #[test]
+    fn the_worker_reads_every_rows_picture_beside_a_linked_table() {
+        use mastik_core::list::DataSet;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let app = crate::app::MastikApp::headless(&ctx);
+        let mut doc = app.session.doc.clone();
+        let frame = doc.get(doc.first_page()).expect("the page").children()[0];
+        let dir = std::env::temp_dir().join(format!("mastik-row-pictures-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = crate::app::rgba_to_png(&[0, 255, 0, 255], (1, 1)).unwrap();
+        std::fs::write(dir.join("last.png"), png).unwrap();
+        let mut t = mastik_core::chart::Table::default();
+        let column = t.next_column_id();
+        t.columns.push(mastik_core::chart::Column {
+            id: column,
+            name: "Photo".into(),
+        });
+        t.rows = (0..200).map(|_| vec![String::new()]).collect();
+        t.rows.push(vec!["last.png".into()]);
+        let table = mastik_core::list::DataSetId(mastik_core::NodeId::from_wire("1:77").unwrap());
+        doc.apply(&Transaction(vec![Operation::SetDataSet {
+            id: table,
+            set: Some(Box::new(DataSet {
+                id: table,
+                name: "Speakers".into(),
+                table: t,
+                source: Some(mastik_core::chart::DataLink {
+                    path: dir.join("speakers.csv").to_string_lossy().into_owned(),
+                    size: 0,
+                    modified: 0,
+                    header: None,
+                }),
+                pictures: Vec::new(),
+            })),
+        }]))
+        .unwrap();
+        let file = PlannedFile {
+            node: frame,
+            spec: ExportSpec {
+                per_row: Some(PerRow {
+                    table,
+                    name_by: None,
+                }),
+                ..ExportSpec::new(ExportFormat::Png, ExportScale::Times(1.0))
+            },
+            path: "a.png".into(),
+            pixels: None,
+            clamped: false,
+            row: Some(200),
+        };
+        let read = with_row_pictures(doc, &[file]);
+        let set = read.data_set(table).expect("the table");
+        assert!(set.picture(&read, "last.png").is_some(), "row 201");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A row writing a file per table row counts its files on the size line,

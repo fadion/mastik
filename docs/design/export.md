@@ -269,7 +269,7 @@ The export crate: SVG, PDF, PNG, JPEG, WebP, ICO and ICNS, code export (HTML/CSS
   - an instance root takes the properties `list::fill_by_name` matches, through the variant switch and property steps a list's regeneration runs (`lists.md`, *Regeneration and undo*);
   - any other layer fills the text layers (not one whose content is bound to a variable) and image-filled layers under it whose names match a column by `content_fill::column_key`, in reading order, leaving out hidden and locked layers and what they hold; one inside a nested instance is filled as an override. A picture cell changes the picture alone, the fill keeping its fit and crop.
 
-  A cell names a picture the table already maps or the document holds (`DataSet::picture`); one naming neither leaves its layer or property as it was, counted in `RowFilled::missing_pictures`, which `plan::render_noted` hands the export worker: the status line adds the sum (*Exported 24 files · 3 pictures not found*). `mastik-export/tests/per_row.rs` pins the names, the fill and the untouched document.
+  A cell names a picture the table already maps or the document holds (`DataSet::picture`); in the app the export worker first reads the picture files beside each linked table a row's file reads, for every row (`with_row_pictures` over `list_data::read_pictures_in`), into its throwaway copy, so a photo draws without a list having read it. One naming neither leaves its layer or property as it was, counted in `RowFilled::missing_pictures`, which `plan::render_noted` hands the export worker: the status line adds the sum (*Exported 24 files · 3 pictures not found*). `mastik-export/tests/per_row.rs` pins the names, the fill and the untouched document.
 
 ### CLI
 
