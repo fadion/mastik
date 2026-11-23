@@ -11,7 +11,8 @@ impl Player {
     /// to it, play state untouched. When the copy refuses it, because play
     /// changed something the edit also touches, the copy is cloned again from
     /// the document and play state carried across by id: the screen, history,
-    /// overlays, play values, scroll offsets and each instance's state. What the
+    /// overlays, play values, scroll offsets and each instance's state. Either
+    /// way, each row play opened is opened again (`reopen_rows`). What the
     /// edit removed falls back, with one notice each.
     ///
     /// `Err` only when the transaction does not apply to the document the player
@@ -29,6 +30,7 @@ impl Player {
             Err(_) => self.reclone(),
         }
         self.prepare();
+        self.reopen_rows();
         self.fall_back();
         Ok(())
     }
@@ -43,6 +45,7 @@ impl Player {
         self.base = doc.clone();
         self.reclone();
         self.prepare();
+        self.reopen_rows();
         self.fall_back();
     }
 

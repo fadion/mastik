@@ -203,6 +203,9 @@ pub struct Player {
     pub(crate) states: FxHashMap<NodeId, NodeId>,
     /// The modes *Set mode* gave each page or frame, carried across a re-clone.
     pub(crate) modes: FxHashMap<NodeId, Vec<mastik_core::variable::ModeId>>,
+    /// The row play opened in each data set, opened again after a live edit:
+    /// the edit's own regeneration, or a re-clone, puts every list back on row 1.
+    pub(crate) opened: BTreeMap<mastik_core::list::DataSetId, usize>,
     /// The size each screen is laid out at in place of its own (a page's
     /// device, or the room under *Responsive*); `None` as drawn.
     pub(crate) play_size: Option<Size>,
@@ -269,6 +272,7 @@ impl Player {
             drops: Vec::new(),
             states: FxHashMap::default(),
             modes: FxHashMap::default(),
+            opened: BTreeMap::new(),
             play_size: None,
             auto: FxHashMap::default(),
             inputs: Vec::new(),
@@ -646,6 +650,7 @@ impl Player {
     /// row* made again on the copy to show it.
     pub(crate) fn open_data_row(&mut self, data: mastik_core::list::DataSetId, row: usize) {
         use mastik_core::list::{self, Rows};
+        self.opened.insert(data, row);
         let targets: Vec<(NodeId, list::List)> = list::lists(&self.doc)
             .into_iter()
             .filter_map(|l| {
@@ -673,6 +678,16 @@ impl Player {
             });
             let settled = self.res.settle(&mut self.doc);
             self.dirty.extend(settled.0);
+        }
+    }
+
+    /// Each row play opened, opened again on the copy; a data set the copy no
+    /// longer has is forgotten.
+    pub(crate) fn reopen_rows(&mut self) {
+        self.opened.retain(|d, _| self.doc.data_set(*d).is_some());
+        let opened: Vec<_> = self.opened.iter().map(|(d, r)| (*d, *r)).collect();
+        for (data, row) in opened {
+            self.open_data_row(data, row);
         }
     }
 

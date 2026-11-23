@@ -356,7 +356,10 @@ the document's data sets, which it calls tables. Named *Data tables*, not *Conte
 - **A pointer reaction firing inside a list row opens that row** (`Player::open_row`, called by
   `fire` before the reaction's actions): every list over the same data set showing *Opened row*
   gets the row as `opened` and is regenerated on the played copy, so a navigation the reaction
-  makes lands on a detail screen already showing it. Nothing is written to the document. There is
+  makes lands on a detail screen already showing it. Nothing is written to the document. The
+  player keeps the row it opened in each data set (`Player::opened`) and opens it again after
+  every live edit (`reopen_rows`), since the editor's regeneration and a re-clone both put the
+  list back on row 1. There is
   no *Open row* action; the tap is the act
   (`a_tapped_row_is_opened_on_the_detail_screen`).
 - **The player's state card starts with *Opened rows*** (`state_rows`): one row per data set an

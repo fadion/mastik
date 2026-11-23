@@ -2335,8 +2335,9 @@ fn listed(fx: &mut Fx, instance: NodeId, source: mastik_core::list::Source) -> N
 }
 
 /// A tap on a list's second row opens it before the row's navigation runs, so
-/// the detail screen's *Opened row* list shows row 2.
-/// flip: `fire` not calling `open_row` → fails at "row 2 opened".
+/// the detail screen's *Opened row* list shows row 2, and a live edit keeps it.
+/// flip: `fire` not calling `open_row` → fails at "row 2 opened"; `apply_edit`
+/// not calling `reopen_rows` → fails at "kept through the editor's regeneration".
 #[test]
 fn a_tapped_row_is_opened_on_the_detail_screen() {
     use mastik_core::chart::{Column, ColumnId, Table};
@@ -2397,6 +2398,21 @@ fn a_tapped_row_is_opened_on_the_detail_screen() {
         0,
         "the file untouched"
     );
+
+    // A live edit that writes the list as the editor holds it (its own
+    // regeneration), then one the copy refuses and re-clones over, keeps row 2.
+    let as_saved = fx.doc.get(shown).unwrap().list().unwrap().clone();
+    let tx = Transaction(vec![Operation::SetList {
+        id: shown,
+        list: Some(Box::new(as_saved)),
+    }]);
+    fx.doc.apply(&tx).unwrap();
+    p.apply_edit(&tx).unwrap();
+    let l = p.document().get(shown).unwrap().list().unwrap();
+    assert_eq!(l.opened, 1, "kept through the editor's regeneration");
+    p.rebase(&fx.doc);
+    let l = p.document().get(shown).unwrap().list().unwrap();
+    assert_eq!(l.opened, 1, "kept through a re-clone");
 }
 
 /// The state card lists the data set an *Opened row* list reads, and a row
