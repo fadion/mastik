@@ -535,14 +535,16 @@ in `collapsed_panels` (Marks, Axes, Values, Legend and Text start folded, `chart
 - **Data** — led by the table the chart reads (`chart_table_dropdown`), the List card's Data
   dropdown, `list_data::table_combo` (`lists.md`, *The List card*), with a first row *Own table*
   (`TableRows { own }`, tooltip *A table of the chart's own, which nothing else reads*), a
-  separator, every data set in the document (*name · N rows*, or *name · not used*), a separator
-  and *From a file…*. The closed face shows *Own table*, the set's name, or *Missing data* with
+  separator, every data set in the document (*name · N rows*, or *name · not used*), a separator,
+  *Save as table* (`icon::FLOPPY_DISK`, while the chart reads no set the document has) and *From
+  a file…*. The closed face shows *Own table*, the set's name, or *Missing data* with
   the note *Its table is not in this document: pick one*. Picking a set
   moves the chart onto it (`move_chart_to_set`, `Chart::reading`), undo step *Chart data*,
   status *The chart reads ‹name›*; *Own table* keeps the rows as they are and stops reading the set, which
   stays (`chart_own_table`), undo step *Chart data*; *From a file…* reads the picked file on the
   worker (`chart_data_dialog`, `Then::ChartData`) into a new data set named for the file, linked,
-  and moves the chart onto it in one step. Then the summary (*3 series · 12 rows*, a Sankey's
+  and moves the chart onto it in one step; *Save as table* is the data window's (*The data
+  window*). Then the summary (*3 series · 12 rows*, a Sankey's
   *8 flows*), *Edit data…* (an `ui::action_button`, tooltip *Open the chart's table over the
   canvas*), the source line while linked (`chart_source_line`; a chart reading a set shows the
   set's, the List card's `data_set_link_rows`; both painted by `chart_import::link_rows`), the
@@ -639,17 +641,30 @@ behind it as *Data tables* (`lists.md`, *Data tables*); `ChartData.chart` names 
 marks, a list's fills, or plain). The import box serves *Make a list* and *Data tables* too
 (`lists.md`, *Doors* and *Data tables*).
 
-**Over a chart reading a data set** the window stays the chart's: its head note is *‹chart name› ·
-‹set name›*, the grid is the chart's table with its role marks, *Use as category* and *Show as
-series*, and the linked line and read-only rule follow the set's link. A table edit writes the
-set (`commit_data_table`, a `SetDataSet`, undo step *Edit table*), every list over it is made
-again and the chart follows in the same step; a mapping-only edit is the chart's own `SetChart`.
+**Over a chart reading a data set** the window stays the chart's: its head note is *‹set name› ·
+‹chart name›*, the set's name renamed in place as a list's window renames it
+(`settings::card_head_renamable`, undo step *Rename table*), the grid is the chart's table with
+its role marks, *Use as category* and *Show as series*, and the linked line and read-only rule
+follow the set's link. A table edit writes the set (`commit_data_table`, a `SetDataSet`, undo
+step *Edit table*), every list over it is made again and the chart follows in the same step; a
+mapping-only edit is the chart's own `SetChart`.
 
-- **Head**: `settings::card_head_noted` — *Chart data*, the chart's layer name as the note, the
-  shared ✕. Under it the toolbar of `ui::action_button`s at `CONTROL_H`, each as wide as
-  `ui::action_button_w` makes it: *Add row* (`icon::ROWS_PLUS_BOTTOM`) and *Add column*
-  (`icon::COLUMNS_PLUS_RIGHT`) on the left, disabled at the table's limits with *At most N rows*
-  / *columns*, and *Import…* (`icon::IMPORT`) on the right. Each add adds at the end, moves the
+**Save as table** makes a chart's own table one of the document's, for other charts and lists to
+read (`save_chart_table`): a toolbar button after *Import…* (`icon::FLOPPY_DISK`, tooltip *Keep
+this chart's data as a table that other charts and lists can read*) while the chart reads no set
+the document has, and the same row in the Chart card's Data dropdown. One step, *Save as table*:
+a `SetDataSet` holding the chart's table with its column ids, so the mapping and series styles
+stay where they are, and the chart moved onto it (`Chart::reading`). A linked chart's file goes
+with the table, which holds the link from then on. The set is named for the chart
+(`list::free_name` numbering a taken name), status *Saved the chart's data as ‹name›*, and in the
+window the name opens for typing, the next thing to write.
+
+- **Head**: `settings::card_head_noted` — *Chart data*, the chart's layer name as the note (over
+  a data set, the renamable head above), the shared ✕. Under it the toolbar of
+  `ui::action_button`s at `CONTROL_H`, each as wide as `ui::action_button_w` makes it: *Add row*
+  (`icon::ROWS_PLUS_BOTTOM`) and *Add column* (`icon::COLUMNS_PLUS_RIGHT`) on the left, disabled
+  at the table's limits with *At most N rows* / *columns*, and *Import…* (`icon::IMPORT`) on the
+  right, then *Save as table* on an own table. Each add adds at the end, moves the
   cursor onto the new row or column, and carries a cell being typed into in the same step. A
   linked chart hides the adds and shows its source line under the toolbar.
 - **The grid** is one focusable region that locks the arrows, `Tab` and `Escape` while it has

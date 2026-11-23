@@ -17,11 +17,6 @@ remains is below.
   (`at_names` in `panels/prototype.rs`), but typing `{`, which is the form the field shows,
   suggests nothing. `{` should open the same list, narrowing as the name is typed and closing on
   `}`.
-- **Rename a data table from a chart's data window.** A chart reading a data set opens its own
-  window, which writes the set (`charts.md`, *The data window*); its head note reads *‹chart
-  name› · ‹set name›* but cannot be renamed, so the table is renamed only from a list's window
-  or *Data tables* (`settings::card_head_renamable`, *Rename table*). The set's name in the
-  chart's head should rename the table as those do.
 
 ## Next · Editing parity
 

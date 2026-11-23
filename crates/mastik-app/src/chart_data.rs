@@ -690,7 +690,7 @@ impl MastikApp {
             self.chart_data = None;
             return;
         };
-        let mut name = self
+        let name = self
             .session
             .doc
             .get(id)
@@ -702,14 +702,11 @@ impl MastikApp {
             .chart_set(id)
             .and_then(|s| self.session.doc.data_set(s).cloned());
         let shown = match &set {
-            Some(s) => {
-                name = format!("{name} \u{b7} {}", s.name);
-                Chart {
-                    source: s.source.clone(),
-                    table: s.table.clone(),
-                    ..chart.clone()
-                }
-            }
+            Some(s) => Chart {
+                source: s.source.clone(),
+                table: s.table.clone(),
+                ..chart.clone()
+            },
             None => chart.clone(),
         };
         let w = W.min(canvas.width() - 32.0).max(320.0);
@@ -725,14 +722,45 @@ impl MastikApp {
             })
             .collect();
         let mut act: Vec<Act> = Vec::new();
+        let mut renamed = None;
+        let mut save = false;
         let Some(mut state) = self.chart_data.take() else {
             return;
         };
         let hold = crate::settings::CardHold::Open;
         crate::settings::movable_canvas_card(ctx, "chart-data", canvas, w, hold, |ui| {
-            if crate::settings::card_head_noted(ui, w, "Chart data", Some(&name)) {
+            // Over a data set the note leads with the set's name, renamed in
+            // place as a list's window and *Data tables* rename it.
+            let closed = match &set {
+                Some(s) => {
+                    let rest = format!(" \u{b7} {name}");
+                    let (closed, kept) = crate::settings::card_head_renamable(
+                        ui,
+                        w,
+                        "Chart data",
+                        &s.name,
+                        &rest,
+                        &mut state.naming,
+                    );
+                    renamed = kept;
+                    closed
+                }
+                None => crate::settings::card_head_noted(ui, w, "Chart data", Some(&name)),
+            };
+            if closed {
                 act.push(Act::Close);
             }
+            let own = set.is_none();
+            let mut bar = |ui: &mut egui::Ui, slot: Slot| {
+                if own
+                    && slot == Slot::Trail
+                    && tool_button(ui, icon::FLOPPY_DISK, "Save as table")
+                        .on_hover_text(crate::list_data::SAVE_AS_TABLE_TIP)
+                        .clicked()
+                {
+                    save = true;
+                }
+            };
             egui::Frame::NONE
                 .inner_margin(egui::Margin {
                     left: PAD as i8,
@@ -743,19 +771,14 @@ impl MastikApp {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
                     let heads = Heads::Chart(&swatches);
-                    grid(
-                        ui,
-                        &shown,
-                        heads,
-                        &mut state,
-                        linked,
-                        &mut |_, _| {},
-                        &mut act,
-                    );
+                    grid(ui, &shown, heads, &mut state, linked, &mut bar, &mut act);
                 });
         });
         self.chart_data = Some(state);
         let set = set.map(|s| s.id);
+        if let (Some(s), Some(name)) = (set, renamed) {
+            self.rename_data_set(s, &name);
+        }
         for a in act {
             match (a, set) {
                 (Act::Close, _) => self.close_chart_data(),
@@ -776,6 +799,14 @@ impl MastikApp {
                 ),
                 (Act::Copy(text), _) => ctx.copy_text(text),
                 (Act::Note(text), _) => self.session.info(text),
+            }
+        }
+        // After the acts, so a cell typed into lands in the table saved; the
+        // new table's name opens for typing, the next thing to write.
+        if save && let Some(s) = self.save_chart_table(id) {
+            let name = self.session.doc.data_set(s).map(|d| d.name.clone());
+            if let Some(open) = &mut self.chart_data {
+                open.naming = name;
             }
         }
     }
@@ -1029,6 +1060,7 @@ impl MastikApp {
                     let rows = TableRows {
                         own: None,
                         new: true,
+                        save: false,
                     };
                     let pick = table_combo(
                         ui,
@@ -1043,7 +1075,7 @@ impl MastikApp {
                         Some(TablePick::Set(d)) => Some(TablesAct::Pick(d)),
                         Some(TablePick::New) => Some(TablesAct::New),
                         Some(TablePick::File) => Some(TablesAct::File),
-                        Some(TablePick::Own) | None => asked.take(),
+                        Some(TablePick::Own | TablePick::Save) | None => asked.take(),
                     };
                 }
                 Slot::Trail => {
@@ -2531,6 +2563,82 @@ mod tests {
         assert_eq!(open.data, Some(sets[0]), "moved to the remaining table");
         app.session.undo();
         assert_eq!(app.session.doc.data_sets().len(), 2, "undo brings it back");
+    }
+
+    /// *Save as table* on a chart's own table adds a data set named for the
+    /// chart holding its table, the chart reading it with its mapping kept,
+    /// the name opened for typing; one undo step takes both back.
+    /// flip: `chart_data_ui` dropping the `bar` it hands `grid` → fails at
+    /// "Save as table is drawn".
+    #[test]
+    fn save_as_table_makes_the_charts_table_a_data_set() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = opened(&ctx);
+        let before = app.session.doc.get(id).unwrap().chart().unwrap().clone();
+        let name = app.session.doc.get(id).unwrap().name().to_string();
+        let at = text_pos(&ctx, &mut app, "Save as table");
+        click(&ctx, &mut app, at);
+        let set = app.session.doc.data_sets().first().cloned().expect("saved");
+        assert_eq!(set.name, name, "named for the chart");
+        assert_eq!(set.table, before.table);
+        let after = app.session.doc.get(id).unwrap().chart().unwrap().clone();
+        assert_eq!(after.data, Some(set.id), "the chart reads it");
+        assert_eq!(after.mapping, before.mapping, "the mapping kept");
+        let open = app.chart_data.as_ref().expect("open");
+        assert_eq!(open.naming.as_deref(), Some(name.as_str()), "named next");
+        app.session.undo();
+        assert!(app.session.doc.data_sets().is_empty(), "one undo step");
+        let back = app.session.doc.get(id).unwrap().chart().unwrap();
+        assert_eq!(back.data, None);
+    }
+
+    /// The set's name in a chart's head renames the table, *Rename table*.
+    /// flip: `chart_data_ui` not calling `rename_data_set` with the head's
+    /// kept name → fails at "renamed".
+    #[test]
+    fn a_charts_head_renames_its_table() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = opened(&ctx);
+        let sid = app.save_chart_table(id).expect("saved");
+        app.chart_data.as_mut().unwrap().naming = Some("Revenue".into());
+        for _ in 0..3 {
+            pass(&ctx, &mut app, Vec::new());
+        }
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        pass(&ctx, &mut app, Vec::new());
+        let name = |app: &MastikApp| app.session.doc.data_set(sid).unwrap().name.clone();
+        assert_eq!(name(&app), "Revenue", "renamed");
+        assert_eq!(app.chart_data.as_ref().and_then(|d| d.chart), Some(id));
+        app.session.undo();
+        assert_ne!(name(&app), "Revenue", "one undo step");
+    }
+
+    /// A linked chart saved as a table hands its file to the set, which holds
+    /// the link for every reader; the chart keeps none of its own.
+    /// flip: `save_chart_table` making the set with `source: None` → fails at
+    /// "the set holds the link".
+    #[test]
+    fn a_linked_chart_saved_as_a_table_hands_its_link_to_the_set() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let link = chart::DataLink {
+            path: "sales.csv".into(),
+            size: 120,
+            modified: 1,
+            header: Some(true),
+        };
+        let sample = Chart {
+            source: Some(link.clone()),
+            ..Chart::sample(ChartKind::Column)
+        };
+        app.insert_chart_at(mastik_core::kurbo::Point::new(-4000.0, 0.0), sample);
+        let id = *app.session.selection.ids().first().unwrap();
+        let sid = app.save_chart_table(id).expect("saved");
+        let set = app.session.doc.data_set(sid).unwrap();
+        assert_eq!(set.source.as_ref(), Some(&link), "the set holds the link");
+        let chart = app.session.doc.get(id).unwrap().chart().unwrap();
+        assert_eq!(chart.source, None, "the chart keeps none");
     }
 
     /// A headless app with a new chart's data window open, a few passes in.

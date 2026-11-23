@@ -1004,12 +1004,16 @@ impl MastikApp {
         let rows = TableRows {
             own: Some(chart.data.is_none()),
             new: false,
+            save: self.chart_set(id).is_none(),
         };
         match table_combo(ui, ("chart-table", id), w, doc, &shown, chart.data, &rows) {
             Some(TablePick::Own) => self.chart_own_table(id),
             Some(TablePick::Set(d)) => self.move_chart_to_set(id, d, None),
+            Some(TablePick::Save) => {
+                self.save_chart_table(id);
+            }
             Some(TablePick::File) => self.chart_data_dialog(id),
-            _ => {}
+            Some(TablePick::New) | None => {}
         }
         if chart.data.is_some() && self.chart_set(id).is_none() {
             ui::selection_note(ui, crate::panels::list::MISSING_TABLE);

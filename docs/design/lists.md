@@ -270,7 +270,8 @@ step.
 The chart's data window (`chart_data.rs`; `charts.md`, *The data window*) opened from a list over
 its data set, `ChartData.data` naming it. Opened by *Edit data…* on the List card, on a list
 frame's context menu and after *Make a list*'s *New table*. A chart reading a set opens the
-chart's own window, which writes the set (`charts.md`, *The data window*); with nothing behind it
+chart's own window, which writes and renames the set, and a chart's own table becomes a set by
+*Save as table* (`charts.md`, *The data window*); with nothing behind it
 the window is *Data tables* (below).
 
 - **Head**: *List data*, its note the data set's name, then its readers in words (*· 2 lists, 1

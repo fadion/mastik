@@ -39,18 +39,26 @@ pub(crate) enum TablePick {
     Set(DataSetId),
     /// *New table*.
     New,
+    /// *Save as table*: a chart's own table made one of the document's.
+    Save,
     /// *From a file…*.
     File,
 }
 
 /// The rows a [`table_combo`] offers beside the document's tables: *Own table*
-/// first, ticked when `own` is `Some(true)`, and *New table* before *From a
-/// file…*.
+/// first, ticked when `own` is `Some(true)`, and *New table* and *Save as
+/// table* before *From a file…*.
 #[derive(Default)]
 pub(crate) struct TableRows {
     pub own: Option<bool>,
     pub new: bool,
+    pub save: bool,
 }
+
+/// *Save as table*'s tooltip, on the Chart card's dropdown row and the data
+/// window's button.
+pub(crate) const SAVE_AS_TABLE_TIP: &str =
+    "Keep this chart's data as a table that other charts and lists can read";
 
 /// The dropdown of the document's tables on the List card, the Chart card and
 /// *Data tables*' toolbar: `width` wide whatever the tables are called
@@ -102,6 +110,17 @@ pub(crate) fn table_combo(
                     .clicked()
             {
                 pick = Some(TablePick::New);
+            }
+            if extra.save
+                && ui
+                    .selectable_label(
+                        false,
+                        ui::glyph_and_text(icon::FLOPPY_DISK, "Save as table"),
+                    )
+                    .on_hover_text(SAVE_AS_TABLE_TIP)
+                    .clicked()
+            {
+                pick = Some(TablePick::Save);
             }
             if ui
                 .selectable_label(false, ui::glyph_and_text(icon::IMPORT, "From a file…"))
@@ -704,6 +723,48 @@ impl MastikApp {
                 ..chart
             })),
         }]));
+    }
+
+    /// *Save as table* on chart `id`, which reads no data set of the
+    /// document's: its table, column ids and linked file kept, added as a data
+    /// set named for the chart and read by it, one undo step *Save as table*.
+    /// Answers the new set.
+    pub(crate) fn save_chart_table(&mut self, id: NodeId) -> Option<DataSetId> {
+        if self.chart_set(id).is_some() {
+            return None;
+        }
+        let node = self.session.doc.get(id)?;
+        let chart = node.chart()?.clone();
+        let wanted = match node.name().trim() {
+            "" => "Table 1",
+            n => n,
+        };
+        let wanted: String = wanted.chars().take(list::MAX_NAME_CHARS).collect();
+        let set = DataSet {
+            id: self.session.ids.mint_data_set(),
+            name: list::free_name(&self.session.doc, &wanted),
+            table: chart.table.clone(),
+            source: chart.source.clone(),
+            pictures: Vec::new(),
+        };
+        let (sid, name) = (set.id, set.name.clone());
+        let reads = chart.reading(sid, &set.table);
+        self.session.name_step("Save as table", icon::FLOPPY_DISK);
+        let landed = self.commit_edit(Transaction(vec![
+            Operation::SetDataSet {
+                id: sid,
+                set: Some(Box::new(set)),
+            },
+            Operation::SetChart {
+                id,
+                chart: Some(Box::new(reads)),
+            },
+        ]));
+        landed.then(|| {
+            self.session
+                .info(format!("Saved the chart's data as {name}"));
+            sid
+        })
     }
 
     /// *From a file…* on chart `id`'s data dropdown: a new data set read from a
