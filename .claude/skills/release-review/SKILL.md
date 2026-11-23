@@ -126,8 +126,9 @@ tree the release will reject:
 1. `git status --short` empty. Reviewing a dirty tree reviews something that isn't shipping.
 2. `cargo fmt --all --check` → exit 0.
 3. `cargo clippy --workspace --all-targets` → clean, **then per package**:
-   `for d in crates/*/; do cargo clippy -p "$(basename "$d")" --all-targets; done`.
+   `for d in crates/*/; do p=$(basename "$d"); grep -q "^exclude = .*\"crates/$p\"" Cargo.toml || cargo clippy -p "$p" --all-targets; done`.
    The two spellings compile different code, so a warning only one prints is a warning nobody sees.
+   The `grep` skips a crate the root `Cargo.toml` excludes (`mastik-web`), which `-p` cannot name.
 4. `cargo test --workspace` → green.
 5. `cargo doc --workspace --no-deps --document-private-items` → exit 0. **The flag is not optional**:
    without it rustdoc checks no link on any private item, which here is most of them.

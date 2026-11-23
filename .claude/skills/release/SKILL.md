@@ -38,8 +38,11 @@ cargo clippy --workspace --all-targets
 ```
 
 ```bash
-for d in crates/*/; do cargo clippy -p "$(basename "$d")" --all-targets; done
+for d in crates/*/; do p=$(basename "$d"); grep -q "^exclude = .*\"crates/$p\"" Cargo.toml || cargo clippy -p "$p" --all-targets; done
 ```
+
+The `grep` skips a crate the root `Cargo.toml` excludes (`mastik-web`, its own workspace), which
+`-p` cannot name.
 
 ```bash
 cargo test --workspace

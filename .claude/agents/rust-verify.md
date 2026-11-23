@@ -32,8 +32,11 @@ run clippy per package, always — not only on the crates the caller edited** �
 which spelling you ran:
 
 ```bash
-for d in crates/*/; do cargo clippy -p "$(basename "$d")" --all-targets; done
+for d in crates/*/; do p=$(basename "$d"); grep -q "^exclude = .*\"crates/$p\"" Cargo.toml || cargo clippy -p "$p" --all-targets; done
 ```
+
+The `grep` skips a crate the root `Cargo.toml` excludes (`mastik-web`, its own workspace), which
+`-p` cannot name.
 
 `--document-private-items` is why the doc gate reads anything at all here. Without it rustdoc
 checks no link on any private item — which in this workspace is `Builder`, every `MastikApp` method

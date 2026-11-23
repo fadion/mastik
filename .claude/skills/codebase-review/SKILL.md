@@ -82,10 +82,11 @@ Before Pass 0, verify in order (these are the project's own gates, in CLAUDE.md'
    the `/review/` line in `.gitignore` go in before Pass 0.
 2. `cargo fmt --all --check` → exit 0.
 3. `cargo clippy --workspace --all-targets` → clean, **then re-run it per package**:
-   `for d in crates/*/; do cargo clippy -p "$(basename "$d")" --all-targets; done`.
+   `for d in crates/*/; do p=$(basename "$d"); grep -q "^exclude = .*\"crates/$p\"" Cargo.toml || cargo clippy -p "$p" --all-targets; done`.
    The two spellings compile different code (AGENTS.md, *Build / test*), so a warning only one of
    them prints is a warning nobody sees. The loop reads the crate list from `crates/`, so a new
-   crate is never left out.
+   crate is never left out. The `grep` skips one the root `Cargo.toml` excludes (`mastik-web`, its
+   own workspace), which `-p` cannot name.
 4. `cargo test --workspace` → green.
 5. `cargo doc --workspace --no-deps --document-private-items` → exit 0. **The flag is not
    optional**: without it rustdoc checks no link on any private item, which here is most of them.
