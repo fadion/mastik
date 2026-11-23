@@ -41,7 +41,7 @@ pub(crate) use export::{
 };
 /// What an SVG export could not say exactly, worded once for every surface that
 /// reports it — the export card and *Copy as SVG* (§15 D780).
-pub(crate) use export::{exportable_layers_of, fidelity_clauses};
+pub(crate) use export::{exportable_layers_of, fidelity_clauses, with_row_pictures};
 #[cfg(test)]
 pub(crate) use inspector::CropShape;
 pub(crate) use inspector::{

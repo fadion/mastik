@@ -3613,8 +3613,8 @@ impl ExportFlags {
 /// `doc` with the pictures named beside each linked table a *One file per row*
 /// file reads, for every row, added and mapped in the table, outside history:
 /// the worker's throwaway copy, so a row's photo draws without a list over the
-/// table having read it first.
-fn with_row_pictures(
+/// table having read it first. The CLI's `export --all` reads them the same way.
+pub(crate) fn with_row_pictures(
     mut doc: mastik_core::Document,
     files: &[PlannedFile],
 ) -> mastik_core::Document {

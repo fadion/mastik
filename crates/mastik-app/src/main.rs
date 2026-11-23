@@ -1749,6 +1749,19 @@ fn run_export_all(
     scale_override: Option<ExportScale>,
     page: Option<&str>,
 ) -> Result<(), String> {
+    let report = export_all(file, out, folders, scale_override, page)?;
+    println!("{report}");
+    Ok(())
+}
+
+/// [`run_export_all`]'s work, answering the line it prints.
+fn export_all(
+    file: &str,
+    out: Option<&str>,
+    folders: bool,
+    scale_override: Option<ExportScale>,
+    page: Option<&str>,
+) -> Result<String, String> {
     use mastik_core::Resolved;
 
     let bytes = std::fs::read(file).map_err(|e| format!("cannot read {file}: {e}"))?;
@@ -1791,10 +1804,16 @@ fn run_export_all(
         },
     );
 
+    // The pictures beside a linked table, for every row a file reads, as the
+    // app's export worker reads them.
+    let doc = panels::with_row_pictures(doc, &plan);
     let mut written = Vec::new();
     let mut skipped = 0usize;
+    let mut missing_pictures = 0usize;
     for f in &plan {
-        match mastik_export::plan::render(&doc, &res, f) {
+        let (data, filled) = mastik_export::plan::render_noted(&doc, &res, f);
+        missing_pictures += filled.missing_pictures;
+        match data {
             Some(data) => written.push((dir.join(&f.path), data)),
             None => {
                 eprintln!("skipped {} — that layer has no size", f.path);
@@ -1818,11 +1837,11 @@ fn run_export_all(
     // the write, since afterwards every path exists. Same sentence as
     // `write_export`'s, a separate implementation of the same walk.
     let replaced = write_planned(&written)?;
-    println!(
-        "{}",
-        export_all_report(written.len(), replaced, skipped, &dir)
-    );
-    Ok(())
+    let report = export_all_report(written.len(), replaced, skipped, &dir);
+    Ok(match missing_pictures {
+        0 => report,
+        n => format!("{report} ({} not found)", ui::count(n, "picture")),
+    })
 }
 
 /// Write a rendered plan to disk, answering how many of those paths already held
@@ -3781,6 +3800,123 @@ mod tests {
             write_planned(&files).expect("writes again"),
             2,
             "a re-run replaces everything it wrote last time, which is ordinary"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--all` reads the pictures beside a linked table for a per-row export,
+    /// and counts a cell naming none.
+    ///
+    /// flip: `export_all` not calling `with_row_pictures` → fails at "found
+    /// beside the table".
+    #[test]
+    fn export_all_reads_the_pictures_beside_a_linked_table() {
+        use mastik_core::chart::{Column, DataLink, Table};
+        use mastik_core::kurbo::Size;
+        use mastik_core::list::DataSet;
+        use mastik_core::{
+            Document, ExportFormat as Fmt, ExportScale, ExportSpec, Fill, IdSource, NodeKind,
+            Operation, PerRow, Transaction,
+        };
+
+        let dir = std::env::temp_dir().join(format!("mastik-all-pictures-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = app::rgba_to_png(&[0, 255, 0, 255], (1, 1)).unwrap();
+        std::fs::write(dir.join("ada.png"), png).unwrap();
+
+        let run = |cell: &str| {
+            let mut ids = IdSource::new(0xA12);
+            let root = ids.mint();
+            let mut doc = Document::new(root);
+            let (frame, photo, table) = (ids.mint(), ids.mint(), ids.mint_data_set());
+            let mut t = Table::default();
+            let column = t.next_column_id();
+            t.columns.push(Column {
+                id: column,
+                name: "Photo".into(),
+            });
+            t.rows = vec![vec![cell.to_string()]];
+            doc.apply(&Transaction(vec![
+                Operation::CreateNode {
+                    id: frame,
+                    parent: root,
+                    index: 0,
+                    kind: NodeKind::Artboard {
+                        size: Size::new(16.0, 16.0),
+                        corner_radii: Default::default(),
+                        corner_smoothing: 0.0,
+                    },
+                    transform: None,
+                    name: Some("Card".into()),
+                },
+                Operation::CreateNode {
+                    id: photo,
+                    parent: frame,
+                    index: 0,
+                    kind: NodeKind::Rect {
+                        size: Size::new(16.0, 16.0),
+                        corner_radii: Default::default(),
+                        corner_smoothing: 0.0,
+                    },
+                    transform: None,
+                    name: Some("Photo".into()),
+                },
+                Operation::SetFills {
+                    id: photo,
+                    fills: mastik_core::keyed_by_position([Fill {
+                        brush: mastik_core::image_brush(mastik_core::ImageId("seal".into())).into(),
+                        visible: true,
+                    }]),
+                },
+                Operation::SetDataSet {
+                    id: table,
+                    set: Some(Box::new(DataSet {
+                        id: table,
+                        name: "Speakers".into(),
+                        table: t,
+                        source: Some(DataLink {
+                            path: dir.join("speakers.csv").to_string_lossy().into_owned(),
+                            size: 0,
+                            modified: 0,
+                            header: None,
+                        }),
+                        pictures: Vec::new(),
+                    })),
+                },
+                Operation::SetExports {
+                    id: frame,
+                    exports: mastik_core::keyed_by_position([ExportSpec {
+                        per_row: Some(PerRow {
+                            table,
+                            name_by: None,
+                        }),
+                        ..ExportSpec::new(Fmt::Png, ExportScale::Times(1.0))
+                    }]),
+                },
+            ]))
+            .unwrap();
+            let src = dir.join("doc.mastik");
+            std::fs::write(&src, mastik_core::io::save(&doc).unwrap()).unwrap();
+            let out = dir.join("out");
+            export_all(
+                &src.to_string_lossy(),
+                Some(&out.to_string_lossy()),
+                false,
+                None,
+                None,
+            )
+            .expect("export --all succeeds")
+        };
+        let found = run("ada.png");
+        assert!(
+            !found.contains("not found"),
+            "found beside the table: {found}"
+        );
+        let missing = run("nobody.png");
+        assert!(
+            missing.ends_with("(1 picture not found)"),
+            "a cell naming no file is counted: {missing}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
