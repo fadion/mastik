@@ -197,8 +197,11 @@ impl Player {
                     return;
                 };
                 let new = match (change, old) {
-                    (VarChange::Set { to }, _) => {
-                        match to.eval(&|v| self.doc.resolve_var(holder, v)) {
+                    (VarChange::Set { to }, old) => {
+                        match self
+                            .eval(holder, to, None)
+                            .and_then(|v| same_kind(v, &old, to))
+                        {
                             Ok(v) => v,
                             Err(error) => {
                                 self.notice_once(
@@ -228,7 +231,7 @@ impl Player {
                 otherwise,
             } => {
                 for b in branches {
-                    match b.when.eval(&|v| self.doc.resolve_var(holder, v)) {
+                    match self.eval(holder, &b.when, None) {
                         Ok(Value::Boolean(true)) => {
                             return self.run_actions(holder, trigger, &b.actions, undo);
                         }
@@ -305,6 +308,11 @@ impl Player {
                 }
                 self.run_script(holder, k.id, *script);
             }
+            Action::AddRow { table, at, cells } => self.add_row(holder, k.id, *table, *at, cells),
+            Action::EditRow { table, row, cells } => {
+                self.edit_row(holder, k.id, *table, row, cells)
+            }
+            Action::DeleteRow { table, row } => self.delete_row(holder, k.id, *table, row),
         }
     }
 
@@ -830,6 +838,33 @@ impl Player {
         let prop = vs.props.iter().position(|p| p.name == property)?;
         let value = bool_value(&vs.props[prop].values, on)?;
         variant::switch_target(&self.doc, main, prop, &value)
+    }
+}
+
+/// `v` when it is of `old`'s kind: a table's cell has its kind only in play, so
+/// *Set variable* checks it here, as the field checks a variable's.
+fn same_kind(
+    v: Value,
+    old: &Value,
+    to: &mastik_core::prototype::Expr,
+) -> Result<Value, prototype::ExprError> {
+    use crate::player::kind_of;
+    let word = |k| match k {
+        mastik_core::variable::VarKind::Number => "a number",
+        mastik_core::variable::VarKind::String => "text",
+        mastik_core::variable::VarKind::Boolean => "true or false",
+        mastik_core::variable::VarKind::Color => "a colour",
+    };
+    match kind_of(&v) == kind_of(old) {
+        true => Ok(v),
+        false => Err(prototype::ExprError::Type {
+            at: 0..to.0.len(),
+            msg: format!(
+                "this comes to {}, not {}",
+                word(kind_of(&v)),
+                word(kind_of(old))
+            ),
+        }),
     }
 }
 

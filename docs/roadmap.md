@@ -13,18 +13,10 @@ A release of its own. The prototype is built (`prototyping.md` points to each pa
 remains is below.
 
 - **Variable autocomplete on `{`.** An expression names a variable as `{name}`
-  (`Expr::with_names`), and `@` already opens a list of the document's variables that writes one
-  (`at_names` in `panels/prototype.rs`), but typing `{`, which is the form the field shows,
+  (`Expr::with_names`), and `@` already opens a list of the document's variables and tables that writes one
+  (`at_rows` in `panels/prototype.rs`), but typing `{`, which is the form the field shows,
   suggests nothing. `{` should open the same list, narrowing as the name is typed and closing on
   `}`.
-- **Data tables beyond lists and charts.** Lists, charts, the *Fill with content* box, an export
-  row's *One file per row* and the table verbs (`lists.md`, *Verbs*) are the only readers and
-  writers of a data set today; no expression reads one, and in play only a *Run script* changes
-  one. Largest gap first:
-  - *Tables in play.* Expressions reading a cell or a row count; actions adding, editing and
-    deleting a row (a cart, a to-do list, a form). The played copy holds the edited table, as it holds variables, and the
-    exported page plays it through `mastik-play`. A *Run script* already edits the played copy's
-    tables, and the lists and charts over them follow (`Player::follow_tables`).
 
 ## Next · Editing parity
 

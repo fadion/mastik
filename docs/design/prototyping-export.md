@@ -149,7 +149,8 @@ as `serve` does.
   picture by its stored bytes, which gzip does not shrink; the document less its pictures), and
   the estimate shared out by those weights, so the four sum to it.
 - **What holds the export** (`holds`): on the pages the chosen flows reach, each layer with an
-  action naming a layer that is gone, or with an expression that does not read (`Expr::check`),
+  action naming a layer or table that is gone, or with an expression that does not read
+  (`Expr::check`, over every expression an action holds, a row action's cells included),
   once per layer and kind. The app's card refuses to write while any is listed; the CLI does not
   ask.
 

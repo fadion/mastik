@@ -76,9 +76,10 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - **Triggers** are offered in two groups under `ui::menu_eyebrow`s, *Pointer* (*On click*, *On
   double click*, *On press*, *While pressing*, *On long press*, *On hover*, *While hovering*, *On
   leave*, *On drag*, *On swipe*, *On drop*) and *Other* (*Key…*, *After delay*, *When a variable
-  changes*, *When scrolled past*, *When the frame opens*). *On drop* needs a layer that follows
+  changes*, *When a table changes*, *When scrolled past*, *When the frame opens*). *On drop* needs a layer that follows
   the drag (*Only a layer that follows the drag drops*); *When the frame opens* is offered on a
-  top-level frame only (*Only a frame opens*); *When a variable changes* needs a variable; *When scrolled
+  top-level frame only (*Only a frame opens*); *When a variable changes* needs a variable; *When a
+  table changes* a table (*This document has no tables*); *When scrolled
   past* needs a scrolling frame at or above the layer or on its screen (*No frame here scrolls*).
   Changing to a trigger no person fires is refused while the reaction holds *Run script*.
 - **A trigger's fields sit under its head**, each change one *Change trigger* step:
@@ -87,6 +88,7 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   | --- | --- | --- |
   | *After delay* | *Delay* (ms) | *After 2 s* |
   | *When a variable changes* | a variable dropdown | *When ‹variable› changes* |
+  | *When a table changes* | the row actions' table dropdown | *When ‹table› changes* |
   | *On long press* | *Hold* (ms, new at 500, 100 to 10 000) | *On long press* |
   | *On swipe* | a *Left · Right · Up · Down* `ui::segmented` | *On swipe left* |
   | *On drop* | a dropdown behind `icon::CROSSHAIR_SIMPLE`, unlabelled as a trigger's other choices are (a number takes a prefix; a choice says what it holds by its glyph and tooltip): *Anywhere*, and under *Release* *Snaps* also the drawn point by its name (`drawn_point`) and each snap point; its face names the trigger's point as the head does, offered or not | *On drop anywhere*, *On drop at Closed*, *On drop at a missing snap point* |
@@ -96,7 +98,10 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   staying the editor's while playing; `Escape` or a click away gives up.
 - **The add menu** groups the actions by what they move: *Go* (*Navigate to*, *Back*, *Scroll
   to*, *Open link*), *Overlay* (*Open*, *Swap*, *Close overlay*), *State* (*Change to*, *Set
-  variable*, *Set mode*, *Conditional*, *Run script*). What the layer cannot take is dimmed with
+  variable*, *Set mode*, *Conditional*, *Run script*), *Table* (*Add row* in
+  `ROWS_PLUS_BOTTOM`, *Edit row* in `ROWS_PENCIL` (U+F093, a table's rows with a pencil where
+  `ROWS_PLUS_BOTTOM` has its plus; not `PENCIL_SIMPLE`, which renames), *Delete row* in
+  `TRASH`). What the layer cannot take is dimmed with
   its reason (`prototype::action_refusal`): *Run script* under a trigger no person fires (*A
   script runs only when someone acts*) or with no script in the document or the script library;
   *Change to* outside an instance of a set's variant or a main variant (*Only a component with
@@ -104,7 +109,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   modes or more (*No collection has a second mode*); *Scroll to* with no scrolling frame to
   scroll (*No frame on the screen scrolls*), or whose scrolling frames hold no layer (*No frame
   that scrolls holds a layer*); a screen action with no frame to go to (*No frame to
-  go to*). A new action names the likeliest target (`prototype::new_action`):
+  go to*); a *Table* action with no table (*This document has no tables*). A new action names
+  the likeliest target (`prototype::new_action`):
   - a screen action: a frame on the holder's own page first, from the screen after its own round
     to the one before it, so the link draws as a connector rather than a stub; then other pages';
     mains last;
@@ -121,7 +127,10 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   - *Run script*: the first script, or on a document with none a fresh script id, *Missing
     script* until one is copied in from the library;
   - *Set mode*: the first collection with two modes, at a mode the holder's screen does not read
-    now, *Everywhere*.
+    now, *Everywhere*;
+  - a *Table* action: the table of a list the holder fires in (`in_list_over`: the holder sits in
+    a row of a list over it, or in a main an instance of which does), else the first; *This row*
+    there, else *Opened row*; *Add row* at the end with no cells.
 
   It opens its popover at once, except *Back*, which has nothing to set.
 - **An action is one row**, a `ui::field_row_pressable` that opens its popover (*Back*'s opens
@@ -134,7 +143,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   target with no room for a letter before its `…` is left out. *Set variable*'s row names its
   variable as a `binding::capsule`, as a bound field does, and not the value. A conditional's
   names its branch count (*1 branch*, *2 branches*, *… · else* while *else* holds actions), its
-  conditions being the branch heads under it. The rows stand
+  conditions being the branch heads under it. A row action's names its table, and for *Edit
+  row* and *Delete row* its row (*Cart · This row*, *· Opened row*, *· First where…*). The rows stand
   `NEST` in from their trigger. A row
   drags by its grip to
   another place in its own list (a reaction's, or one branch's), carried under the pointer with
@@ -142,8 +152,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   an Effects row is (`InFlight::action_drag`); the
   release is one *Move action* step, and a right-click or `Escape` puts it back. The
   grip is inert while the list holds one action. A target that is gone is drawn in the error
-  colour behind the warning glyph (*Missing frame*, *Missing layer*, *Missing variable*, …), kept
-  so it can be mended, and skipped while playing. A conditional's branches follow it as heads in
+  colour behind the warning glyph (*Missing frame*, *Missing layer*, *Missing variable*, *Missing
+  table*, …, and *No list row* for a *This row* action no longer inside a list over its table),
+  kept so it can be mended, and skipped while playing. A conditional's branches follow it as heads in
   mono accent (*if …*, *else if …*, *else*), each one caption line tall (`BRANCH_HEAD_H`), taking
   `BRANCH_TUCK` of the rows' gap back above and below, its `+` reaching to the close button's box,
   their actions indented under them. A target is read as the layer holding the reaction reads it
@@ -177,6 +188,19 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   (*Everywhere* · *This screen*), then a note: a by-width collection is held at the mode at any
   width; under *Everywhere*, frames that set their own mode keep it. Its row reads *Set Theme to
   Dark*, as *Set variable*'s reads *Set*, and *… · this screen* under *This screen*.
+- **A row action's popover**: *Table* (`list_data::table_combo` with `TableRows::no_file`, which
+  leaves out *From a file…*, since what it names must already be there; the same dropdown serves
+  *When a table changes*). A new table drops the cells, and a row that cannot follow it (*First
+  row where…*, or *This row* outside a list over it) becomes *Opened row*.
+  - *Add row*: *At* (*End* · *Start*, a `ui::segmented`), then one `ui::labelled` expression field
+    per column; an empty field writes an empty cell.
+  - *Edit row* and *Delete row*: *Row* (*This row*, dimmed with *This row: the interaction is not
+    inside a list over Cart* when it does not apply; *Opened row*; *First row where…*, which adds
+    a *Where* test reading `{row.…}`, and the note *No row matches: the action is skipped*).
+  - *Edit row* then lists only the columns it writes, each with `×` (*Leave this column as it
+    is*), and *Add column*, whose new cell starts as `{row.<column>}`, which changes nothing until
+    typed over; with two cells or more the note *Every cell is worked out from the row as it was
+    before the edit*.
 - ***Open overlay* and *Swap overlay* show how the frame shows** (`overlay_fields`, one
   *Overlay* step): *Position* (the centre, the top and bottom thirds' left, centre and right, or
   *Manual*), *Close on a click outside*, *Darken behind it* (black at 40% when turned on) and,
@@ -187,18 +211,27 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   action, and starts just under that layer (X 0, Y its height plus `MANUAL_OVERLAY_GAP`, 8), and the
   note *Drag the frame on the canvas to place it*: the fields are for the last point, the canvas
   is where it is placed (*Placing an overlay*, below).
-- **Expressions show names.** The field writes a variable `{name}`
-  (`Expr::with_names`) and stores its id (`Expr::from_names`), so a rename never breaks it. What
-  does not read, names no variable, or (for *Set variable*'s value and a condition) comes to
-  another kind than wanted (`Expr::kind`) is kept as typed, ringed, with the reason on the
+- **Expressions show names.** The field writes a variable `{name}` and a table read
+  `{Cart.rows}`, `{Products.3.Name}`, `{Cart.Line.sum}` or `{row.Qty}` (`Expr::with_names_in`)
+  and stores ids (`Expr::from_names_in`), so a rename never breaks it (`play.md`,
+  *Expressions*). What does not read, names nothing, or (for *Set variable*'s value and a
+  condition) comes to another kind than wanted (`Expr::kind`; a cell has no kind until play, so
+  it is never refused here) is kept as typed, ringed, with the reason on the
   warning glyph inside the field's right end (`ui::refusable_field`, as an address and a flow's
   starting value are refused) and the range `ExprError::at` names underlined
   (`ui::field_underline`), and nothing is written until it reads. Its hint ends *or @ for a
-  variable*: while the focused field ends in `@` and a name being typed (`at_names`: closed by
-  whitespace, a brace or an operator), a list of the document's variables whose names hold that
-  text opens under it, at most `AT_LIST_MAX` (12). The arrows move its light; Enter or Tab, or a
-  click, replaces the `@` and what follows with `{name}`, the caret after it. A press on the list
-  keeps the field's focus and its draft.
+  name* (*or @ for a variable* where only variables are read, as in a list's filter): while the
+  focused field ends in `@` and a name being typed (`at_rows`: closed by a brace or an operator,
+  and by whitespace unless a table's name may still go on past it, since *Table 1* holds one), a
+  list opens under it of the variables whose names hold that text, then under *Tables* the
+  tables with their row counts (`row`, the row acted on, first inside a row action), at most
+  `AT_LIST_MAX` (12). After `<table>.` it lists *rows*, *opened*, *first*, *last*, a typed row
+  number and the columns (a number column noted *# · sum min max avg*); after a row, its columns;
+  after a column, its totals. The arrows move its light; Enter or Tab, or a click, replaces the
+  `@` and what follows with `{name}`, the caret after it, or, for a step that names nothing whole
+  yet (a table, a row, a column before its total), with `@` and that step and a dot, so the next
+  step's list opens.
+  A press on the list keeps the field's focus and its draft.
 - **Transitions** (`transition_fields`, also the page's *Default transition*): the kind; for *Move in*,
   *Move out*, *Push* and *Slide* (`TransitionKind::is_directional`) and *Smart animate*, a
   direction segment of *None* and the four sides. *None* is live for *Smart animate* alone, whose

@@ -246,6 +246,56 @@ fn trigger_words(doc: &Document, t: &Trigger) -> String {
         Trigger::After { ms } => format!("After {ms} ms"),
         Trigger::VariableChanges { var } => format!("When {} changes", var_name(doc, *var)),
         Trigger::FrameOpens => "When the frame opens".into(),
+        Trigger::TableChanges { table } => format!("When {} changes", table_name(doc, *table)),
+    }
+}
+
+fn table_name(doc: &Document, t: mastik_core::list::DataSetId) -> String {
+    match doc.data_set(t) {
+        Some(d) => format!("“{}”", d.name),
+        None => "a missing table".into(),
+    }
+}
+
+/// A row action's cells in words: *(Qty to 1, Line to {Price})*; nothing when
+/// it writes none.
+fn cells_words(
+    doc: &Document,
+    t: mastik_core::list::DataSetId,
+    cells: &[mastik_core::prototype::CellWrite],
+) -> String {
+    if cells.is_empty() {
+        return String::new();
+    }
+    let table = doc.data_set(t).map(|d| &d.table);
+    let words: Vec<String> = cells
+        .iter()
+        .map(|c| {
+            let col = table
+                .and_then(|t| t.column(c.column))
+                .map_or("a missing column", |c| c.name.as_str());
+            let value = mastik_core::prototype::expr_shown(doc, &c.to, Some(t));
+            format!("{col} to {value}")
+        })
+        .collect();
+    format!(" ({})", words.join(", "))
+}
+
+/// The row an *Edit row* or *Delete row* acts on, in words, with its table.
+fn row_words(
+    doc: &Document,
+    t: mastik_core::list::DataSetId,
+    which: &mastik_core::prototype::WhichRow,
+) -> String {
+    use mastik_core::prototype::WhichRow;
+    let name = table_name(doc, t);
+    match which {
+        WhichRow::This => format!("this row of {name}"),
+        WhichRow::Opened => format!("the opened row of {name}"),
+        WhichRow::FirstWhere { when } => format!(
+            "the first row of {name} where {}",
+            mastik_core::prototype::expr_shown(doc, when, Some(t))
+        ),
     }
 }
 
@@ -381,6 +431,23 @@ fn action_words(doc: &Document, holder: NodeId, a: &Action) -> String {
                     .map(|s| s.name.as_str())
             )
         ),
+        Action::AddRow { table, at, cells } => {
+            let place = match at {
+                mastik_core::prototype::RowEnd::End => "to",
+                mastik_core::prototype::RowEnd::Start => "at the start of",
+            };
+            format!(
+                "add a row {place} {}{}",
+                table_name(doc, *table),
+                cells_words(doc, *table, cells)
+            )
+        }
+        Action::EditRow { table, row, cells } => format!(
+            "edit {}{}",
+            row_words(doc, *table, row),
+            cells_words(doc, *table, cells)
+        ),
+        Action::DeleteRow { table, row } => format!("delete {}", row_words(doc, *table, row)),
     }
 }
 
@@ -427,9 +494,9 @@ fn transition_words(t: &Transition) -> String {
     format!(" ({kind}{direction}, {timing})")
 }
 
-/// An expression as its field shows it: each variable by its name.
+/// An expression as its field shows it: each variable and table read by name.
 fn expr_words(doc: &Document, e: &mastik_core::prototype::Expr) -> String {
-    e.with_names(&|v| doc.variables().get(v).map(|x| x.name.clone()))
+    mastik_core::prototype::expr_shown(doc, e, None)
 }
 
 fn var_name(doc: &Document, v: mastik_core::VarId) -> String {

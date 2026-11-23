@@ -26,14 +26,17 @@ player `prototyping-player.md`. Code: `mastik-core/src/prototype.rs` and `protot
   its item id, which may dangle), `ScrollPast
   { frame, at, going }` (a scrolling frame's offset crossing `at`, going forward, back or either;
   forward is down, or right on a sideways frame), `Key` (plain or Shift-ed), `After { ms }`,
-  `VariableChanges { var }`, `FrameOpens`. A scroll trigger's frame is a layer target like an
+  `VariableChanges { var }`, `FrameOpens`, `TableChanges { table }` (a row action changed the
+  table, whichever layer ran it). A scroll trigger's frame is a layer target like an
   action's: `Trigger::layer_target` names it, `Trigger::map_layers` (through
   `prototype::map_layers`) carries it through the copy remaps, and it may dangle.
 - **Actions**: `Navigate` (with `keep_scroll`, off by default), `Back`, `OpenOverlay`,
   `CloseOverlay`, `SwapOverlay`, `ScrollTo`, `ChangeState` (an instance and the variant main it
   switches to), `SetVariable` (`Set`, `Increment`, `Toggle`), `SetMode` (a mode, and a
   `ModeScope`: `Everywhere` by default, or `Screen`), `Conditional` (branches, then `otherwise`),
-  `OpenUrl`, `RunScript`. `SetMode` stores only the mode: its collection is the one the mode
+  `OpenUrl`, `RunScript`, and the row actions `AddRow { table, at, cells }` (`RowEnd`: `End`
+  by default, or `Start`), `EditRow { table, row, cells }` and `DeleteRow { table, row }`.
+  `SetMode` stores only the mode: its collection is the one the mode
   belongs to, the document's or a kit's. Every
   action that moves the screen carries a `Transition`: a kind, a direction read by the
   directional kinds and smart animate (a side, or `None`, which is smart animate's alone and
@@ -72,9 +75,20 @@ player `prototyping-player.md`. Code: `mastik-core/src/prototype.rs` and `protot
 - A **flow** is a name, a start frame, starting modes (one per collection, of the document's or
   a kit's; one no longer there is passed over) and starting variable cells, which beat the
   modes' values.
-- **Expressions** (`prototype::Expr`: a condition, *Set variable*'s value) are stored as source text,
-  a variable written `{<actor-hex>:<seq>}` so a rename never breaks one. The language is in
-  `play.md` *Expressions*.
+- **A row action names its row by `WhichRow`**: `This` (the list row the reaction fired in,
+  only inside a list over the action's table), `Opened` (the row an *Opened row* list over the
+  table shows) or `FirstWhere { when }` (the first row whose test holds). There is no row number:
+  a run deletes rows as it goes, so a number would name a different row each time. Each
+  `CellWrite` is a column and an `Expr`; *Add row* leaves the columns it does not list empty,
+  *Edit row* leaves them as they are.
+- **Expressions** (`prototype::Expr`: a condition, *Set variable*'s value, a row action's cells
+  and its *First row where…* test) are stored as source text, everything named by id so a
+  rename never breaks one: a variable `{<actor-hex>:<seq>}`, and a table read (a table id is
+  itself `actor:seq`) as `{<table>:rows}`, `{<table>:<row>:<column>}` (`opened`, `first`,
+  `last` or a number from 1), `{<table>:<column>:<agg>}` (`sum`, `min`, `max`, `avg`) or
+  `{row:<column>}`, the row a row action is on (`expr::Ref`). `prototype::map_refs` maps the
+  variables inside every expression, cells and tests included. The language is in `play.md`
+  *Expressions*.
 
 ## Operations
 
@@ -85,8 +99,8 @@ page's flows and play settings, so the inverse of a removal brings them back.
 
 **What the door refuses** (and the loader refuses the same in a file):
 
-- *Run script* under a trigger no person fires — `After`, `VariableChanges`, `FrameOpens`
-  (`Trigger::is_a_persons_act`; `ReactionError::ScriptUnasked`). Under those a script would run
+- *Run script* under a trigger no person fires — `After`, `VariableChanges`, `FrameOpens`,
+  `TableChanges` (`Trigger::is_a_persons_act`; `ReactionError::ScriptUnasked`). Under those a script would run
   unasked, which the document never does.
 - An unusable timing (`Timing::is_usable`: finite, a spring's numbers positive, a cubic's x within
   0..=1), on an action or a page's default transition (`OpError::BadPlay`), or a non-finite
@@ -100,15 +114,16 @@ page's flows and play settings, so the inverse of a removal brings them back.
   a layer (`Node::check_item_ids`), a flow id on a page.
 
 **Targets dangle by design.** Neither the door nor the loader checks that an action's target, a
-flow's start, a scroll effect's frame, an input's variable, a *Set mode*'s mode or a named
-script exists. Play skips a missing one, and undo of
+flow's start, a scroll effect's frame, an input's variable, a *Set mode*'s mode, a named
+script, or a row action's or *When a table changes*' table or column exists. Play skips a missing one, and undo of
 the delete mends it. A target has nothing to draw, so keeping it costs nothing. An input's
 variable counts as a target here, not as a binding, which the loader does refuse when dangling
 (§5.3f).
 
 ## Saved form
 
-- Schema v20 (`io.md`); every field is skipped when empty or at its default.
+- Schema v20, the row actions and `TableChanges` in v21 (`io.md`); every field is skipped when
+  empty or at its default.
 - **The enums are externally tagged** (`{"Navigate":{…}}`, a unit variant as a bare string), as the
   file's other enums are: an instance follows its main field by field, and the merge
   (`propagate::variant_changed`) recognises a change of kind only as the object's one key changing.

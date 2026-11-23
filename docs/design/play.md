@@ -51,7 +51,9 @@ modes *Set mode* gave each page or frame (both carried across a re-clone); insta
 by themselves, with the main to return to; the layers bound as inputs; the pointer, the layers
 under it, a press in progress with its long presses due, a click held for a double click, the
 focused input; *while* reactions in force with what to put back; the scroll offsets the scroll
-triggers last saw; pending timers; motions under way; notices, the script log and requests for the shell.
+triggers last saw; pending timers; motions under way; notices, the script log and requests for the shell;
+each table play wrote (a row action or a script, noted in `follow_tables`), with the document's
+table as it stood at the first write.
 
 ## The shell's contract
 
@@ -69,6 +71,7 @@ pointer events back into it.
 | `values()`, `set_value(var, value)` | The state card's rows, and setting one (recorded in a take; reactions to the change fire) |
 | `modes()` | The state card's modes (`ModeRow`): each collection with two modes or more, the document's then each kit's, the mode the screen reads, and whether the screen sets one itself. A pick is `Input::SetMode`, set everywhere and recorded in a take |
 | `opened_rows()` | The state card's *Opened rows* (`OpenedRow`): each data set an *Opened row* list reads, its rows by first cell and the open one. A pick is `Input::OpenRow`, opened as a tap opens a row and recorded in a take (`lists.md`, *Play*) |
+| `tables()` | The state card's *Tables* (`TableRow`): each table play wrote this run, its rows in play and in the document. `Input::ResetTable` puts one back as the document has it, recorded in a take |
 | `set_play_size(size)`, `play_size()` | Lay every screen out at `size` in place of its own (a page's device, or the room under *Responsive*; `PagePlay::play_size`), `None` as drawn: the copy's frame is given that size (`fit_screen`, a `SetGeometry` on the copy) as play starts, before a navigation's smart animate measures it, after a live edit and across a restart, so its flex, grid and width queries answer as on a real screen of that size. A frame with no layout keeps its children where drawn. Overlays keep their own size |
 | `width_pick()` | The collection picked by width and the mode the screen's play width picks, by name, while it differs from the one its drawn width picks (the base document's `width_mode`); `None` where the screen does not pick by width (`Document::width_pick`: a pin, a component). The player's mode chip |
 | `rebase(&doc)` | Play `doc` in place of the document the player started from, keeping the run's place as a refused live edit does (the copy cloned again, play state carried by id, what `doc` lacks falling back): for a shell sent the document whole, a phone mirroring the app, whose trimmed copy cannot take the editor's transactions |
@@ -160,7 +163,9 @@ out both ends.
   nothing still let time move, and one `tick` fires at most 1024 timers, the loop going on from
   the tick's end.
 - *Frame opens* runs when the screen or an overlay opens; *variable changes* runs on every shown
-  frame's layers when a play value changes what the variable reads.
+  frame's layers when a play value changes what the variable reads; *table changes* runs on every
+  shown frame's layers after each write that changes the table's rows: a row action, or a
+  *Reset* from the state card. A script's write does not fire it.
 - **A scroll trigger** (`ScrollPast`) on a shown frame's layer, outside a *Disabled* instance,
   fires when its frame (read through `resolve_target`) crosses `at` the way it asks: forward when the offset was below `at` and is
   now at or past it, back when it was at or past and is now below. A sideways frame's horizontal
@@ -194,7 +199,9 @@ out both ends.
 - **Change state** is `variant::switch` committed on the copy, so ids survive. An authored change
   on an instance ends any interaction state it was showing by itself.
 - **Set variable** evaluates against the copy at the reaction's layer (play values included);
-  increment applies to numbers and toggle to booleans, and anything else is skipped. A value that
+  increment applies to numbers and toggle to booleans, and anything else is skipped. A value of
+  another kind than the variable's is skipped with an `Expression` notice: a table's cell has its
+  kind only in play, so the check is made here as well as in the field. A value that
   does not change what the variable reads fires nothing.
 - **Set mode** commits `SetModes` on the copy in place of any mode of the same collection there:
   on every page root for *Everywhere*, so a frame that sets its own mode keeps it and a by-width
@@ -213,9 +220,22 @@ out both ends.
   script whose header asks for input is not run, with a notice — and `print` goes to the log. The
   copy and its resolve are snapshotted first and put back whole if the run fails. A run that
   wrote a table ends with `Player::follow_tables` over the tables it wrote: every chart over one
-  brought onto its table and every list over one made again on the copy, as the editor follows a
-  table edit; `Player::commit` does the same for any transaction writing a table. Behind the
+  brought onto its table, every list over one made again on the copy, as the editor follows a
+  table edit, and each list's template hidden or shown as it now draws rows or none (`lists.md`,
+  *Play*); `Player::commit` does the same for any transaction writing a table. Behind the
   default `scripts` feature; without it the action is skipped with `ScriptsOff`.
+- **Add row, Edit row and Delete row** (`rows.rs`) write the copy's table through
+  `Player::commit`, so its lists and charts follow; nothing reaches the document, the save or
+  undo. A linked table is edited in play like any other: refusing an edit to a linked table is
+  the document's rule, not the played copy's. Each cell is worked out from the row as it was
+  before the edit, written as text and cut at the cell limit; a cell that does not evaluate skips
+  the action with an `Expression` notice, and a column the table lacks is passed over. *This
+  row* is `list::row_at` on the holder and must be a row of a list over the action's table, else
+  `Missing`; *Opened row* is the row the data set has open, row 1 until one is opened; *First
+  row where…* tries each row with `{row.…}` reading it, and none holding skips the action
+  silently, as an empty table does. *Add row* on a table at the row limit is skipped with
+  `TableFull`. A missing table is `Missing`. After each write, *When a table changes* reactions
+  fire (*Triggers*). *Restart* puts every table back.
 
 ## Inputs
 
@@ -356,6 +376,10 @@ still follows the drag.
 Then what the edit removed falls back, one notice each: a deleted screen to the start frame (else
 the first frame of the document), a deleted overlay closes, a deleted variable's play value goes.
 A variable whose starting value was edited keeps its play value.
+A table play wrote, by a row action or a script, is taken before the edit (`played_tables`) and afterwards
+(`carry_tables`, through a re-clone or `rebase` too) gets its played rows back while its document
+table is still the one the first write started from; one the edit changed is the document's again,
+its played rows dropped rather than replayed onto the new table.
 
 ## Takes
 
@@ -379,7 +403,8 @@ answering false.
 
 ## Notices
 
-`Missing` and `Expression` are said once per action; `Script` and `ScriptNeedsInput` per run;
+`Missing`, `Expression` and `TableFull` (*Add row* on a table holding the most rows a table
+can) are said once per action; `Script` and `ScriptNeedsInput` per run;
 `ScriptsOff` and `Loop` once; `Fallback` (screen, overlay, variable) once per live edit that caused
 it; `ScrollFrameGone { layer }`, a scroll trigger whose frame is gone and so never fires, once per
 reaction, the first time its screen scrolls. The app and the page word it *A scroll trigger
@@ -388,23 +413,41 @@ says it to the console.
 
 ## Expressions
 
-`prototype::Expr` holds a condition or *Set variable*'s value as source text, a variable written
-by id, `{<actor-hex>:<seq>}`.
+`prototype::Expr` holds a condition, *Set variable*'s value, a row action's cell or a *First row
+where…* test as source text, everything it names stored by id (`expr::Ref`,
+`prototyping-model.md`).
 
 - **Values**: numbers (`12`, `0.5`), text in double or single quotes with `\` escapes, `true`,
-  `false`, and variables of any kind (a colour can be read and compared, not computed with).
+  `false`, variables of any kind (a colour can be read and compared, not computed with), and
+  table reads. The field shows them `{Cart.rows}`, `{Products.3.Name}`,
+  `{Products.opened.Price}`, `{Cart.Line.sum}` and `{row.Qty}`.
+- **Table reads in play** (`TableEnv::read`): a count is a number; a cell is a number when
+  `chart::parse_number` reads it, else text; an aggregate takes the column's number cells and
+  skips the rest, an empty column summing to 0 and min, max or avg of no numbers an error. Errors
+  say why: *Products has 2 rows, not 3*, *Cart has no rows* (first, last or opened of an empty
+  table), *row is read only inside a row action*. `opened` is the row the data set has open, row
+  1 until a tap or the state card opens another. A list's filter value reads variables only; a
+  table read there does not evaluate and passes.
 - **Operators**, loosest first: `or`; `and`; `not`; one comparison (`==` `!=` `<` `<=` `>` `>=`, not
   chained); `+` `-`; `*` `/` `%`; unary `-`; parentheses. `+` joins when either side is text, a number
   written whole or with at most three decimals; `==` and `!=` need two of one kind; `<`-style
   comparisons take two numbers or two texts; `and`/`or`/`not` take booleans and short-circuit.
   Division by zero is an error.
 - **Errors** carry the byte range they are about (`ExprError::at`): syntax, a type, a variable
-  not there, a name no variable has.
-- **The field** shows names: `with_names(name_of)` writes `{<name>}` for each id it can name, and
-  `from_names(text, id_of)` turns a typed `{<name>}` (or an id) back into the stored form,
-  answering the first error in the typed text so the draft is kept and underlined. `kind(kind_of)`
-  answers the kind an expression comes to without evaluating it, for checking *Set variable*'s
-  value against its variable. `var_tokens` lists the `{…}` spans for highlighting.
+  not there, a name nothing has, a table or column not there (`MissingTable`).
+- **The field** shows names: `with_names_in(&Names)` writes `{<name>}` for each id it can name, and
+  `from_names_in(text, &Names)` turns a typed `{<name>}` (or an id) back into the stored form,
+  answering the first error in the typed text so the draft is kept and underlined
+  (`with_names` and `from_names` are the variables-only forms a list filter uses). A typed name
+  is resolved against the real table and column names (`Names::resolve`), since a name may
+  hold a dot (an imported table is named after its file, `products.csv`): every reading is
+  collected, and a name that reads two ways is refused with *pick it from the @ list*. `row` is
+  reserved: no table takes it (`list::free_name`; the loader renames one). `kind(kind_of)`
+  answers the kind an expression comes to without evaluating it, `None` when it is known only in
+  play (`table_kind`: a count and a total are numbers, a cell has no kind until play), for
+  checking *Set variable*'s value and a condition, so authoring never refuses a cell for its
+  kind. `var_tokens` lists the `{…}` spans for highlighting; `prototype::expr_shown` shows an
+  expression by name for the flow map and the app.
 
 ## Building for the browser
 

@@ -1372,6 +1372,10 @@ pub mod icon {
     /// quarter-turn arrow over its shoulder. Not [`ROTATE_RIGHT`], which turns a
     /// layer, nor [`PHONE`], which plays on one.
     pub const TURN_DEVICE: &str = "\u{f092}";
+    /// A row of a table changed: *Edit row*, a table's rows with a pencil
+    /// where [`ROWS_PLUS_BOTTOM`] has its plus. Not [`PENCIL_SIMPLE`], which
+    /// renames.
+    pub const ROWS_PENCIL: &str = "\u{f093}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1715,6 +1719,7 @@ pub mod icon {
         ("record", RECORD),
         ("phone", PHONE),
         ("turn-device", TURN_DEVICE),
+        ("rows-pencil", ROWS_PENCIL),
     ];
 }
 

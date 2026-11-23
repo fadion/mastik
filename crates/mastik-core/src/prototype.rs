@@ -24,9 +24,11 @@ pub mod expr;
 
 pub use expr::{Expr, ExprError};
 
+use crate::chart::ColumnId;
 use crate::document::Document;
 use crate::id::NodeId;
 use crate::item::{ItemId, Keyed};
+use crate::list::DataSetId;
 use crate::script::ScriptId;
 use crate::variable::{Cell, ModeId, VarId};
 use peniko::Color;
@@ -129,6 +131,8 @@ pub enum Trigger {
     VariableChanges { var: VarId },
     /// The frame holding the layer opens.
     FrameOpens,
+    /// A row action changed the table, whichever layer ran it.
+    TableChanges { table: DataSetId },
 }
 
 impl Trigger {
@@ -137,8 +141,19 @@ impl Trigger {
     pub fn is_a_persons_act(&self) -> bool {
         !matches!(
             self,
-            Trigger::After { .. } | Trigger::VariableChanges { .. } | Trigger::FrameOpens
+            Trigger::After { .. }
+                | Trigger::VariableChanges { .. }
+                | Trigger::FrameOpens
+                | Trigger::TableChanges { .. }
         )
+    }
+
+    /// The table it watches.
+    pub fn table(&self) -> Option<DataSetId> {
+        match self {
+            Trigger::TableChanges { table } => Some(*table),
+            _ => None,
+        }
     }
 
     /// The layer the trigger watches, other than its holder: a scroll
@@ -258,9 +273,108 @@ pub enum Action {
     OpenUrl { url: String },
     /// Run a document script on the played copy.
     RunScript { script: ScriptId },
+    /// Add a row to a table of the played copy: each listed cell what its
+    /// expression comes to, written as text, the others empty.
+    AddRow {
+        table: DataSetId,
+        #[serde(default, skip_serializing_if = "is_default")]
+        at: RowEnd,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cells: Vec<CellWrite>,
+    },
+    /// Write the listed cells of one row of a table of the played copy, each
+    /// worked out from the row as it was before the edit.
+    EditRow {
+        table: DataSetId,
+        row: WhichRow,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        cells: Vec<CellWrite>,
+    },
+    /// Delete one row of a table of the played copy.
+    DeleteRow { table: DataSetId, row: WhichRow },
+}
+
+/// Where *Add row* puts its row.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum RowEnd {
+    #[default]
+    End,
+    Start,
+}
+
+/// Which row *Edit row* or *Delete row* acts on. No row number: a run deletes
+/// rows as it goes, so a number would name a different row each time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum WhichRow {
+    /// The list row the reaction fired in, the row a tap there opens; only
+    /// inside a list over the action's table.
+    This,
+    /// The row an *Opened row* list over the table shows.
+    Opened,
+    /// The first row whose test holds, `{row.<column>}` reading the row tried.
+    /// None holding skips the action.
+    FirstWhere { when: Expr },
+}
+
+/// One cell a row action writes.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CellWrite {
+    pub column: ColumnId,
+    pub to: Expr,
 }
 
 impl Action {
+    /// The table a row action names.
+    pub fn table(&self) -> Option<DataSetId> {
+        match self {
+            Action::AddRow { table, .. }
+            | Action::EditRow { table, .. }
+            | Action::DeleteRow { table, .. } => Some(*table),
+            _ => None,
+        }
+    }
+
+    /// The tables this action names, nested actions' and its expressions'
+    /// included.
+    pub fn tables(&self) -> Vec<DataSetId> {
+        let mut out = Vec::new();
+        walk(self, &mut |a| {
+            out.extend(a.table());
+            for e in a.exprs() {
+                out.extend(e.refs().iter().filter_map(|r| r.table()));
+            }
+        });
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// The expressions this action holds itself, not its nested actions'.
+    pub fn exprs(&self) -> Vec<&Expr> {
+        fn cells(c: &[CellWrite]) -> Vec<&Expr> {
+            c.iter().map(|c| &c.to).collect()
+        }
+        fn row(r: &WhichRow) -> Vec<&Expr> {
+            match r {
+                WhichRow::FirstWhere { when } => vec![when],
+                _ => vec![],
+            }
+        }
+        match self {
+            Action::SetVariable {
+                change: VarChange::Set { to },
+                ..
+            } => vec![to],
+            Action::Conditional { branches, .. } => branches.iter().map(|b| &b.when).collect(),
+            Action::AddRow { cells: c, .. } => cells(c),
+            Action::EditRow {
+                row: r, cells: c, ..
+            } => [row(r), cells(c)].concat(),
+            Action::DeleteRow { row: r, .. } => row(r),
+            _ => Vec::new(),
+        }
+    }
+
     /// The actions nested in this one, branch by branch, then `otherwise`.
     pub fn nested(&self) -> impl Iterator<Item = &Keyed<Action>> {
         let (branches, otherwise): (&[Branch], &[Keyed<Action>]) = match self {
@@ -375,6 +489,20 @@ impl Action {
                 },
             },
             Action::RunScript { script: s } => Action::RunScript { script: script(*s) },
+            Action::AddRow { table, at, cells } => Action::AddRow {
+                table: *table,
+                at: *at,
+                cells: map_cells(cells, var),
+            },
+            Action::EditRow { table, row, cells } => Action::EditRow {
+                table: *table,
+                row: map_row(row, var),
+                cells: map_cells(cells, var),
+            },
+            Action::DeleteRow { table, row } => Action::DeleteRow {
+                table: *table,
+                row: map_row(row, var),
+            },
             Action::Conditional {
                 branches,
                 otherwise,
@@ -393,6 +521,25 @@ impl Action {
             }
             other => other.clone(),
         }
+    }
+}
+
+fn map_cells(cells: &[CellWrite], var: &mut dyn FnMut(VarId) -> VarId) -> Vec<CellWrite> {
+    cells
+        .iter()
+        .map(|c| CellWrite {
+            column: c.column,
+            to: c.to.map_vars(var),
+        })
+        .collect()
+}
+
+fn map_row(row: &WhichRow, var: &mut dyn FnMut(VarId) -> VarId) -> WhichRow {
+    match row {
+        WhichRow::FirstWhere { when } => WhichRow::FirstWhere {
+            when: when.map_vars(var),
+        },
+        other => other.clone(),
     }
 }
 
@@ -1239,6 +1386,20 @@ pub fn refs(reactions: &[Keyed<Reaction>]) -> (Vec<VarId>, Vec<ScriptId>) {
         },
     );
     (vars, scripts)
+}
+
+/// `e` as its field shows it in `doc`: each variable and table read by name,
+/// `{row.…}` read against `row`, a name that is gone left as its id.
+pub fn expr_shown(doc: &Document, e: &Expr, row: Option<DataSetId>) -> String {
+    let vars = doc.variables();
+    let var_id = |n: &str| vars.by_name(n).map(|v| v.id);
+    let var_name = |v: VarId| vars.get(v).map(|v| v.name.clone());
+    e.with_names_in(&expr::Names {
+        var_id: &var_id,
+        var_name: &var_name,
+        tables: doc.data_sets(),
+        row,
+    })
 }
 
 /// The layer `target` names when read from a reaction on `holder`. A reaction on

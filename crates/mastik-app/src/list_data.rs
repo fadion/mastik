@@ -47,12 +47,14 @@ pub(crate) enum TablePick {
 
 /// The rows a [`table_combo`] offers beside the document's tables: *Own table*
 /// first, ticked when `own` is `Some(true)`, and *New table* and *Save as
-/// table* before *From a file…*.
+/// table* before *From a file…*, which `no_file` leaves out where only a table
+/// already there can be named (a row action's).
 #[derive(Default)]
 pub(crate) struct TableRows {
     pub own: Option<bool>,
     pub new: bool,
     pub save: bool,
+    pub no_file: bool,
 }
 
 /// *Save as table*'s tooltip, on the Chart card's dropdown row and the data
@@ -101,7 +103,8 @@ pub(crate) fn table_combo(
                     pick = Some(TablePick::Set(d.id));
                 }
             }
-            if !doc.data_sets().is_empty() {
+            let more = extra.new || extra.save || !extra.no_file;
+            if !doc.data_sets().is_empty() && more {
                 ui::menu_sep(ui);
             }
             if extra.new
@@ -122,9 +125,10 @@ pub(crate) fn table_combo(
             {
                 pick = Some(TablePick::Save);
             }
-            if ui
-                .selectable_label(false, ui::glyph_and_text(icon::IMPORT, "From a file…"))
-                .clicked()
+            if !extra.no_file
+                && ui
+                    .selectable_label(false, ui::glyph_and_text(icon::IMPORT, "From a file…"))
+                    .clicked()
             {
                 pick = Some(TablePick::File);
             }

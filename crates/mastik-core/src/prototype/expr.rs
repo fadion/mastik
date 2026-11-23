@@ -1,8 +1,13 @@
-//! Expressions in a prototype: a condition's test and *Set variable*'s value.
+//! Expressions in a prototype: a condition's test, *Set variable*'s value and a
+//! row action's cells.
 //!
 //! Stored as source text so the field shows what was typed. A variable is written
 //! `{<actor-hex>:<seq>}`, its id's wire form, so a rename never breaks one; the
 //! field shows `{<name>}` instead ([`Expr::with_names`], [`Expr::from_names`]).
+//! A table is read the same way, by ids ([`Ref`]): the field shows
+//! `{Cart.rows}`, `{Products.3.Name}`, `{Cart.Line.sum}` or `{row.Qty}`, and
+//! typed names resolve against the real table and column names ([`Names`]),
+//! since a table, a column and a variable may each contain a dot.
 //!
 //! The language is numbers, strings and booleans (a colour variable may be read
 //! and compared): `+ - * / %` on numbers, `+` joining when either side is a
@@ -11,10 +16,374 @@
 //! script. Every error carries the byte range of the source it is about, for the
 //! field to underline.
 
+use crate::chart::{ColumnId, parse_number};
 use crate::id::NodeId;
+use crate::list::{DataSet, DataSetId};
 use crate::variable::{Value, VarId, VarKind};
 use serde::{Deserialize, Serialize};
 use std::ops::Range;
+
+/// What a `{…}` in an expression names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Ref {
+    Var(VarId),
+    /// How many rows the table has: `{<table>:rows}`.
+    Rows(DataSetId),
+    /// One cell: `{<table>:<row>:<column>}`.
+    Cell(DataSetId, RowAt, ColumnId),
+    /// A column's number cells taken together: `{<table>:<column>:<agg>}`.
+    Total(DataSetId, ColumnId, Agg),
+    /// A cell of the row a row action is on — the one *Edit row* writes, or
+    /// the one a *First row where…* test is looking at: `{row:<column>}`.
+    Row(ColumnId),
+}
+
+/// Which row of a table a [`Ref::Cell`] reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RowAt {
+    /// The row an *Opened row* list over the table shows: row 1 until a tap
+    /// opens another.
+    Opened,
+    First,
+    Last,
+    /// Counted from 1, as the data window's gutter counts.
+    Nth(u32),
+}
+
+impl RowAt {
+    /// Its word in an expression, stored and shown alike.
+    pub fn word(self) -> String {
+        match self {
+            RowAt::Opened => "opened".into(),
+            RowAt::First => "first".into(),
+            RowAt::Last => "last".into(),
+            RowAt::Nth(n) => n.to_string(),
+        }
+    }
+
+    fn from_word(w: &str) -> Option<RowAt> {
+        match w {
+            "opened" => Some(RowAt::Opened),
+            "first" => Some(RowAt::First),
+            "last" => Some(RowAt::Last),
+            n => n.parse().ok().filter(|n| *n >= 1).map(RowAt::Nth),
+        }
+    }
+}
+
+/// How a [`Ref::Total`] takes a column's cells together.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Agg {
+    Sum,
+    Min,
+    Max,
+    Avg,
+}
+
+impl Agg {
+    pub const ALL: [Agg; 4] = [Agg::Sum, Agg::Min, Agg::Max, Agg::Avg];
+
+    /// Its word in an expression, stored and shown alike.
+    pub fn word(self) -> &'static str {
+        match self {
+            Agg::Sum => "sum",
+            Agg::Min => "min",
+            Agg::Max => "max",
+            Agg::Avg => "avg",
+        }
+    }
+
+    fn from_word(w: &str) -> Option<Agg> {
+        Agg::ALL.into_iter().find(|a| a.word() == w)
+    }
+}
+
+impl Ref {
+    /// The stored form, without its braces.
+    pub fn wire(&self) -> String {
+        match self {
+            Ref::Var(v) => v.0.to_wire(),
+            Ref::Rows(t) => format!("{}:rows", t.0.to_wire()),
+            Ref::Cell(t, at, c) => format!("{}:{}:{}", t.0.to_wire(), at.word(), c.0),
+            Ref::Total(t, c, a) => format!("{}:{}:{}", t.0.to_wire(), c.0, a.word()),
+            Ref::Row(c) => format!("row:{}", c.0),
+        }
+    }
+
+    /// What a stored `{…}` names, `None` when it is no stored form.
+    pub fn from_wire(inner: &str) -> Option<Ref> {
+        let s = inner.trim();
+        let table = |a: &str, q: &str| NodeId::from_wire(&format!("{a}:{q}")).map(DataSetId);
+        let column = |c: &str| c.parse().ok().map(ColumnId);
+        match s.split(':').collect::<Vec<_>>().as_slice() {
+            ["row", c] => Some(Ref::Row(column(c)?)),
+            [_] | [_, _] => NodeId::from_wire(s).map(|id| Ref::Var(VarId(id))),
+            [a, q, "rows"] => Some(Ref::Rows(table(a, q)?)),
+            [a, q, c, agg] if Agg::from_word(agg).is_some() => {
+                Some(Ref::Total(table(a, q)?, column(c)?, Agg::from_word(agg)?))
+            }
+            [a, q, at, c] => Some(Ref::Cell(table(a, q)?, RowAt::from_word(at)?, column(c)?)),
+            _ => None,
+        }
+    }
+
+    /// The table it reads, `None` for a variable or `row`.
+    pub fn table(&self) -> Option<DataSetId> {
+        match self {
+            Ref::Rows(t) | Ref::Cell(t, ..) | Ref::Total(t, ..) => Some(*t),
+            Ref::Var(_) | Ref::Row(_) => None,
+        }
+    }
+}
+
+/// Why a [`Ref`] gives no value or kind.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Unread {
+    /// The variable, table or column it names is not there.
+    Missing,
+    /// It is there but cannot be read now, and why (*Cart has no rows*).
+    Why(String),
+}
+
+/// Why a typed name names nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Lookup {
+    Unknown,
+    Why(String),
+}
+
+/// What typed names are read against: the document's variables and tables,
+/// and the table `row` reads inside a row action.
+pub struct Names<'a> {
+    pub var_id: &'a dyn Fn(&str) -> Option<VarId>,
+    pub var_name: &'a dyn Fn(VarId) -> Option<String>,
+    pub tables: &'a [DataSet],
+    /// The row action's table: what `{row.<column>}` reads. `None` outside one.
+    pub row: Option<DataSetId>,
+}
+
+/// The name `row` reads the acted-on row by; no table may take it.
+pub const ROW: &str = "row";
+
+impl Names<'_> {
+    fn table(&self, id: DataSetId) -> Option<&DataSet> {
+        self.tables.iter().find(|d| d.id == id)
+    }
+
+    /// `r` as the field shows it, inside the braces; `None` when what it names
+    /// is not there.
+    pub fn name(&self, r: &Ref) -> Option<String> {
+        let col = |t: &DataSet, c: ColumnId| t.table.column(c).map(|c| c.name.clone());
+        match *r {
+            Ref::Var(v) => (self.var_name)(v),
+            Ref::Rows(t) => Some(format!("{}.rows", self.table(t)?.name)),
+            Ref::Cell(t, at, c) => {
+                let t = self.table(t)?;
+                Some(format!("{}.{}.{}", t.name, at.word(), col(t, c)?))
+            }
+            Ref::Total(t, c, a) => {
+                let t = self.table(t)?;
+                Some(format!("{}.{}.{}", t.name, col(t, c)?, a.word()))
+            }
+            Ref::Row(c) => Some(format!("{ROW}.{}", col(self.table(self.row?)?, c)?)),
+        }
+    }
+
+    /// What a typed `{…}` names: a variable by name, a table read by its
+    /// table's and column's names, or a stored form. A name that reads two
+    /// ways is refused rather than guessed.
+    pub fn resolve(&self, inner: &str) -> Result<Ref, Lookup> {
+        let s = inner.trim();
+        let mut found: Vec<Ref> = Vec::new();
+        fn push(found: &mut Vec<Ref>, r: Ref) {
+            if !found.contains(&r) {
+                found.push(r);
+            }
+        }
+        if let Some(v) = (self.var_id)(s) {
+            push(&mut found, Ref::Var(v));
+        }
+        if let Some(r) = Ref::from_wire(s) {
+            push(&mut found, r);
+        }
+        let col = |t: &DataSet, name: &str| {
+            t.table
+                .columns
+                .iter()
+                .find(|c| c.name == name)
+                .map(|c| c.id)
+        };
+        let mut hint = None;
+        if let Some(rest) = s.strip_prefix(ROW).and_then(|r| r.strip_prefix('.')) {
+            match self.row.and_then(|t| self.table(t)) {
+                Some(t) => match col(t, rest) {
+                    Some(c) => push(&mut found, Ref::Row(c)),
+                    None => hint = Some(format!("{} has no column “{rest}”", t.name)),
+                },
+                None => hint = Some("row is read only inside a row action".into()),
+            }
+        }
+        for t in self.tables {
+            if s == t.name {
+                hint = Some(format!(
+                    "“{s}” is a table; read it with a dot, as {{{s}.rows}}"
+                ));
+                continue;
+            }
+            let Some(rest) = s
+                .strip_prefix(t.name.as_str())
+                .and_then(|r| r.strip_prefix('.'))
+            else {
+                continue;
+            };
+            let before = found.len();
+            if rest == "rows" {
+                push(&mut found, Ref::Rows(t.id));
+            }
+            if let Some((at, c)) = rest.split_once('.')
+                && let (Some(at), Some(c)) = (RowAt::from_word(at), col(t, c))
+            {
+                push(&mut found, Ref::Cell(t.id, at, c));
+            }
+            if let Some((c, a)) = rest.rsplit_once('.')
+                && let (Some(c), Some(a)) = (col(t, c), Agg::from_word(a))
+            {
+                push(&mut found, Ref::Total(t.id, c, a));
+            }
+            if found.len() == before {
+                hint.get_or_insert_with(|| format!("{} holds no “{rest}”", t.name));
+            }
+        }
+        match found.as_slice() {
+            [one] => Ok(*one),
+            [] => Err(hint.map_or(Lookup::Unknown, Lookup::Why)),
+            _ => Err(Lookup::Why(format!(
+                "“{s}” reads two ways; pick it from the @ list"
+            ))),
+        }
+    }
+}
+
+/// Where a table read looks in play: the tables, the row each one's *Opened
+/// row* lists show, and the row a row action is on.
+pub struct TableEnv<'a> {
+    pub tables: &'a [DataSet],
+    pub opened: &'a dyn Fn(DataSetId) -> usize,
+    /// The row action's table and the cells of the row it is on.
+    pub row: Option<(DataSetId, &'a [String])>,
+}
+
+/// A cell as an expression reads it: a number when it parses as one, else text.
+pub fn cell_value(cell: &str) -> Value {
+    parse_number(cell).map_or_else(|| Value::String(cell.to_owned()), Value::Number)
+}
+
+/// How many rows, said as a count: *1 row*, *3 rows*.
+fn rows_word(n: usize) -> String {
+    match n {
+        1 => "1 row".into(),
+        n => format!("{n} rows"),
+    }
+}
+
+impl TableEnv<'_> {
+    /// What table read `r` comes to now. A variable is not a table read and
+    /// reads as missing here.
+    pub fn read(&self, r: &Ref) -> Result<Value, Unread> {
+        let set = |t: DataSetId| {
+            self.tables
+                .iter()
+                .find(|d| d.id == t)
+                .ok_or(Unread::Missing)
+        };
+        let at = |d: &DataSet, c: ColumnId| d.table.index_of(c).ok_or(Unread::Missing);
+        match *r {
+            Ref::Var(_) => Err(Unread::Missing),
+            Ref::Rows(t) => Ok(Value::Number(set(t)?.table.rows.len() as f64)),
+            Ref::Cell(t, which, c) => {
+                let d = set(t)?;
+                let i = at(d, c)?;
+                let n = d.table.rows.len();
+                let empty = || Unread::Why(format!("{} has no rows", d.name));
+                let row = match which {
+                    RowAt::First if n > 0 => 0,
+                    RowAt::Last if n > 0 => n - 1,
+                    RowAt::Opened if n > 0 => (self.opened)(t).min(n - 1),
+                    RowAt::Nth(k) if (k as usize) <= n => k as usize - 1,
+                    RowAt::Nth(k) => {
+                        return Err(Unread::Why(format!(
+                            "{} has {}, not {k}",
+                            d.name,
+                            rows_word(n)
+                        )));
+                    }
+                    _ => return Err(empty()),
+                };
+                Ok(cell_value(&d.table.rows[row][i]))
+            }
+            Ref::Total(t, c, agg) => {
+                let d = set(t)?;
+                at(d, c)?;
+                let nums: Vec<f64> = d.table.cells(c).filter_map(parse_number).collect();
+                if nums.is_empty() && agg != Agg::Sum {
+                    let col = d.table.column(c).map_or("", |c| c.name.as_str());
+                    return Err(Unread::Why(format!(
+                        "{} of no numbers: {} has no numbers in {col}",
+                        agg.word(),
+                        d.name
+                    )));
+                }
+                let n = nums.len() as f64;
+                Ok(Value::Number(match agg {
+                    Agg::Sum => nums.iter().sum(),
+                    Agg::Min => nums.iter().copied().fold(f64::INFINITY, f64::min),
+                    Agg::Max => nums.iter().copied().fold(f64::NEG_INFINITY, f64::max),
+                    Agg::Avg => nums.iter().sum::<f64>() / n,
+                }))
+            }
+            Ref::Row(c) => {
+                let Some((t, cells)) = self.row else {
+                    return Err(Unread::Why("row is read only inside a row action".into()));
+                };
+                let i = at(set(t)?, c)?;
+                Ok(cells
+                    .get(i)
+                    .map_or(Value::String(String::new()), |s| cell_value(s)))
+            }
+        }
+    }
+}
+
+/// The kind table read `r` comes to without evaluating it: a count and a total
+/// are numbers, and a cell is a number or text by its data in play, so it has
+/// no kind while authoring. Missing when its table or column is not in
+/// `tables`; `row` is refused outside a row action (`row: None`).
+pub fn table_kind(
+    tables: &[DataSet],
+    row: Option<DataSetId>,
+    r: &Ref,
+) -> Result<Option<VarKind>, Unread> {
+    let has = |t: DataSetId, c: Option<ColumnId>| {
+        tables
+            .iter()
+            .find(|d| d.id == t)
+            .is_some_and(|d| c.is_none_or(|c| d.table.index_of(c).is_some()))
+    };
+    let there = match *r {
+        Ref::Var(_) => false,
+        Ref::Rows(t) => has(t, None),
+        Ref::Cell(t, _, c) | Ref::Total(t, c, _) => has(t, Some(c)),
+        Ref::Row(c) => match row {
+            Some(t) => has(t, Some(c)),
+            None => return Err(Unread::Why("row is read only inside a row action".into())),
+        },
+    };
+    match (there, r) {
+        (false, _) => Err(Unread::Missing),
+        (true, Ref::Rows(_) | Ref::Total(..)) => Ok(Some(VarKind::Number)),
+        (true, _) => Ok(None),
+    }
+}
 
 /// An expression's source.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +402,8 @@ pub enum ExprError {
     MissingVariable { at: Range<usize>, var: VarId },
     #[error("no variable is named “{name}”")]
     UnknownName { at: Range<usize>, name: String },
+    #[error("the expression names a table or column that is not there")]
+    MissingTable { at: Range<usize> },
 }
 
 impl ExprError {
@@ -42,7 +413,17 @@ impl ExprError {
             ExprError::Syntax { at, .. }
             | ExprError::Type { at, .. }
             | ExprError::MissingVariable { at, .. }
-            | ExprError::UnknownName { at, .. } => at.clone(),
+            | ExprError::UnknownName { at, .. }
+            | ExprError::MissingTable { at } => at.clone(),
+        }
+    }
+
+    fn unread(why: Unread, r: &Ref, at: &Range<usize>) -> ExprError {
+        let at = at.clone();
+        match (why, r) {
+            (Unread::Missing, Ref::Var(var)) => ExprError::MissingVariable { at, var: *var },
+            (Unread::Missing, _) => ExprError::MissingTable { at },
+            (Unread::Why(msg), _) => ExprError::Type { at, msg },
         }
     }
 }
@@ -50,9 +431,20 @@ impl ExprError {
 impl Expr {
     /// The variables it names, in the order written, repeats kept.
     pub fn vars(&self) -> Vec<VarId> {
+        self.refs()
+            .into_iter()
+            .filter_map(|r| match r {
+                Ref::Var(v) => Some(v),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Everything it names by id, in the order written, repeats kept.
+    pub fn refs(&self) -> Vec<Ref> {
         var_tokens(&self.0)
             .into_iter()
-            .filter_map(|(_, inner)| NodeId::from_wire(inner).map(VarId))
+            .filter_map(|(_, inner)| Ref::from_wire(inner))
             .collect()
     }
 
@@ -73,29 +465,57 @@ impl Expr {
         Expr(out)
     }
 
-    /// Whether it reads: `Ok` when it parses and every `{…}` is an id.
+    /// Whether it reads: `Ok` when it parses and every `{…}` is a stored form.
     pub fn check(&self) -> Result<(), ExprError> {
-        parse(&self.0, &by_wire).map(|_| ())
+        parse(&self.0, &stored).map(|_| ())
     }
 
-    /// The kind it comes to, each variable's kind read through `kind_of`, without
-    /// evaluating it: what the field checks *Set variable*'s value against.
-    pub fn kind(&self, kind_of: &dyn Fn(VarId) -> Option<VarKind>) -> Result<VarKind, ExprError> {
-        type_of(&parse(&self.0, &by_wire)?, kind_of)
+    /// The kind it comes to without evaluating it, each name's kind read
+    /// through `kind_of` (`None`: known only in play, as a table's cell): what
+    /// the field checks *Set variable*'s value against.
+    pub fn kind(
+        &self,
+        kind_of: &dyn Fn(&Ref) -> Result<Option<VarKind>, Unread>,
+    ) -> Result<Option<VarKind>, ExprError> {
+        type_of(&parse(&self.0, &stored)?, kind_of)
     }
 
-    /// What it comes to with each variable read through `read`.
+    /// What it comes to with each variable read through `read`; a table read
+    /// is missing.
     pub fn eval(&self, read: &dyn Fn(VarId) -> Option<Value>) -> Result<Value, ExprError> {
-        eval(&parse(&self.0, &by_wire)?, read)
+        self.eval_with(&|r| match r {
+            Ref::Var(v) => read(*v).ok_or(Unread::Missing),
+            _ => Err(Unread::Missing),
+        })
+    }
+
+    /// What it comes to with everything it names read through `read`.
+    pub fn eval_with(
+        &self,
+        read: &dyn Fn(&Ref) -> Result<Value, Unread>,
+    ) -> Result<Value, ExprError> {
+        eval(&parse(&self.0, &stored)?, read)
     }
 
     /// The source as the field shows it: each `{<id>}` that `name_of` names
     /// written `{<name>}`; an id it does not name is left as written.
     pub fn with_names(&self, name_of: &dyn Fn(VarId) -> Option<String>) -> String {
+        self.shown(&|r| match r {
+            Ref::Var(v) => name_of(*v),
+            _ => None,
+        })
+    }
+
+    /// [`Self::with_names`] with tables named too.
+    pub fn with_names_in(&self, names: &Names) -> String {
+        self.shown(&|r| names.name(r))
+    }
+
+    fn shown(&self, name_of: &dyn Fn(&Ref) -> Option<String>) -> String {
         let mut out = String::with_capacity(self.0.len());
         let mut last = 0;
         for (at, inner) in var_tokens(&self.0) {
-            let Some(name) = NodeId::from_wire(inner).and_then(|id| name_of(VarId(id))) else {
+            let Some(name) = Ref::from_wire(inner).and_then(|r| name_of(&r)) else {
                 continue;
             };
             out.push_str(&self.0[last..at.start]);
@@ -117,21 +537,40 @@ impl Expr {
         text: &str,
         id_of: &dyn Fn(&str) -> Option<VarId>,
     ) -> (Expr, Option<ExprError>) {
-        let lookup = |inner: &str| id_of(inner.trim()).or_else(|| by_wire(inner));
+        Self::stored_from(text, &|inner| match id_of(inner.trim()) {
+            Some(v) => Ok(Ref::Var(v)),
+            None => by_wire(inner).map(Ref::Var).ok_or(Lookup::Unknown),
+        })
+    }
+
+    /// [`Self::from_names`] with table reads resolved too ([`Names::resolve`]).
+    pub fn from_names_in(text: &str, names: &Names) -> (Expr, Option<ExprError>) {
+        Self::stored_from(text, &|inner| names.resolve(inner))
+    }
+
+    fn stored_from(
+        text: &str,
+        lookup: &dyn Fn(&str) -> Result<Ref, Lookup>,
+    ) -> (Expr, Option<ExprError>) {
         let mut out = String::with_capacity(text.len());
         let mut last = 0;
         for (at, inner) in var_tokens(text) {
-            let Some(id) = lookup(inner) else { continue };
+            let Ok(r) = lookup(inner) else { continue };
             out.push_str(&text[last..at.start]);
             out.push('{');
-            out.push_str(&id.0.to_wire());
+            out.push_str(&r.wire());
             out.push('}');
             last = at.end;
         }
         out.push_str(&text[last..]);
-        let error = parse(text, &lookup).err();
+        let error = parse(text, lookup).err();
         (Expr(out), error)
     }
+}
+
+/// A stored `{…}`'s lookup: what [`Ref::from_wire`] reads.
+fn stored(inner: &str) -> Result<Ref, Lookup> {
+    Ref::from_wire(inner).ok_or(Lookup::Unknown)
 }
 
 /// Every `{…}` in `text`: its byte range, braces included, and what is inside.
@@ -189,7 +628,7 @@ enum Tok {
     Num(f64),
     Str(String),
     Bool(bool),
-    Var(VarId),
+    Ref(Ref),
     Word(&'static str),
     Sym(&'static str),
 }
@@ -200,7 +639,7 @@ const SYMS: [&str; 13] = [
 
 fn lex(
     src: &str,
-    var: &dyn Fn(&str) -> Option<VarId>,
+    var: &dyn Fn(&str) -> Result<Ref, Lookup>,
 ) -> Result<Vec<(Tok, Range<usize>)>, ExprError> {
     let syntax = |at: Range<usize>, msg: &str| ExprError::Syntax {
         at,
@@ -258,11 +697,17 @@ fn lex(
             };
             let inner = &src[i + 1..close];
             let at = start..close + 1;
-            let id = var(inner).ok_or_else(|| ExprError::UnknownName {
-                at: at.clone(),
-                name: inner.trim().to_owned(),
+            let r = var(inner).map_err(|why| match why {
+                Lookup::Unknown => ExprError::UnknownName {
+                    at: at.clone(),
+                    name: inner.trim().to_owned(),
+                },
+                Lookup::Why(msg) => ExprError::Syntax {
+                    at: at.clone(),
+                    msg,
+                },
             })?;
-            out.push((Tok::Var(id), at));
+            out.push((Tok::Ref(r), at));
             i = close + 1;
             continue;
         }
@@ -311,7 +756,7 @@ fn lex(
 #[derive(Clone, Debug, PartialEq)]
 enum Ast {
     Lit(Value),
-    Var(VarId),
+    Ref(Ref),
     Neg(Box<Node>),
     Not(Box<Node>),
     Bin(&'static str, Box<Node>, Box<Node>),
@@ -452,7 +897,7 @@ impl Parser {
             Tok::Num(n) => Ast::Lit(Value::Number(n)),
             Tok::Str(s) => Ast::Lit(Value::String(s)),
             Tok::Bool(b) => Ast::Lit(Value::Boolean(b)),
-            Tok::Var(v) => Ast::Var(v),
+            Tok::Ref(r) => Ast::Ref(r),
             Tok::Sym("(") => {
                 let inner = self.or()?;
                 let close = self.here();
@@ -478,7 +923,7 @@ impl Parser {
     }
 }
 
-fn parse(src: &str, var: &dyn Fn(&str) -> Option<VarId>) -> Result<Node, ExprError> {
+fn parse(src: &str, var: &dyn Fn(&str) -> Result<Ref, Lookup>) -> Result<Node, ExprError> {
     let toks = lex(src, var)?;
     if toks.is_empty() {
         return Err(ExprError::Syntax {
@@ -560,46 +1005,79 @@ fn bin_kind(op: &str, l: VarKind, r: VarKind) -> Result<VarKind, String> {
     }
 }
 
-fn type_of(n: &Node, kind_of: &dyn Fn(VarId) -> Option<VarKind>) -> Result<VarKind, ExprError> {
+const KINDS: [VarKind; 4] = [
+    VarKind::Number,
+    VarKind::String,
+    VarKind::Boolean,
+    VarKind::Color,
+];
+
+/// [`bin_kind`] where a side may be known only in play (`None`): it applies
+/// when some kind that side could come to makes it apply, and comes to the
+/// kind every such pairing agrees on, else to one known only in play.
+fn bin_kind_maybe(
+    op: &str,
+    l: Option<VarKind>,
+    r: Option<VarKind>,
+) -> Result<Option<VarKind>, String> {
+    let sides = |k: Option<VarKind>| k.map_or(KINDS.to_vec(), |k| vec![k]);
+    let mut first_err = None;
+    let mut got: Vec<VarKind> = Vec::new();
+    for a in sides(l) {
+        for b in sides(r) {
+            match bin_kind(op, a, b) {
+                Ok(k) if !got.contains(&k) => got.push(k),
+                Ok(_) => {}
+                Err(e) => {
+                    first_err.get_or_insert(e);
+                }
+            }
+        }
+    }
+    match got.as_slice() {
+        [] => Err(first_err.unwrap_or_default()),
+        [k] => Ok(Some(*k)),
+        _ => Ok(None),
+    }
+}
+
+fn type_of(
+    n: &Node,
+    kind_of: &dyn Fn(&Ref) -> Result<Option<VarKind>, Unread>,
+) -> Result<Option<VarKind>, ExprError> {
     let wrong = |msg: String| ExprError::Type {
         at: n.at.clone(),
         msg,
     };
     match &n.ast {
-        Ast::Lit(v) => Ok(kind_of_value(v)),
-        Ast::Var(v) => kind_of(*v).ok_or(ExprError::MissingVariable {
-            at: n.at.clone(),
-            var: *v,
-        }),
+        Ast::Lit(v) => Ok(Some(kind_of_value(v))),
+        Ast::Ref(r) => kind_of(r).map_err(|why| ExprError::unread(why, r, &n.at)),
         Ast::Neg(inner) => match type_of(inner, kind_of)? {
-            VarKind::Number => Ok(VarKind::Number),
-            k => Err(wrong(format!("- needs a number, not {}", kind_word(k)))),
+            None | Some(VarKind::Number) => Ok(Some(VarKind::Number)),
+            Some(k) => Err(wrong(format!("- needs a number, not {}", kind_word(k)))),
         },
         Ast::Not(inner) => match type_of(inner, kind_of)? {
-            VarKind::Boolean => Ok(VarKind::Boolean),
-            k => Err(wrong(format!(
+            None | Some(VarKind::Boolean) => Ok(Some(VarKind::Boolean)),
+            Some(k) => Err(wrong(format!(
                 "not needs true or false, not {}",
                 kind_word(k)
             ))),
         },
         Ast::Bin(op, l, r) => {
             let (l, r) = (type_of(l, kind_of)?, type_of(r, kind_of)?);
-            bin_kind(op, l, r).map_err(wrong)
+            bin_kind_maybe(op, l, r).map_err(wrong)
         }
     }
 }
 
-fn eval(n: &Node, read: &dyn Fn(VarId) -> Option<Value>) -> Result<Value, ExprError> {
+fn eval(n: &Node, read: &dyn Fn(&Ref) -> Result<Value, Unread>) -> Result<Value, ExprError> {
     let wrong = |msg: String| ExprError::Type {
         at: n.at.clone(),
         msg,
     };
     match &n.ast {
         Ast::Lit(v) => Ok(v.clone()),
-        Ast::Var(v) => read(*v).ok_or(ExprError::MissingVariable {
-            at: n.at.clone(),
-            var: *v,
-        }),
+        Ast::Ref(r) => read(r).map_err(|why| ExprError::unread(why, r, &n.at)),
         Ast::Neg(inner) => match eval(inner, read)? {
             Value::Number(x) => Ok(Value::Number(-x)),
             v => Err(wrong(format!(
@@ -774,15 +1252,19 @@ mod tests {
     /// flip: `bin_kind` answering `Number` for `+` with a string → fails at "join".
     #[test]
     fn the_kind_is_known_without_evaluating() {
-        let kind_of = |v: VarId| match v.0.seq {
-            1 => Some(VarKind::Number),
-            2 => Some(VarKind::String),
-            _ => None,
+        let kind_of = |r: &Ref| match r {
+            Ref::Var(v) if v.0.seq == 1 => Ok(Some(VarKind::Number)),
+            Ref::Var(v) if v.0.seq == 2 => Ok(Some(VarKind::String)),
+            _ => Err(Unread::Missing),
         };
         let k = |s: String| Expr(s).kind(&kind_of);
-        assert_eq!(k(format!("{} + 1", wire(1))), Ok(VarKind::Number));
-        assert_eq!(k(format!("{} + 1", wire(2))), Ok(VarKind::String), "join");
-        assert_eq!(k(format!("{} > 1", wire(1))), Ok(VarKind::Boolean));
+        assert_eq!(k(format!("{} + 1", wire(1))), Ok(Some(VarKind::Number)));
+        assert_eq!(
+            k(format!("{} + 1", wire(2))),
+            Ok(Some(VarKind::String)),
+            "join"
+        );
+        assert_eq!(k(format!("{} > 1", wire(1))), Ok(Some(VarKind::Boolean)));
         assert!(matches!(
             k(format!("{} * 2", wire(2))),
             Err(ExprError::Type { .. })
@@ -808,5 +1290,218 @@ mod tests {
         assert_eq!(kept.0, format!("{} + {{gone}}", wire(1)), "kept as typed");
         assert_eq!(err.map(|e| e.at()), Some(15..21));
         assert_eq!(stored.vars(), vec![var(1)]);
+    }
+
+    fn set(seq: u64, name: &str, cols: &[&str], rows: &[&[&str]]) -> DataSet {
+        use crate::chart::{Column, Table};
+        DataSet {
+            id: DataSetId(NodeId { actor: 0xcd, seq }),
+            name: name.into(),
+            table: Table {
+                columns: cols
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| Column {
+                        id: ColumnId(i as u32),
+                        name: (*n).into(),
+                    })
+                    .collect(),
+                rows: rows
+                    .iter()
+                    .map(|r| r.iter().map(|c| (*c).to_string()).collect())
+                    .collect(),
+            },
+            source: None,
+            pictures: Vec::new(),
+        }
+    }
+
+    fn shop() -> Vec<DataSet> {
+        vec![
+            set(
+                1,
+                "products.csv",
+                &["Name", "Price"],
+                &[&["Shirt", "42"], &["Scarf", "28"]],
+            ),
+            set(2, "Cart", &["Name", "Line", "rows"], &[]),
+        ]
+    }
+
+    /// A typed table read resolves by the real names, longest match, and is
+    /// stored by ids that read back to the same text.
+    ///
+    /// flip: `Names::resolve` skipping its `Ref::Total` arm → fails at "a total".
+    #[test]
+    fn table_reads_resolve_by_name_and_store_ids() {
+        let sets = shop();
+        let vid = |n: &str| (n == "Total").then(|| var(1));
+        let vname = |v: VarId| (v == var(1)).then(|| "Total".to_owned());
+        let names = Names {
+            var_id: &vid,
+            var_name: &vname,
+            tables: &sets,
+            row: Some(sets[1].id),
+        };
+        let typed = "{products.csv.2.Name} + {Cart.Line.sum} + {Cart.rows} + {row.Line} + {Total}";
+        let (e, err) = Expr::from_names_in(typed, &names);
+        assert_eq!(err, None);
+        let refs = e.refs();
+        assert_eq!(refs[0], Ref::Cell(sets[0].id, RowAt::Nth(2), ColumnId(0)));
+        assert_eq!(
+            refs[1],
+            Ref::Total(sets[1].id, ColumnId(1), Agg::Sum),
+            "a total"
+        );
+        assert_eq!(refs[2], Ref::Rows(sets[1].id));
+        assert_eq!(refs[3], Ref::Row(ColumnId(1)));
+        assert_eq!(e.with_names_in(&names), typed, "shown as typed");
+        assert_eq!(e.vars(), vec![var(1)]);
+        assert_eq!(Expr(e.0.clone()).check(), Ok(()), "the stored form reads");
+
+        // A column called `rows` and the count read two ways.
+        let (_, err) = Expr::from_names_in("{Cart.rows}", &Names { row: None, ..names });
+        assert_eq!(
+            err, None,
+            "Cart.rows alone is the count: `rows` needs an aggregate"
+        );
+        let (_, err) = Expr::from_names_in("{Cart.first.rows}", &names);
+        assert_eq!(err, None);
+        let (_, err) = Expr::from_names_in("{Cart}", &names);
+        assert!(err.unwrap().to_string().contains("is a table"));
+        let (_, err) = Expr::from_names_in("{row.Name}", &Names { row: None, ..names });
+        assert_eq!(
+            err.unwrap().to_string(),
+            "row is read only inside a row action"
+        );
+    }
+
+    /// A name that reads two ways is refused rather than guessed.
+    ///
+    /// flip: `Names::resolve` answering its first candidate → fails at "two ways".
+    #[test]
+    fn a_name_reading_two_ways_is_refused() {
+        let sets = shop();
+        let vid = |n: &str| (n == "Cart.rows").then(|| var(1));
+        let vname = |_: VarId| None;
+        let names = Names {
+            var_id: &vid,
+            var_name: &vname,
+            tables: &sets,
+            row: None,
+        };
+        let (_, err) = Expr::from_names_in("{Cart.rows} + 1", &names);
+        let err = err.expect("two ways");
+        assert!(
+            err.to_string().contains("pick it from the @ list"),
+            "two ways"
+        );
+        assert_eq!(err.at(), 0..11);
+    }
+
+    /// Each form evaluates in play, and one that cannot says why.
+    ///
+    /// flip: `TableEnv::read` counting `Nth` from 0 → fails at "row 2".
+    #[test]
+    fn table_reads_evaluate_and_explain() {
+        let sets = shop();
+        let opened = |_| 1;
+        let row = ["Scarf".to_string(), "28".to_string(), String::new()];
+        let env = TableEnv {
+            tables: &sets,
+            opened: &opened,
+            row: Some((sets[1].id, &row)),
+        };
+        let (p, c) = (sets[0].id, sets[1].id);
+        let e = |r: Ref| env.read(&r);
+        assert_eq!(
+            e(Ref::Cell(p, RowAt::Nth(2), ColumnId(0))),
+            Ok(Value::String("Scarf".into())),
+            "row 2"
+        );
+        assert_eq!(
+            e(Ref::Cell(p, RowAt::Opened, ColumnId(1))),
+            Ok(Value::Number(28.0))
+        );
+        assert_eq!(
+            e(Ref::Total(p, ColumnId(1), Agg::Sum)),
+            Ok(Value::Number(70.0))
+        );
+        assert_eq!(
+            e(Ref::Total(p, ColumnId(1), Agg::Avg)),
+            Ok(Value::Number(35.0))
+        );
+        assert_eq!(
+            e(Ref::Total(p, ColumnId(0), Agg::Sum)),
+            Ok(Value::Number(0.0))
+        );
+        assert_eq!(e(Ref::Rows(c)), Ok(Value::Number(0.0)));
+        assert_eq!(
+            e(Ref::Total(c, ColumnId(1), Agg::Sum)),
+            Ok(Value::Number(0.0)),
+            "empty sums to 0"
+        );
+        assert_eq!(e(Ref::Row(ColumnId(1))), Ok(Value::Number(28.0)));
+        let why = |r: Ref| match e(r) {
+            Err(Unread::Why(m)) => m,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            why(Ref::Cell(p, RowAt::Nth(3), ColumnId(0))),
+            "products.csv has 2 rows, not 3"
+        );
+        assert_eq!(
+            why(Ref::Cell(c, RowAt::First, ColumnId(0))),
+            "Cart has no rows"
+        );
+        assert_eq!(
+            why(Ref::Total(c, ColumnId(1), Agg::Min)),
+            "min of no numbers: Cart has no numbers in Line"
+        );
+        assert_eq!(
+            e(Ref::Cell(p, RowAt::First, ColumnId(9))),
+            Err(Unread::Missing)
+        );
+
+        // Through an expression, the reason lands on the token.
+        let x = Expr(format!(
+            "1 + {{{}}}",
+            Ref::Cell(c, RowAt::First, ColumnId(0)).wire()
+        ));
+        let err = x.eval_with(&|r| env.read(r)).unwrap_err();
+        assert_eq!(err.to_string(), "Cart has no rows");
+        assert_eq!(err.at().start, 4);
+    }
+
+    /// A count and a total are numbers while authoring; a cell has no kind
+    /// until play, so it is never refused for one.
+    ///
+    /// flip: `bin_kind_maybe` erring whenever a side is unknown → fails at "a cell".
+    #[test]
+    fn a_cell_has_no_kind_until_play() {
+        let sets = shop();
+        let p = sets[0].id;
+        let k = |src: String| Expr(src).kind(&|r| table_kind(&sets, None, r));
+        let cell = format!("{{{}}}", Ref::Cell(p, RowAt::First, ColumnId(1)).wire());
+        let rows = format!("{{{}}}", Ref::Rows(p).wire());
+        assert_eq!(
+            k(format!("{cell} * 2")),
+            Ok(Some(VarKind::Number)),
+            "a cell"
+        );
+        assert_eq!(k(format!("{cell} + 1")), Ok(None), "a sum or a join");
+        assert_eq!(k(format!("{rows} + 1")), Ok(Some(VarKind::Number)));
+        assert_eq!(k(format!("{cell} == 'x'")), Ok(Some(VarKind::Boolean)));
+        assert!(k(format!("{rows} and true")).is_err());
+        let gone = format!(
+            "{{{}}}",
+            Ref::Rows(DataSetId(NodeId { actor: 1, seq: 1 })).wire()
+        );
+        assert!(matches!(k(gone), Err(ExprError::MissingTable { .. })));
+        let row = format!("{{{}}}", Ref::Row(ColumnId(0)).wire());
+        assert!(
+            matches!(k(row), Err(ExprError::Type { .. })),
+            "row outside a row action"
+        );
     }
 }

@@ -1128,6 +1128,7 @@ impl MastikApp {
                         own: None,
                         new: true,
                         save: false,
+                        no_file: false,
                     };
                     let pick = table_combo(
                         ui,
@@ -1308,18 +1309,85 @@ fn tool_button(ui: &mut egui::Ui, glyph: &str, label: &str) -> egui::Response {
     ui::action_button(ui, glyph, label, ui::FieldButton::Off, size)
 }
 
-/// *Edited in sales.csv — unlink to edit here*.
+/// Why a locked grid takes no edit: *Edited in sales.csv — unlink to edit
+/// here* over a linked table; over a table with no file, which only the
+/// player's window locks, the played copy's.
 fn linked_line(chart: &Chart) -> String {
-    let file = chart
-        .source
-        .as_ref()
-        .and_then(|s| {
-            std::path::Path::new(&s.path)
-                .file_name()
-                .map(|f| f.to_string_lossy().into_owned())
-        })
-        .unwrap_or_else(|| "a file".to_string());
+    let Some(source) = &chart.source else {
+        return PLAYED_LINE.to_string();
+    };
+    let file = std::path::Path::new(&source.path).file_name().map_or_else(
+        || "a file".to_string(),
+        |f| f.to_string_lossy().into_owned(),
+    );
     format!("Edited in {file} — unlink to edit here")
+}
+
+/// The note line over a table shown as play holds it.
+const PLAYED_LINE: &str = "Edited in play — edits here would not reach the document";
+
+impl ChartData {
+    /// The window's state over a table play holds, its first cell picked.
+    pub(crate) fn played() -> Self {
+        Self::over(None, (0, 0))
+    }
+}
+
+/// The data window over `set` as play holds it, in `area` (the player's
+/// screen): its head names the table *in play*, and the grid is locked as a
+/// linked table's is, with no toolbar and the play line under the head. Cells
+/// can be selected and copied. Answers whether it was closed.
+pub(crate) fn played_table_card(
+    ctx: &egui::Context,
+    area: egui::Rect,
+    set: &mastik_core::list::DataSet,
+    state: &mut ChartData,
+) -> bool {
+    let w = W.min(area.width() - 32.0).max(320.0);
+    state.grid_h = grid_h(area);
+    let mut act: Vec<Act> = Vec::new();
+    let hold = crate::settings::CardHold::Open;
+    let note = format!("{} \u{b7} in play", set.name);
+    crate::settings::movable_canvas_card(ctx, "played-table", area, w, hold, |ui| {
+        if crate::settings::card_head_noted(ui, w, "Data tables", Some(&note)) {
+            act.push(Act::Close);
+        }
+        let chart = Chart {
+            table: set.table.clone(),
+            source: None,
+            mapping: Default::default(),
+            series: Vec::new(),
+            ..Chart::sample(ChartKind::Column)
+        };
+        egui::Frame::NONE
+            .inner_margin(egui::Margin {
+                left: PAD as i8,
+                right: PAD as i8,
+                top: 0,
+                bottom: PAD as i8,
+            })
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
+                grid(
+                    ui,
+                    &chart,
+                    Heads::Plain,
+                    state,
+                    true,
+                    &mut |_, _| {},
+                    &mut act,
+                );
+            });
+    });
+    let mut closed = false;
+    for a in act {
+        match a {
+            Act::Close => closed = true,
+            Act::Copy(text) => ctx.copy_text(text),
+            _ => {}
+        }
+    }
+    closed
 }
 
 /// The grid under its toolbar (*Add row*, *Add column*, and *Import…* at the
@@ -1342,54 +1410,72 @@ fn grid(
     // The table's size once this pass's edit lands, so the cursor may stand on
     // a row or column added just now.
     let (mut fit_r, mut fit_c) = (nr, nc);
-    ui.horizontal(|ui| {
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            bar(ui, Slot::Trail);
-            if tool_button(ui, icon::IMPORT, "Import…")
-                .on_hover_text("Replace the table with a CSV, TSV or JSON file")
-                .clicked()
-            {
-                act.push(Act::Import);
-            }
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                bar(ui, Slot::Lead);
-                if linked {
-                    return;
+    // A played table has nothing to add or import: no toolbar.
+    let played = linked && chart.source.is_none();
+    if !played {
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                bar(ui, Slot::Trail);
+                if tool_button(ui, icon::IMPORT, "Import…")
+                    .on_hover_text("Replace the table with a CSV, TSV or JSON file")
+                    .clicked()
+                {
+                    act.push(Act::Import);
                 }
-                let more_rows = nr < chart::MAX_ROWS;
-                let resp = ui::disable_unless(ui, more_rows, |ui| {
-                    tool_button(ui, icon::ROWS_PLUS_BOTTOM, "Add row")
-                })
-                .inner
-                .on_disabled_hover_text(format!("At most {} rows", chart::MAX_ROWS));
-                if resp.clicked() {
-                    let mut next = with_typed(t, s);
-                    next.rows.push(vec![String::new(); nc]);
-                    s.at = (nr, s.at.1.min(nc.saturating_sub(1)));
-                    s.anchor = s.at;
-                    s.reveal = true;
-                    fit_r = nr + 1;
-                    act.push(Act::Table(next));
-                }
-                let more_cols = nc < chart::MAX_COLUMNS;
-                let resp = ui::disable_unless(ui, more_cols, |ui| {
-                    tool_button(ui, icon::COLUMNS_PLUS_RIGHT, "Add column")
-                })
-                .inner
-                .on_disabled_hover_text(format!("At most {} columns", chart::MAX_COLUMNS));
-                if resp.clicked() {
-                    let mut next = with_typed(t, s);
-                    add_column(&mut next, nc);
-                    s.at = (s.at.0, nc);
-                    s.anchor = s.at;
-                    s.reveal = true;
-                    fit_c = nc + 1;
-                    act.push(Act::Table(next));
-                }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    bar(ui, Slot::Lead);
+                    if linked {
+                        return;
+                    }
+                    let more_rows = nr < chart::MAX_ROWS;
+                    let resp = ui::disable_unless(ui, more_rows, |ui| {
+                        tool_button(ui, icon::ROWS_PLUS_BOTTOM, "Add row")
+                    })
+                    .inner
+                    .on_disabled_hover_text(format!("At most {} rows", chart::MAX_ROWS));
+                    if resp.clicked() {
+                        let mut next = with_typed(t, s);
+                        next.rows.push(vec![String::new(); nc]);
+                        s.at = (nr, s.at.1.min(nc.saturating_sub(1)));
+                        s.anchor = s.at;
+                        s.reveal = true;
+                        fit_r = nr + 1;
+                        act.push(Act::Table(next));
+                    }
+                    let more_cols = nc < chart::MAX_COLUMNS;
+                    let resp = ui::disable_unless(ui, more_cols, |ui| {
+                        tool_button(ui, icon::COLUMNS_PLUS_RIGHT, "Add column")
+                    })
+                    .inner
+                    .on_disabled_hover_text(format!("At most {} columns", chart::MAX_COLUMNS));
+                    if resp.clicked() {
+                        let mut next = with_typed(t, s);
+                        add_column(&mut next, nc);
+                        s.at = (s.at.0, nc);
+                        s.anchor = s.at;
+                        s.reveal = true;
+                        fit_c = nc + 1;
+                        act.push(Act::Table(next));
+                    }
+                });
             });
         });
-    });
-    if linked {
+    }
+    if played {
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = ui::LIST_ROW_GAP;
+            ui.label(theme::icon_text(
+                icon::PLAY,
+                ui::SMALL_PT,
+                theme::text::dim(),
+            ));
+            ui.label(
+                egui::RichText::new(PLAYED_LINE)
+                    .size(ui::SMALL_PT)
+                    .color(theme::text::dim()),
+            );
+        });
+    } else if linked {
         ui.label(
             egui::RichText::new(linked_line(chart))
                 .size(ui::SMALL_PT)

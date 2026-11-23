@@ -21,6 +21,7 @@ mod input;
 mod live;
 pub mod motion;
 mod player;
+mod rows;
 mod scene;
 mod script;
 mod take;
@@ -32,5 +33,6 @@ pub use input::Input;
 pub use player::{
     Fallback, ModeRow, Notice, OpenedRow, Player, Request, Start, StartError, ValueError, ValueRow,
 };
+pub use rows::TableRow;
 pub use scene::{Hotspot, Layer, Patch, Scene};
 pub use take::{Replay, Take};

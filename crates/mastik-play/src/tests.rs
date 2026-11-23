@@ -1340,6 +1340,9 @@ fn a_script_editing_a_table_redraws_the_list_over_it() {
         1,
         "the file untouched"
     );
+    assert_eq!(p.tables().len(), 1, "on the state card");
+    p.rebase(&fx.doc);
+    assert_eq!(rows(&p), 2, "kept through a re-clone");
 }
 
 // ── Live update ─────────────────────────────────────────────────────────────
@@ -2633,4 +2636,304 @@ fn an_empty_list_draws_no_row_in_play() {
         p.document().get(item).unwrap().visible(),
         "shown once the table has rows"
     );
+}
+
+// ── Row actions ─────────────────────────────────────────────────────────────
+
+/// `{<read>}` for a table read, as an expression stores it.
+fn read(r: mastik_core::prototype::expr::Ref) -> Expr {
+    Expr(format!("{{{}}}", r.wire()))
+}
+
+/// A frame A (200×400) with a list at (10, 10) over a table `Cart` (Name, Qty)
+/// holding `rows`, its template an instance of a 180×30 main.
+fn cart(rows: &[[&str; 2]]) -> (Fx, NodeId, NodeId, mastik_core::list::DataSetId) {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    use mastik_core::list::{DataSet, Source};
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 400.0);
+    let main = fx.frame("Row", 600.0, 180.0, 30.0);
+    fx.apply(vec![Operation::SetComponent {
+        id: main,
+        component: true,
+    }]);
+    let item = row_instance(&mut fx, main, a);
+    let set = DataSet {
+        id: fx.ids.mint_data_set(),
+        name: "Cart".into(),
+        table: Table {
+            columns: vec![
+                Column {
+                    id: ColumnId(0),
+                    name: "Name".into(),
+                },
+                Column {
+                    id: ColumnId(1),
+                    name: "Qty".into(),
+                },
+            ],
+            rows: rows
+                .iter()
+                .map(|r| r.iter().map(|c| (*c).to_string()).collect())
+                .collect(),
+        },
+        source: None,
+        pictures: Vec::new(),
+    };
+    let data = set.id;
+    listed(&mut fx, item, Source::New(set));
+    (fx, a, item, data)
+}
+
+/// A cart with no script: *Add row* fills an empty table and its list, a
+/// row's *Edit row* reads the row it is on, and *When a table changes* works a
+/// total out again. The document's table stays empty, and the state card's
+/// *Reset* puts the played one back.
+///
+/// flip: `write_table` not calling `table_changed` → fails at "the total
+/// follows"; `Player::pick` reading `opened` for *This row* → fails at "row 2
+/// edited".
+#[test]
+fn a_cart_adds_edits_and_totals_rows_in_play() {
+    use mastik_core::chart::ColumnId;
+    use mastik_core::prototype::expr::{Agg, Ref};
+    use mastik_core::prototype::{CellWrite, RowEnd, WhichRow};
+    let (mut fx, a, item, cart) = cart(&[]);
+    let total = fx.var("Total", VarKind::Number, Cell::Number(0.0));
+    let add = fx.rect(a, "Add", 150.0, 350.0, 40.0, 40.0);
+    fx.on(
+        add,
+        Trigger::Click,
+        vec![Action::AddRow {
+            table: cart,
+            at: RowEnd::End,
+            cells: vec![
+                CellWrite {
+                    column: ColumnId(0),
+                    to: Expr("'Shirt'".into()),
+                },
+                CellWrite {
+                    column: ColumnId(1),
+                    to: Expr("1".into()),
+                },
+            ],
+        }],
+    );
+    fx.on(
+        item,
+        Trigger::Click,
+        vec![Action::EditRow {
+            table: cart,
+            row: WhichRow::This,
+            cells: vec![CellWrite {
+                column: ColumnId(1),
+                to: Expr(format!("{} + 1", read(Ref::Row(ColumnId(1))).0)),
+            }],
+        }],
+    );
+    fx.on(
+        a,
+        Trigger::TableChanges { table: cart },
+        vec![Action::SetVariable {
+            var: total,
+            change: VarChange::Set {
+                to: read(Ref::Total(cart, ColumnId(1), Agg::Sum)),
+            },
+        }],
+    );
+    let l = fx.doc.get(item).unwrap().parent().unwrap();
+    let mut p = fx.play(a);
+    let drawn = |p: &Player| {
+        let n = p.document().get(l).unwrap();
+        n.children()
+            .iter()
+            .filter(|c| p.document().get(**c).unwrap().visible())
+            .count()
+    };
+    assert_eq!(drawn(&p), 0, "an empty cart draws nothing");
+
+    click(&mut p, 160.0, 360.0);
+    click(&mut p, 160.0, 360.0);
+    assert!(p.take_notices().is_empty());
+    let rows = |p: &Player| p.document().data_set(cart).unwrap().table.rows.clone();
+    assert_eq!(rows(&p).len(), 2, "two rows added");
+    assert_eq!(drawn(&p), 2, "the list follows");
+    assert_eq!(number(&p, total), 2.0, "the total follows");
+
+    // Rows at y 10 and 48: the second row's click edits the second row.
+    click(&mut p, 30.0, 60.0);
+    assert_eq!(
+        rows(&p)[1],
+        vec!["Shirt".to_string(), "2".into()],
+        "row 2 edited"
+    );
+    assert_eq!(rows(&p)[0][1], "1");
+    assert_eq!(number(&p, total), 3.0);
+    assert!(
+        fx.doc.data_set(cart).unwrap().table.rows.is_empty(),
+        "the file untouched"
+    );
+
+    let card = p.tables();
+    assert_eq!(card.len(), 1);
+    assert_eq!((card[0].rows, card[0].in_file), (2, 0));
+    p.input(Input::ResetTable(cart));
+    assert!(rows(&p).is_empty(), "put back");
+    assert_eq!(drawn(&p), 0);
+    assert_eq!(number(&p, total), 0.0, "a reset is a change too");
+    assert!(p.tables().is_empty());
+}
+
+/// *First row where…* finds its row by `{row.…}`; a row past the end skips the
+/// action with a notice; *This row* outside a list over the table is missing;
+/// a full table refuses *Add row* once, by name.
+///
+/// flip: `TableEnv::read` answering an empty cell for a row past the end →
+/// fails at "a row past the end".
+#[test]
+fn row_actions_pick_their_row_and_say_why_they_skip() {
+    use mastik_core::chart::ColumnId;
+    use mastik_core::prototype::expr::{Ref, RowAt};
+    use mastik_core::prototype::{CellWrite, RowEnd, WhichRow};
+    let (mut fx, a, _, cart) = cart(&[["A", "1"], ["B", "1"], ["C", "1"]]);
+    let button = |fx: &mut Fx, y: f64, action: Action| {
+        let b = fx.rect(a, "B", 150.0, y, 40.0, 30.0);
+        fx.on(b, Trigger::Click, vec![action]);
+    };
+    button(
+        &mut fx,
+        200.0,
+        Action::DeleteRow {
+            table: cart,
+            row: WhichRow::FirstWhere {
+                when: Expr(format!("{} == 'B'", read(Ref::Row(ColumnId(0))).0)),
+            },
+        },
+    );
+    button(
+        &mut fx,
+        250.0,
+        Action::EditRow {
+            table: cart,
+            row: WhichRow::Opened,
+            cells: vec![CellWrite {
+                column: ColumnId(0),
+                to: read(Ref::Cell(cart, RowAt::Nth(9), ColumnId(0))),
+            }],
+        },
+    );
+    button(
+        &mut fx,
+        300.0,
+        Action::DeleteRow {
+            table: cart,
+            row: WhichRow::This,
+        },
+    );
+    let mut p = fx.play(a);
+    let names = |p: &Player| -> Vec<String> {
+        let t = &p.document().data_set(cart).unwrap().table;
+        t.rows.iter().map(|r| r[0].clone()).collect()
+    };
+    click(&mut p, 160.0, 210.0);
+    assert_eq!(names(&p), ["A", "C"], "B deleted");
+    click(&mut p, 160.0, 210.0);
+    assert_eq!(names(&p), ["A", "C"], "no B left: skipped, nothing said");
+    assert!(p.take_notices().is_empty());
+
+    click(&mut p, 160.0, 260.0);
+    let notices = p.take_notices();
+    assert!(
+        matches!(&notices[..], [Notice::Expression { error, .. }]
+            if error.to_string() == "Cart has 2 rows, not 9"),
+        "a row past the end: {notices:?}"
+    );
+    assert_eq!(names(&p), ["A", "C"]);
+
+    click(&mut p, 160.0, 310.0);
+    assert!(matches!(&p.take_notices()[..], [Notice::Missing { .. }]));
+
+    // A full table: the most rows a table holds.
+    let (mut fx, a, _, set) = self::cart(&[]);
+    let mut full = fx.doc.data_set(set).unwrap().clone();
+    full.table.rows = vec![vec![String::new(), String::new()]; mastik_core::chart::MAX_ROWS];
+    fx.apply(vec![Operation::SetDataSet {
+        id: set,
+        set: Some(Box::new(full)),
+    }]);
+    let b = fx.rect(a, "Add", 150.0, 350.0, 40.0, 40.0);
+    fx.on(
+        b,
+        Trigger::Click,
+        vec![Action::AddRow {
+            table: set,
+            at: RowEnd::Start,
+            cells: vec![],
+        }],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 160.0, 360.0);
+    click(&mut p, 160.0, 360.0);
+    assert!(
+        matches!(&p.take_notices()[..], [Notice::TableFull { table, .. }] if table == "Cart"),
+        "said once, by name"
+    );
+}
+
+/// A live edit that leaves a played table's document rows alone keeps the
+/// played rows, through a re-clone too; one that changes them gives the
+/// document's back.
+///
+/// flip: `rebase` not calling `carry_tables` → fails at "kept through a
+/// re-clone".
+#[test]
+fn played_rows_survive_a_live_edit_that_leaves_their_table() {
+    use mastik_core::prototype::{RowEnd, WhichRow};
+    let (mut fx, a, _, cart) = cart(&[["A", "1"]]);
+    let b = fx.rect(a, "Add", 150.0, 350.0, 40.0, 40.0);
+    fx.on(
+        b,
+        Trigger::Click,
+        vec![Action::AddRow {
+            table: cart,
+            at: RowEnd::End,
+            cells: vec![],
+        }],
+    );
+    let del = fx.rect(a, "Del", 150.0, 300.0, 40.0, 40.0);
+    fx.on(
+        del,
+        Trigger::Click,
+        vec![Action::DeleteRow {
+            table: cart,
+            row: WhichRow::Opened,
+        }],
+    );
+    let mut p = fx.play(a);
+    let len = |p: &Player| p.document().data_set(cart).unwrap().table.rows.len();
+    click(&mut p, 160.0, 360.0);
+    assert_eq!(len(&p), 2);
+    let tx = Transaction(vec![Operation::SetName {
+        id: b,
+        name: "Add to cart".into(),
+    }]);
+    fx.doc.apply(&tx).unwrap();
+    p.apply_edit(&tx).unwrap();
+    assert_eq!(len(&p), 2, "kept through an edit elsewhere");
+    p.rebase(&fx.doc);
+    assert_eq!(len(&p), 2, "kept through a re-clone");
+
+    let mut set = fx.doc.data_set(cart).unwrap().clone();
+    set.table.rows.push(vec!["Z".into(), "9".into()]);
+    set.table.rows.push(vec!["Y".into(), "9".into()]);
+    let tx = Transaction(vec![Operation::SetDataSet {
+        id: cart,
+        set: Some(Box::new(set)),
+    }]);
+    fx.doc.apply(&tx).unwrap();
+    p.apply_edit(&tx).unwrap();
+    assert_eq!(len(&p), 3, "the document's rows again");
+    assert!(p.tables().is_empty());
+    click(&mut p, 160.0, 310.0);
+    assert_eq!(len(&p), 2, "the opened row, row 1, deleted");
 }

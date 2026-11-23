@@ -14,14 +14,14 @@ variables, conditions and Luau; the output is a real player, not a slideshow of 
 | Part | File |
 | --- | --- |
 | The saved model: reactions, play settings, flows, the export settings, dangling targets, instances and copies | `design/prototyping-model.md` |
-| The engine: the played copy, play values and state, triggers and actions, inputs and focus, scrolling, a layer that follows the drag, a scroll effect, motion (smart animate's direction, states that loop), live update, takes and video, expressions | `design/play.md` |
+| The engine: the played copy, play values and state, triggers and actions, inputs and focus, scrolling, a layer that follows the drag, a scroll effect, motion (smart animate's direction, states that loop), live update, takes and video, expressions and the tables they read, row actions on the played copy's tables | `design/play.md` |
 | Drawing a frame of play on either backend | `design/render.md` *Play* |
 | Authoring: prototype mode, connectors, the link dots, flow chips, instances, kit publishing, agents | `design/prototyping-authoring.md` |
 | The player in the app: present mode, following the editor, over the canvas, detached, fullscreen, keys, the bar and its flow menu, playing on a phone, the export card (HTML file, video, flow map) | `design/prototyping-player.md` |
 | The exported page: the browser build, the trim, fonts, the file, the page playing, inspect mode, the mirrored page, the flow map, the release's player | `design/prototyping-export.md` |
 | Scripts a reaction runs: document scripts; a kit's are copied in when vendored | `design/command-mode.md` §10, `design/kits.md` |
 | Imported prototype links and flows (Figma, Penpot, Sketch) | `design/library.md` *Import files* |
-| Lists from data: an instance repeated per row of a data set, the List card, the *Data tables* window, a tapped row opened on a detail screen | `design/lists.md` |
+| Lists from data: an instance repeated per row of a data set, the List card, the *Data tables* window, a tapped row opened on a detail screen, lists following a table edited in play | `design/lists.md` |
 
 **Derived** — rebuilt when needed, never stored: smart animate's pairing of layers between two
 frames, the in-between frames, the flow map's connectors, hotspot rectangles, and the copy's

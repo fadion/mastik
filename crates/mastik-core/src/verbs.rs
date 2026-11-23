@@ -8339,7 +8339,7 @@ fn ids_in(v: &mut Value, mint: &mut dyn FnMut() -> crate::item::ItemId) {
 /// Each prototype action by its name, and whether it carries a transition: what
 /// an action written as a bare word, or its kind in another case, is read as.
 /// Kept with [`crate::prototype::Action`]'s variants.
-const ACTIONS: [(&str, bool); 11] = [
+const ACTIONS: [(&str, bool); 14] = [
     ("Navigate", true),
     ("Back", false),
     ("OpenOverlay", true),
@@ -8351,6 +8351,9 @@ const ACTIONS: [(&str, bool); 11] = [
     ("Conditional", false),
     ("OpenUrl", false),
     ("RunScript", false),
+    ("AddRow", false),
+    ("EditRow", false),
+    ("DeleteRow", false),
 ];
 
 /// The list of reactions `v` in its serde shape: an `id` for each reaction and

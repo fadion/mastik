@@ -53,6 +53,13 @@ pub enum Notice {
     Fallback(Fallback),
     /// Reactions set each other off past the depth the player follows.
     Loop,
+    /// *Add row* on a table holding the most rows a table can; it is skipped.
+    /// Said once per action.
+    TableFull {
+        layer: NodeId,
+        action: ItemId,
+        table: String,
+    },
     /// A scroll trigger watches a frame that is gone, so it never fires. Said
     /// once per reaction, the first time its screen scrolls.
     ScrollFrameGone { layer: NodeId },
@@ -206,6 +213,10 @@ pub struct Player {
     /// The row play opened in each data set, opened again after a live edit:
     /// the edit's own regeneration, or a re-clone, puts every list back on row 1.
     pub(crate) opened: BTreeMap<mastik_core::list::DataSetId, usize>,
+    /// Each table play wrote this run, by a row action or a script, with the document's table as
+    /// it was then: the state card's *Tables*, and what a live edit compares
+    /// against to keep the played rows.
+    pub(crate) tables: BTreeMap<mastik_core::list::DataSetId, mastik_core::chart::Table>,
     /// The size each screen is laid out at in place of its own (a page's
     /// device, or the room under *Responsive*); `None` as drawn.
     pub(crate) play_size: Option<Size>,
@@ -273,6 +284,7 @@ impl Player {
             states: FxHashMap::default(),
             modes: FxHashMap::default(),
             opened: BTreeMap::new(),
+            tables: BTreeMap::new(),
             play_size: None,
             auto: FxHashMap::default(),
             inputs: Vec::new(),
@@ -638,6 +650,17 @@ impl Player {
     /// after a row action or a script writes one in play.
     pub(crate) fn follow_tables(&mut self, sets: &[mastik_core::list::DataSetId]) {
         use mastik_core::list;
+        if sets.is_empty() {
+            return;
+        }
+        // Whatever wrote it, a row action or a script, the first write of a run
+        // remembers the document's table: the state card's *Tables*, and what a
+        // live edit compares against to keep the played rows.
+        for set in sets {
+            if let Some(b) = self.base.data_set(*set) {
+                self.tables.entry(*set).or_insert_with(|| b.table.clone());
+            }
+        }
         for &set in sets {
             let Some(table) = self.doc.data_set(set).map(|d| d.table.clone()) else {
                 continue;
@@ -662,6 +685,8 @@ impl Player {
                 self.regenerate_list(l);
             }
         }
+        // A list a write emptied hides its template, one it filled shows it.
+        self.hide_empty_templates();
     }
 
     /// A tap inside a list's row opens that row of its data set: every list

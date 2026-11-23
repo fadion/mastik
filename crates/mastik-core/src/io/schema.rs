@@ -1126,7 +1126,14 @@ impl DocumentDto {
         // the second unreachable; a table past its limits is refused as an
         // operation would refuse it.
         let mut seen_data = FxHashSet::default();
-        for d in &self.data {
+        let mut data = self.data;
+        // `row` names the acted-on row in an expression, so no table keeps it.
+        for i in 0..data.len() {
+            if data[i].name == crate::prototype::expr::ROW {
+                data[i].name = crate::list::free_name_among(&data, crate::prototype::expr::ROW);
+            }
+        }
+        for d in &data {
             if !seen_data.insert(d.id) {
                 return Err(IoError::Integrity(format!(
                     "duplicate data set id {:?}",
@@ -1165,7 +1172,7 @@ impl DocumentDto {
             variables,
             styles,
             self.scripts,
-            self.data,
+            data,
             self.play_export,
             // Taken as written, with nothing minted: a loader that filled in a
             // missing id would make `load` non-deterministic, so the library mints

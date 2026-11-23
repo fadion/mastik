@@ -13,7 +13,9 @@ template, the list's description, its data set or a variable its filter reads ch
 - **`DataSet { id, name, table, source, pictures }`**, in `Document::data_sets()` in order,
   looked up by `DataSetId` (a node-id wire form, minted by `IdSource::mint_data_set`). The `table` is the
   chart's `Table` (`charts.md`, *The description*) under the chart's limits
-  (`list::validate_table`), and the name is at most 256 characters (`list::MAX_NAME_CHARS`).
+  (`list::validate_table`), and the name is at most 256 characters (`list::MAX_NAME_CHARS`). No door
+  names one `row`, the word an expression reads a row action's row by: `list::free_name` numbers
+  past it, and the loader renames a table called `row`. `SetDataSet` itself does not refuse it.
 - **A data set is the document's, not a list's**: several lists and charts may read one, and an
   edit to it regenerates every list reading it and brings every chart reading it onto its table
   (`charts.md`, *The description*, `data`). It is never drawn, so `SetDataSet` dirties nothing.
@@ -501,9 +503,17 @@ MCP's Phase 3 (`mcp.md`), each acting as its door in the app.
   or shows templates as below: a search field or a chip narrows the list. A mode set on the copy
   (`put_modes`: *Set mode*, the state card, a flow's start) regenerates every list whose filter
   reads any variable. An *Opened row* list keeps its row.
+- **Row actions edit the played copy's tables** (*Add row*, *Edit row*, *Delete row*;
+  `play.md`, *Actions*), as a *Run script* can: every list and chart over the table follows on
+  the copy (`Player::follow_tables`), and nothing reaches the document, the save or undo. A linked
+  table is edited in play too; its refusal of edits is the document's. Expressions read a table's
+  row count, cells and column totals (`play.md`, *Expressions*). The state card lists each table
+  play wrote, by a row action or a script, with *Show* and *Reset* (`prototyping-player.md`).
 - **A list drawing no row draws nothing in play**: an empty table, or no row passing its filter.
-  `Player::hide_empty_templates`, run from `prepare` and after `refilter`, hides its template on
-  the played copy and shows it again as the document has it once a row is drawn. The canvas
+  `Player::hide_empty_templates`, run from `prepare`, after `refilter` and after every table
+  write (`follow_tables`), hides its template on
+  the played copy and shows it again as the document has it once a row is drawn, so a list a
+  row action empties or fills follows. The canvas
   keeps the template, the one row to edit. The exported page plays through `mastik-play` and
   does the same. A list whose data set is missing keeps its rows.
 

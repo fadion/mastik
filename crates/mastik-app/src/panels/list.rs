@@ -532,7 +532,8 @@ impl MastikApp {
                     if t.op.takes_value() {
                         let key = super::prototype::DraftKey::ListTest(id, i);
                         let want = super::prototype::ExprWant::LiteralOr;
-                        if let Some(e) = self.expr_field(ui, key, &t.value, fw, want) {
+                        let reads = super::prototype::Reads::Vars;
+                        if let Some(e) = self.expr_field(ui, key, &t.value, fw, want, reads) {
                             let mut l = now.clone();
                             l.filter.tests[i].value = e;
                             next = Some(l);
@@ -998,6 +999,33 @@ mod tests {
         .unwrap();
         assert!(app.commit_edit(tx));
         (l, id)
+    }
+
+    /// A row action on the main a list's rows are instances of fires in a list
+    /// row, as one on the template does, so a new one acts on *This row*; a
+    /// layer outside every list gets *Opened row*.
+    /// flip: `in_list_over` not asking the main's instances → fails at "the
+    /// main's layer".
+    #[test]
+    fn a_row_action_on_a_rows_main_acts_on_this_row() {
+        use super::super::prototype::{ActionKind, in_list_over, new_action};
+        use mastik_core::prototype::{Action, WhichRow};
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let main = mastik_core::component::main_of(&app.session.doc, inst).unwrap();
+        let label = app.session.doc.get(main).unwrap().children()[0];
+        let (_, set) = listed(&mut app, inst, &["A", "B"]);
+        let doc = &app.session.doc;
+        assert!(in_list_over(doc, inst, set), "the template");
+        assert!(in_list_over(doc, label, set), "the main's layer");
+        let page = doc.first_page();
+        assert!(!in_list_over(doc, page, set), "outside every list");
+        let row_of = |holder| match new_action(doc, holder, ActionKind::EditRow) {
+            Some(Action::EditRow { table, row, .. }) => (table, row),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(row_of(label), (set, WhichRow::This));
+        assert_eq!(row_of(page), (set, WhichRow::Opened));
     }
 
     /// A filled property stays read-only while the template is among several

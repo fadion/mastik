@@ -59,6 +59,9 @@ pub enum Input {
         data: mastik_core::list::DataSetId,
         row: usize,
     },
+    /// A table put back as the document has it, from the state card's
+    /// *Tables*.
+    ResetTable(mastik_core::list::DataSetId),
     /// The pointer is a finger (`true`) or a mouse from here on. A finger
     /// hovers nothing: the hover triggers and hover states keep still, as on a
     /// phone, where a tap would otherwise fire *On hover* first.
@@ -149,6 +152,7 @@ impl Player {
                 self.open_data_row(data, row);
                 true
             }
+            Input::ResetTable(data) => self.reset_table(data),
             Input::Touch(on) => {
                 let was = std::mem::replace(&mut self.touch, on);
                 if was != on {

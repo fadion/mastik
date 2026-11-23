@@ -133,6 +133,8 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **Hosted links** — the export is one HTML file the designer sends or hosts anywhere; Mastik runs no server.
 - **Data from a URL or formulas in a list's data set** — as for a chart's table (*Charts*, below): a data set holds values read from a local file (`design/lists.md`).
 - **Grouped or formula filters on a list** — a list's filter is a few column tests joined by one *All* or *Any*, and its sort a column and one *Then by*; anything past that is a script.
+- **A row number as a row action's row** — a run deletes rows as it goes, so a number would name a different row each time; *This row*, *Opened row* and *First row where…* name it (`design/prototyping-model.md`).
+- **An expression inside an aggregate** (`{Cart.sum(Price * Qty)}`) — keep a stored line-total column and sum that.
 
 ## Charts
 

@@ -1005,6 +1005,7 @@ impl MastikApp {
             own: Some(chart.data.is_none()),
             new: false,
             save: self.chart_set(id).is_none(),
+            no_file: false,
         };
         match table_combo(ui, ("chart-table", id), w, doc, &shown, chart.data, &rows) {
             Some(TablePick::Own) => self.chart_own_table(id),

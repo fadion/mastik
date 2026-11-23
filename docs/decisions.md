@@ -218,6 +218,8 @@ Decided non-goals are in `docs/non-goals.md`.
 - **A data set stays until deleted, whatever reads it**, and the commit refuses deleting one a list or chart reads; no sweep (*Clean up…*, *System health*) takes an unread one, since a table holds typed data and losing it costs more than a stray layer (`design/lists.md`, *Data sets*).
 - **A list's copies are saved instances, regenerated inside the edit's undo step**: other edits write the copies in history (a main's change propagated, a variable detach), so a regeneration outside history would leave steps naming copies a later one replaced.
 - **A tap inside a list row opens that row; there is no *Open row* action**: a pointer reaction firing in a row sets the row on every *Opened row* list over the same data set before its actions run.
+- **A table edited in play is the played copy's, never the document's**: row actions write it through the player's commit door, the lists and charts over it follow, and nothing reaches the save or undo; a live edit keeps the played rows while the document's table is unchanged and otherwise drops them for the document's, and *Restart* puts every table back (`design/play.md`, *Actions*, *Live update*).
+- **An expression stores a table read by ids and resolves typed names against the real table and column names**: a rename never breaks one, and since names may hold dots (`products.csv`), a typed name that reads two ways is refused rather than guessed (`design/play.md`, *Expressions*).
 - **A video from a take encodes H.264 through OpenH264 built from source** (BSD-2-Clause), muxed by the `mp4` crate. Cisco's patent licence covers only its own binaries, so the patent cover is the distributor's. GIF needs no codec.
 
 ## Distribution

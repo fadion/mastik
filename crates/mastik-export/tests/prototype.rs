@@ -810,3 +810,45 @@ fn a_missing_target_or_a_broken_expression_holds_the_export() {
     );
     assert_eq!(held.len(), 2, "each once");
 }
+
+/// A row action on a table that is gone holds the export as a missing frame
+/// does, and a cell that does not read holds it as a condition does.
+///
+/// flip: `holds` asking only `layer_targets` → fails at "the missing table".
+#[test]
+fn a_row_action_on_a_missing_table_or_a_broken_cell_holds_the_export() {
+    use mastik_core::prototype::{CellWrite, Expr, RowEnd};
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let home = f.doc.page(f.flows_page).expect("page").flows[0].value.start;
+    let mut ids = IdSource::new(0x78);
+    let gone = ids.mint_data_set();
+    let reactions = click(
+        &mut ids,
+        Action::AddRow {
+            table: gone,
+            at: RowEnd::End,
+            cells: vec![CellWrite {
+                column: mastik_core::chart::ColumnId(0),
+                to: Expr("1 +".into()),
+            }],
+        },
+    );
+    f.doc
+        .apply(&Transaction(vec![Operation::SetReactions {
+            id: home,
+            reactions,
+        }]))
+        .expect("reactions");
+    let held = holds(&f.doc);
+    assert!(
+        held.iter()
+            .any(|h| h.layer == home && h.why == HoldWhy::Missing),
+        "the missing table: {held:?}"
+    );
+    assert!(
+        held.iter()
+            .any(|h| h.layer == home && matches!(h.why, HoldWhy::Expression(_))),
+        "the broken cell: {held:?}"
+    );
+}

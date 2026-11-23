@@ -138,7 +138,13 @@ otherwise the player returns over the canvas).
   above it. It opens with the frame shown (`screen_row`) and how far *Back* reaches, each
   open overlay then each step of history (*2 back*, or *No way back*). Then *Opened rows* when a
   list shows *Opened row*: one row per data
-  set such a list reads, a dropdown of its rows (`lists.md`, *Play*). Then *Modes* when the
+  set such a list reads, a dropdown of its rows (`lists.md`, *Play*). Then *Tables* when a row
+  action has changed a table this run (`Player::tables`): its name, *2 rows · 0 in the file* in
+  faint caption ink, *Show* (`icon::TABLE`, lit while shown) and *Reset* (`icon::ARROW_COUNTER_CLOCKWISE`,
+  *Put Cart back as the document has it*, an `Input::ResetTable`). *Show* opens the data window
+  read-only over the played table on the player's screen: the grid locked as a linked table's
+  is, no toolbar, and a note line behind `icon::PLAY`, *Edited in play — edits here would not
+  reach the document*. Then *Modes* when the
   document has a collection of two modes or more:
   one row per such collection, the document's then each kit's under the kit's eyebrow
   (`Player::modes`), a dropdown of its modes
@@ -189,7 +195,7 @@ on), `‹document› — ‹take›.mp4` or `.gif`, `‹document› — Flow map
     85, or a PNG when it has see-through pixels). A note then says the document keeps the
     original, with *Keep the original* to take the downscale back.
   - **What holds the export** (`mastik_export::prototype::holds`): on the pages the file carries,
-    a layer with an action naming a layer that is gone, or an expression that does not read
+    a layer with an action naming a layer or table that is gone, or an expression that does not read
     (`Expr::check`), each named by its layer behind a warning glyph in the danger ink. While any is listed, *Export…* is
     disabled with *Fix the interactions named above first*; until the measure lands, with
     *Measuring the file and checking its interactions*, since the measure is what finds them.

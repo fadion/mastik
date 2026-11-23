@@ -19,6 +19,7 @@ impl Player {
     /// started from either: the shell passed a commit of another document, or
     /// missed one. The player is unchanged then.
     pub fn apply_edit(&mut self, tx: &Transaction) -> Result<(), OpError> {
+        let played = self.played_tables();
         self.base.apply(tx)?;
         match self.doc.apply(tx) {
             Ok(out) => {
@@ -29,6 +30,7 @@ impl Player {
             }
             Err(_) => self.reclone(),
         }
+        self.carry_tables(played);
         self.prepare();
         self.reopen_rows();
         self.fall_back();
@@ -42,8 +44,10 @@ impl Player {
     /// phone mirroring the app, whose trimmed copy cannot take the editor's
     /// transactions).
     pub fn rebase(&mut self, doc: &mastik_core::Document) {
+        let played = self.played_tables();
         self.base = doc.clone();
         self.reclone();
+        self.carry_tables(played);
         self.prepare();
         self.reopen_rows();
         self.fall_back();

@@ -12,11 +12,14 @@ use crate::ui::{self, FieldButton, Prefix, Scrub};
 use eframe::egui;
 use mastik_core::id::NodeId;
 use mastik_core::item::{ItemId, Keyed};
+use mastik_core::list::DataSetId;
+use mastik_core::prototype::expr::{Ref, Unread, table_kind};
 use mastik_core::prototype::{
-    Action, Branch, DRAWN_POINT, Direction, DragPoint, DropAt, Easing, EffectEnds, Expr, Flow,
-    Follow, FollowRange, Going, Input, LayerPlay, ModeScope, OverlayPosition, OverlaySettings,
-    PagePlay, Pin, Reaction, Release, Scaling, ScrollAxis, ScrollEffect, ScrollProp, Side, Snap,
-    SnapAlign, Timing, Transition, TransitionKind, Trigger, VarChange,
+    Action, Branch, CellWrite, DRAWN_POINT, Direction, DragPoint, DropAt, Easing, EffectEnds, Expr,
+    Flow, Follow, FollowRange, Going, Input, LayerPlay, ModeScope, OverlayPosition,
+    OverlaySettings, PagePlay, Pin, Reaction, Release, RowEnd, Scaling, ScrollAxis, ScrollEffect,
+    ScrollProp, Side, Snap, SnapAlign, Timing, Transition, TransitionKind, Trigger, VarChange,
+    WhichRow,
 };
 use mastik_core::variable::{Cell, ModeId, ModeOwner, Switchable, VarId, VarKind};
 use mastik_core::{Document, NodeKind, Operation, Transaction};
@@ -131,6 +134,9 @@ pub(crate) enum ExprWant {
     /// Literal text when it names no `{…}`, else an expression: a list
     /// filter's value, where `2024-01` and `12` mean what they say.
     LiteralOr,
+    /// An expression of any kind, or nothing: *Add row*'s cell, where an empty
+    /// field writes an empty cell.
+    OrEmpty,
 }
 
 /// Where in a reaction a new action goes.
@@ -159,12 +165,15 @@ pub(crate) enum ActionKind {
     SetMode,
     Conditional,
     RunScript,
+    AddRow,
+    EditRow,
+    DeleteRow,
 }
 
 impl ActionKind {
-    /// The add menu's groups: where the player is, what floats over it, and the
-    /// state of the copy it plays.
-    const GROUPS: [(&'static str, &'static [ActionKind]); 3] = [
+    /// The add menu's groups: where the player is, what floats over it, the
+    /// state of the copy it plays, and the copy's tables.
+    const GROUPS: [(&'static str, &'static [ActionKind]); 4] = [
         (
             "Go",
             &[
@@ -192,6 +201,14 @@ impl ActionKind {
                 ActionKind::RunScript,
             ],
         ),
+        (
+            "Table",
+            &[
+                ActionKind::AddRow,
+                ActionKind::EditRow,
+                ActionKind::DeleteRow,
+            ],
+        ),
     ];
 
     fn of(a: &Action) -> Self {
@@ -208,6 +225,9 @@ impl ActionKind {
             Action::Conditional { .. } => Self::Conditional,
             Action::OpenUrl { .. } => Self::OpenUrl,
             Action::RunScript { .. } => Self::RunScript,
+            Action::AddRow { .. } => Self::AddRow,
+            Action::EditRow { .. } => Self::EditRow,
+            Action::DeleteRow { .. } => Self::DeleteRow,
         }
     }
 
@@ -226,6 +246,9 @@ impl ActionKind {
             Self::SetMode => "Set mode",
             Self::Conditional => "Conditional",
             Self::RunScript => "Run script",
+            Self::AddRow => "Add row",
+            Self::EditRow => "Edit row",
+            Self::DeleteRow => "Delete row",
         }
     }
 
@@ -243,6 +266,9 @@ impl ActionKind {
             Self::SetMode => icon::MODE,
             Self::Conditional => icon::CONDITIONAL,
             Self::RunScript => icon::FILE_CODE,
+            Self::AddRow => icon::ROWS_PLUS_BOTTOM,
+            Self::EditRow => icon::ROWS_PENCIL,
+            Self::DeleteRow => icon::TRASH,
         }
     }
 }
@@ -300,7 +326,73 @@ pub(crate) fn trigger_label(doc: &Document, holder: NodeId, t: &Trigger) -> Stri
             None => "When a missing variable changes".into(),
         },
         Trigger::FrameOpens => "When the frame opens".into(),
+        Trigger::TableChanges { table } => match doc.data_set(*table) {
+            Some(d) => format!("When {} changes", d.name),
+            None => "When a missing table changes".into(),
+        },
     }
+}
+
+/// Why the *Table* actions and *When a table changes* are dimmed.
+const NO_TABLES: &str = "This document has no tables";
+
+/// A table dropdown for a row action or *When a table changes*: the
+/// document's tables, without *From a file…*, since what it names must already
+/// be there. Answers the table picked.
+fn row_table_combo(
+    ui: &mut egui::Ui,
+    doc: &Document,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    table: DataSetId,
+    w: f32,
+) -> Option<DataSetId> {
+    use crate::list_data::{TablePick, TableRows, table_combo};
+    let face = doc
+        .data_set(table)
+        .map_or_else(|| "Missing table".to_string(), |d| d.name.clone());
+    let rows = TableRows {
+        no_file: true,
+        ..TableRows::default()
+    };
+    match table_combo(ui, salt, w, doc, &face, Some(table), &rows) {
+        Some(TablePick::Set(t)) => Some(t),
+        _ => None,
+    }
+}
+
+/// Whether a reaction on `holder` fires in a row of a list over `table`: the
+/// holder sits in one, or sits in a main one of whose instances does — what
+/// *This row* needs.
+pub(crate) fn in_list_over(doc: &Document, holder: NodeId, table: DataSetId) -> bool {
+    use mastik_core::list;
+    let in_row = |id: NodeId| {
+        let mut at = Some(id);
+        while let Some(n) = at.and_then(|a| doc.get(a)) {
+            if let Some((l, _)) = list::row_of(doc, n.id())
+                && doc
+                    .get(l)
+                    .and_then(|l| l.list())
+                    .is_some_and(|l| l.data == table)
+            {
+                return true;
+            }
+            at = n.parent();
+        }
+        false
+    };
+    if in_row(holder) {
+        return true;
+    }
+    let mut at = Some(holder);
+    while let Some(n) = at.and_then(|a| doc.get(a)) {
+        if n.component() {
+            return mastik_core::component::instances_of(doc, n.id())
+                .into_iter()
+                .any(in_row);
+        }
+        at = n.parent();
+    }
+    false
 }
 
 /// The name of snap point `p` of the layer `holder` that follows the drag.
@@ -966,32 +1058,71 @@ fn fresh_ids(list: &[Keyed<Action>], mint: &mut impl FnMut() -> ItemId) -> Vec<K
 
 // --- expressions ----------------------------------------------------------------
 
-/// An expression as its field shows it: each `{<actor-hex>:<seq>}` written as the
-/// variable's name in braces, a variable that is gone left as its id.
+/// What an expression field's names may read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Reads {
+    /// Variables only: a list filter's value, read where no table is.
+    Vars,
+    /// Variables and tables, with the row action's table `{row.…}` reads.
+    Tables(Option<DataSetId>),
+}
+
+impl Reads {
+    fn row(self) -> Option<DataSetId> {
+        match self {
+            Reads::Vars => None,
+            Reads::Tables(row) => row,
+        }
+    }
+}
+
+/// An expression as its field shows it: each variable and table read by name,
+/// a name that is gone left as its id.
 pub(crate) fn expr_shown(doc: &Document, e: &Expr) -> String {
-    e.with_names(&|v| doc.variables().get(v).map(|v| v.name.clone()))
+    mastik_core::prototype::expr_shown(doc, e, None)
 }
 
 /// What was typed into an expression field, as stored: each `{name}` written as
-/// its variable's id. Refused, with the reason, when it does not read, names a
-/// variable no one has, or (for *Set variable*, `want`) comes to another kind.
-/// A refusal carries the byte range of the typed text it is about, when the
-/// expression names one.
+/// the id of what it names. Refused, with the reason, when it does not read,
+/// names what no one has, or (for *Set variable*, `want`) comes to another
+/// kind; a table's cell has its kind only in play, so it is never refused for
+/// one. A refusal carries the byte range of the typed text it is about, when
+/// the expression names one.
 pub(crate) fn expr_stored(
     doc: &Document,
     text: &str,
     want: Option<VarKind>,
+    reads: Reads,
 ) -> Result<Expr, (String, Option<std::ops::Range<usize>>)> {
-    let (e, error) = Expr::from_names(text, &|n| doc.variables().by_name(n).map(|v| v.id));
+    let vars = doc.variables();
+    let var_id = |n: &str| vars.by_name(n).map(|v| v.id);
+    let var_name = |v: VarId| vars.get(v).map(|v| v.name.clone());
+    let (e, error) = match reads {
+        Reads::Vars => Expr::from_names(text, &var_id),
+        Reads::Tables(row) => Expr::from_names_in(
+            text,
+            &mastik_core::prototype::expr::Names {
+                var_id: &var_id,
+                var_name: &var_name,
+                tables: doc.data_sets(),
+                row,
+            },
+        ),
+    };
     if let Some(why) = error {
         return Err((capitalised(&why.to_string()), Some(why.at())));
     }
     if let Some(want) = want {
         // `kind` reads the stored form, whose ranges are not the typed text's.
         let got = e
-            .kind(&|v| doc.variables().get(v).map(|v| v.kind))
+            .kind(&|r| match r {
+                Ref::Var(v) => vars.get(*v).map(|v| Some(v.kind)).ok_or(Unread::Missing),
+                r => table_kind(doc.data_sets(), reads.row(), r),
+            })
             .map_err(|why| (capitalised(&why.to_string()), None))?;
-        if got != want {
+        if let Some(got) = got
+            && got != want
+        {
             return Err((
                 format!(
                     "This comes to a {}, not a {}",
@@ -1003,6 +1134,188 @@ pub(crate) fn expr_stored(
         }
     }
     Ok(e)
+}
+
+/// One row of the list `@` opens in an expression field.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AtRow {
+    /// The eyebrow it sits under.
+    group: &'static str,
+    label: String,
+    /// The faint words after it: a table's row count, what a word reads.
+    note: String,
+    /// What replaces the `@` and what follows it…
+    insert: String,
+    /// …in braces when this names something whole; else after a new `@`, for
+    /// the next step's list (a table's rows and columns, a column's totals).
+    done: bool,
+}
+
+/// What an expression's `text` may be naming after its last `@`: the
+/// variables whose names hold what follows it, then (where `reads` takes
+/// tables) the tables; after `<table>.`, what the table holds — its row count,
+/// its rows, its columns; after a row, its columns; after a column, its
+/// totals. None when no `@` is open.
+pub(crate) fn at_rows(doc: &Document, text: &str, reads: Reads) -> Vec<AtRow> {
+    use mastik_core::prototype::expr::{Agg, ROW};
+    let Some(at) = text.rfind('@') else {
+        return Vec::new();
+    };
+    let query = &text[at + 1..];
+    if query.contains(|c: char| "{}()+-*/<>=!&|,\"".contains(c)) {
+        return Vec::new();
+    }
+    // A space ends the name, unless a table's name goes on past it.
+    let spaced = |name: &str| query.starts_with(name) || name.starts_with(query);
+    let tables = matches!(reads, Reads::Tables(_));
+    if query.contains(char::is_whitespace)
+        && !(tables && doc.data_sets().iter().any(|t| spaced(&t.name)))
+    {
+        return Vec::new();
+    }
+    let row = |group, label: &str, note: String, insert: String, done| AtRow {
+        group,
+        label: label.to_owned(),
+        note,
+        insert,
+        done,
+    };
+    let holds = |name: &str, q: &str| name.to_lowercase().contains(&q.to_lowercase());
+    let mut out: Vec<AtRow> = doc
+        .variables()
+        .iter()
+        .filter(|v| holds(&v.name, query))
+        .map(|v| row("Variables", &v.name, String::new(), v.name.clone(), true))
+        .collect();
+    let Reads::Tables(row_table) = reads else {
+        out.truncate(AT_LIST_MAX);
+        return out;
+    };
+    let sets = doc.data_sets();
+    let count = |n: usize| match n {
+        1 => "1 row".to_string(),
+        n => format!("{n} rows"),
+    };
+    // The columns of `t`, each named whole after `head` or opening its totals.
+    let columns = |t: &mastik_core::list::DataSet, head: &str, rest: &str, whole: bool| {
+        t.table
+            .columns
+            .iter()
+            .filter(|c| holds(&c.name, rest))
+            .map(|c| {
+                let numbers = t.table.is_numeric(c.id);
+                let note = match (numbers, whole) {
+                    (true, false) => "# · sum min max avg",
+                    (true, true) => "#",
+                    (false, _) => "Aa",
+                };
+                let insert = match whole {
+                    true => format!("{head}{}", c.name),
+                    false => format!("{head}{}.", c.name),
+                };
+                row("Columns", &c.name, note.into(), insert, whole)
+            })
+            .collect::<Vec<_>>()
+    };
+    // `row.` and `<table>.` with what follows them.
+    let row_set = row_table.and_then(|r| sets.iter().find(|d| d.id == r));
+    if let (Some(t), Some(rest)) = (row_set, query.strip_prefix("row.")) {
+        return columns(t, "row.", rest, true);
+    }
+    if let Some((t, rest)) = sets.iter().find_map(|t| {
+        let rest = query.strip_prefix(t.name.as_str())?.strip_prefix('.')?;
+        Some((t, rest))
+    }) {
+        let head = format!("{}.", t.name);
+        // After a column: its totals.
+        if let Some((c, q)) = rest.rsplit_once('.')
+            && t.table.columns.iter().any(|x| x.name == c)
+        {
+            return Agg::ALL
+                .iter()
+                .filter(|a| a.word().starts_with(q))
+                .map(|a| {
+                    let insert = format!("{head}{c}.{}", a.word());
+                    row("Totals", a.word(), String::new(), insert, true)
+                })
+                .collect();
+        }
+        // After a row: its columns.
+        if let Some((sel, q)) = rest.split_once('.') {
+            let ok = matches!(sel, "opened" | "first" | "last")
+                || sel.parse::<u32>().is_ok_and(|n| n >= 1);
+            return match ok {
+                true => columns(t, &format!("{head}{sel}."), q, true),
+                false => Vec::new(),
+            };
+        }
+        let n = t.table.rows.len();
+        let mut words = vec![
+            row(
+                "Rows",
+                "rows",
+                format!("{} · how many rows", count(n)),
+                format!("{head}rows"),
+                true,
+            ),
+            row(
+                "Rows",
+                "opened",
+                "the opened row".into(),
+                format!("{head}opened."),
+                false,
+            ),
+            row(
+                "Rows",
+                "first",
+                "row 1".into(),
+                format!("{head}first."),
+                false,
+            ),
+            row(
+                "Rows",
+                "last",
+                format!("row {}", n.max(1)),
+                format!("{head}last."),
+                false,
+            ),
+        ];
+        if let Ok(k) = rest.parse::<u32>()
+            && k >= 1
+        {
+            words.push(row(
+                "Rows",
+                rest,
+                format!("row {k}"),
+                format!("{head}{k}."),
+                false,
+            ));
+        }
+        words.retain(|w| w.label.starts_with(rest));
+        words.extend(columns(t, &head, rest, false));
+        words.truncate(AT_LIST_MAX);
+        return words;
+    }
+    if row_set.is_some() && holds(ROW, query) {
+        out.push(row(
+            "Tables",
+            ROW,
+            "the row acted on".into(),
+            "row.".into(),
+            false,
+        ));
+    }
+    out.extend(sets.iter().filter(|t| holds(&t.name, query)).map(|t| {
+        row(
+            "Tables",
+            &t.name,
+            count(t.table.rows.len()),
+            format!("{}.", t.name),
+            false,
+        )
+    }));
+    out.truncate(AT_LIST_MAX);
+    out
 }
 
 fn kind_word(k: VarKind) -> &'static str {
@@ -1209,7 +1522,29 @@ fn target_words(doc: &Document, holder: NodeId, a: &Action) -> (String, Option<&
             Some(s) => (s.name.clone(), None),
             None => ("Missing script".into(), Some("Missing script")),
         },
+        Action::AddRow { table, .. } => match doc.data_set(*table) {
+            Some(d) => (d.name.clone(), None),
+            None => ("Missing table".into(), Some("Missing table")),
+        },
+        Action::EditRow { table, row, .. } | Action::DeleteRow { table, row } => {
+            match doc.data_set(*table) {
+                None => ("Missing table".into(), Some("Missing table")),
+                Some(_) if *row == WhichRow::This && !in_list_over(doc, holder, *table) => {
+                    ("No list row".into(), Some("No list row"))
+                }
+                Some(d) => (format!("{} · {}", d.name, row_short(row)), None),
+            }
+        }
         Action::Back | Action::CloseOverlay { .. } => (String::new(), None),
+    }
+}
+
+/// The row a row action acts on, as its row in the card says it.
+fn row_short(row: &WhichRow) -> &'static str {
+    match row {
+        WhichRow::This => "This row",
+        WhichRow::Opened => "Opened row",
+        WhichRow::FirstWhere { .. } => "First where…",
     }
 }
 
@@ -1346,6 +1681,15 @@ fn first_condition(doc: &Document) -> Expr {
         .map_or_else(|| Expr("true".into()), |v| keeps(v.id))
 }
 
+/// *First row where…*'s first test: the first column's cell against empty
+/// text, which reads as a question still to be set; `true` with no column.
+fn first_row_test(columns: &[(mastik_core::chart::ColumnId, String)]) -> Expr {
+    match columns.first() {
+        Some((c, _)) => Expr(format!("{{{}}} == ''", Ref::Row(*c).wire())),
+        None => Expr("true".into()),
+    }
+}
+
 /// *Flow n*, n the list's length on, the first number no flow is named by.
 fn free_flow_name(flows: &[Keyed<Flow>]) -> String {
     let mut n = flows.len() + 1;
@@ -1466,6 +1810,33 @@ pub(crate) fn new_action(doc: &Document, holder: NodeId, kind: ActionKind) -> Op
         ActionKind::RunScript => Action::RunScript {
             script: doc.scripts().first()?.id,
         },
+        // The table of the list the holder is in, else the first; the row the
+        // holder's list row is, where it is in one.
+        ActionKind::AddRow | ActionKind::EditRow | ActionKind::DeleteRow => {
+            let sets = doc.data_sets();
+            let table = sets
+                .iter()
+                .find(|d| in_list_over(doc, holder, d.id))
+                .or_else(|| sets.first())?
+                .id;
+            let row = match in_list_over(doc, holder, table) {
+                true => WhichRow::This,
+                false => WhichRow::Opened,
+            };
+            match kind {
+                ActionKind::AddRow => Action::AddRow {
+                    table,
+                    at: RowEnd::End,
+                    cells: Vec::new(),
+                },
+                ActionKind::EditRow => Action::EditRow {
+                    table,
+                    row,
+                    cells: Vec::new(),
+                },
+                _ => Action::DeleteRow { table, row },
+            }
+        }
     })
 }
 
@@ -1490,6 +1861,11 @@ pub(crate) fn action_refusal(
         }
         ActionKind::SetMode if switchable_collections(doc).is_empty() => {
             Some("No collection has a second mode")
+        }
+        ActionKind::AddRow | ActionKind::EditRow | ActionKind::DeleteRow
+            if doc.data_sets().is_empty() =>
+        {
+            Some(NO_TABLES)
         }
         ActionKind::ScrollTo if new_action(doc, holder, kind).is_none() => {
             Some(match scrolling_frames(doc, holder).is_empty() {
@@ -3897,6 +4273,17 @@ impl MastikApp {
                     ));
                 }
             }
+            Trigger::TableChanges { table } => {
+                let w = ui.available_width();
+                let doc = &self.session.doc;
+                if let Some(t) = row_table_combo(ui, doc, ("when-table", r.id), *table, w) {
+                    out.write = Some((
+                        with(&|x: &mut Reaction| x.trigger = Trigger::TableChanges { table: t }),
+                        "Change trigger",
+                        icon::TABLE,
+                    ));
+                }
+            }
             _ => {}
         }
         // --- the actions, one step in under their trigger ---------------------
@@ -3988,6 +4375,7 @@ impl MastikApp {
         let label = trigger_label(doc, id, &r.trigger);
         let a_screen = screen_of(doc, id) == Some(id);
         let first_var = doc.variables().iter().next().map(|v| v.id);
+        let first_table = doc.data_sets().first().map(|d| d.id);
         let first_scroller = scrolling_frames(doc, id).first().copied();
         let mut pick = None;
         let current = r.trigger.clone();
@@ -4047,6 +4435,14 @@ impl MastikApp {
                 && let Some(var) = first_var
             {
                 pick = Some(TriggerPick::Set(Trigger::VariableChanges { var }));
+            }
+            let on = matches!(current, Trigger::TableChanges { .. });
+            let why = first_table.is_none().then_some(NO_TABLES);
+            if row(ui, "When a table changes", on, why).clicked()
+                && !on
+                && let Some(table) = first_table
+            {
+                pick = Some(TriggerPick::Set(Trigger::TableChanges { table }));
             }
             let on = matches!(current, Trigger::ScrollPast { .. });
             let why = first_scroller.is_none().then_some("No frame here scrolls");
@@ -4837,6 +5233,7 @@ impl MastikApp {
                             to,
                             w,
                             ExprWant::Kind(kind),
+                            Reads::Tables(None),
                         ) {
                             out = Some((
                                 Action::SetVariable {
@@ -4908,6 +5305,7 @@ impl MastikApp {
                                 &b.when,
                                 fw,
                                 ExprWant::Kind(Some(VarKind::Boolean)),
+                                Reads::Tables(None),
                             ) {
                                 next_branches[i].when = e;
                                 changed = true;
@@ -5065,8 +5463,250 @@ impl MastikApp {
             Action::CloseOverlay { .. } => {
                 ui::selection_note(ui, "Closes the overlay on top");
             }
+            Action::AddRow { .. } | Action::EditRow { .. } | Action::DeleteRow { .. } => {
+                let glyph = ActionKind::of(&k.value).glyph();
+                out = self
+                    .row_action_fields(ui, id, k, w)
+                    .map(|a| (a, "Change action", glyph));
+            }
         }
         out
+    }
+
+    /// A row action's fields: its table; *Add row*'s place and one field per
+    /// column, an empty one writing an empty cell; *Edit row*'s and *Delete
+    /// row*'s row, and *Edit row*'s cells, only the columns it writes. Answers
+    /// the action rewritten.
+    fn row_action_fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        k: &Keyed<Action>,
+        w: f32,
+    ) -> Option<Action> {
+        let doc = &self.session.doc;
+        let (table, at, row, cells) = match &k.value {
+            Action::AddRow { table, at, cells } => (*table, Some(*at), None, Some(cells.clone())),
+            Action::EditRow { table, row, cells } => {
+                (*table, None, Some(row.clone()), Some(cells.clone()))
+            }
+            Action::DeleteRow { table, row } => (*table, None, Some(row.clone()), None),
+            _ => return None,
+        };
+        let make = |table: DataSetId, row: Option<WhichRow>, cells: Vec<CellWrite>| match (at, row)
+        {
+            (Some(at), _) => Action::AddRow { table, at, cells },
+            (None, Some(row)) if matches!(k.value, Action::EditRow { .. }) => {
+                Action::EditRow { table, row, cells }
+            }
+            (None, row) => Action::DeleteRow {
+                table,
+                row: row.unwrap_or(WhichRow::Opened),
+            },
+        };
+        let columns: Vec<(mastik_core::chart::ColumnId, String)> = doc
+            .data_set(table)
+            .map(|d| {
+                d.table
+                    .columns
+                    .iter()
+                    .map(|c| (c.id, c.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let table_name = doc
+            .data_set(table)
+            .map_or_else(|| "Missing table".to_string(), |d| d.name.clone());
+        let in_list = in_list_over(doc, id, table);
+        let mut next = None;
+        ui::labelled(ui, "Table", |ui| {
+            if let Some(t) = row_table_combo(ui, doc, ("row-table", k.id), table, w) {
+                // Another table's columns are not these, and its list may not
+                // hold this layer.
+                let row = row.clone().map(|r| match r {
+                    WhichRow::This if !in_list_over(doc, id, t) => WhichRow::Opened,
+                    WhichRow::FirstWhere { .. } => WhichRow::Opened,
+                    r => r,
+                });
+                next = Some(make(t, row, Vec::new()));
+            }
+        });
+        if let Some(at) = at {
+            ui::labelled(ui, "At", |ui| {
+                let cur = usize::from(at == RowEnd::Start);
+                let got = ui::segmented_tipped(
+                    ui,
+                    w,
+                    ui::SEGMENT_CELL_H,
+                    2,
+                    cur,
+                    |_| true,
+                    |i| match i {
+                        0 => "After the last row",
+                        _ => "Before the first row",
+                    },
+                    |p, i, r, on| ui::segment_label(p, r, ["End", "Start"][i], on),
+                );
+                if let Some(i) = got.filter(|i| *i != cur) {
+                    next = Some(Action::AddRow {
+                        table,
+                        at: [RowEnd::End, RowEnd::Start][i],
+                        cells: cells.clone().unwrap_or_default(),
+                    });
+                }
+            });
+        }
+        if let Some(row) = &row {
+            let this_why =
+                format!("This row: the interaction is not inside a list over {table_name}");
+            ui::labelled(ui, "Row", |ui| {
+                let face = row_short(row);
+                ui::fitted_combo(ui, ("row-which", k.id), w, face, face, |ui| {
+                    ui::menu_rows(ui);
+                    let options = [
+                        ("This row", "the list row tapped", WhichRow::This),
+                        ("Opened row", "", WhichRow::Opened),
+                        (
+                            "First row where…",
+                            "",
+                            WhichRow::FirstWhere {
+                                when: first_row_test(&columns),
+                            },
+                        ),
+                    ];
+                    for (label, note, pick) in options {
+                        let on = std::mem::discriminant(row) == std::mem::discriminant(&pick);
+                        let ok = pick != WhichRow::This || in_list;
+                        let mut r = ui::MenuRow::new("", label).selected(on).enabled(ok);
+                        if !note.is_empty() {
+                            r = r.note(note);
+                        }
+                        let resp = ui::menu_row(ui, r, ui::MENU_ROW_H);
+                        if !ok {
+                            resp.on_disabled_hover_text(&this_why);
+                        } else if resp.clicked() && !on {
+                            next = Some(make(table, Some(pick), cells.clone().unwrap_or_default()));
+                        }
+                    }
+                });
+            });
+            if *row == WhichRow::This && !in_list {
+                ui::selection_note(ui, &this_why);
+            }
+            if let WhichRow::FirstWhere { when } = row {
+                ui::labelled(ui, "Where", |ui| {
+                    if let Some(e) = self.expr_field(
+                        ui,
+                        DraftKey::Expr(k.id, usize::MAX),
+                        when,
+                        w,
+                        ExprWant::Kind(Some(VarKind::Boolean)),
+                        Reads::Tables(Some(table)),
+                    ) {
+                        let row = WhichRow::FirstWhere { when: e };
+                        next = Some(make(table, Some(row), cells.clone().unwrap_or_default()));
+                    }
+                });
+                ui::selection_note(ui, "No row matches: the action is skipped");
+            }
+        }
+        let Some(cells) = cells else {
+            return next;
+        };
+        ui::card_rule(ui);
+        let order = |c: &mut Vec<CellWrite>| {
+            c.sort_by_key(|x| columns.iter().position(|(id, _)| *id == x.column));
+        };
+        if at.is_some() {
+            // *Add row*: every column, an empty field an empty cell.
+            for (i, (col, name)) in columns.iter().enumerate() {
+                let now = cells
+                    .iter()
+                    .find(|c| c.column == *col)
+                    .map_or_else(Expr::default, |c| c.to.clone());
+                ui::labelled(ui, name, |ui| {
+                    let key = DraftKey::Expr(k.id, i);
+                    let reads = Reads::Tables(None);
+                    if let Some(e) = self.expr_field(ui, key, &now, w, ExprWant::OrEmpty, reads) {
+                        let mut c: Vec<CellWrite> =
+                            cells.iter().filter(|c| c.column != *col).cloned().collect();
+                        if !e.0.trim().is_empty() {
+                            c.push(CellWrite {
+                                column: *col,
+                                to: e,
+                            });
+                        }
+                        order(&mut c);
+                        next = Some(make(table, None, c));
+                    }
+                });
+            }
+            if columns.is_empty() {
+                ui::selection_note(ui, "The table has no columns");
+            }
+            return next;
+        }
+        // *Edit row*: the columns it writes, each removable, then *Add column*.
+        let row = row.unwrap_or(WhichRow::Opened);
+        let fw = w - ui::CONTROL_H - COL;
+        for (i, c) in cells.iter().enumerate() {
+            let name = columns
+                .iter()
+                .find(|(id, _)| *id == c.column)
+                .map_or("Missing column", |(_, n)| n.as_str());
+            ui::labelled(ui, name, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = COL;
+                    let key = DraftKey::Expr(k.id, i);
+                    let want = ExprWant::Kind(None);
+                    let reads = Reads::Tables(Some(table));
+                    if let Some(e) = self.expr_field(ui, key, &c.to, fw, want, reads) {
+                        let mut all = cells.clone();
+                        all[i].to = e;
+                        next = Some(make(table, Some(row.clone()), all));
+                    }
+                    if ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
+                        .on_hover_text("Leave this column as it is")
+                        .clicked()
+                    {
+                        let mut all = cells.clone();
+                        all.remove(i);
+                        next = Some(make(table, Some(row.clone()), all));
+                    }
+                });
+            });
+        }
+        let free = columns
+            .iter()
+            .find(|(id, _)| !cells.iter().any(|c| c.column == *id));
+        let size = egui::vec2(w, ui::CONTROL_H);
+        let resp = ui::disable_unless(ui, free.is_some(), |ui| {
+            ui::action_button(ui, icon::PLUS, "Add column", FieldButton::Off, size)
+        })
+        .inner;
+        let resp = match free {
+            Some(_) => resp.on_hover_text("Write another of the row's cells"),
+            None => resp.on_disabled_hover_text("The edit writes every column"),
+        };
+        if resp.clicked()
+            && let Some((col, _)) = free
+        {
+            // It reads its own cell, so it changes nothing until typed over.
+            let mut all = cells.clone();
+            all.push(CellWrite {
+                column: *col,
+                to: Expr(format!("{{{}}}", Ref::Row(*col).wire())),
+            });
+            order(&mut all);
+            next = Some(make(table, Some(row.clone()), all));
+        }
+        if cells.len() > 1 {
+            ui::selection_note(
+                ui,
+                "Every cell is worked out from the row as it was before the edit",
+            );
+        }
+        next
     }
 
     /// A transition's rows: its kind, its direction (for the kinds that move one
@@ -5584,24 +6224,27 @@ impl MastikApp {
         e: &Expr,
         w: f32,
         want: ExprWant,
+        reads: Reads,
     ) -> Option<Expr> {
+        let empty_ok = want == ExprWant::OrEmpty;
         let (want, literal) = match want {
             ExprWant::Kind(k) => (k, false),
             ExprWant::LiteralOr => (None, true),
+            ExprWant::OrEmpty => (None, false),
         };
-        let shown = expr_shown(&self.session.doc, e);
+        let shown = mastik_core::prototype::expr_shown(&self.session.doc, e, reads.row());
         let ctx = ui.ctx().clone();
         let live = ui::Draft::live(&mut self.proto.draft, &ctx, key);
         let refused = live.as_ref().and_then(|d| d.refused.clone());
         let mut text = live.map_or(shown.clone(), |d| d.text.clone());
-        // `@` asks for a variable: while the field holds one being named, its
-        // keys move through the list under it rather than commit.
+        // `@` asks for a variable or a table: while the field holds one being
+        // named, its keys move through the list under it rather than commit.
         let at_id = ui.id().with(("expr-at", key));
-        let (pick_key, pressed_in) = self.at_list_keys(ui, at_id, &text);
-        let hint = if literal {
-            "A value, or @ for a variable"
-        } else {
-            "An expression, such as {count} + 1, or @ for a variable"
+        let (pick_key, pressed_in) = self.at_list_keys(ui, at_id, &text, reads);
+        let hint = match (literal, reads) {
+            (true, _) => "A value, or @ for a variable",
+            (false, Reads::Vars) => "An expression, such as {count} + 1, or @ for a variable",
+            (false, Reads::Tables(_)) => "An expression, such as {count} + 1, or @ for a name",
         };
         let resp = ui::refusable_field(
             ui,
@@ -5621,9 +6264,13 @@ impl MastikApp {
             resp.request_focus();
             return None;
         }
-        if let Some(named) = self.at_list(ui, at_id, &resp, &text, pick_key) {
+        if let Some(row) = self.at_list(ui, at_id, &resp, &text, pick_key, reads) {
             let at = text.rfind('@').unwrap_or(text.len());
-            let next = format!("{}{{{named}}}", &text[..at]);
+            // A table, or a table's row or column, opens the next step's list.
+            let next = match row.done {
+                true => format!("{}{{{}}}", &text[..at], row.insert),
+                false => format!("{}@{}", &text[..at], row.insert),
+            };
             let mut state = egui::TextEdit::load_state(&ctx, resp.id).unwrap_or_default();
             state
                 .cursor
@@ -5639,11 +6286,13 @@ impl MastikApp {
         if typed == shown {
             return None;
         }
-        if literal && mastik_core::prototype::expr::var_tokens(&typed).is_empty() {
+        if (literal && mastik_core::prototype::expr::var_tokens(&typed).is_empty())
+            || (empty_ok && typed.trim().is_empty())
+        {
             self.proto.expr_fault = None;
             return Some(Expr(typed));
         }
-        match expr_stored(&self.session.doc, &typed, want) {
+        match expr_stored(&self.session.doc, &typed, want, reads) {
             Ok(e) => {
                 self.proto.expr_fault = None;
                 Some(e)
@@ -5660,11 +6309,17 @@ impl MastikApp {
     /// `@` and the field held focus last pass, take the arrows, Enter and Tab
     /// for the list. Answers the variable Enter or Tab picked, and whether the
     /// pointer pressed on the list this pass.
-    fn at_list_keys(&self, ui: &egui::Ui, at_id: egui::Id, text: &str) -> (Option<String>, bool) {
-        let shown: Option<(Vec<String>, egui::Rect, egui::Id)> = ui
+    fn at_list_keys(
+        &self,
+        ui: &egui::Ui,
+        at_id: egui::Id,
+        text: &str,
+        reads: Reads,
+    ) -> (Option<AtRow>, bool) {
+        let shown: Option<(Vec<AtRow>, egui::Rect, egui::Id)> = ui
             .ctx()
             .data(|d| d.get_temp::<(egui::Rect, egui::Id)>(at_id))
-            .map(|(r, f)| (self.at_names(text), r, f));
+            .map(|(r, f)| (at_rows(&self.session.doc, text, reads), r, f));
         let Some((names, list, field)) = shown else {
             return (None, false);
         };
@@ -5695,37 +6350,19 @@ impl MastikApp {
         (enter.then(|| names[hi].clone()), pressed_in)
     }
 
-    /// The variables an expression's `text` may be naming after its last `@`,
-    /// those whose names hold what follows it; none when no `@` is open.
-    fn at_names(&self, text: &str) -> Vec<String> {
-        let Some(at) = text.rfind('@') else {
-            return Vec::new();
-        };
-        let query = text[at + 1..].to_lowercase();
-        if query.contains(|c: char| c.is_whitespace() || "{}()+-*/<>=!&|,\"".contains(c)) {
-            return Vec::new();
-        }
-        self.session
-            .doc
-            .variables()
-            .iter()
-            .map(|v| v.name.clone())
-            .filter(|n| n.to_lowercase().contains(&query))
-            .take(AT_LIST_MAX)
-            .collect()
-    }
-
     /// The list `@` opens under the expression field `resp`, its highlighted
-    /// row lit; answers the variable clicked, or `picked` by Enter or Tab.
+    /// row lit, each group under its eyebrow; answers the row clicked, or
+    /// `picked` by Enter or Tab.
     fn at_list(
         &self,
         ui: &egui::Ui,
         at_id: egui::Id,
         resp: &egui::Response,
         text: &str,
-        picked: Option<String>,
-    ) -> Option<String> {
-        let names = self.at_names(text);
+        picked: Option<AtRow>,
+        reads: Reads,
+    ) -> Option<AtRow> {
+        let names = at_rows(&self.session.doc, text, reads);
         if names.is_empty() || !resp.has_focus() {
             ui.ctx()
                 .data_mut(|d| d.remove::<(egui::Rect, egui::Id)>(at_id));
@@ -5743,9 +6380,16 @@ impl MastikApp {
             .show(|ui| {
                 ui::popup_rows(ui);
                 ui.set_width(resp.rect.width());
-                ui::menu_eyebrow(ui, "Variables");
+                let mut group = None;
                 for (i, n) in names.iter().enumerate() {
-                    let row = ui::MenuRow::new("", n).highlight(i == hi);
+                    if group != Some(n.group) {
+                        ui::menu_eyebrow(ui, n.group);
+                        group = Some(n.group);
+                    }
+                    let mut row = ui::MenuRow::new("", &n.label).highlight(i == hi);
+                    if !n.note.is_empty() {
+                        row = row.note(&n.note);
+                    }
                     if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
                         clicked = Some(n.clone());
                     }
@@ -7403,7 +8047,7 @@ mod tests {
     #[test]
     fn a_refused_expression_names_where_it_fails() {
         let doc = Document::new(mastik_core::IdSource::new(1).mint());
-        let (_, at) = expr_stored(&doc, "1 + )", None).expect_err("does not read");
+        let (_, at) = expr_stored(&doc, "1 + )", None, Reads::Vars).expect_err("does not read");
         let at = at.expect("a syntax fault has a place");
         assert!(
             at.start >= 2 && at.start <= 4,
@@ -7453,16 +8097,20 @@ mod tests {
         .expect("fixture: a number variable");
         assert!(s.commit(Transaction(ops)), "fixture: committed");
         let doc = &f.app.session.doc;
-        let stored = expr_stored(doc, "{cartCount} + 1", Some(VarKind::Number)).expect("reads");
+        let stored =
+            expr_stored(doc, "{cartCount} + 1", Some(VarKind::Number), Reads::Vars).expect("reads");
         assert_eq!(stored.0, format!("{{{}}} + 1", var.0.to_wire()));
         assert_eq!(expr_shown(doc, &stored), "{cartCount} + 1");
         assert!(
-            expr_stored(doc, "{nope} + 1", None).is_err(),
+            expr_stored(doc, "{nope} + 1", None, Reads::Vars).is_err(),
             "an unknown name"
         );
-        assert!(expr_stored(doc, "1 +", None).is_err(), "does not read");
         assert!(
-            expr_stored(doc, "{cartCount} + 1", Some(VarKind::String)).is_err(),
+            expr_stored(doc, "1 +", None, Reads::Vars).is_err(),
+            "does not read"
+        );
+        assert!(
+            expr_stored(doc, "{cartCount} + 1", Some(VarKind::String), Reads::Vars).is_err(),
             "a number is not a string"
         );
     }
@@ -7999,7 +8647,7 @@ mod tests {
 
     /// `@` in an expression lists the variables whose names hold what follows
     /// it, and nothing once the name is closed or no `@` is open.
-    /// flip: `at_names` ignoring the query → fails at "filtered".
+    /// flip: `at_rows` ignoring the query → fails at "filtered".
     #[test]
     fn an_at_lists_the_variables_it_may_name() {
         use mastik_core::variable::{Cell, CollectionId, Mode, Variable};
@@ -8032,10 +8680,105 @@ mod tests {
             number(a, "cartCount"),
             number(b, "signedIn"),
         ])));
-        assert_eq!(f.app.at_names("1 + @"), vec!["cartCount", "signedIn"]);
-        assert_eq!(f.app.at_names("1 + @cart"), vec!["cartCount"], "filtered");
-        assert!(f.app.at_names("@cart + 1").is_empty(), "closed by a space");
-        assert!(f.app.at_names("{cartCount} + 1").is_empty(), "no @");
+        let names = |t: &str| -> Vec<String> {
+            at_rows(&f.app.session.doc, t, Reads::Vars)
+                .into_iter()
+                .map(|r| r.label)
+                .collect()
+        };
+        assert_eq!(names("1 + @"), vec!["cartCount", "signedIn"]);
+        assert_eq!(names("1 + @cart"), vec!["cartCount"], "filtered");
+        assert!(names("@cart + 1").is_empty(), "closed by a space");
+        assert!(names("{cartCount} + 1").is_empty(), "no @");
+    }
+
+    /// `@` lists the tables after the variables; a table's dot lists its count,
+    /// its rows and its columns, a column's dot its totals, and a pick of the
+    /// last step writes the whole read, which stores by ids.
+    /// flip: `at_rows` leaving out the tables → fails at "tables after".
+    #[test]
+    fn an_at_lists_tables_and_then_what_they_hold() {
+        use mastik_core::chart::{Column, ColumnId, Table};
+        use mastik_core::list::DataSet;
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let id = f.app.session.ids.mint_data_set();
+        let set = DataSet {
+            id,
+            name: "Cart items".into(),
+            table: Table {
+                columns: vec![
+                    Column {
+                        id: ColumnId(0),
+                        name: "Name".into(),
+                    },
+                    Column {
+                        id: ColumnId(1),
+                        name: "Line".into(),
+                    },
+                ],
+                rows: vec![vec!["Shirt".into(), "42".into()]],
+            },
+            source: None,
+            pictures: Vec::new(),
+        };
+        assert!(
+            f.app
+                .session
+                .commit(Transaction(vec![Operation::SetDataSet {
+                    id,
+                    set: Some(Box::new(set)),
+                }]))
+        );
+        let doc = &f.app.session.doc;
+        let rows = |t: &str| at_rows(doc, t, Reads::Tables(None));
+        let labels = |t: &str| -> Vec<String> { rows(t).into_iter().map(|r| r.label).collect() };
+        assert_eq!(
+            labels("@"),
+            vec!["Cart items"],
+            "tables after the variables"
+        );
+        assert_eq!(
+            rows("@Cart i")[0].insert,
+            "Cart items.",
+            "a space inside a table's name"
+        );
+        assert!(
+            at_rows(doc, "@", Reads::Vars).is_empty(),
+            "a list filter reads no table"
+        );
+        assert_eq!(
+            labels("@Cart items."),
+            vec!["rows", "opened", "first", "last", "Name", "Line"]
+        );
+        let line = rows("@Cart items.Li").pop().unwrap();
+        assert_eq!(
+            (line.insert.as_str(), line.done),
+            ("Cart items.Line.", false)
+        );
+        assert_eq!(
+            labels("@Cart items.Line."),
+            vec!["sum", "min", "max", "avg"]
+        );
+        let cell = rows("@Cart items.first.Na").pop().unwrap();
+        assert_eq!(
+            (cell.insert.as_str(), cell.done),
+            ("Cart items.first.Name", true)
+        );
+        let typed = format!("{{{}}} + 1", rows("@Cart items.Line.s")[0].insert);
+        let e = expr_stored(doc, &typed, Some(VarKind::Number), Reads::Tables(None)).unwrap();
+        assert_eq!(expr_shown(doc, &e), "{Cart items.Line.sum} + 1");
+        assert!(
+            expr_stored(doc, "{row.Name}", None, Reads::Tables(None)).is_err(),
+            "row outside a row action"
+        );
+        assert!(expr_stored(doc, "{row.Name}", None, Reads::Tables(Some(id))).is_ok());
+        assert!(labels("@row.").is_empty() && !rows("@").iter().any(|r| r.label == "row"));
+        let in_row = at_rows(doc, "@", Reads::Tables(Some(id)));
+        assert_eq!(
+            in_row[0].label, "row",
+            "the acted-on row inside a row action"
+        );
     }
 
     /// A new *Set variable* on a text variable reads before anything is typed,

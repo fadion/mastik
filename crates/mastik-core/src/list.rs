@@ -1102,7 +1102,14 @@ pub fn name_for_path(path: &std::path::Path) -> String {
 
 /// A name no data set in `doc` has: `wanted`, else numbered past it.
 pub fn free_name(doc: &Document, wanted: &str) -> String {
-    let taken: FxHashSet<&str> = doc.data_sets().iter().map(|d| d.name.as_str()).collect();
+    free_name_among(doc.data_sets(), wanted)
+}
+
+/// [`free_name`] among `sets`. `row` is always taken: an expression reads the
+/// row a row action is on as `{row.<column>}`.
+pub fn free_name_among(sets: &[DataSet], wanted: &str) -> String {
+    let mut taken: FxHashSet<&str> = sets.iter().map(|d| d.name.as_str()).collect();
+    taken.insert(crate::prototype::expr::ROW);
     if !taken.contains(wanted) {
         return wanted.to_owned();
     }

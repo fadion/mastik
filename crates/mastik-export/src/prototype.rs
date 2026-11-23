@@ -142,21 +142,15 @@ pub enum HoldWhy {
 /// Every [`Hold`] on the pages the export of `doc`'s chosen flows carries, in
 /// document order, each layer once per kind.
 pub fn holds(doc: &Document) -> Vec<Hold> {
-    use mastik_core::prototype::{Action, VarChange};
+    use mastik_core::prototype::Action;
     fn exprs(action: &Action, out: &mut Vec<String>) {
-        match action {
-            Action::SetVariable {
-                change: VarChange::Set { to },
-                ..
-            } => out.extend(to.check().err().map(|e| e.to_string())),
-            Action::Conditional { branches, .. } => out.extend(
-                branches
-                    .iter()
-                    .filter_map(|b| b.when.check().err())
-                    .map(|e| e.to_string()),
-            ),
-            _ => {}
-        }
+        out.extend(
+            action
+                .exprs()
+                .into_iter()
+                .filter_map(|e| e.check().err())
+                .map(|e| e.to_string()),
+        );
         for k in action.nested() {
             exprs(&k.value, out);
         }
@@ -180,7 +174,11 @@ pub fn holds(doc: &Document) -> Vec<Hold> {
                     let missing = action.value.layer_targets().into_iter().any(|t| {
                         let t = mastik_core::prototype::resolve_target(doc, id, t);
                         doc.get(t).is_none()
-                    });
+                    }) || action
+                        .value
+                        .tables()
+                        .into_iter()
+                        .any(|t| doc.data_set(t).is_none());
                     if missing {
                         push(Hold {
                             layer: id,

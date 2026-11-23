@@ -149,6 +149,9 @@ pub(crate) struct Playing {
     pulse_at: Option<f64>,
     /// The player was last told the pointer is a finger.
     touch: bool,
+    /// The table the state card's *Show* opened, read-only over the screen,
+    /// with its grid's state.
+    table_shown: Option<(mastik_core::list::DataSetId, crate::chart_data::ChartData)>,
 }
 
 /// Where play starts on `page` of `doc`: the selected top-level `frame` when
@@ -264,6 +267,14 @@ pub(crate) fn notice_text(n: &Notice) -> String {
         Notice::ScrollFrameGone { .. } => {
             "A scroll trigger watches a frame that is gone; it never fires".into()
         }
+        Notice::TableFull { table, .. } => {
+            let n = mastik_core::chart::MAX_ROWS;
+            format!(
+                "Skipped Add row: {table} holds {},{:03} rows, the most a table can",
+                n / 1000,
+                n % 1000
+            )
+        }
     }
 }
 
@@ -302,6 +313,7 @@ impl Playing {
             stirred_at: f64::NEG_INFINITY,
             pulse_at: None,
             touch: false,
+            table_shown: None,
         }
     }
 
@@ -870,6 +882,13 @@ fn state_rows(ui: &mut egui::Ui, p: &mut Playing) {
             opened_row(ui, p, i, row);
         }
     }
+    let tables = p.player.tables();
+    if !tables.is_empty() {
+        section(ui, "Tables");
+        for row in &tables {
+            table_row(ui, p, row);
+        }
+    }
     let modes = p.player.modes();
     if !modes.is_empty() {
         section(ui, "Modes");
@@ -1047,6 +1066,43 @@ fn opened_row(ui: &mut egui::Ui, p: &mut Playing, i: usize, row: &mastik_play::O
             data: row.data,
             row: n,
         });
+    }
+}
+
+/// One table in *Tables*: its name, its rows in play against the document's,
+/// *Show* opening it read-only over the screen, and *Reset* putting it back.
+fn table_row(ui: &mut egui::Ui, p: &mut Playing, row: &mastik_play::TableRow) {
+    let (mut show, mut reset) = (false, false);
+    let shown = p.table_shown.as_ref().is_some_and(|(d, _)| *d == row.data);
+    ui::label_row(ui, &row.name, ui::switch_row_ink(true), |ui| {
+        let button = |ui: &mut egui::Ui, glyph, on| {
+            ui::icon_button(ui, glyph, ui::CONTROL_H, ui::CONTROL_GLYPH_PT, on, true)
+        };
+        reset = button(ui, icon::ARROW_COUNTER_CLOCKWISE, false)
+            .on_hover_text(format!("Put {} back as the document has it", row.name))
+            .clicked();
+        show = button(ui, icon::TABLE, shown)
+            .on_hover_text(format!("{} as it is in play, read-only", row.name))
+            .clicked();
+        let count = format!(
+            "{} \u{b7} {} in the file",
+            ui::count_as(row.rows, "row", "rows"),
+            row.in_file
+        );
+        ui.label(
+            egui::RichText::new(count)
+                .size(ui::CAPTION_PT)
+                .color(theme::text::faint()),
+        );
+    });
+    if show {
+        p.table_shown = match shown {
+            true => None,
+            false => Some((row.data, crate::chart_data::ChartData::played())),
+        };
+    }
+    if reset {
+        p.player.input(mastik_play::Input::ResetTable(row.data));
     }
 }
 
@@ -1420,6 +1476,18 @@ impl crate::app::MastikApp {
                     ui.ctx().request_repaint();
                 }
                 false => p.pulse_at = None,
+            }
+        }
+        // *Show*'s table over the screen, while play still holds it.
+        if let Some((data, state)) = &mut p.table_shown {
+            let closed = match p.player.document().data_set(*data) {
+                Some(set) => {
+                    crate::chart_data::played_table_card(ui.ctx(), screen_area, set, state)
+                }
+                None => true,
+            };
+            if closed {
+                p.table_shown = None;
             }
         }
         let mut card_act = None;

@@ -40,7 +40,7 @@ Read the file for the exact wording before relying on one.
 | `images.md` | 5.5a | Images; the brush, gradient stops, ends and mixing |
 | `io.md` | 5.11, 5.11a | Save format, schema migration, clipboard envelope, the library block |
 | `prototyping-model.md` | — | The saved prototype: a layer's reactions and play settings, a page's flows, the export settings, their ops, dangling targets, instances and copies |
-| `play.md` | — | The play engine (`mastik-play`): the played copy and its door, play values, play state, the shell's contract, triggers, actions, inputs, scrolling, a layer that follows the drag, a scroll effect, motion, live update, takes; the expression language |
+| `play.md` | — | The play engine (`mastik-play`): the played copy and its door, play values, play state, the shell's contract, triggers, actions, inputs, scrolling, a layer that follows the drag, a scroll effect, motion, live update, takes; the expression language and its table reads; row actions on the played copy's tables |
 | **Render, export, MCP** | | |
 | `render.md` | 6.1–6.3 | The render boundary, `RenderOverrides`, backends |
 | `export.md` | 7 | SVG, PDF, PNG, ICO and ICNS, code export (HTML/CSS, React, Vue), the Penpot and Sketch files, JSON snapshot, the CLI, export doors |
