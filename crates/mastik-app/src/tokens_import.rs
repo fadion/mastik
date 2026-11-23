@@ -563,34 +563,8 @@ impl MastikApp {
         };
         // The kit update pill's face: lit while the changes wait unreviewed, at
         // rest once put off with *Later*.
-        let scale = ui::Scale::Toolbar;
-        let glyph_pt = scale.glyph_pt();
-        let font = egui::FontId::proportional(scale.text_pt());
-        let text_w = ui
-            .ctx()
-            .fonts_mut(|f| f.layout_no_wrap(text.clone(), font.clone(), color::text()))
-            .size()
-            .x;
-        let w = 9.0 + glyph_pt + 6.0 + text_w + 9.0;
         let state = FieldButton::on_if(!quiet);
-        let (rect, resp, fg) = ui::button_face(ui, egui::vec2(w, ui::TOOLBAR_H), state);
-        let p = ui.painter();
-        let y = rect.center().y;
-        p.text(
-            egui::pos2(rect.left() + 9.0, y),
-            egui::Align2::LEFT_CENTER,
-            icon::IMPORT,
-            theme::icon_font(glyph_pt),
-            fg,
-        );
-        p.text(
-            egui::pos2(rect.left() + 9.0 + glyph_pt + 6.0, y),
-            egui::Align2::LEFT_CENTER,
-            text,
-            font,
-            fg,
-        );
-        let resp = resp.on_hover_text(format!(
+        let resp = ui::toolbar_pill(ui, icon::IMPORT, &text, state).on_hover_text(format!(
             "{name} changed since it was last applied \u{b7} click to review"
         ));
         if resp.clicked() {

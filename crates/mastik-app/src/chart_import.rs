@@ -266,33 +266,9 @@ fn charts(doc: &mastik_core::Document) -> Vec<(NodeId, &Chart)> {
 /// The toolbar pill a changed linked file shows — the import glyph and `text` on
 /// the lit button face — answering whether it was clicked.
 pub(crate) fn link_pill(ui: &mut egui::Ui, text: &str, tip: &str) -> bool {
-    let scale = ui::Scale::Toolbar;
-    let glyph_pt = scale.glyph_pt();
-    let font = egui::FontId::proportional(scale.text_pt());
-    let text_w = ui
-        .ctx()
-        .fonts_mut(|f| f.layout_no_wrap(text.to_string(), font.clone(), color::text()))
-        .size()
-        .x;
-    let w = 9.0 + glyph_pt + 6.0 + text_w + 9.0;
-    let (rect, resp, fg) = ui::button_face(ui, egui::vec2(w, ui::TOOLBAR_H), FieldButton::On);
-    let p = ui.painter();
-    let y = rect.center().y;
-    p.text(
-        egui::pos2(rect.left() + 9.0, y),
-        egui::Align2::LEFT_CENTER,
-        icon::IMPORT,
-        theme::icon_font(glyph_pt),
-        fg,
-    );
-    p.text(
-        egui::pos2(rect.left() + 9.0 + glyph_pt + 6.0, y),
-        egui::Align2::LEFT_CENTER,
-        text,
-        font,
-        fg,
-    );
-    resp.on_hover_text(tip).clicked()
+    ui::toolbar_pill(ui, icon::IMPORT, text, FieldButton::On)
+        .on_hover_text(tip)
+        .clicked()
 }
 
 /// The stat a link stores: modified seconds and size.

@@ -64,41 +64,16 @@ pub(crate) fn io_error(e: &std::io::Error) -> String {
 ///
 /// [`FieldButton::On`]: crate::ui::FieldButton::On
 pub(crate) fn pill(ui: &mut egui::Ui) -> bool {
-    use crate::theme::{self, color, icon};
+    use crate::theme::icon;
     use crate::ui::{self, FieldButton};
     if !on() {
         return false;
     }
-    let scale = ui::Scale::Toolbar;
-    let glyph_pt = scale.glyph_pt();
-    let font = egui::FontId::proportional(scale.text_pt());
-    let text_w = ui
-        .ctx()
-        .fonts_mut(|f| f.layout_no_wrap("Private mode".into(), font.clone(), color::text()))
-        .size()
-        .x;
-    let w = 9.0 + glyph_pt + 6.0 + text_w + 9.0;
-    let (rect, resp, fg) = ui::button_face(ui, egui::vec2(w, ui::TOOLBAR_H), FieldButton::On);
-    let p = ui.painter();
-    let y = rect.center().y;
-    p.text(
-        egui::pos2(rect.left() + 9.0, y),
-        egui::Align2::LEFT_CENTER,
-        icon::INCOGNITO,
-        theme::icon_font(glyph_pt),
-        fg,
-    );
-    p.text(
-        egui::pos2(rect.left() + 9.0 + glyph_pt + 6.0, y),
-        egui::Align2::LEFT_CENTER,
-        "Private mode",
-        font,
-        fg,
-    );
-    resp.on_hover_text(crate::input::keys(
-        "Names are hidden · click to leave private mode (Ctrl+Shift+N)",
-    ))
-    .clicked()
+    ui::toolbar_pill(ui, icon::INCOGNITO, "Private mode", FieldButton::On)
+        .on_hover_text(crate::input::keys(
+            "Names are hidden · click to leave private mode (Ctrl+Shift+N)",
+        ))
+        .clicked()
 }
 
 /// `id`'s name as drawn: the name itself, or masked as its kind's word and its

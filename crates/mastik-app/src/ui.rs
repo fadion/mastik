@@ -7083,6 +7083,48 @@ fn resting_ink(ui: &egui::Ui, enabled: bool) -> egui::Color32 {
     }
 }
 
+/// A top bar's pill (a changed linked file, kit updates, private mode): `glyph`
+/// and `text` at [`Scale::Toolbar`] on a [`button_face`] of [`TOOLBAR_H`],
+/// lit in `state`, as wide as its words.
+pub fn toolbar_pill(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    text: &str,
+    state: FieldButton,
+) -> egui::Response {
+    /// The inset at either end.
+    const PAD: f32 = 9.0;
+    /// Between the glyph and the words.
+    const GAP: f32 = 6.0;
+    let scale = Scale::Toolbar;
+    let glyph_pt = scale.glyph_pt();
+    let font = egui::FontId::proportional(scale.text_pt());
+    let text_w = ui
+        .ctx()
+        .fonts_mut(|f| f.layout_no_wrap(text.to_string(), font.clone(), theme::color::text()))
+        .size()
+        .x;
+    let w = PAD + glyph_pt + GAP + text_w + PAD;
+    let (rect, resp, fg) = button_face(ui, egui::vec2(w, TOOLBAR_H), state);
+    let p = ui.painter();
+    let y = rect.center().y;
+    p.text(
+        egui::pos2(rect.left() + PAD, y),
+        egui::Align2::LEFT_CENTER,
+        glyph,
+        theme::icon_font(glyph_pt),
+        fg,
+    );
+    p.text(
+        egui::pos2(rect.left() + PAD + glyph_pt + GAP, y),
+        egui::Align2::LEFT_CENTER,
+        text,
+        font,
+        fg,
+    );
+    resp
+}
+
 /// The ground, hairline and hover treatment every field-row button shares, and
 /// the colour its content should be drawn in. Its corner is [`BUTTON_R`], which a
 /// caller painting over the face must match. `pub` for callers whose content is
