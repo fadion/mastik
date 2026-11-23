@@ -583,7 +583,7 @@ impl MastikApp {
         let Some(now) = self.session.doc.get(id).and_then(|n| n.list()).cloned() else {
             return;
         };
-        let next = self.list_on(id, &now, &set.table, set.id);
+        let next = self.list_on(id, &now, &set);
         let name = set.name.clone();
         let tx = Transaction(vec![
             Operation::SetDataSet {
@@ -805,42 +805,11 @@ impl MastikApp {
         });
     }
 
-    /// `now` moved onto data set `data` of `table`: a fill keeps its column where
-    /// the table has one of the same name; a property left unfilled takes the
-    /// column matching its own name.
-    pub(crate) fn list_on(
-        &self,
-        id: NodeId,
-        now: &List,
-        table: &mastik_core::chart::Table,
-        data: DataSetId,
-    ) -> List {
-        let doc = &self.session.doc;
-        let old = doc.data_set(now.data).map(|d| &d.table);
-        let mut fill: Vec<list::Fill> = now
-            .fill
-            .iter()
-            .filter_map(|f| {
-                let name = &old?.column(f.column)?.name;
-                let col = table.columns.iter().find(|c| c.name == *name)?;
-                Some(list::Fill {
-                    target: f.target.clone(),
-                    column: col.id,
-                })
-            })
-            .collect();
-        if let Some(t) = list::template(doc, id) {
-            for f in list::fill_by_name(doc, t, table) {
-                if !fill.iter().any(|g| g.target == f.target) {
-                    fill.push(f);
-                }
-            }
-        }
-        List {
-            data,
-            fill,
-            ..now.clone()
-        }
+    /// `now` moved onto data set `set` as `set_list` moves it
+    /// (`verbs::moved_onto`): fills, filter tests and sort keys keep their
+    /// columns by name, and a property left unfilled takes its own name's.
+    pub(crate) fn list_on(&self, id: NodeId, now: &List, set: &list::DataSet) -> List {
+        mastik_core::verbs::moved_onto(&self.session.doc, id, now, set)
     }
 
     /// *Update*: read data set `set`'s linked file again. A click while that

@@ -838,7 +838,8 @@ without one (`menu::KIND_VERBS`).
   description on its next save.
 - **MCP snapshot** (`export.md`, *Snapshot*): a chart frame carries `chart` (kind, variant
   (`Chart::variant`), the table's header with each column's id and type and its row count, the
-  mapping by column id, each series' name, visibility and own colour, and whether it is linked)
+  mapping by column id, each series' name, visibility and own colour, the data set it reads by
+  name and id, and whether it is linked)
   beside its parts, each part with its `role`. Version 17.
 - **Verbs** (`mastik_core::verbs`, MCP's Phase 2, `mcp.md`): `insert_chart` makes a 480 × 280
   frame named *Chart* on the kind's sample table, or on a table given, its mapping read off the
@@ -856,11 +857,17 @@ without one (`menu::KIND_VERBS`).
   colour variable by id or name, which binds, written through `chart::with_series_fill` or
   `with_node_fill`, so an agent brands a chart without flattening it and losing its live data. A
   name the chart draws nothing under is refused listing the ones it does, so a typo is not kept
-  as a style nothing reads, and a variable that is no colour is refused. `set_chart_data` replaces
-  the table by *Import*'s rule (`Chart::with_table`; a mapping of which nothing survives is
-  guessed) and drops the link and the data set the chart reads (`data`), so an agent's table is
-  the chart's own rather than one the commit would put back to the set's; `flatten_chart` is `chart::flatten_ops` for each chart. Any other verb writing a part is refused at the commit by
-  `chart::guard`.
+  as a style nothing reads, and a variable that is no colour is refused. `set_chart_data` has
+  three forms. `data` points the chart at another table of the document's, as the Data dropdown
+  does (`Chart::reading`). `table` on a chart with a table of its own replaces it by *Import*'s
+  rule (`Chart::with_table`; a mapping of which nothing survives is guessed). `table` on a chart
+  reading a data set writes the cells into the set, its columns keeping their ids by name, so
+  every reader follows (*Edit table*, as the data window writes it); with `write = "chart"` it
+  gives the chart its own copy instead, dropping the link and `data`. When another list or chart
+  reads the set too, `table` without `write` is refused (*This chart reads People, which 1 list
+  also read. Pass write = "table" to change People for all of them, or write = "chart" to give
+  this chart its own copy.*). `flatten_chart` is `chart::flatten_ops` for each chart. Any other
+  verb writing a part is refused at the commit by `chart::guard`.
 - **Code export** (`export.md`, *Code export*) writes a chart as the frames it is: its flex and
   grid containers as CSS, its marks positioned by their percentage insets, its labels and pie
   centred on their points, its paths as stretching inline `<svg>`s (*Laid out, not placed*), so

@@ -31,6 +31,23 @@ pub(super) struct Shown {
     /// and holds it to, kept for every look since a whole snapshot is not.
     top: Option<u64>,
     print: u64,
+    /// Each data table's hash by its id, so `base_rev` holds for a table as
+    /// for a layer.
+    tables: HashMap<String, u64>,
+}
+
+/// Each of the document's data tables hashed, by its id.
+pub(super) fn tables_of(s: &EditorSession) -> HashMap<String, u64> {
+    use std::hash::{Hash as _, Hasher as _};
+    s.doc
+        .data_sets()
+        .iter()
+        .map(|d| {
+            let mut h = std::hash::DefaultHasher::new();
+            serde_json::to_string(d).unwrap_or_default().hash(&mut h);
+            (d.id.0.to_wire(), h.finish())
+        })
+        .collect()
 }
 
 /// A layer as a connection saw it.
@@ -270,14 +287,16 @@ pub(super) fn layers_of(s: &EditorSession) -> Rc<HashMap<String, Layer>> {
     looked(s).1
 }
 
-/// Remember a look at `rev`, with the layers `others` changed or removed since
-/// the look before and `top`, the step on top of the history.
+/// Remember a look at `rev`, with the layers and tables `others` changed or
+/// removed since the look before, `top`, the step on top of the history, and
+/// `tables`, each table's hash ([`tables_of`]).
 pub(super) fn remember(
     conn: &mut Connection,
     rev: u64,
     layers: Rc<HashMap<String, Layer>>,
     others: Vec<String>,
     top: Option<u64>,
+    tables: HashMap<String, u64>,
 ) {
     if conn.shown.back().is_some_and(|s| s.rev == rev) {
         return;
@@ -289,6 +308,7 @@ pub(super) fn remember(
         others,
         top,
         print,
+        tables,
     });
     if let Some(old) = conn.shown.len().checked_sub(KEPT + 1) {
         conn.shown[old].layers = None;
@@ -312,7 +332,7 @@ pub(super) fn catch_up(conn: &mut Connection, session: &EditorSession) -> Option
         return None;
     }
     let now = layers_of(session);
-    let (report, others) = match last_layers(conn) {
+    let (report, mut others) = match last_layers(conn) {
         Some((last, from)) => {
             let d = delta(last, &now);
             let report = (!d.is_empty()).then(|| d.to_json(&now, last, from));
@@ -320,7 +340,16 @@ pub(super) fn catch_up(conn: &mut Connection, session: &EditorSession) -> Option
         }
         None => (None, Vec::new()),
     };
-    remember(conn, rev, now, others, session.history.current());
+    let tables = tables_of(session);
+    if let Some(last) = conn.shown.back() {
+        others.extend(
+            last.tables
+                .iter()
+                .filter(|(id, hash)| tables.get(*id) != Some(*hash))
+                .map(|(id, _)| id.clone()),
+        );
+    }
+    remember(conn, rev, now, others, session.history.current(), tables);
     report
 }
 
@@ -494,6 +523,20 @@ pub(super) fn stale(
         .skip(at + 1)
         .flat_map(|s| s.others.iter().map(String::as_str))
         .collect();
+    // A table is no layer: one the call writes is named by `get_table`'s word.
+    for op in &tx.0 {
+        if let mastik_core::Operation::SetDataSet { id, .. } = op
+            && others.contains(id.0.to_wire().as_str())
+        {
+            let name = s
+                .doc
+                .data_set(*id)
+                .map_or_else(|| id.0.to_wire(), |d| d.name.clone());
+            return Err(format!(
+                "{name} changed since rev {base}. Read it again with get_table."
+            ));
+        }
+    }
     // A delete writes away its whole subtree, so a layer inside it the person
     // changed counts as one the call writes.
     let deleted: Vec<mastik_core::NodeId> =
@@ -720,6 +763,60 @@ mod tests {
             "set_name",
             rename("Mine", &now),
         ));
+    }
+
+    /// An `edit_table` whose table another client changed after its `base_rev`
+    /// is refused naming the table; the client's own edits off the same read are
+    /// not counted against it.
+    ///
+    /// flip: `catch_up` leaving the tables out of `others` → fails at "refused".
+    #[test]
+    fn a_stale_table_edit_is_refused() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        open(&mut engine, &mut docs, 2);
+        let args = json!({ "name": "People", "columns": ["Name"], "rows": [["Ana"], ["Ben"]] });
+        ok(&call(&mut engine, &mut docs, 1, "add_table", args));
+        let read = call(
+            &mut engine,
+            &mut docs,
+            2,
+            "get_table",
+            json!({ "table": "People" }),
+        );
+        let base = ok(&read)["rev"].clone();
+        let edit = |value: &str, base: &Value| {
+            json!({ "table": "People", "set": [{ "row": 1, "column": "Name", "value": value }],
+                "base_rev": base })
+        };
+        ok(&call(
+            &mut engine,
+            &mut docs,
+            2,
+            "edit_table",
+            edit("Cy", &base),
+        ));
+        ok(&call(
+            &mut engine,
+            &mut docs,
+            2,
+            "edit_table",
+            edit("Dee", &base),
+        ));
+        ok(&call(
+            &mut engine,
+            &mut docs,
+            1,
+            "edit_table",
+            edit("Eve", &Value::Null),
+        ));
+        let late = call(&mut engine, &mut docs, 2, "edit_table", edit("Fay", &base));
+        assert!(late.is_error, "refused");
+        let Content::Text(why) = &late.content[0] else {
+            panic!("no text")
+        };
+        let said = format!("People changed since rev {base}. Read it again with get_table.");
+        assert!(why.contains(&said), "{why}");
     }
 
     /// A delete with a stale `base_rev` is refused when a layer inside what it

@@ -120,8 +120,29 @@ fn made_key(verb: &str) -> &'static str {
         "add_collection" | "duplicate_collection" => "collection",
         "add_style" => "style",
         "define_property" => "property",
+        "add_table" => "table",
         _ => "made",
     }
+}
+
+/// The undo step a table verb's edit is named, as the app's own door for the
+/// same act names it, and its glyph; `None` names the step by the tool.
+fn step_name(tool: &str, tx: &mastik_core::Transaction) -> Option<(&'static str, &'static str)> {
+    use crate::theme::icon;
+    let writes_table = || {
+        tx.0.iter()
+            .any(|op| matches!(op, mastik_core::Operation::SetDataSet { .. }))
+    };
+    Some(match tool {
+        "add_table" => ("New table", icon::PLUS),
+        "edit_table" | "set_table" => ("Edit table", icon::TABLE),
+        "set_chart_data" if writes_table() => ("Edit table", icon::TABLE),
+        "rename_table" => ("Rename table", icon::PENCIL_SIMPLE),
+        "delete_table" => ("Delete table", icon::TRASH),
+        "unlink_table" => ("Unlink data file", icon::LINK_SIMPLE),
+        "make_list" => ("Make list", icon::TABLE),
+        _ => return None,
+    })
 }
 
 /// The name of the property `define_property` just made, whose id is `item`:
@@ -328,15 +349,19 @@ pub(super) fn refuse_kit_vault(s: &EditorSession, args: &Value) -> Result<(), St
     }
 }
 
-/// Commit an agent's `tx` as one undo step named by `tool`, with the style
-/// browser's *Edit* set aside: an agent's edit means the same whatever is open.
+/// Commit an agent's `tx` as one undo step named by `tool`, or by the app's
+/// name for a table verb's act, with the style browser's *Edit* set aside: an
+/// agent's edit means the same whatever is open.
 pub(super) fn commit(
     s: &mut EditorSession,
     client: &str,
     tool: &str,
     tx: mastik_core::Transaction,
 ) -> Result<(), String> {
-    s.name_mcp_step(client, tool, "");
+    match step_name(tool, &tx) {
+        Some((name, glyph)) => s.name_mcp_step_as(client, tool, name, glyph),
+        None => s.name_mcp_step(client, tool, ""),
+    }
     commit_named(s, tx)
 }
 

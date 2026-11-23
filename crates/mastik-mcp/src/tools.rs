@@ -3,7 +3,7 @@
 
 /// Phase 1 — read/export, ship first (§8.4), in the order §8.4 gives it so a
 /// reordering shows as a diff.
-pub const PHASE_1: [&str; 28] = [
+pub const PHASE_1: [&str; 30] = [
     "use_document",
     "get_document",
     "get_node",
@@ -23,6 +23,8 @@ pub const PHASE_1: [&str; 28] = [
     "list_components",
     "list_variables",
     "list_styles",
+    "list_tables",
+    "get_table",
     "export_tokens",
     "list_fonts",
     "check_contrast",
@@ -139,7 +141,7 @@ pub const PHASE_2: [&str; 90] = [
 /// still in use is refused at the commit. `create_instance`, `add_variable`,
 /// `add_mode`, `add_collection`, `duplicate_collection` and `add_style` return
 /// the new ids.
-pub const PHASE_3: [&str; 53] = [
+pub const PHASE_3: [&str; 61] = [
     "make_component",
     "duplicate_as_component",
     "create_instance",
@@ -193,6 +195,14 @@ pub const PHASE_3: [&str; 53] = [
     "add_script",
     "set_script",
     "remove_script",
+    "add_table",
+    "edit_table",
+    "set_table",
+    "rename_table",
+    "delete_table",
+    "unlink_table",
+    "make_list",
+    "set_list",
 ];
 
 /// Phase 4 — kits and the library, the app's own actions (§8.4).
@@ -232,7 +242,7 @@ pub const ASSISTANT: [&str; 1] = ["propose_edit"];
 /// The tools `tools/list` names by default (§8.4, *Core*): what nearly every
 /// task uses. Every other tool still answers by name, through `call`, or listed
 /// with `mastik mcp-proxy --tools all`; a short list is read on every turn.
-pub const CORE: [&str; 39] = [
+pub const CORE: [&str; 42] = [
     "use_document",
     "list_documents",
     "get_selection",
@@ -248,6 +258,8 @@ pub const CORE: [&str; 39] = [
     "list_components",
     "list_variables",
     "list_styles",
+    "list_tables",
+    "get_table",
     "list_fonts",
     "search_assets",
     "place_asset",
@@ -266,6 +278,7 @@ pub const CORE: [&str; 39] = [
     "make_component",
     "apply_style",
     "bind_variable",
+    "edit_table",
     "batch",
     "group_steps",
     "run_script",

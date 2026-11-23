@@ -374,6 +374,9 @@ pub struct ChartSummary {
     /// follows; absent for a chart with a table of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+    /// That data table's id, which the table tools take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data_id: Option<String>,
 }
 
 /// A list's description as an agent reads it: the data table it repeats its
@@ -383,11 +386,17 @@ pub struct ListSummary {
     /// The data table's name, absent when the document lacks it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+    /// The data table's id, which the table tools take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_id: Option<String>,
     /// The instance every row is made from, the one layer of the list to edit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<String>,
     /// How many rows it draws, the template included.
     pub rows: usize,
+    /// How many rows the data table holds, absent when the document lacks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table_rows: Option<usize>,
     /// Each filled property, by name, and the column filling it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fill: Vec<ListFillSummary>,
@@ -1250,6 +1259,10 @@ fn chart_summary(doc: &Document, id: NodeId, c: &mastik_core::chart::Chart) -> C
                 .and_then(|d| doc.data_set(d))
                 .is_some_and(|s| s.source.is_some()),
         data: c.data.and_then(|d| doc.data_set(d)).map(|s| s.name.clone()),
+        data_id: c
+            .data
+            .filter(|d| doc.data_set(*d).is_some())
+            .map(|d| d.0.to_wire()),
     }
 }
 
@@ -1273,9 +1286,11 @@ fn list_summary(doc: &Document, id: NodeId, l: &mastik_core::list::List) -> List
         .collect();
     ListSummary {
         data: set.map(|s| s.name.clone()),
+        table_id: set.map(|s| s.id.0.to_wire()),
         template: template.map(|t| t.to_wire()),
         // A list whose table is missing keeps the rows it was copied with.
         rows: set.map_or(1 + l.copies.len(), |_| list::shown(doc, id).len()),
+        table_rows: set.map(|s| s.table.rows.len()),
         fill,
     }
 }

@@ -190,8 +190,8 @@ impl MastikApp {
         );
         match pick {
             Some(TablePick::Set(d)) => {
-                if let Some(table) = self.session.doc.data_set(d).map(|s| s.table.clone()) {
-                    let next = self.list_on(id, now, &table, d);
+                if let Some(set) = self.session.doc.data_set(d).cloned() {
+                    let next = self.list_on(id, now, &set);
                     self.list_commit(id, "List data", next);
                 }
             }

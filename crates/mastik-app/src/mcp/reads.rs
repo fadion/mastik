@@ -325,6 +325,102 @@ pub(super) fn styles(doc: &Document) -> Value {
     json!({ "styles": styles })
 }
 
+/// Every table: its id, name, size, whether it is linked, and how many lists
+/// and charts read it.
+pub(super) fn tables(doc: &Document) -> Value {
+    let tables: Vec<Value> = doc
+        .data_sets()
+        .iter()
+        .map(|d| {
+            let (lists, charts) = mastik_core::verbs::readers(doc, d.id);
+            json!({
+                "id": d.id.0.to_wire(),
+                "name": d.name,
+                "rows": d.table.rows.len(),
+                "columns": d.table.columns.len(),
+                "linked": d.source.is_some(),
+                "read_by": { "lists": lists.len(), "charts": charts.len() },
+            })
+        })
+        .collect();
+    json!({ "tables": tables })
+}
+
+/// The most rows `get_table` answers unless asked for more.
+const TABLE_ROWS: u64 = 200;
+
+/// `get_table`: a table's columns and a page of its rows, every cell text, rows
+/// counted from 1: `from` (1) and `count` (200), narrowed to `columns` by name.
+/// `total` is always the whole table's row count.
+pub(super) fn table(doc: &Document, args: &Value) -> Result<Value, String> {
+    let text = args
+        .get("table")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let set = mastik_core::verbs::find_table(doc, text)?;
+    let t = &set.table;
+    let total = t.rows.len();
+    let from = args.get("from").and_then(Value::as_u64).unwrap_or(1);
+    let count = args
+        .get("count")
+        .and_then(Value::as_u64)
+        .unwrap_or(TABLE_ROWS);
+    if from == 0 {
+        return Err("`from`: rows count from 1".into());
+    }
+    if from as usize > total + 1 {
+        return Err(format!(
+            "`from`: {} has {}, not {from}",
+            set.name,
+            crate::ui::count_as(total, "row", "rows")
+        ));
+    }
+    let picked: Vec<usize> = match args.get("columns").and_then(Value::as_array) {
+        None => (0..t.columns.len()).collect(),
+        Some(names) => names
+            .iter()
+            .map(|n| {
+                let n = n.as_str().unwrap_or_default();
+                t.columns.iter().position(|c| c.name == n).ok_or_else(|| {
+                    let all: Vec<String> =
+                        t.columns.iter().map(|c| format!("`{}`", c.name)).collect();
+                    format!(
+                        "`columns`: `{n}` is no column of {}; its columns are {}",
+                        set.name,
+                        all.join(", ")
+                    )
+                })
+            })
+            .collect::<Result<_, _>>()?,
+    };
+    let columns: Vec<Value> = picked
+        .iter()
+        .map(|i| {
+            let c = &t.columns[*i];
+            json!({ "id": c.id.0, "name": c.name, "numeric": t.is_numeric(c.id) })
+        })
+        .collect();
+    let rows: Vec<Value> = t
+        .rows
+        .iter()
+        .skip(from as usize - 1)
+        .take(count as usize)
+        .map(|r| json!(picked.iter().map(|i| &r[*i]).collect::<Vec<_>>()))
+        .collect();
+    let mut answer = json!({
+        "id": set.id.0.to_wire(),
+        "name": set.name,
+        "columns": columns,
+        "rows": rows,
+        "from": from,
+        "total": total,
+    });
+    if let Some(link) = &set.source {
+        answer["link"] = json!(link.path);
+    }
+    Ok(answer)
+}
+
 /// Where a layer's own (0, 0) lies in world space; `design_context`'s root
 /// carries the same answer.
 pub(super) use mastik_export::context::origin;
@@ -601,5 +697,53 @@ mod tests {
             let (a, b) = (row[3 + k].as_f64().unwrap(), section[k].as_f64().unwrap());
             assert!((a - b).abs() < 0.06, "edge {k}: {row} against {section}");
         }
+    }
+
+    /// `get_table` answers 200 rows unless asked for a range, always with the
+    /// total; `columns` narrows the read, each column saying whether it is
+    /// numeric, and `list_tables` counts the table's rows and readers.
+    ///
+    /// flip: `table` answering every row past `from` → fails at "200 rows".
+    #[test]
+    fn get_table_reads_a_page_of_rows() {
+        use crate::mcp::Engine;
+        use crate::mcp::tests::{One, call, ok, open};
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let rows: Vec<Value> = (1..=250)
+            .map(|i| json!([format!("Row {i}"), i.to_string()]))
+            .collect();
+        let args = json!({ "name": "Big", "columns": ["Name", "N"], "rows": rows });
+        let made = call(&mut engine, &mut docs, 1, "add_table", args);
+        let id = ok(&made)["table"].clone();
+        let read = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "get_table",
+            json!({ "table": "Big" }),
+        );
+        let t = ok(&read).clone();
+        assert_eq!(t["id"], id);
+        assert_eq!(t["rows"].as_array().map(Vec::len), Some(200), "200 rows");
+        assert_eq!(
+            (t["from"].clone(), t["total"].clone()),
+            (json!(1), json!(250))
+        );
+        assert_eq!(
+            t["columns"][1],
+            json!({ "id": 1, "name": "N", "numeric": true })
+        );
+        let args = json!({ "table": id, "from": 249, "count": 5, "columns": ["N"] });
+        let page = ok(&call(&mut engine, &mut docs, 1, "get_table", args)).clone();
+        assert_eq!(page["rows"], json!([["249"], ["250"]]));
+        let past = json!({ "table": "Big", "from": 300 });
+        assert!(call(&mut engine, &mut docs, 1, "get_table", past).is_error);
+        let listed = ok(&call(&mut engine, &mut docs, 1, "list_tables", json!({}))).clone();
+        let row = &listed["tables"][0];
+        assert_eq!(
+            (row["rows"].clone(), row["read_by"]["lists"].clone()),
+            (json!(250), json!(0))
+        );
     }
 }

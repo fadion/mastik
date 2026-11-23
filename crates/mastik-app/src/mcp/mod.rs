@@ -576,7 +576,8 @@ impl Engine {
                         conn.document = Some(path.clone());
                         conn.shown.clear();
                         let top = session.history.current();
-                        remember(conn, rev, layers_of(session), Vec::new(), top);
+                        let tables = revisions::tables_of(session);
+                        remember(conn, rev, layers_of(session), Vec::new(), top, tables);
                     }
                     let pages: Vec<Value> = snap
                         .pages
@@ -785,7 +786,15 @@ impl Engine {
             let now = layers_of(session);
             let own =
                 last_layers(conn).map(|(then, from)| delta(then, &now).to_json(&now, then, from));
-            remember(conn, after, now, Vec::new(), session.history.current());
+            let tables = revisions::tables_of(session);
+            remember(
+                conn,
+                after,
+                now,
+                Vec::new(),
+                session.history.current(),
+                tables,
+            );
             if matches!(call.tool.as_str(), "undo" | "redo")
                 && let (Some(own), Some(Value::Object(map))) = (own, output.structured.as_mut())
             {
@@ -1184,6 +1193,7 @@ fn read_fits(tool: &str, answer: Answer) -> Result<Answer, String> {
             "pass `query` to list the ones whose name holds it"
         }
         "export_tokens" => "read them in parts with `list_variables` and `list_styles`",
+        "get_table" => "pass a smaller `count`, or `columns`",
         "check_layout" | "check_contrast" | "review_colours" | "export_code" => {
             "pass `ids` to read one part of the page"
         }
@@ -1555,6 +1565,8 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
         "list_components" => json(reads::named(reads::components(&s.doc), "components", args)),
         "list_variables" => json(reads::named(reads::variables(&s.doc), "variables", args)),
         "list_styles" => json(reads::named(reads::styles(&s.doc), "styles", args)),
+        "list_tables" => json(reads::tables(&s.doc)),
+        "get_table" => json(reads::table(&s.doc, args)?),
         tool if inspect::TOOLS.contains(&tool) => inspect::run(s, tool, args),
         tool if context::TOOLS.contains(&tool) => context::run(s, tool, args),
         "run_script" => run_script(conn, s, &call.client, args),

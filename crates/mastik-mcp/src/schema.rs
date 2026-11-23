@@ -259,6 +259,36 @@ pub static TOOLS: &[Tool] = &[
         params: &[QUERY_NAME],
     },
     Tool {
+        name: "list_tables",
+        doc: "Every data table lists and charts read: id, name, row and column counts, whether it is linked to a file, and how many lists and charts read it.",
+        params: &[],
+    },
+    Tool {
+        name: "get_table",
+        doc: "A data table's columns (id, name, `numeric`) and a page of its rows, every cell text, rows counted from 1; `total` is the whole table's row count.",
+        params: &[
+            param("table", ParamKind::Text, true, "The table, by id or name."),
+            param(
+                "from",
+                ParamKind::Index,
+                false,
+                "The first row; 1 when absent.",
+            ),
+            param(
+                "count",
+                ParamKind::Index,
+                false,
+                "How many rows; 200 when absent.",
+            ),
+            param(
+                "columns",
+                ParamKind::Model("[Name]"),
+                false,
+                "Only these columns, by name.",
+            ),
+        ],
+    },
+    Tool {
         name: "export_tokens",
         doc: "The document's own variables and styles as a design tokens (DTCG) file, with a note for each left out or changed on the way. Nothing is written to disk.",
         params: &[],
@@ -930,10 +960,12 @@ fn model_type(model: &str) -> Option<&'static str> {
     match model {
         "Steps" | "Region" | "Quad" | "[CharAttr]" | "[Effect]" | "[ExportSpec]" | "[Fill]"
         | "[Guide]" | "[Hex]" | "[LayoutGrid]" | "[Name]" | "[Node]" | "[ParaAttr]"
-        | "[Stroke]" | "[Reaction]" | "[Flow]" => Some("array"),
+        | "[Stroke]" | "[Reaction]" | "[Flow]" | "TableRows" | "[ColumnName]" | "[TableCell]"
+        | "[TableRow]" | "[RowNumber]" | "ListSort" => Some("array"),
         "Props" | "Args" | "Tree" | "ChartMapping" | "ChartOptions" | "ChartColours"
         | "KitModeMap" | "DtcgFile" | "BlockStyle" | "ParagraphStyle" | "TextStyle"
-        | "LayoutItem" | "RepeatLine" | "RepeatGrid" | "LayerPlay" | "PagePlay" => Some("object"),
+        | "LayoutItem" | "RepeatLine" | "RepeatGrid" | "LayerPlay" | "PagePlay"
+        | "TableColumns" | "ListFill" | "ListFilter" => Some("object"),
         _ => None,
     }
 }
@@ -1138,6 +1170,15 @@ mod tests {
             "ParagraphStyle",
             "TextStyle",
             "LayoutItem",
+            "TableRows",
+            "[ColumnName]",
+            "[TableCell]",
+            "[TableRow]",
+            "[RowNumber]",
+            "TableColumns",
+            "ListFill",
+            "ListFilter",
+            "ListSort",
         ];
         for model in typed {
             let Some(example) = verbs::example(model) else {
@@ -1181,8 +1222,8 @@ mod tests {
     /// budget.
     #[test]
     fn the_tool_list_stays_within_its_budget() {
-        const CORE_BUDGET: usize = 27_500;
-        const ALL_BUDGET: usize = 115_800;
+        const CORE_BUDGET: usize = 28_700;
+        const ALL_BUDGET: usize = 123_600;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

@@ -30,6 +30,9 @@ use rustc_hash::FxHashSet;
 use serde_json::{Map, Value};
 
 mod loose;
+mod tables;
+
+pub use tables::{find_table, moved_onto, readers, readers_words};
 
 /// What a parameter takes, for checking an argument before a verb runs and for
 /// describing the verb to a caller (an MCP schema, Command Mode's completion).
@@ -230,6 +233,9 @@ fn loosened<'v>(p: &Param, v: &'v Value) -> std::borrow::Cow<'v, Value> {
                 && (parsed.is_object() || parsed.is_array() || parsed.is_string())
             {
                 v = parsed;
+            }
+            if as_written(model) {
+                return std::borrow::Cow::Owned(v);
             }
             // A short form written wrong is left as written, for the check to
             // refuse with its reason.
@@ -498,7 +504,7 @@ fn loosen_model(model: &str, key: &str, v: &mut Value) -> Result<(), String> {
 /// [`settle`] puts right put right, or why it does not read as the model.
 fn settled_model(model: &str, v: &Value) -> Result<Value, String> {
     let mut loose = v.clone();
-    if model != "DtcgFile" {
+    if !as_written(model) {
         loosen_model(model, model_key(model, ""), &mut loose)?;
     }
     let v = &loose;
@@ -583,8 +589,42 @@ fn settled_model(model: &str, v: &Value) -> Result<Value, String> {
         "ChartOptions" => {
             checked(settle::<crate::chart::Options>(model, without_nulls(v)).map(|_| ()))
         }
+        "TableRows" => checked(read_model::<Vec<Vec<tables::CellIn>>>(v).map(|_| ())),
+        "[ColumnName]" => checked(read_model::<Vec<String>>(v).map(|_| ())),
+        "[TableCell]" => checked(read_model::<Vec<tables::CellEdit>>(v).map(|_| ())),
+        "[TableRow]" => checked(
+            read_model::<Vec<std::collections::BTreeMap<String, tables::CellIn>>>(v).map(|_| ()),
+        ),
+        "[RowNumber]" => checked(read_model::<Vec<usize>>(v).map(|_| ())),
+        "TableColumns" => checked(read_model::<tables::ColumnEdits>(v).map(|_| ())),
+        "ListRows" => checked(read_model::<crate::list::Rows>(v).map(|_| ())),
+        "ListFill" => {
+            checked(read_model::<std::collections::BTreeMap<String, String>>(v).map(|_| ()))
+        }
+        "ListFilter" => checked(read_model::<tables::FilterIn>(v).map(|_| ())),
+        "ListSort" => checked(read_model::<Vec<tables::SortIn>>(v).map(|_| ())),
         other => checked(check_other(other, v)),
     }
+}
+
+/// Whether a model is read as written, no short form loosened: a design tokens
+/// file's `$value`s are its own grammar, and a table's cells and column names are
+/// the person's words, which a short form keyed by a field's name would rewrite.
+fn as_written(model: &str) -> bool {
+    matches!(
+        model,
+        "DtcgFile"
+            | "TableRows"
+            | "[ColumnName]"
+            | "[TableCell]"
+            | "[TableRow]"
+            | "[RowNumber]"
+            | "TableColumns"
+            | "ListRows"
+            | "ListFill"
+            | "ListFilter"
+            | "ListSort"
+    )
 }
 
 /// Whether `v` is the model `model` names that no serde type reads, or why not.
@@ -1439,11 +1479,27 @@ pub fn example(model: &str) -> Option<Value> {
             "scaling": "Fit",
             "transition": { "kind": "Push", "direction": "Right" },
         }),
+        "TableRows" => serde_json::json!([["Linen", "12"], ["Wool", "18"]]),
+        "[ColumnName]" => serde_json::json!(["Name", "Price"]),
+        "[TableCell]" => serde_json::json!([{ "row": 1, "column": "Price", "value": "14" }]),
+        "[TableRow]" => serde_json::json!([{ "Name": "Silk", "Price": "30" }]),
+        "[RowNumber]" => serde_json::json!([3]),
+        "TableColumns" => serde_json::json!({
+            "add": ["Stock"], "rename": { "Price": "Price (€)" }, "delete": ["Notes"],
+        }),
+        "ListRows" => serde_json::json!({ "first": 3 }),
+        "ListFill" => serde_json::json!({ "Title": "Name" }),
+        "ListFilter" => serde_json::json!({
+            "tests": [{ "column": "Price", "op": "less", "value": "20" }],
+        }),
+        "ListSort" => serde_json::json!([{ "column": "Price", "descending": true }]),
         _ => return None,
     })
     .map(|mut v| {
         // Shown in the short forms, which are the ones worth writing.
-        loose::tighten(model_key(model, ""), &mut v);
+        if !as_written(model) {
+            loose::tighten(model_key(model, ""), &mut v);
+        }
         v
     })
 }
@@ -6630,26 +6686,26 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "set_chart_data",
-        doc: "Replace a chart's table, keeping the mapping and series colours of each column whose name survives; unlinks file and data table",
+        doc: "Point a chart at a table of the document's (`data`), or give it new cells (`table`), keeping the mapping and series colours of each column whose name survives. On a chart reading a table the cells go into that table unless `write` is `chart`; a table other lists or charts read too needs `write`",
         params: &[
             req("node", NODE, "the chart"),
-            req(
+            opt(
                 "table",
                 ParamKind::Model("ChartTable"),
                 "its new data; column ids are its own",
             ),
+            opt(
+                "data",
+                TEXT,
+                "a table of the document's, by id or name, for the chart to read",
+            ),
+            opt(
+                "write",
+                ParamKind::Choice(&["table", "chart"]),
+                "with `table` on a chart reading a table: `table` writes the cells into it for every reader, `chart` gives this chart its own copy",
+            ),
         ],
-        run: |ctx, a| {
-            let (id, chart) = chart_of(ctx, a)?;
-            let mut chart = chart.with_table(a.model("table")?);
-            chart.source = None;
-            chart.data = None;
-            chart_valid(a, &chart)?;
-            Ok(Done::ops(vec![Operation::SetChart {
-                id,
-                chart: Some(Box::new(chart)),
-            }]))
-        },
+        run: tables::set_chart_data,
     },
     Verb {
         name: "flatten_chart",
@@ -6667,6 +6723,143 @@ pub static VERBS: &[Verb] = &[
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(Done::ops(ops.into_iter().flatten().collect()))
         },
+    },
+    Verb {
+        name: "add_table",
+        doc: "Add a table to the document, as *Data tables*' *New table*: named `Table N` unless given, a taken name numbered past; with no `columns`, `Column 1` and one empty row. Answers its id",
+        params: &[
+            opt("name", TEXT, "its name"),
+            opt(
+                "columns",
+                ParamKind::Model("[ColumnName]"),
+                "its column names, in order",
+            ),
+            opt(
+                "rows",
+                ParamKind::Model("TableRows"),
+                "its rows, one text cell per column",
+            ),
+        ],
+        run: tables::add_table,
+    },
+    Verb {
+        name: "edit_table",
+        doc: "Edit a table's cells, rows and columns in one step; every list and chart reading it follows. Rows count from 1 as the table stands before the call; `set` and `add` name columns as they stand after `columns`. Refused on a linked table",
+        params: &[
+            req("table", TEXT, "the table, by id or name"),
+            opt(
+                "set",
+                ParamKind::Model("[TableCell]"),
+                "cells to write: row, column (name or id), text",
+            ),
+            opt(
+                "add",
+                ParamKind::Model("[TableRow]"),
+                "rows to add, each by column name; a column left out is empty",
+            ),
+            opt(
+                "at",
+                INDEX,
+                "the row the added rows start at; the end unless given",
+            ),
+            opt(
+                "delete",
+                ParamKind::Model("[RowNumber]"),
+                "the rows to delete",
+            ),
+            opt(
+                "columns",
+                ParamKind::Model("TableColumns"),
+                "columns to add, rename (old to new) and delete, by name",
+            ),
+        ],
+        run: tables::edit_table,
+    },
+    Verb {
+        name: "set_table",
+        doc: "Replace a table's columns and rows, keeping its id; a column keeps its id, and the fills reading it, where the old table has one of its name. Refused on a linked table",
+        params: &[
+            req("table", TEXT, "the table, by id or name"),
+            req(
+                "columns",
+                ParamKind::Model("[ColumnName]"),
+                "its column names, in order",
+            ),
+            req(
+                "rows",
+                ParamKind::Model("TableRows"),
+                "its rows, one text cell per column",
+            ),
+        ],
+        run: tables::set_table,
+    },
+    Verb {
+        name: "rename_table",
+        doc: "Rename a table; a name another table has is numbered past it",
+        params: &[
+            req("table", TEXT, "the table, by id or name"),
+            req("name", TEXT, "its new name"),
+        ],
+        run: tables::rename_table,
+    },
+    Verb {
+        name: "delete_table",
+        doc: "Delete a table no list or chart reads; a linked table's file is untouched",
+        params: &[req("table", TEXT, "the table, by id or name")],
+        run: tables::delete_table,
+    },
+    Verb {
+        name: "unlink_table",
+        doc: "Drop a table's linked file, keeping its cells, so it can be edited",
+        params: &[req("table", TEXT, "the table, by id or name")],
+        run: tables::unlink_table,
+    },
+    Verb {
+        name: "make_list",
+        doc: "Make an instance a list over a table, as *Make a list from data*: wrapped in a frame that repeats it once per row, each copy's properties filled from its row",
+        params: &[
+            req("node", NODE, "the instance"),
+            req("table", TEXT, "the table, by id or name"),
+            opt(
+                "fill",
+                ParamKind::Model("ListFill"),
+                "property name to column name; the columns named as the properties unless given",
+            ),
+        ],
+        run: tables::make_list,
+    },
+    Verb {
+        name: "set_list",
+        doc: "Change a list's table, rows, fills, filter or sort, as the List card does; columns are named in the table it reads after the call",
+        params: &[
+            req("node", NODE, "the list's frame or its template"),
+            opt(
+                "table",
+                TEXT,
+                "the table it reads, by id or name; each fill keeps the column of its name",
+            ),
+            opt(
+                "rows",
+                ParamKind::Model("ListRows"),
+                "\"all\", {\"first\": n}, {\"row\": n} or \"opened\"",
+            ),
+            opt(
+                "fill",
+                ParamKind::Model("ListFill"),
+                "property name to column name, replacing every fill",
+            ),
+            opt(
+                "filter",
+                ParamKind::Model("ListFilter"),
+                "tests on columns, all passing unless `any`; a value may read `{variable}`",
+            ),
+            opt(
+                "sort",
+                ParamKind::Model("ListSort"),
+                "the columns its rows are sorted by, at most two",
+            ),
+        ],
+        run: tables::set_list,
     },
 ];
 
