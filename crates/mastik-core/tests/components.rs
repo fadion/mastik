@@ -417,15 +417,14 @@ fn close_by_hand(doc: &mut Document, mut ops: Vec<Operation>) -> Vec<u8> {
     serde_json::to_vec(&json).unwrap()
 }
 
-/// Load `bytes` on a thread with a small stack: 256 KB in a debug build, 64 KB
-/// under `--release`. A debug load of even a short document needs more than
-/// 64 KB, and a release build's frames are small enough that the recursive
-/// search survived 2,000 mains on 256 KB — so each profile gets the size at which
-/// the flip below bites (measured both ways).
+/// Load `bytes` on a thread with a 256 KB stack. The budget must leave real
+/// headroom over a load's own use: on Windows the runtime keeps ~20 KB of every
+/// thread's stack for its overflow handler and thread start-up varies, so 64 KB
+/// is too tight for a release load of even a short document. The chain below is
+/// long instead, so a search recursing once per main still cannot fit.
 fn load_on_a_small_stack(bytes: Vec<u8>) -> Result<Document, String> {
-    let stack = if cfg!(debug_assertions) { 256 } else { 64 } << 10;
     std::thread::Builder::new()
-        .stack_size(stack)
+        .stack_size(256 << 10)
         .spawn(move || io::load(&bytes).map_err(|e| e.to_string()))
         .unwrap()
         .join()
@@ -439,10 +438,10 @@ fn load_on_a_small_stack(bytes: Vec<u8>) -> Result<Document, String> {
 /// no `catch_unwind` catches.
 ///
 /// flip: the search recursing once per main → aborts the test binary on the open
-/// chain's load (`STATUS_STACK_OVERFLOW`), in debug on 256 KB and in release on 64 KB.
+/// chain's load (`STATUS_STACK_OVERFLOW`), in debug and in release.
 #[test]
 fn a_deep_chain_of_mains_loads_on_a_small_stack() {
-    const N: usize = 2_000;
+    const N: usize = 20_000;
     let open = load_on_a_small_stack(chain_of_mains(N, false)).expect("a chain loads");
     assert_eq!(open.get(open.first_page()).unwrap().children().len(), N);
     let closed = load_on_a_small_stack(chain_of_mains(N, true)).expect_err("a loop is refused");
