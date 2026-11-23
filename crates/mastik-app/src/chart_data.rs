@@ -158,6 +158,12 @@ impl ChartData {
         }
     }
 
+    /// Whether something inside the window answers `Escape` itself: the
+    /// table's name or a header being typed, a cell being typed into, a menu.
+    fn busy(&self) -> bool {
+        self.naming.is_some() || self.edit.is_some() || self.rename.is_some() || self.menu.is_some()
+    }
+
     /// The row of the cell being typed into, for a test.
     #[cfg(test)]
     pub(crate) fn typing_row(&self) -> Option<usize> {
@@ -632,9 +638,17 @@ impl MastikApp {
     }
 
     /// `Escape` with the window open and nothing in it holding the keyboard:
-    /// close it. The grid and a cell being typed into answer their own.
+    /// close it. The grid answers its own. An edit in the window answers its
+    /// own too, and is not seen by focus: egui drops a field's focus on
+    /// `Escape` before this runs, so the window would close under the edit.
     pub(crate) fn escape_chart_data(&mut self, ctx: &egui::Context) -> bool {
-        if self.chart_data.is_none() || ctx.memory(|m| m.focused().is_some()) {
+        let Some(open) = &self.chart_data else {
+            return false;
+        };
+        if open.busy() {
+            return true;
+        }
+        if ctx.memory(|m| m.focused().is_some()) {
             return false;
         }
         self.chart_data = None;
@@ -1219,6 +1233,26 @@ fn grid_h(canvas: egui::Rect) -> f32 {
     (canvas.height() - GRID_CHROME_H).clamp(GRID_MIN_H, GRID_H)
 }
 
+/// Cell `at`'s lines over its rect `rc`, collapsed with its neighbours': its
+/// right and bottom edges, and its top and left only on the grid's first row
+/// and column. Each cell stroking its whole box drew two lines between
+/// neighbours, the inner lines twice the outer ones' width.
+fn cell_lines(p: &egui::Painter, rc: egui::Rect, at: Cell, stroke: egui::Stroke) {
+    let (w, h) = (stroke.width, stroke.width / 2.0);
+    // Uprights stop short of the horizontals, so a translucent line never
+    // inks a corner twice.
+    let top = if at.0 == 0 { rc.top() + w } else { rc.top() };
+    let upright = egui::Rangef::new(top, rc.bottom() - w);
+    p.hline(rc.x_range(), rc.bottom() - h, stroke);
+    p.vline(rc.right() - h, upright, stroke);
+    if at.0 == 0 {
+        p.hline(rc.x_range(), rc.top() + h, stroke);
+    }
+    if at.1 == 0 {
+        p.vline(rc.left() + h, upright, stroke);
+    }
+}
+
 /// *Rename table*: opens the head's name field, lit while it is `open`. A
 /// click while it is open keeps the name as `Enter` does: the press already
 /// closed the field, so whether it was open is read at the press, or the
@@ -1494,7 +1528,7 @@ fn grid(
         for r in first..v_last {
             for c in vc_first..vc_last {
                 if r >= nr || c >= nc {
-                    p.rect_stroke(cell_rect(r, c), 0.0, faint, egui::StrokeKind::Inside);
+                    cell_lines(&p, cell_rect(r, c), (r, c), faint);
                 }
             }
         }
@@ -1511,7 +1545,7 @@ fn grid(
                         theme::color::field()
                     },
                 );
-                p.rect_stroke(rc, 0.0, hairline, egui::StrokeKind::Inside);
+                cell_lines(&p, rc, (r, c), hairline);
                 // An empty cell naming no variant has no text to ink: its edge is.
                 if text.is_empty() && warned.contains(&(r, c)) {
                     let edge = egui::Stroke::new(1.0, color::warn());
@@ -2723,6 +2757,45 @@ mod tests {
         );
     }
 
+    /// `Escape` in the head's name field or in a cell being typed into drops
+    /// that edit and leaves the window open; the next one closes it.
+    /// flip: `escape_chart_data` not asking `busy` → fails at "the name's
+    /// Escape leaves the window".
+    #[test]
+    fn escape_in_an_edit_drops_it_and_keeps_the_window() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = opened(&ctx);
+        let sid = app.save_chart_table(id).expect("saved");
+        let name = app.session.doc.data_set(sid).unwrap().name.clone();
+        app.chart_data.as_mut().unwrap().naming = Some("Typed".into());
+        for _ in 0..3 {
+            pass(&ctx, &mut app, Vec::new());
+        }
+        pass(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+        pass(&ctx, &mut app, Vec::new());
+        assert!(
+            app.chart_data.is_some(),
+            "the name's Escape leaves the window"
+        );
+        assert_eq!(app.session.doc.data_set(sid).unwrap().name, name, "dropped");
+        app.chart_data.as_mut().unwrap().focus = true;
+        pass(&ctx, &mut app, Vec::new());
+        pass(&ctx, &mut app, vec![egui::Event::Text("9".into())]);
+        pass(&ctx, &mut app, Vec::new());
+        assert!(
+            app.chart_data.as_ref().is_some_and(|d| d.edit.is_some()),
+            "fixture: typing into a cell"
+        );
+        pass(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+        pass(&ctx, &mut app, Vec::new());
+        assert!(
+            app.chart_data.as_ref().is_some_and(|d| d.edit.is_none()),
+            "a cell's Escape leaves the window, the edit dropped"
+        );
+        pass(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+        assert!(app.chart_data.is_none(), "the next Escape closes it");
+    }
+
     /// *Rename table* opens the head's field; pressed again it keeps the
     /// name typed and does not open it anew.
     /// flip: `rename_button` answering every click → fails at "kept, closed".
@@ -3318,5 +3391,49 @@ mod tests {
             shapes = out.shapes.len();
         }
         assert!(shapes < 10_000, "only the view: {shapes} shapes");
+    }
+
+    /// Two neighbouring cells share one line, as wide as the grid's outer one.
+    /// flip: `cell_lines` drawing every cell's left edge → fails at "one line
+    /// between".
+    #[test]
+    fn neighbouring_cells_share_one_line() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = opened(&ctx);
+        let mut frame = eframe::Frame::_new_kittest();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1320.0, 820.0),
+            )),
+            ..Default::default()
+        };
+        let out = ctx.run_ui(input, |ui| eframe::App::ui(&mut app, ui, &mut frame));
+        let grid = ctx
+            .read_response(egui::Id::new(GRID_ID))
+            .expect("the grid")
+            .rect;
+        // Row 0's middle, and the boundaries left of column 0 and between 0 and 1.
+        let y = grid.top() + ROW_H * 1.5;
+        let outer = grid.left() + GUTTER;
+        let inner = outer + COL_W;
+        fn uprights(shape: &egui::Shape, y: f32, out: &mut Vec<f32>) {
+            match shape {
+                egui::Shape::LineSegment { points: [a, b], .. }
+                    if (a.x - b.x).abs() < 0.01 && a.y.min(b.y) < y && a.y.max(b.y) > y =>
+                {
+                    out.push(a.x);
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|s| uprights(s, y, out)),
+                _ => {}
+            }
+        }
+        let mut xs = Vec::new();
+        out.shapes
+            .iter()
+            .for_each(|c| uprights(&c.shape, y, &mut xs));
+        let near = |x: f32| xs.iter().filter(|&&u| (u - x).abs() <= 1.0).count();
+        assert_eq!(near(outer), 1, "fixture: the outer line: {xs:?}");
+        assert_eq!(near(inner), 1, "one line between: {xs:?}");
     }
 }

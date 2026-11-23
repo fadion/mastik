@@ -677,7 +677,8 @@ window the name opens for typing, the next thing to write.
   X values*) or a Sankey's *From*, *To* or *Value* in words. The name is cut with an ellipsis
   short of the mark, its whole name the tooltip when cut. The header and a row-number gutter are
   held at the scrolled view's edges over the cells; cells on the field ground with its hairline
-  at `ui::MENU_ROW_H`, numbers right-aligned, the selected range in the accent's tint and the
+  at `ui::MENU_ROW_H`, neighbours sharing one line (`cell_lines`: each cell its right and bottom
+  edge, the first row and column their top and left), so inner lines are as thin as the outer, numbers right-aligned, the selected range in the accent's tint and the
   cursor a square 1.5 px accent edge. Past the table's last row and column a dim grid fills the
   view (the cells' lines in `color::card_border()` on the card's ground, no gutter numbers); it
   neither scrolls nor takes a click, so only real rows and columns make the grid scroll. The
@@ -691,7 +692,9 @@ window the name opens for typing, the next thing to write.
   with the cursor's edge); `Enter` commits and moves down, `Tab` commits and moves right,
   `Shift` the other way; `Escape` abandons an edit, and with none closes the window (the focused
   grid answers it; with nothing holding the keyboard it reaches the window through
-  `MastikApp::escape`); `Delete` and `Backspace` clear the selected cells; `Shift`+arrows, a
+  `MastikApp::escape`). An edit in the window (a cell, a header, the table's name, a menu) keeps
+  that press from closing it (`ChartData::busy`): egui drops a field's focus on `Escape` before
+  `MastikApp::escape` runs, so focus alone cannot say the press was the edit's; `Delete` and `Backspace` clear the selected cells; `Shift`+arrows, a
   `Shift`-click and a drag select a range, a header click its column. `Ctrl+C` / `Ctrl+X` /
   `Ctrl+V` read and write tab-separated text, quoted as a spreadsheet quotes a cell holding a
   tab, a line break or a quote, so a range pasted from a spreadsheet lands as cells from the
