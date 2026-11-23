@@ -194,9 +194,6 @@ pub(crate) fn run(r: &Render) -> Result<(), String> {
     Ok(())
 }
 
-/// The most characters a `--name-by` cell gives a file name.
-const NAME_CAP: usize = 200;
-
 /// A rendered file: its path under the destination and its bytes, `None` when
 /// the layer had nothing to frame.
 type Rendered = (String, Option<Vec<u8>>);
@@ -263,23 +260,20 @@ fn render_rows(
     } else {
         stem
     };
-    let width = rows.len().to_string().len();
     let mut taken = Vec::new();
     let base = s.history.undo_depth();
     let mut out = Vec::with_capacity(rows.len());
     for (r, (row, edit)) in rows.iter().zip(&edits).enumerate() {
         let n = r + 1;
         apply_row(s, inst, edit, header, n)?;
-        let named = name_col
-            .and_then(|c| row.get(c))
-            // Capped well under the 255 a file name may hold, with room for the
-            // extension and a de-collide suffix, so no row fails the write midway.
-            .map(|cell| {
-                let cell: String = cell.trim().chars().take(NAME_CAP).collect();
-                mastik_export::plan::sanitize_segment(&cell)
-            })
-            .filter(|cell| !cell.is_empty());
-        let name = named.unwrap_or_else(|| format!("{stem}-{n:0width$}"));
+        // Named as *One file per row* names a row: the same cap, sanitizing and
+        // zero-padded number.
+        let named = name_col.and_then(|c| row.get(c)).and_then(|cell| {
+            mastik_export::plan::row_cell_name(cell, &mastik_export::PlanOptions::default())
+        });
+        let name = named.unwrap_or_else(|| {
+            format!("{stem}-{}", mastik_export::plan::row_number(n, rows.len()))
+        });
         let path = mastik_export::plan::de_collide(
             format!("{name}.{}", spec.format.extension()),
             &mut taken,
@@ -396,6 +390,7 @@ fn render_one(s: &EditorSession, node: NodeId, spec: &ExportSpec, path: String) 
         path,
         pixels,
         clamped,
+        row: None,
     };
     let data = mastik_export::plan::render(&s.doc, &s.resolved, &file);
     (file.path, data)
@@ -477,7 +472,9 @@ fn place_instance(s: &mut EditorSession, main: NodeId) -> Result<NodeId, String>
 }
 
 /// What each header cell drives, warning once for a column that matches nothing.
-/// A name matches exactly, else ignoring case when that finds exactly one.
+/// A name matches exactly, else as a list's column matches a property
+/// (`content_fill::column_key`: ignoring case, spaces, dashes and underscores)
+/// when that finds exactly one.
 fn columns(
     doc: &Document,
     owner: NodeId,
@@ -507,8 +504,9 @@ fn columns(
         let h = cell.trim();
         let exact = names.iter().position(|n| *n == h);
         let loose = || {
+            let key = mastik_core::content_fill::column_key;
             let hits: Vec<usize> = (0..names.len())
-                .filter(|i| names[*i].eq_ignore_ascii_case(h))
+                .filter(|i| key(names[*i]) == key(h))
                 .collect();
             (hits.len() == 1).then(|| hits[0])
         };
@@ -1240,7 +1238,7 @@ mod tests {
     /// count's width.
     ///
     /// flip: `render_rows` naming without `de_collide` → fails at the names, the
-    /// second `CTA.svg`; without the `0width` padding → `Button-3.svg`.
+    /// second `CTA.svg`; `plan::row_number` without its padding → `Button-3.svg`.
     #[test]
     fn rows_named_alike_are_told_apart_and_numbered_to_width() {
         let mut s = button();

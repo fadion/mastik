@@ -128,6 +128,7 @@ fn a_planned_file_follows_its_text_setting() {
         path: "t.svg".into(),
         pixels: None,
         clamped: false,
+        row: None,
     };
     let bytes = mastik_export::plan::render(&f.doc, &f.res, &file).expect("bytes");
     let svg = String::from_utf8(bytes).unwrap();

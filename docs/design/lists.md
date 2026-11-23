@@ -21,7 +21,9 @@ template, the list's description, its data set or a variable its filter reads ch
   another, detached, flattened or deleted) or one made in *Data tables* stays, and every Data
   dropdown offers it. `Document::apply` refuses a transaction leaving a set gone while a list or
   chart still reads it (`OpError::DataSetRead`, *‹id› is read by a list or chart — point it at
-  another table first*); `list::is_read` answers whether anything reads one. No sweep takes an
+  another table first*); `list::is_read` answers whether anything reads one. An export row's
+  *One file per row* reads one without holding it: deleting the table leaves that row writing
+  one file (`export.md`, *Plan*). No sweep takes an
   unread table (*Clean up…*, *System health*): a table holds typed data, and losing it to a sweep
   costs more than a stray layer (`tests/lists.rs · a_data_set_stays_until_deleted`).
 - **`source: Option<DataLink>`** is the linked file, the chart's `DataLink` (path, the stat of the
@@ -103,7 +105,8 @@ list's description as it drops a misplaced one.
 - **A cell names a picture by a path or by its id.** `DataSet::picture(doc, cell)` answers the
   picture `pictures` maps the trimmed cell to, else the document's picture of that id. A document
   picture has no name of its own, so there is nothing else to name it by; a web address is not
-  read.
+  read. `DataSet::image_columns(doc)` is the columns with a cell naming a picture, which *Fill
+  with content* offers a shape (`app-canvas-chrome.md`).
 - **A cell naming nothing gives the row the main's picture.** The List card warns under that fill
   row (`list::unmatched_pictures`, *Fill*, below).
 - **The app reads the files** (`list_data::read_pictures`): only a plain relative path beside the
@@ -153,7 +156,9 @@ list's description as it drops a misplaced one.
   3. each row's text, boolean and image properties set through `variant::set_property`.
 
   Each copy is the template's subtree copied whole, its overrides included; the cells then
-  overwrite what they fill. It does nothing (`false`) when the frame is not a list or its data
+  overwrite what they fill. Steps 2 and 3 are `variant_ops` and `property_ops`, which
+  `list::fill_row` also runs on an export's throwaway copy, so an instance exported *One file per
+  row* fills as a list's row does (`export.md`, *Plan*). It does nothing (`false`) when the frame is not a list or its data
   set or template is missing.
 - **`list::touched`** says which lists a committed transaction left out of date: its `SetList`s,
   the lists over a data set its `SetDataSet`s wrote, a list whose template subtree it
@@ -255,8 +260,10 @@ step.
   tables*' too): a `ui::fitted_combo` with the `TABLE` glyph, its width kept whatever the tables
   are called, listing every data set in the document (`table_words`: *name · N rows*, or *name ·
   not used* when nothing reads it) and, after a separator, *From a file…*; picking a data set
-  moves the list onto it, undo step *List data*: each fill keeps its column where the new table has a column of the same name, and
-  a property left unfilled takes the column of its own name (`MastikApp::list_on`). *From a
+  moves the list onto it, undo step *List data*: each fill, filter test and sort key keeps its
+  column where the new table has a column of the same name and is dropped where it has none, and
+  a property left unfilled takes the column of its own name (`verbs::moved_onto`, which
+  `set_list`'s `table` moves a list through too). *From a
   file…* reads a new data set from a picked file and moves this list alone onto it in one step.
   Under it, *N rows · N columns* and *Edit data…* (`ui::action_button`, the data window, as on
   the Chart card); while linked, the source line (*Linked to products.csv*, *Changed on disk* in
@@ -407,6 +414,41 @@ the document's data sets, which it calls tables. Named *Data tables*, not *Conte
 - **Two refusals guard *Delete table***: `delete_table`'s own `list::is_read` check and the
   commit's `OpError::DataSetRead`. `chart_data.rs · delete_table_only_takes_an_unread_table`
   stays green with either removed alone; the commit's refusal is the one every door meets.
+
+## Verbs
+
+The tables and lists for agents, Command Mode and scripts: registry verbs (`verbs/tables.rs`),
+MCP's Phase 3 (`mcp.md`), each acting as its door in the app.
+
+- **Naming.** A table is named by id or name (`verbs::find_table`); a name matching none or
+  several is refused listing the tables. Rows count from 1. Cells are text in and out, a number
+  or true/false sent in kept as its text, and the table models are read as written
+  (`verbs::as_written`), since cells and column names are the person's words.
+- **`add_table(name?, columns?, rows?)`** is *New table*: *Table N* unnamed, a taken name
+  numbered past and said; with no columns, *Column 1* and one empty row. Answers its id.
+- **`edit_table(table, set?, add?, at?, delete?, columns?)`** is one *Edit table*: `columns`
+  adds, renames and deletes columns by name, `set` writes cells (`{row, column, value}`, the
+  column by name or id), `add` inserts rows keyed by column name at `at` or the end, `delete`
+  takes row numbers. Rows are numbered as the table stood before the call; `set` and `add` name
+  columns as they stand after `columns`. Said *People: 3 rows*.
+- **`set_table(table, columns, rows)`** replaces the cells; a column whose name survives keeps its
+  id (`Table::take_ids_by_name`), so the fills reading it hold.
+- **`rename_table`**, **`delete_table`** (refused while read: *Delete table: used by 1 list and 1
+  chart. Point them at another table first.*) and **`unlink_table`** are the window's and the
+  card's acts.
+- **A linked table refuses a cell edit** (*People is linked to people.csv: unlink it first*): the
+  next *Update* would read the file over it. Limits and rows are refused in words (*At most 64
+  columns*, *People has 2 rows, not 14*, *rows count from 1*).
+- **Every table edit is one `SetDataSet`**, so its commit regenerates the lists over the table and
+  brings the charts over it along, as the data window's edits do.
+- **`make_list(node, table, fill?)`** is *Make a list from data* over a table there is: filled by
+  name unless `fill` maps property names to column names. Answers the frame.
+- **`set_list(node, table?, rows?, fill?, filter?, sort?)`** is the List card: `node` the list
+  frame or its template, `rows` `"all"`, `{first}`, `{row}` or `"opened"`, columns named in the
+  table the list reads after the call, and a `{Variable}` in a filter value stored in the id form
+  (`Expr::from_names`). `table` moves the list as the Data dropdown does.
+- **`set_chart_data`** writes a chart's set or gives the chart its own table (`charts.md`,
+  *Elsewhere*).
 
 ## On the canvas and in the layers tree
 

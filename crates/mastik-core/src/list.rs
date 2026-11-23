@@ -1195,83 +1195,104 @@ pub fn regenerate<E>(
         set.table.rows.get(row)?.get(i).map(|c| c.trim())
     };
 
-    // Each row switched to the variant its cells name. A filled property whose
-    // cell names no value takes the default variant's, not the one the row was
-    // captured showing: that is row 1's last fill, so it would follow history.
+    // Each row switched to the variant its cells name, then its text, boolean
+    // and image properties set.
     let mut switches = Vec::new();
     for (root, row) in &roots {
-        let Some(main) = crate::component::main_of(doc, *root) else {
-            continue;
-        };
-        let Some(values) = doc.get(main).map(|m| m.variant().to_vec()) else {
-            continue;
-        };
-        let props = variant_props(doc, *root);
-        let default: Option<Vec<String>> = crate::variant::set_of(doc, main)
-            .and_then(|s| crate::kit::default_variant(doc, s))
-            .and_then(|d| doc.get(d))
-            .map(|d| d.variant().to_vec());
-        let mut want = values.clone();
-        for f in &list.fill {
-            let Target::Variant(name) = &f.target else {
-                continue;
-            };
-            let (Some(i), Some(c)) = (
-                props.iter().position(|p| p.name == *name),
-                cell(*row, f.column),
-            ) else {
-                continue;
-            };
-            let value = if props[i].values.iter().any(|v| v == c) {
-                Some(c)
-            } else {
-                default.as_ref().and_then(|d| d.get(i)).map(String::as_str)
-            };
-            if let (Some(v), Some(w)) = (value, want.get_mut(i)) {
-                *w = v.to_string();
-            }
-        }
-        if want == values {
-            continue;
-        }
-        let Some(to) = crate::variant::set_of(doc, main)
-            .and_then(|s| crate::variant::find_variant(doc, s, &want))
-        else {
-            continue;
-        };
-        if let Some(tx) = crate::variant::switch(doc, *root, to, ids) {
-            switches.extend(tx.0);
-        }
+        switches.extend(variant_ops(doc, *root, &list.fill, &|c| cell(*row, c), ids));
     }
     step(doc, ids, switches)?;
-
-    // Then each row's text, boolean and image properties. A cell that reads as
-    // no value resets the property to the main's, for the reason above.
     let mut props = Vec::new();
     for (root, row) in &roots {
-        let offered = crate::variant::instance_properties(doc, *root);
-        for f in &list.fill {
-            let Target::Prop(item) = &f.target else {
-                continue;
-            };
-            let (Some(p), Some(c)) = (offered.iter().find(|p| p.id == *item), cell(*row, f.column))
-            else {
-                continue;
-            };
-            let value = match p.kind {
-                PropKind::Text => Some(PropValue::Text(c.to_string())),
-                PropKind::Boolean => cell_bool(c).map(PropValue::Boolean),
-                PropKind::Image => set.picture(doc, c).map(PropValue::Image),
-                PropKind::Swap | PropKind::Nested => continue,
-            };
-            props.extend(match value {
-                Some(v) => crate::variant::set_property(doc, &[*root], p, &v),
-                None => crate::variant::reset_property(doc, &[*root], p),
-            });
-        }
+        props.extend(property_ops(doc, *root, &list.fill, &set, &|c| {
+            cell(*row, c)
+        }));
     }
     step(doc, ids, props)?;
     Ok(true)
+}
+
+/// The ops switching instance `root` to the variant its row's cells (`cell`)
+/// name under `fill`. A filled property whose cell names no value takes the
+/// default variant's, not the one the copy was captured showing: that is row
+/// 1's last fill, so it would follow history. Empty when nothing changes.
+fn variant_ops<'a>(
+    doc: &Document,
+    root: NodeId,
+    fill: &[Fill],
+    cell: &dyn Fn(ColumnId) -> Option<&'a str>,
+    ids: &mut IdSource,
+) -> Vec<Operation> {
+    let Some(main) = crate::component::main_of(doc, root) else {
+        return Vec::new();
+    };
+    let Some(values) = doc.get(main).map(|m| m.variant().to_vec()) else {
+        return Vec::new();
+    };
+    let props = variant_props(doc, root);
+    let default: Option<Vec<String>> = crate::variant::set_of(doc, main)
+        .and_then(|s| crate::kit::default_variant(doc, s))
+        .and_then(|d| doc.get(d))
+        .map(|d| d.variant().to_vec());
+    let mut want = values.clone();
+    for f in fill {
+        let Target::Variant(name) = &f.target else {
+            continue;
+        };
+        let (Some(i), Some(c)) = (props.iter().position(|p| p.name == *name), cell(f.column))
+        else {
+            continue;
+        };
+        let value = if props[i].values.iter().any(|v| v == c) {
+            Some(c)
+        } else {
+            default.as_ref().and_then(|d| d.get(i)).map(String::as_str)
+        };
+        if let (Some(v), Some(w)) = (value, want.get_mut(i)) {
+            *w = v.to_string();
+        }
+    }
+    if want == values {
+        return Vec::new();
+    }
+    crate::variant::set_of(doc, main)
+        .and_then(|s| crate::variant::find_variant(doc, s, &want))
+        .and_then(|to| crate::variant::switch(doc, root, to, ids))
+        .map(|tx| tx.0)
+        .unwrap_or_default()
+}
+
+/// The ops setting instance `root`'s text, boolean and image properties from
+/// its row's cells (`cell`) under `fill`. A cell that reads as no value resets
+/// the property to the main's, for [`variant_ops`]' reason.
+fn property_ops<'a>(
+    doc: &Document,
+    root: NodeId,
+    fill: &[Fill],
+    set: &DataSet,
+    cell: &dyn Fn(ColumnId) -> Option<&'a str>,
+) -> Vec<Operation> {
+    let offered = crate::variant::instance_properties(doc, root);
+    let mut ops = Vec::new();
+    for f in fill {
+        let Target::Prop(item) = &f.target else {
+            continue;
+        };
+        let (Some(p), Some(c)) = (offered.iter().find(|p| p.id == *item), cell(f.column)) else {
+            continue;
+        };
+        let value = match p.kind {
+            PropKind::Text => Some(PropValue::Text(c.to_string())),
+            PropKind::Boolean => cell_bool(c).map(PropValue::Boolean),
+            PropKind::Image => set.picture(doc, c).map(PropValue::Image),
+            PropKind::Swap | PropKind::Nested => continue,
+        };
+        ops.extend(match value {
+            Some(v) => crate::variant::set_property(doc, &[root], p, &v),
+            None => crate::variant::reset_property(doc, &[root], p),
+        });
+    }
+    ops
 }
 
 /// The charts reading data set `set`, in id order.
@@ -1420,6 +1441,167 @@ pub fn regenerate_outside_history(doc: &mut Document, lists: &[NodeId]) -> Dirty
         }
     }
     all
+}
+
+/// What one column fills when a frame is drawn once per row of a table.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RowTarget {
+    /// A property of an instance frame, as a list fills its template.
+    Fill(Fill),
+    /// A text layer, or a layer showing a picture, under a frame that is no
+    /// instance. One inside a nested instance is filled as an override.
+    Layer { node: NodeId, column: ColumnId },
+}
+
+/// What `table`'s columns fill in `frame` by default. On an instance, the
+/// properties [`fill_by_name`] matches. On any other frame, each text layer and
+/// layer showing a picture under it whose name matches a column by
+/// [`crate::content_fill::column_key`], in reading order; hidden and locked
+/// layers and what they hold are left out, as is a text bound to a variable.
+pub fn row_targets(doc: &Document, frame: NodeId, table: &Table) -> Vec<RowTarget> {
+    if crate::component::instance_root(doc, frame) == Some(frame) {
+        return fill_by_name(doc, frame, table)
+            .into_iter()
+            .map(RowTarget::Fill)
+            .collect();
+    }
+    let key = crate::content_fill::column_key;
+    let column = |name: &str| {
+        let k = key(name);
+        table
+            .columns
+            .iter()
+            .find(|c| key(&c.name) == k)
+            .map(|c| c.id)
+    };
+    let mut out = Vec::new();
+    let mut stack: Vec<NodeId> = doc
+        .get(frame)
+        .map(|n| n.children().iter().rev().copied().collect())
+        .unwrap_or_default();
+    while let Some(id) = stack.pop() {
+        let Some(n) = doc.get(id) else { continue };
+        if !n.visible() || n.locked() {
+            continue;
+        }
+        let fillable = match n.kind() {
+            crate::node::NodeKind::Text { .. } => {
+                n.text_vars()[crate::variable::TEXT_CONTENT].is_none()
+            }
+            _ => n.paint().image_fill().is_some(),
+        };
+        if fillable && let Some(c) = column(n.name()) {
+            out.push(RowTarget::Layer {
+                node: id,
+                column: c,
+            });
+        }
+        stack.extend(n.children().iter().rev());
+    }
+    out
+}
+
+/// What filling a frame from one row left as it was.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RowFilled {
+    /// Cells naming no picture the table or the document holds, whose layer or
+    /// property kept its own.
+    pub missing_pictures: usize,
+}
+
+/// Fill `frame` in `doc` from row `row` (from 0) of `set` through `targets`
+/// ([`row_targets`]), straight onto `doc` and outside history: for a throwaway
+/// copy that is drawn once and dropped, as *One file per row* draws each file.
+pub fn fill_row(
+    doc: &mut Document,
+    frame: NodeId,
+    set: &DataSet,
+    row: usize,
+    targets: &[RowTarget],
+) -> RowFilled {
+    let mut ids = IdSource::new(copy_actor(frame));
+    crate::document::reserve_existing_ids(doc, &mut ids);
+    let cells = set.table.rows.get(row);
+    let cell = |col: ColumnId| -> Option<&str> {
+        let i = set.table.index_of(col)?;
+        cells?.get(i).map(|c| c.trim())
+    };
+    let missing = |c: &str| !c.is_empty() && set.picture(doc, c).is_none();
+    let fill: Vec<Fill> = targets
+        .iter()
+        .filter_map(|t| match t {
+            RowTarget::Fill(f) => Some(f.clone()),
+            RowTarget::Layer { .. } => None,
+        })
+        .collect();
+    let images = crate::variant::instance_properties(doc, frame);
+    let mut filled = RowFilled::default();
+    for f in &fill {
+        if let Target::Prop(item) = &f.target
+            && images
+                .iter()
+                .any(|p| p.id == *item && p.kind == PropKind::Image)
+            && cell(f.column).is_some_and(missing)
+        {
+            filled.missing_pictures += 1;
+        }
+    }
+    let mut layers = Vec::new();
+    for t in targets {
+        let RowTarget::Layer { node, column } = t else {
+            continue;
+        };
+        let (Some(n), Some(c)) = (doc.get(*node), cell(*column)) else {
+            continue;
+        };
+        match n.kind() {
+            crate::node::NodeKind::Text {
+                content,
+                style,
+                spans,
+                para_spans,
+                paragraph,
+                ..
+            } => layers.push(Operation::SetText {
+                id: *node,
+                content: c.to_string(),
+                spans: spans.replaced(0, content.len(), c.len(), style),
+                para_spans: para_spans.replaced(0, content.len(), c.len(), paragraph),
+            }),
+            _ if missing(c) => filled.missing_pictures += 1,
+            _ => {
+                // The picture alone: the fill's fit and crop stay the layer's.
+                let (Some(picture), Some(i)) = (set.picture(doc, c), n.paint().image_fill()) else {
+                    continue;
+                };
+                let mut fills = n.paint().fills.clone();
+                if let crate::variable::BrushSource::Literal(crate::Brush::Image(b)) =
+                    &mut fills[i].brush
+                {
+                    b.image.id = picture;
+                }
+                layers.push(Operation::SetFills { id: *node, fills });
+            }
+        }
+    }
+    let switches = variant_ops(doc, frame, &fill, &cell, &mut ids);
+    apply_outside(doc, switches, &mut ids);
+    let props = property_ops(doc, frame, &fill, set, &cell);
+    apply_outside(doc, props, &mut ids);
+    apply_outside(doc, layers, &mut ids);
+    filled
+}
+
+/// `ops` applied straight onto `doc` with what they owe the document's other
+/// copies, outside history. A refusal is a bug in the caller, never the user's.
+fn apply_outside(doc: &mut Document, ops: Vec<Operation>, ids: &mut IdSource) {
+    if ops.is_empty() {
+        return;
+    }
+    let mut tx = Transaction(ops);
+    crate::propagate::owed(doc, &mut tx, ids);
+    let applied = doc.apply(&tx);
+    debug_assert!(applied.is_ok(), "a row's fill was refused: {applied:?}");
 }
 
 #[cfg(test)]

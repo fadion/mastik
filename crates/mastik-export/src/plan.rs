@@ -54,6 +54,9 @@ pub struct PlannedFile {
     /// Whether [`Self::pixels`] is smaller than the spec asked for, because the
     /// request was past what the CPU rasterizer can allocate.
     pub clamped: bool,
+    /// The table row, from 0, a *One file per row* file is filled from
+    /// ([`ExportSpec::per_row`]); `None` draws the layer as it is.
+    pub row: Option<usize>,
 }
 
 /// Everything `subjects` would produce, in order, with no two files sharing a
@@ -93,6 +96,16 @@ pub fn plan(
             });
         }
         for spec in &specs {
+            if let Some(files) = row_files(doc, node, spec, &opts) {
+                for (row, wanted) in files {
+                    let path = de_collide(wanted, &mut taken);
+                    out.push(PlannedFile {
+                        row: Some(row),
+                        ..planned(doc, res, node, spec, path)
+                    });
+                }
+                continue;
+            }
             if let Some(files) = variant_files(doc, node, spec, &opts) {
                 for (variant, wanted) in files {
                     let path = de_collide(wanted, &mut taken);
@@ -134,7 +147,82 @@ fn planned(
         path,
         pixels,
         clamped,
+        row: None,
     }
+}
+
+/// The files a layer writes under [`ExportSpec::per_row`]: a row each, from 0,
+/// at `prefix` + the layer's name as a folder, `/`, the row's cell in the
+/// *Name by* column ([`row_cell_name`]) or its number ([`row_number`]) and the
+/// spec's suffix (`Certificate/Ada Lovelace@2x.png`). Not yet de-collided;
+/// empty for a table with no rows. `None` when the spec does not ask for it or
+/// its table is not in the document, so the layer exports as one file.
+pub fn row_files(
+    doc: &Document,
+    node: NodeId,
+    spec: &ExportSpec,
+    opts: &PlanOptions,
+) -> Option<Vec<(usize, String)>> {
+    let per_row = spec.per_row.as_ref()?;
+    let set = doc.data_set(per_row.table)?;
+    let folder = path_stem(&format!("{}{}", spec.prefix, doc.get(node)?.name()), opts);
+    let name_col = per_row.name_by.and_then(|c| set.table.index_of(c));
+    let rows = set.table.rows.len();
+    let (suffix, ext) = (spec.effective_suffix(), spec.format.extension());
+    Some(
+        set.table
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(r, cells)| {
+                let name = name_col
+                    .and_then(|c| cells.get(c))
+                    .and_then(|cell| row_cell_name(cell, opts))
+                    .unwrap_or_else(|| row_number(r + 1, rows));
+                let stem = path_stem(&format!("{name}{suffix}"), opts);
+                (r, format!("{folder}/{stem}.{ext}"))
+            })
+            .collect(),
+    )
+}
+
+/// The most characters a cell gives a file name: well under the 255 a name
+/// may hold, with room for the suffix, the extension and a de-collision.
+pub const ROW_NAME_CAP: usize = 200;
+
+/// Row `n` (from 1) of `rows` as a file name, zero-padded to the count's width
+/// so the files sort in row order: `01` – `24`, `001` – `240`.
+pub fn row_number(n: usize, rows: usize) -> String {
+    let width = rows.to_string().len();
+    format!("{n:0width$}")
+}
+
+/// A cell as a file name: trimmed, cut at [`ROW_NAME_CAP`] characters and
+/// sanitized as a layer's name is, a `/` a folder only under
+/// [`PlanOptions::folders_from_names`]. `None` when nothing of it is usable,
+/// for the caller's row number to stand in.
+pub fn row_cell_name(cell: &str, opts: &PlanOptions) -> Option<String> {
+    let cell: String = cell.trim().chars().take(ROW_NAME_CAP).collect();
+    let parts = segments(&cell, opts);
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
+/// The copy a *One file per row* file of `node` under `spec` is drawn from:
+/// `doc` with `node` filled from table row `row` ([`mastik_core::list::fill_row`]),
+/// its `Resolved`, and what the fill left as it was. `None` when the spec reads
+/// no table the document holds.
+pub fn filled_copy(
+    doc: &Document,
+    node: NodeId,
+    spec: &ExportSpec,
+    row: usize,
+) -> Option<(Document, Resolved, mastik_core::list::RowFilled)> {
+    let set = doc.data_set(spec.per_row.as_ref()?.table)?.clone();
+    let targets = mastik_core::list::row_targets(doc, node, &set.table);
+    let mut copy = doc.clone();
+    let filled = mastik_core::list::fill_row(&mut copy, node, &set, row, &targets);
+    let res = Resolved::rebuild(&copy);
+    Some((copy, res, filled))
 }
 
 /// The files a component set writes under [`ExportSpec::each_variant`]: each
@@ -254,6 +342,7 @@ pub(crate) fn acting_extras(spec: &mastik_core::ExportSpec) -> bool {
                 || spec.view != plain.view
                 || spec.precision != plain.precision))
         || spec.each_variant
+        || spec.per_row.is_some()
 }
 
 /// The document an export of `roots` draws: `doc` with [`strip_fills`] applied,
@@ -326,6 +415,18 @@ pub fn drawn_roots(doc: &Document, res: &Resolved, node: NodeId, spec: &ExportSp
 /// halfway through a drag cannot leak an uncommitted position into a file
 /// (§15 D264). Nothing here can check that.
 pub fn render(doc: &Document, res: &Resolved, file: &PlannedFile) -> Option<Vec<u8>> {
+    // A row's file is drawn from its own filled copy; a table gone since the
+    // plan draws the layer as it is.
+    if let Some(row) = file.row {
+        let plain = PlannedFile {
+            row: None,
+            ..file.clone()
+        };
+        return match filled_copy(doc, file.node, &file.spec, row) {
+            Some((copy, res, _)) => render(&copy, &res, &plain),
+            None => render(doc, res, &plain),
+        };
+    }
     // Once at most: the copy holds no fill left to take off.
     if let Some((doc, res)) = for_export(doc, &drawn_roots(doc, res, file.node, &file.spec)) {
         return render(&doc, &res, file);
@@ -486,19 +587,25 @@ fn frame_background(doc: &Document, node: NodeId) -> Option<Color> {
 /// refused or silently transformed by the filesystem. A name that sanitizes away
 /// to nothing becomes `Layer`.
 fn path_stem(name: &str, opts: &PlanOptions) -> String {
-    let parts: Vec<&str> = match opts.folders_from_names {
-        true => name.split('/').collect(),
-        false => vec![name],
-    };
-    let cleaned: Vec<String> = parts
-        .iter()
-        .map(|p| sanitize_segment(p))
-        .filter(|p| !p.is_empty())
-        .collect();
+    let cleaned = segments(name, opts);
     match cleaned.is_empty() {
         true => "Layer".to_string(),
         false => cleaned.join("/"),
     }
+}
+
+/// `name`'s usable path segments: split on `/` only when the caller asked for
+/// folders, each sanitized, the empty ones dropped.
+fn segments(name: &str, opts: &PlanOptions) -> Vec<String> {
+    let parts: Vec<&str> = match opts.folders_from_names {
+        true => name.split('/').collect(),
+        false => vec![name],
+    };
+    parts
+        .iter()
+        .map(|p| sanitize_segment(p))
+        .filter(|p| !p.is_empty())
+        .collect()
 }
 
 /// `s` as one file or folder name the strictest filesystem takes: separators and

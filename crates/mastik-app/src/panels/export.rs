@@ -15,7 +15,7 @@ use crate::theme::{self, icon};
 use crate::ui::{self, Prefix, Scrub, value_field};
 use mastik_core::{
     ExportBackground, ExportFormat, ExportScale, ExportSpec, ExportText, IconSet, Keyed, NodeId,
-    Operation, SvgColour, SvgStrokes, SvgView, Transaction,
+    Operation, PerRow, SvgColour, SvgStrokes, SvgView, Transaction, chart::ColumnId,
 };
 use mastik_export::{PlanOptions, PlannedFile};
 use std::sync::Arc;
@@ -1099,12 +1099,24 @@ impl MastikApp {
                 false => self.export_size_label(spec, sizing),
             };
             let lined = !size.is_empty();
-            let folder = spec.each_variant
-                && sizing.is_some_and(|id| mastik_core::variant::is_set(&self.session.doc, id));
-            let glyph = match (pointing, folder) {
-                (true, _) => icon::SLIDERS_HORIZONTAL,
-                (false, true) => icon::FOLDER_SIMPLE,
-                (false, false) => icon::FRAME,
+            // Whether a file-per-row line warns, when the row has one.
+            let rows_warn = sizing
+                .and_then(|id| self.per_row_line(spec, id))
+                .map(|(_, warn)| warn);
+            let folder = rows_warn == Some(false)
+                || (spec.each_variant
+                    && sizing
+                        .is_some_and(|id| mastik_core::variant::is_set(&self.session.doc, id)));
+            let warn = !pointing && rows_warn == Some(true);
+            let glyph = match (pointing, warn, folder) {
+                (true, ..) => icon::SLIDERS_HORIZONTAL,
+                (false, true, _) => icon::WARNING,
+                (false, false, true) => icon::FOLDER_SIMPLE,
+                (false, false, false) => icon::FRAME,
+            };
+            let ink = match warn {
+                true => theme::color::warn(),
+                false => theme::text::faint(),
             };
             if lined {
                 ui.allocate_space(egui::vec2(0.0, ROW_LINE_GAP));
@@ -1116,7 +1128,7 @@ impl MastikApp {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         ui.add_space(2.0);
-                        ui.label(theme::icon_text(glyph, 12.0, theme::text::faint()));
+                        ui.label(theme::icon_text(glyph, 12.0, ink));
                         ui.label(
                             egui::RichText::new(size)
                                 .size(ui::CAPTION_PT)
@@ -1153,11 +1165,15 @@ impl MastikApp {
     ///
     /// Blank over a multi-selection rather than a guess: `Width(512)` is a different
     /// multiplier on every differently-shaped layer. A set exporting each variant
-    /// says how many files go into which folder instead.
+    /// says how many files go into which folder instead, and a row writing a file
+    /// per table row says [`Self::per_row_line`].
     fn export_size_label(&self, spec: &ExportSpec, sizing: Option<NodeId>) -> String {
         let Some(id) = sizing else {
             return String::new();
         };
+        if let Some((line, _)) = self.per_row_line(spec, id) {
+            return line;
+        }
         let opts = PlanOptions {
             folders_from_names: self.prefs.export_folders_from_names,
             ..Default::default()
@@ -1182,6 +1198,38 @@ impl MastikApp {
             (Some((w, h)), false) => format!("{w}×{h}"),
             (None, _) => String::new(),
         }
+    }
+
+    /// The size line of a row writing a file per table row, and whether it
+    /// warns: the size and *24 files, a row each of Speakers*, or why the
+    /// export writes one file (its table is gone), none (no rows), or the same
+    /// file each time (no column fills anything). `None` when it is not asked for.
+    fn per_row_line(&self, spec: &ExportSpec, id: NodeId) -> Option<(String, bool)> {
+        let per_row = spec.per_row.as_ref()?;
+        let doc = &self.session.doc;
+        let Some(set) = doc.data_set(per_row.table) else {
+            return Some((super::list::MISSING_TABLE.to_string(), true));
+        };
+        let rows = set.table.rows.len();
+        if rows == 0 {
+            return Some((format!("{} has no rows: nothing to export", set.name), true));
+        }
+        if mastik_core::list::row_targets(doc, id, &set.table).is_empty() {
+            let layer = doc.get(id).map_or("", |n| n.name());
+            return Some((format!("No column fills anything in {layer}"), true));
+        }
+        let files = format!("{}, a row each of {}", ui::count(rows, "file"), set.name);
+        let size = match spec.format.is_raster() {
+            true => mastik_export::plan::raster_size(doc, &self.session.resolved, id, spec).0,
+            false => None,
+        };
+        Some((
+            match size {
+                Some((w, h)) => format!("{w}×{h} \u{b7} {files}"),
+                None => files,
+            },
+            false,
+        ))
     }
 
     /// What an icon row's file will hold — `16, 32, 48 px` — and what changes it:
@@ -1455,21 +1503,30 @@ impl MastikApp {
                             .export_subjects()
                             .iter()
                             .all(|id| mastik_core::variant::is_set(&self.session.doc, *id));
+                        // Only one of the two file switches is on; the other is
+                        // dimmed with its reason.
+                        let rows_on = spec.per_row.is_some();
                         if sets {
                             let each = ui::toggle_row(
                                 ui,
                                 icon::FOLDER_SIMPLE,
                                 "Each variant as its own file",
-                                ui::FieldButton::on_if(spec.each_variant),
+                                match rows_on {
+                                    true => ui::FieldButton::Disabled,
+                                    false => ui::FieldButton::on_if(spec.each_variant),
+                                },
                                 size,
                             )
-                            .on_hover_text(
-                                "A file per variant, named by its values, in a folder named for the set",
-                            );
-                            if each.clicked() {
+                            .on_hover_text(match rows_on {
+                                true => "Each variant as its own file: off while One file per row is on",
+                                false => "A file per variant, named by its values, in a folder named for the set",
+                            });
+                            if each.clicked() && !rows_on {
                                 edit(&mut out, spec).each_variant = !spec.each_variant;
                             }
                         }
+                        let variants = sets && spec.each_variant && !rows_on;
+                        self.per_row_rows(ui, index, spec, variants, &mut out);
                     }
                 })
             })
@@ -1505,6 +1562,116 @@ impl MastikApp {
             self.export_suffix_text = None;
         }
         out
+    }
+
+    /// *One file per row*'s switch, and while it is on, the *Table* and *Name
+    /// by* rows under it. `variants` is *Each variant as its own file* on, which
+    /// dims the switch, as a document with no tables does.
+    fn per_row_rows(
+        &mut self,
+        ui: &mut egui::Ui,
+        index: usize,
+        spec: &ExportSpec,
+        variants: bool,
+        out: &mut Option<ExportSpec>,
+    ) {
+        use crate::list_data::{TablePick, TableRows, table_combo};
+        let size = egui::vec2(POP_INNER, POP_CELL);
+        let first = self.session.doc.data_sets().first().map(|d| d.id);
+        let blocked = variants || (spec.per_row.is_none() && first.is_none());
+        let switch = ui::toggle_row(
+            ui,
+            icon::FOLDER_SIMPLE,
+            "One file per row",
+            match blocked {
+                true => ui::FieldButton::Disabled,
+                false => ui::FieldButton::on_if(spec.per_row.is_some()),
+            },
+            size,
+        )
+        .on_hover_text(match (variants, blocked) {
+            (true, _) => "One file per row: off while Each variant as its own file is on",
+            (false, true) => "This document has no tables",
+            (false, false) => {
+                "A file per row of a table, the layer filled from its row, in a folder named for the layer"
+            }
+        });
+        if switch.clicked() && !blocked {
+            edit(out, spec).per_row = match (&spec.per_row, first) {
+                (None, Some(table)) => Some(PerRow {
+                    table,
+                    name_by: None,
+                }),
+                _ => None,
+            };
+        }
+        let Some(per_row) = &spec.per_row else {
+            return;
+        };
+        let doc = &self.session.doc;
+        let set = doc.data_set(per_row.table);
+        let face = set.map_or_else(
+            || "Missing data".to_string(),
+            |s| {
+                let rows = ui::count_as(s.table.rows.len(), "row", "rows");
+                format!("{} \u{b7} {rows}", s.name)
+            },
+        );
+        let table = ui::labelled(ui, "Table", |ui| {
+            let w = ui.available_width();
+            let salt = ("export-table", index);
+            let extra = TableRows::default();
+            table_combo(ui, salt, w, doc, &face, Some(per_row.table), &extra)
+        });
+        let columns: Vec<(ColumnId, String)> = set
+            .map(|s| {
+                let cols = &s.table.columns;
+                cols.iter().map(|c| (c.id, c.name.clone())).collect()
+            })
+            .unwrap_or_default();
+        // A column gone since it was picked names nothing: the rows are numbered.
+        let named = per_row
+            .name_by
+            .and_then(|c| columns.iter().find(|(i, _)| *i == c));
+        let shown = named.map_or("Row number", |(_, n)| n.as_str()).to_string();
+        let mut by: Option<Option<ColumnId>> = None;
+        ui::labelled(ui, "Name by", |ui| {
+            let w = ui.available_width();
+            let salt = ("export-name-by", index);
+            ui::fitted_combo(ui, salt, w, ui::combo_text(&shown), &shown, |ui| {
+                ui::menu_rows(ui);
+                if ui.selectable_label(named.is_none(), "Row number").clicked() {
+                    by = Some(None);
+                }
+                if !columns.is_empty() {
+                    ui::menu_sep(ui);
+                }
+                for (c, n) in &columns {
+                    if ui
+                        .selectable_label(named.is_some_and(|(i, _)| i == c), n)
+                        .clicked()
+                    {
+                        by = Some(Some(*c));
+                    }
+                }
+            });
+        });
+        if let Some(name_by) = by.filter(|b| *b != named.map(|(i, _)| *i)) {
+            edit(out, spec).per_row = Some(PerRow {
+                name_by,
+                ..per_row.clone()
+            });
+        }
+        match table {
+            Some(TablePick::Set(table)) => {
+                edit(out, spec).per_row = Some(PerRow {
+                    table,
+                    name_by: None,
+                });
+            }
+            Some(TablePick::File) => self.table_file_dialog(),
+            _ => {}
+        }
     }
 
     /// Whether every selected layer is a slice, whose box is the point of it: no
@@ -5519,6 +5686,102 @@ mod code_export_tests {
         assert_eq!(
             app.export_size_label(&spec, Some(set)),
             "2 files in arrow-icons/"
+        );
+    }
+
+    /// A row writing a file per table row counts its files on the size line,
+    /// and warns when its frame fills nothing, its table has no rows or is gone.
+    ///
+    /// flip: `per_row_line` skipping the `row_targets` check → fails at "fills
+    /// nothing".
+    #[test]
+    fn a_row_per_table_row_counts_its_files_and_warns() {
+        use mastik_core::list::DataSet;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = crate::app::MastikApp::headless(&ctx);
+        let page = app.session.doc.first_page();
+        let frame = app.session.doc.get(page).expect("the page").children()[0];
+        let layer = app
+            .session
+            .doc
+            .get(frame)
+            .expect("the frame")
+            .name()
+            .to_string();
+        let table = app.session.ids.mint_data_set();
+        let mut t = mastik_core::chart::Table::default();
+        let id = t.next_column_id();
+        t.columns.push(mastik_core::chart::Column {
+            id,
+            name: "Name".into(),
+        });
+        t.rows = vec![
+            vec!["Ada".into()],
+            vec!["Alan".into()],
+            vec!["Grace".into()],
+        ];
+        assert!(app.session.commit(Transaction(vec![Operation::SetDataSet {
+            id: table,
+            set: Some(Box::new(DataSet {
+                id: table,
+                name: "Speakers".into(),
+                table: t.clone(),
+                source: None,
+                pictures: Vec::new(),
+            })),
+        }])));
+        let spec = ExportSpec {
+            per_row: Some(PerRow {
+                table,
+                name_by: None,
+            }),
+            ..ExportSpec::new(ExportFormat::Png, ExportScale::Times(1.0))
+        };
+        assert_eq!(
+            app.export_size_label(&spec, Some(frame)),
+            format!("No column fills anything in {layer}"),
+            "fills nothing"
+        );
+        let name = app.session.ids.mint();
+        assert!(app.session.commit(Transaction(vec![Operation::CreateNode {
+            id: name,
+            parent: frame,
+            index: 0,
+            kind: crate::control_audit::text_kind("Placeholder"),
+            transform: None,
+            name: Some("name".into()),
+        }])));
+        let (w, h) =
+            mastik_export::plan::raster_size(&app.session.doc, &app.session.resolved, frame, &spec)
+                .0
+                .expect("a frame has a size");
+        assert_eq!(
+            app.export_size_label(&spec, Some(frame)),
+            format!("{w}×{h} \u{b7} 3 files, a row each of Speakers")
+        );
+        t.rows.clear();
+        assert!(app.session.commit(Transaction(vec![Operation::SetDataSet {
+            id: table,
+            set: Some(Box::new(DataSet {
+                id: table,
+                name: "Speakers".into(),
+                table: t,
+                source: None,
+                pictures: Vec::new(),
+            })),
+        }])));
+        assert_eq!(
+            app.export_size_label(&spec, Some(frame)),
+            "Speakers has no rows: nothing to export"
+        );
+        assert!(app.session.commit(Transaction(vec![Operation::SetDataSet {
+            id: table,
+            set: None,
+        }])));
+        assert_eq!(
+            app.export_size_label(&spec, Some(frame)),
+            super::super::list::MISSING_TABLE
         );
     }
 

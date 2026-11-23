@@ -98,6 +98,20 @@ pub struct ExportSpec {
     /// size's grid; the document is not changed.
     #[serde(default, skip_serializing_if = "is_false")]
     pub pixel_fit: bool,
+    /// One file per row of a table, each drawn from a throwaway copy of the
+    /// layer filled from its row. Kept while its table is gone, when the layer
+    /// exports as one file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub per_row: Option<PerRow>,
+}
+
+/// What [`ExportSpec::per_row`] reads: the table, and the column naming each
+/// file (`None` numbers them by row).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PerRow {
+    pub table: crate::list::DataSetId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name_by: Option<crate::chart::ColumnId>,
 }
 
 impl ExportSpec {
@@ -121,6 +135,7 @@ impl ExportSpec {
             sizes: Vec::new(),
             size_frames: false,
             pixel_fit: false,
+            per_row: None,
         }
     }
 
@@ -687,6 +702,36 @@ mod tests {
         assert_eq!(
             json,
             r#"{"format":"Svg","colour":"CurrentColor","strokes":"Outline","view":"Artwork","precision":0,"each_variant":true}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<ExportSpec>(&json).expect("round trip"),
+            spec
+        );
+    }
+
+    /// *One file per row* writes its table, and its column only when one names
+    /// the files; off it writes nothing, and it reads back.
+    ///
+    /// flip: `PerRow::name_by` without `skip_serializing_if` → fails at the
+    /// first wire form.
+    #[test]
+    fn a_file_per_row_is_saved_only_when_on() {
+        let mut spec = ExportSpec::new(ExportFormat::Png, ExportScale::Times(1.0));
+        let table = crate::list::DataSetId(crate::IdSource::new(0xA).mint());
+        spec.per_row = Some(PerRow {
+            table,
+            name_by: None,
+        });
+        let json = serde_json::to_string(&spec).expect("serialize");
+        assert_eq!(json, r#"{"format":"Png","per_row":{"table":"a:1"}}"#);
+        spec.per_row = Some(PerRow {
+            table,
+            name_by: Some(crate::chart::ColumnId(2)),
+        });
+        let json = serde_json::to_string(&spec).expect("serialize");
+        assert_eq!(
+            json,
+            r#"{"format":"Png","per_row":{"table":"a:1","name_by":2}}"#
         );
         assert_eq!(
             serde_json::from_str::<ExportSpec>(&json).expect("round trip"),

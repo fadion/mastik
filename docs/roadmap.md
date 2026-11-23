@@ -17,24 +17,27 @@ remains is below.
   (`at_names` in `panels/prototype.rs`), but typing `{`, which is the form the field shows,
   suggests nothing. `{` should open the same list, narrowing as the name is typed and closing on
   `}`.
-- **Data tables beyond lists and charts.** Lists and charts are the only readers of a data set
-  today (`lists.md`); no verb, script, expression, export or *Fill with content* reads or writes
-  one, and a table is fixed in play save for the opened row. Largest gap first:
+- **Data tables beyond lists and charts.** Lists, charts, the *Fill with content* box, an export
+  row's *One file per row* and the table verbs (`lists.md`, *Verbs*) are the only readers and
+  writers of a data set today; no expression reads one, and in play only a *Run script* changes
+  one. Largest gap first:
   - *Tables in play.* Expressions reading a cell or a row count; actions adding, editing and
     deleting a row (a cart, a to-do list, a form). The played copy holds the edited table, as it holds variables, and the
-    exported page plays it through `mastik-play`.
-  - *Export per row.* A frame and a table give one file per row (PNG, SVG, PDF): social cards,
-    certificates, badges. The list's fill maps a row onto an instance; a frame that is no
-    instance would fill its text layers by name from the columns. Each row is drawn on a
-    throwaway copy, never written to the document.
-  - *Tables for agents and scripts.* Verbs to read, write and add a table, and to make and edit a
-    list, its rows, filter and sort included, through the one verb registry MCP, Command
-    Mode and scripts share. `set_chart_data`
-    gives the chart a table of its own (`mcp.md`), so an agent editing a chart over a set leaves
-    the set's other readers behind; a set-aware form would write the set.
-  - *Fill with content from a table.* A *From table ▸ column* source in the box
-    (`content_fill`), so hand-built cards that are no instances take real rows, record by record
-    as `record_roots` groups them.
+    exported page plays it through `mastik-play`. A *Run script* already reaches the table verbs
+    on the played copy, but `PlayHost::commit` regenerates no list, so a list over a table it
+    edits keeps its old rows.
+  - *One file per row, the rest.* The files are built (`export.md`, *Plan*). Left: *One PDF*, a
+    page per row; a *Fill* fold overriding which column fills which target; the preview stepping
+    through rows; reading picture files per row on the worker, as a list reads them beside a
+    linked table; missing pictures and overflowing rows reported on the status line
+    (`RowFilled::missing_pictures` is counted and read by nothing); and MCP `run_exports` taking
+    `rows: {from, count}` for a per-row spec past the answer budget.
+  - *Tables for scripts.* The table verbs are built (`lists.md`, *Verbs*); left are a Luau
+    `tables` handle (`tables.People`), its writes gathered and landing as one `edit_table` per
+    table at the run's end, and Command Mode's completion of table names.
+  - *Fill with content: pictures beside a linked table.* The box finds only the pictures a table
+    already maps and the document's own; it should read the picture files beside a linked table
+    for the rows it takes, as a list does.
   - *Picking and keeping a fixed row.* A *Row* list holds its row by position, so deleting
     rows above it moves it to another record without a word. The List card should say so (*Row 3
     was Linen shirt before rows were deleted above it*), and a click on a row's gutter in the

@@ -133,8 +133,8 @@ pub use effect::{
     stack_escape,
 };
 pub use export::{
-    ExportBackground, ExportFormat, ExportScale, ExportSpec, ExportText, IconSet, SvgColour,
-    SvgStrokes, SvgView,
+    ExportBackground, ExportFormat, ExportScale, ExportSpec, ExportText, IconSet, PerRow,
+    SvgColour, SvgStrokes, SvgView,
 };
 pub use guide::{
     DEFAULT_GUIDE_COLOR, Guide, GuideAxis, GuideId, guide_coord_of, guide_point, guide_span,
