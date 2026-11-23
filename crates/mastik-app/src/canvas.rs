@@ -3416,14 +3416,16 @@ impl MastikApp {
             return;
         }
 
-        // A click's `pick_at_pointer` chain, plus a selected frame's whole box.
-        // Ctrl grabs nothing, so the drag draws a marquee over the layers.
+        // A click's `pick_at_pointer` chain, with a selected frame's whole box
+        // ahead of the layers in it: a drag anywhere over a selected frame moves
+        // the frame, not what it holds. Ctrl grabs nothing, so the drag draws a
+        // marquee over the layers.
         let over = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
         let grabbed = (!over)
             .then(|| {
                 self.frame_label_at(ui, grab, rect, ppp)
-                    .or_else(|| self.pick_leaf(grab_world))
                     .or_else(|| self.selected_frame_at(grab_world))
+                    .or_else(|| self.pick_leaf(grab_world))
                     .or_else(|| self.frame_edge_at(grab_world))
             })
             .flatten();
@@ -9642,7 +9644,8 @@ impl MastikApp {
     }
 
     /// A selected frame whose box `world` falls in: dragging from inside it moves
-    /// it rather than starting a marquee.
+    /// it, over its layers as over its empty parts, rather than grabbing a layer
+    /// or starting a marquee.
     fn selected_frame_at(&self, world: Point) -> Option<NodeId> {
         self.session.selection.ids().iter().copied().find(|id| {
             self.is_occupied_frame(*id)
@@ -24621,6 +24624,33 @@ mod frame_edge_tests {
         press(&mut app, egui::Modifiers::COMMAND);
         assert!(matches!(app.drag, Drag::Marquee { .. }), "a marquee");
         assert!(app.session.selection.is_empty(), "the layer is not grabbed");
+    }
+
+    /// A drag pressed on a layer inside a selected page frame moves the frame,
+    /// the layer left unselected.
+    /// flip: `begin_select_drag` asking `pick_leaf` before `selected_frame_at`
+    /// → fails at "the frame stays the selection".
+    #[test]
+    fn a_drag_over_a_selected_frames_layer_moves_the_frame() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, board, inside) = fixture(&ctx);
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let screen = app.to_screen(Point::new(95.0, 95.0), rect, 1.0);
+        assert!(
+            app.pick_leaf(Point::new(95.0, 95.0)) == Some(inside),
+            "fixture: the press lands on the layer"
+        );
+        app.session.selection.set_one(board);
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            app.begin_select_drag(ui, screen, rect, 1.0, &None, false);
+        });
+        assert!(matches!(app.drag, Drag::Move { .. }), "a move");
+        assert_eq!(
+            app.session.selection.ids(),
+            [board],
+            "the frame stays the selection"
+        );
     }
 
     /// A press inside the selected slice, over the rect, moves the slice; with the

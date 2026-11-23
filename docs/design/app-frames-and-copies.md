@@ -28,11 +28,12 @@ through the system clipboard), and the hand-kept lists of transient state. Part 
   (`canvas::pick_leaf` skips it, §5.10), unless the frame is an instance, which picks like a group,
   background included, or a chart, which picks whole (`charts.md`). A nested frame's own fill is clickable like any layer's. An **empty** frame is
   clickable anywhere; a page frame that is already the selection stays draggable from anywhere inside
-  it (`selected_frame_at`).
+  it, over its layers too (`selected_frame_at`, asked before `pick_leaf`), so a selected frame is
+  moved without hunting for a bare patch of it. A click there still selects the layer.
 - **One pick chain**: `canvas::pick_at_pointer` = tag, then `pick_leaf`, then the **edge**
   (`canvas::frame_edge_at`, occupied page frames only; `FRAME_EDGE_PICK_PX`, 8pt either side of the
   border). Used by the select click, the context menu, and `canvas::hover_target` (via
-  `pick_at_pointer` and `pick_preview`). `begin_select_drag` adds `selected_frame_at` on top. A
+  `pick_at_pointer` and `pick_preview`). `begin_select_drag` adds `selected_frame_at` after the tag. A
   press-drag in the edge strip moves the frame.
 - **Coincident tags**: `MastikApp::artboards` is depth-first paint order; tag readers walk
   `MastikApp::tagged` and take the **last** match — the one painted on top and readable.
