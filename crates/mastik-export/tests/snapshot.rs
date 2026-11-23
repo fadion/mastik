@@ -1566,3 +1566,115 @@ fn a_layers_reactions_are_in_its_node() {
     let json = serde_json::to_string(&snap).unwrap();
     assert_eq!(json.matches("\"reactions\"").count(), 1, "absent elsewhere");
 }
+
+/// A list frame carries its description, and a copy and every layer inside it
+/// name the list as `list_copy`; the template and its layers do not.
+/// flip: `node_snapshot` leaving `list_copy` out → fails at "inside a copy".
+#[test]
+fn a_list_reports_its_description_and_marks_its_copies() {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    use mastik_core::kurbo::Size;
+    use mastik_core::list::{self, DataSet, Source};
+    use mastik_core::verbs::{self, Ctx};
+    use mastik_core::{Document, IdSource, NodeId, NodeKind, Resolved};
+    let mut ids = IdSource::new(0x1157);
+    let mut doc = Document::new(ids.mint());
+    let page = doc.first_page();
+    let run = |doc: &mut Document, ids: &mut IdSource, name: &str, args: serde_json::Value| {
+        let res = Resolved::rebuild(doc);
+        let mut done = verbs::call(
+            &mut Ctx {
+                doc,
+                res: &res,
+                ids,
+                images: None,
+                contrast: None,
+            },
+            name,
+            &args,
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        mastik_core::propagate::owed(doc, &mut done.tx, ids);
+        doc.apply(&done.tx).unwrap();
+        done.created
+    };
+    let frame = serde_json::to_value(NodeKind::Artboard {
+        size: Size::new(200.0, 40.0),
+        corner_radii: Default::default(),
+        corner_smoothing: 0.0,
+    })
+    .unwrap();
+    let main = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        serde_json::json!({ "parent": page.to_wire(), "kind": frame, "name": "Row" }),
+    )[0];
+    let text = run(
+        &mut doc,
+        &mut ids,
+        "create_text",
+        serde_json::json!({ "parent": main.to_wire(), "text": "Name" }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "make_component",
+        serde_json::json!({ "nodes": [main.to_wire()] }),
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "define_property",
+        serde_json::json!({ "node": text.to_wire(), "kind": "text", "name": "Title" }),
+    );
+    let inst = run(
+        &mut doc,
+        &mut ids,
+        "create_instance",
+        serde_json::json!({ "main": main.to_wire(), "parent": page.to_wire(), "x": 400, "y": 0 }),
+    )[0];
+    let set = DataSet {
+        id: ids.mint_data_set(),
+        name: "rows.csv".into(),
+        table: Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "title".into(),
+            }],
+            rows: vec![vec!["A".into()], vec!["B".into()], vec!["C".into()]],
+        },
+        source: None,
+        pictures: Vec::new(),
+    };
+    let res = Resolved::rebuild(&doc);
+    let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).unwrap();
+    doc.apply(&tx).unwrap();
+    list::regenerate_outside_history(&mut doc, &[l]);
+    let res = Resolved::settled(&mut doc);
+    let snap = snapshot(&doc, &res);
+    let node = |id: NodeId| snap.nodes.iter().find(|n| n.id == wire(id)).unwrap();
+
+    let d = node(l).list.as_ref().expect("the frame carries its list");
+    assert_eq!(d.data.as_deref(), Some("rows.csv"));
+    assert_eq!(d.template, Some(wire(inst)));
+    assert_eq!(d.rows, 3);
+    assert_eq!(
+        (d.fill[0].property.as_str(), d.fill[0].column.as_str()),
+        ("Title", "title")
+    );
+    assert_eq!(node(l).list_copy, None);
+    let template_text = node(inst).children[0].clone();
+    for id in [wire(inst), template_text] {
+        let n = snap.nodes.iter().find(|n| n.id == id).unwrap();
+        assert_eq!(n.list_copy, None, "the template is no copy");
+    }
+    let copies = doc.get(l).unwrap().list().unwrap().copies.clone();
+    assert_eq!(copies.len(), 2, "the fixture made its rows");
+    for c in copies {
+        assert_eq!(node(c).list_copy, Some(wire(l)), "a copy");
+        let inner = node(c).children[0].clone();
+        let n = snap.nodes.iter().find(|n| n.id == inner).unwrap();
+        assert_eq!(n.list_copy, Some(wire(l)), "inside a copy");
+    }
+}

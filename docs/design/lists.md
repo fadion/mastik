@@ -152,9 +152,13 @@ list's description as it drops a misplaced one.
   row switched to.
 - **Each step joins the edit's step.** Dropping the join leaves the rows as undo steps of their
   own (`tests/lists.rs · a_list_repeats_its_template_per_row_and_undoes_whole`).
-- **A copy is edited only by regeneration in practice, not by a rule.** The canvas picks a copy as
-  its list and the layers panel does not list it, but no guard refuses another door's edit to a
-  copy (an agent's `set`); the next regeneration replaces it.
+- **A copy is edited only by regeneration.** The canvas picks a copy as its list and the layers
+  panel does not list it. A verb naming a layer of a copy as its `node`, `nodes` or `parent` is
+  refused, pointing at the template (`verbs::refuse_list_copies`), so an agent's or a script's
+  edit is not landed and then lost; a verb that only reads its layer (`add_style`,
+  `duplicate_as_component`, `push_to_main`) may name one. The snapshot marks each copy's layers
+  with `list_copy` (`export.md`, *Snapshot*). `Document::apply` holds no such rule: the
+  regeneration itself, and a main's edit propagated into the copies, write them.
 
 ## Doors
 

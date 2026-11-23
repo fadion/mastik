@@ -1479,7 +1479,52 @@ pub fn call(ctx: &mut Ctx<'_>, name: &str, args: &Value) -> Result<Done, VerbErr
     let verb = find(name).ok_or_else(|| VerbError::Unknown(name.to_owned()))?;
     let args = by_names(ctx.doc, verb, args)?;
     let args = Args::check(verb, &args)?;
+    refuse_list_copies(ctx.doc, verb, &args)?;
     (verb.run)(ctx, &args)
+}
+
+/// The verbs whose `node` or `nodes` is only read from, so a list's copy may be
+/// named: a style or a component made from its look, a push of its overrides.
+const READS_ITS_NODE: &[&str] = &["add_style", "duplicate_as_component", "push_to_main"];
+
+/// Refuse a write that names a layer of a list's copy as its `node`, `nodes` or
+/// `parent`: the copies are made again from the template whenever the list
+/// regenerates, so the edit would land and then be lost without a word.
+fn refuse_list_copies(
+    doc: &Document,
+    verb: &'static Verb,
+    args: &Args<'_>,
+) -> Result<(), VerbError> {
+    if READS_ITS_NODE.contains(&verb.name) {
+        return Ok(());
+    }
+    for p in verb.params {
+        if !matches!(p.name, "node" | "nodes" | "parent") || args.get(p.name).is_none() {
+            continue;
+        }
+        let ids = match p.kind {
+            ParamKind::Node => vec![args.node(p.name)?],
+            ParamKind::Nodes => args.nodes(p.name)?,
+            _ => continue,
+        };
+        for id in ids {
+            let Some(list) = crate::list::copy_owner(doc, id) else {
+                continue;
+            };
+            let template = crate::list::template(doc, list)
+                .map_or_else(String::new, |t| format!(" `{}`", t.to_wire()));
+            return Err(args.invalid(
+                p.name,
+                format!(
+                    "`{}` is in a row list `{}` makes from its template{template}, and is made \
+                     again whenever the list regenerates: edit the template, or the list's data",
+                    id.to_wire(),
+                    list.to_wire()
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `args` with each variable, style, collection, mode or script given by its name

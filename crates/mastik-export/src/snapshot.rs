@@ -65,7 +65,7 @@ use std::collections::BTreeMap;
 /// - **28** The prototype: `NodeSnapshot::reactions` and `play`,
 ///   `PageSnapshot::flows` and `play`, and `Snapshot::play_export`, each absent
 ///   when empty or at its default.
-pub const SNAPSHOT_VERSION: u32 = 28;
+pub const SNAPSHOT_VERSION: u32 = 29;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -213,6 +213,14 @@ pub struct NodeSnapshot {
     /// absent outside a chart.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// A list frame's description, absent on every other layer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<ListSummary>,
+    /// The list frame whose copy this layer is or sits in, absent elsewhere.
+    /// A copy is made again from the list's template whenever the list
+    /// regenerates, so the verbs refuse to edit one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_copy: Option<String>,
     /// How the node lays out its children, flex or grid, in the shape
     /// `set_display` takes; absent when they are placed by their own
     /// transforms. Bound gaps, padding and flow are reported as drawn.
@@ -366,6 +374,30 @@ pub struct ChartSummary {
     /// follows; absent for a chart with a table of its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
+}
+
+/// A list's description as an agent reads it: the data table it repeats its
+/// template over and which column fills which property.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListSummary {
+    /// The data table's name, absent when the document lacks it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+    /// The instance every row is made from, the one layer of the list to edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    /// How many rows it draws, the template included.
+    pub rows: usize,
+    /// Each filled property, by name, and the column filling it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fill: Vec<ListFillSummary>,
+}
+
+/// One filled property of a list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListFillSummary {
+    pub property: String,
+    pub column: String,
 }
 
 /// One column of a chart's table.
@@ -960,6 +992,8 @@ fn node_snapshot(
             .and_then(|c| doc.get(c)?.chart()?.parts.iter().find(|(_, p)| *p == id))
             .and_then(|(k, _)| serde_json::to_value(k.role).ok())
             .and_then(|v| v.as_str().map(str::to_string)),
+        list: node.list().map(|l| list_summary(doc, id, l)),
+        list_copy: mastik_core::list::copy_owner(doc, id).map(|l| l.to_wire()),
         display: doc.resolved_display(id).map(std::borrow::Cow::into_owned),
         item: Some(drawn_item(doc, node)).filter(|i| *i != Default::default()),
         insets: Some(*node.insets()).filter(|i| !i.is_unset()),
@@ -1216,6 +1250,35 @@ fn chart_summary(doc: &Document, id: NodeId, c: &mastik_core::chart::Chart) -> C
                 .and_then(|d| doc.data_set(d))
                 .is_some_and(|s| s.source.is_some()),
         data: c.data.and_then(|d| doc.data_set(d)).map(|s| s.name.clone()),
+    }
+}
+
+/// List frame `id`'s [`ListSummary`], its fills named by property and column.
+fn list_summary(doc: &Document, id: NodeId, l: &mastik_core::list::List) -> ListSummary {
+    use mastik_core::list::{self, Target};
+    let set = doc.data_set(l.data);
+    let template = list::template(doc, id);
+    let props = template.map(|t| mastik_core::variant::instance_properties(doc, t));
+    let fill = l
+        .fill
+        .iter()
+        .filter_map(|f| {
+            let property = match &f.target {
+                Target::Prop(item) => props.as_ref()?.iter().find(|p| p.id == *item)?.name.clone(),
+                Target::Variant(name) => name.clone(),
+            };
+            let column = set?.table.column(f.column)?.name.clone();
+            Some(ListFillSummary { property, column })
+        })
+        .collect();
+    ListSummary {
+        data: set.map(|s| s.name.clone()),
+        template: template.map(|t| t.to_wire()),
+        // A list whose table is missing keeps the rows it was copied with.
+        rows: set.map_or(1 + l.copies.len(), |s| {
+            l.shown_rows(s.table.rows.len()).len()
+        }),
+        fill,
     }
 }
 

@@ -322,6 +322,51 @@ fn a_list_saves_and_duplicates() {
     assert_eq!(titles(&doc, copy), ["A", "B"]);
 }
 
+/// A verb naming a layer inside a list's copy is refused, pointing at the
+/// template; the same verb on the template's layer runs.
+/// flip: `verbs::call` skipping `refuse_list_copies` → fails at "refused".
+#[test]
+fn a_verb_on_a_copy_is_refused() {
+    let (mut doc, mut ids, page) = blank();
+    let (_, inst) = row_component(&mut doc, &mut ids, page);
+    let set = data(&mut ids, &[("A", "1"), ("B", "0")]);
+    let res = Resolved::rebuild(&doc);
+    let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).unwrap();
+    let mut history = History::default();
+    commit(&mut history, &mut doc, &mut ids, tx);
+    let text_in = |doc: &Document, root: NodeId| {
+        mastik_core::build::subtree_nodes(doc, &[root])
+            .into_iter()
+            .find(|id| matches!(doc.get(*id).unwrap().kind(), NodeKind::Text { .. }))
+            .unwrap()
+    };
+    let copy = doc.get(l).unwrap().list().unwrap().copies[0];
+    let call = |doc: &mut Document, ids: &mut IdSource, node: NodeId| {
+        let res = Resolved::rebuild(doc);
+        verbs::call(
+            &mut Ctx {
+                doc,
+                res: &res,
+                ids,
+                images: None,
+                contrast: None,
+            },
+            "set_opacity",
+            &json!({ "nodes": [node.to_wire()], "opacity": 0.5 }),
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    };
+    let in_copy = text_in(&doc, copy);
+    let refused = call(&mut doc, &mut ids, in_copy).expect_err("refused");
+    assert!(
+        refused.contains(&inst.to_wire()),
+        "names the template: {refused}"
+    );
+    let in_template = text_in(&doc, inst);
+    call(&mut doc, &mut ids, in_template).expect("the template's layer runs");
+}
+
 /// A column named after a variant property switches each row to the variant
 /// its cell names, and a cell naming no variant takes the default variant's
 /// value, however many times the list was made before.
