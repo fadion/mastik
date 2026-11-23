@@ -25,10 +25,15 @@ use std::time::Duration;
 
 /// Where Antigravity keeps its permissions (under `.gemini`: it shares that
 /// root with Google's earlier CLI). `MASTIK_AGY_SETTINGS` overrides it, so a
-/// moved file costs the tools rather than a write into the wrong file.
+/// moved file costs the tools rather than a write into the wrong file. A test
+/// gets the override alone, never the person's own file: one that registers
+/// without setting it fails to rather than editing their Antigravity.
 fn settings_path() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("MASTIK_AGY_SETTINGS").filter(|p| !p.is_empty()) {
         return Some(PathBuf::from(p));
+    }
+    if cfg!(test) {
+        return None;
     }
     Some(
         crate::find::home()?

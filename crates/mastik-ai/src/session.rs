@@ -2011,6 +2011,8 @@ mod tests {
     #[test]
     fn running_totals_become_each_turns_own() {
         let (mut s, root) = fake_session(Harness::Antigravity, "agy-totals");
+        // Its registration edits the person's own Antigravity: held as done.
+        s.inner.lock().prepared = Some(Ok(()));
         let mut dones = Vec::new();
         for text in ["one", "two"] {
             s.send(Turn {
