@@ -275,8 +275,10 @@ chart's own window, which writes and renames the set, and a chart's own table be
 the window is *Data tables* (below).
 
 - **Head**: *List data*, its note the data set's name, then its readers in words (*· 2 lists, 1
-  chart*, `readers_words`) when more than one list, or any chart, reads it. A double-click on the name renames the data set in place (`settings::card_head_renamable`), undo
-  step *Rename table*, a taken name numbered past (`list::free_name`).
+  chart*, `readers_words`) when more than one list, or any chart, reads it. A double-click on the
+  name, or the toolbar's *Rename table* button after *Import…*, renames the data set in place
+  (`settings::card_head_renamable`), undo step *Rename table*, a taken name numbered past
+  (`list::free_name`). The field sits on the note's line, so the name does not move as it opens.
 - **The grid is the chart's.** Each header shows in the accent the property its column fills on
   the list the window was opened from (tooltip *Fills Title on this list*); the chart-only header
   rows (*Use as category* / *Use as X*, *Show as series*) are not offered. A cell naming no
@@ -310,10 +312,13 @@ the document's data sets, which it calls tables. Named *Data tables*, not *Conte
   its ✕ and `Escape` close it.
 - **Toolbar**: the table dropdown leads it, before *Add row* (`list_data::table_combo`,
   `TABLES_PICK_W` wide, with `TableRows { new }`): each table in `table_words`, the picked one
-  ticked; a separator; *New table* (`icon::PLUS`) and *From a file…* (`icon::IMPORT`). *Delete table* ends the toolbar after *Import…*: a `CONTROL_H`
-  square `ui::icon_button_sized` with `icon::TRASH`, tooltip *Delete table*, dimmed while
-  anything reads the table with the tooltip *Delete table: used by 2 lists and 1 chart. Point
-  them at another table first.* The grid takes these through its `bar` callback (`Slot::Lead`,
+  ticked; a separator; *New table* (`icon::PLUS`) and *From a file…* (`icon::IMPORT`). After
+  *Import…* come two `CONTROL_H` squares on the field ground (`ui::field_button`), destructive
+  last. *Rename table* (`icon::PENCIL_SIMPLE`, `chart_data::rename_button`, shared by every
+  window over a data set) opens the head's name field and is lit (`FieldButton::On`) while it is
+  open; a click then keeps the name, as `Enter` does. *Delete table* (`icon::TRASH`, tooltip
+  *Delete table*) is disabled while anything reads the table, with the tooltip *Delete table:
+  used by 2 lists and 1 chart. Point them at another table first.* The grid takes these through its `bar` callback (`Slot::Lead`,
   `Slot::Trail`). *Import…* relinks the table (*The linked file*); edits go through
   `commit_data_table`, *Edit table*.
 - **Headers are plain** (`Heads::Plain`): no fill, no role mark, the names in full ink, and the

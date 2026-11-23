@@ -16,9 +16,16 @@ use mastik_core::chart::{self, Chart, ChartKind, ColumnId};
 use mastik_core::{NodeId, Operation, Transaction};
 
 /// The card's width; narrower when the canvas is ([`MastikApp::chart_data_ui`]).
-pub(crate) const W: f32 = 640.0;
-/// The grid's height, whatever the table holds, so the card keeps its size.
-const GRID_H: f32 = 240.0;
+pub(crate) const W: f32 = 820.0;
+/// The grid's height, whatever the table holds, so the card keeps its size:
+/// fifteen rows under the header, less on a canvas too short for them
+/// ([`grid_h`]).
+const GRID_H: f32 = 384.0;
+/// The least [`grid_h`] gives a short canvas: nine rows under the header.
+const GRID_MIN_H: f32 = 240.0;
+/// The card's height around its grid (head, toolbar, gaps, bottom inset)
+/// plus the canvas margin a movable card keeps.
+const GRID_CHROME_H: f32 = 124.0;
 const PAD: f32 = crate::settings::CANVAS_CARD_PAD;
 /// Between the toolbar, the linked line and the grid: Clean up's.
 const GAP: f32 = 10.0;
@@ -66,6 +73,8 @@ pub(crate) struct ChartData {
     focus: bool,
     /// Scroll the cursor into view on the next pass.
     reveal: bool,
+    /// The grid's height this pass, from the canvas ([`grid_h`]).
+    grid_h: f32,
 }
 
 /// A cell being typed into: its text, its cell by row and column id, and the
@@ -145,6 +154,7 @@ impl ChartData {
             menu: None,
             focus: true,
             reveal: true,
+            grid_h: GRID_H,
         }
     }
 
@@ -724,9 +734,12 @@ impl MastikApp {
         let mut act: Vec<Act> = Vec::new();
         let mut renamed = None;
         let mut save = false;
+        let mut rename = false;
         let Some(mut state) = self.chart_data.take() else {
             return;
         };
+        state.grid_h = grid_h(canvas);
+        let naming = state.naming.is_some();
         let hold = crate::settings::CardHold::Open;
         crate::settings::movable_canvas_card(ctx, "chart-data", canvas, w, hold, |ui| {
             // Over a data set the note leads with the set's name, renamed in
@@ -750,13 +763,18 @@ impl MastikApp {
             if closed {
                 act.push(Act::Close);
             }
+            // A chart's own table has no name: its slot saves it as a table,
+            // which opens the new name for typing.
             let own = set.is_none();
             let mut bar = |ui: &mut egui::Ui, slot: Slot| {
-                if own
-                    && slot == Slot::Trail
-                    && tool_button(ui, icon::FLOPPY_DISK, "Save as table")
-                        .on_hover_text(crate::list_data::SAVE_AS_TABLE_TIP)
-                        .clicked()
+                if slot != Slot::Trail {
+                    return;
+                }
+                if !own {
+                    rename |= rename_button(ui, naming);
+                } else if tool_button(ui, icon::FLOPPY_DISK, "Save as table")
+                    .on_hover_text(crate::list_data::SAVE_AS_TABLE_TIP)
+                    .clicked()
                 {
                     save = true;
                 }
@@ -774,6 +792,9 @@ impl MastikApp {
                     grid(ui, &shown, heads, &mut state, linked, &mut bar, &mut act);
                 });
         });
+        if rename && let Some(s) = &set {
+            state.naming = Some(s.name.clone());
+        }
         self.chart_data = Some(state);
         let set = set.map(|s| s.id);
         if let (Some(s), Some(name)) = (set, renamed) {
@@ -882,9 +903,12 @@ impl MastikApp {
         let w = W.min(canvas.width() - 32.0).max(320.0);
         let mut act: Vec<Act> = Vec::new();
         let mut renamed = None;
+        let mut rename = false;
         let Some(mut state) = self.chart_data.take() else {
             return;
         };
+        state.grid_h = grid_h(canvas);
+        let naming = state.naming.is_some();
         let hold = crate::settings::CardHold::Open;
         crate::settings::movable_canvas_card(ctx, "chart-data", canvas, w, hold, |ui| {
             let (closed, kept) = crate::settings::card_head_renamable(
@@ -909,17 +933,17 @@ impl MastikApp {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
                     let heads = Heads::Fills(&fills, &warned);
-                    grid(
-                        ui,
-                        &chart,
-                        heads,
-                        &mut state,
-                        linked,
-                        &mut |_, _| {},
-                        &mut act,
-                    );
+                    let mut bar = |ui: &mut egui::Ui, slot: Slot| {
+                        if slot == Slot::Trail {
+                            rename |= rename_button(ui, naming);
+                        }
+                    };
+                    grid(ui, &chart, heads, &mut state, linked, &mut bar, &mut act);
                 });
         });
+        if rename {
+            state.naming = Some(data.name.clone());
+        }
         self.chart_data = Some(state);
         if let Some(name) = renamed {
             self.rename_data_set(set, &name);
@@ -952,7 +976,7 @@ const TABLES_PICK_W: f32 = 180.0;
 impl MastikApp {
     /// *Data tables*, the window with nothing behind it: the picked table under
     /// a dropdown of the document's tables, the head counting who reads it, the
-    /// headers plain, and *Delete table* at the toolbar's end. It does not
+    /// headers plain, and *Rename table* and *Delete table* at the toolbar's end. It does not
     /// follow the selection. With no table, the two ways to make one.
     fn tables_ui(&mut self, ctx: &egui::Context, canvas: egui::Rect) {
         let Some(mut state) = self.chart_data.take() else {
@@ -977,6 +1001,9 @@ impl MastikApp {
         let mut act: Vec<Act> = Vec::new();
         let mut asked: Option<TablesAct> = None;
         let mut renamed = None;
+        let mut rename = false;
+        state.grid_h = grid_h(canvas);
+        let naming = state.naming.is_some();
         let hold = crate::settings::CardHold::Open;
         crate::settings::movable_canvas_card(ctx, "chart-data", canvas, w, hold, |ui| {
             let Some(data) = &data else {
@@ -986,7 +1013,7 @@ impl MastikApp {
                 let inner = w - 2.0 * PAD;
                 // As tall as the window over a table, so the first one made does
                 // not resize it.
-                let body = egui::vec2(inner, ui::CONTROL_H + GAP + GRID_H);
+                let body = egui::vec2(inner, ui::CONTROL_H + GAP + state.grid_h);
                 egui::Frame::NONE
                     .inner_margin(egui::Margin {
                         left: PAD as i8,
@@ -998,7 +1025,7 @@ impl MastikApp {
                         let layout = egui::Layout::top_down(egui::Align::Center);
                         ui.allocate_ui_with_layout(body, layout, |ui| {
                             ui.set_min_size(body);
-                            ui.add_space(GRID_H / 4.0);
+                            ui.add_space(state.grid_h / 4.0);
                             ui::empty_state(
                                 ui,
                                 Some(icon::TABLE),
@@ -1078,10 +1105,9 @@ impl MastikApp {
                         Some(TablePick::Own | TablePick::Save) | None => asked.take(),
                     };
                 }
+                // Right to left: *Delete table* last, *Rename table* before it.
                 Slot::Trail => {
                     let free = readers.is_empty();
-                    let size = egui::vec2(ui::CONTROL_H, ui::CONTROL_H);
-                    let glyph = ui::CONTROL_GLYPH_PT;
                     let tip = if free {
                         "Delete table".to_string()
                     } else {
@@ -1090,11 +1116,13 @@ impl MastikApp {
                             readers.replace(", ", " and ")
                         )
                     };
-                    let resp = ui::icon_button_sized(ui, icon::TRASH, size, glyph, false, free)
-                        .on_hover_text(tip);
+                    let face = ui::FieldButton::enabled_if(free);
+                    let resp =
+                        ui::field_button(ui, icon::TRASH, ui::CONTROL_H, face).on_hover_text(tip);
                     if free && resp.clicked() {
                         asked = Some(TablesAct::Delete(data.id));
                     }
+                    rename |= rename_button(ui, naming);
                 }
             };
             egui::Frame::NONE
@@ -1117,6 +1145,9 @@ impl MastikApp {
                     );
                 });
         });
+        if rename && let Some(d) = &data {
+            state.naming = Some(d.name.clone());
+        }
         self.chart_data = Some(state);
         let set = data.map(|d| d.id);
         if let (Some(name), Some(set)) = (renamed, set) {
@@ -1180,6 +1211,31 @@ enum Act {
     Copy(String),
     /// A word on the status line.
     Note(String),
+}
+
+/// The grid's height over `canvas`: [`GRID_H`], shortened so the card fits a
+/// short canvas, never below [`GRID_MIN_H`].
+fn grid_h(canvas: egui::Rect) -> f32 {
+    (canvas.height() - GRID_CHROME_H).clamp(GRID_MIN_H, GRID_H)
+}
+
+/// *Rename table*: opens the head's name field, lit while it is `open`. A
+/// click while it is open keeps the name as `Enter` does: the press already
+/// closed the field, so whether it was open is read at the press, or the
+/// release would open it again. Answers whether to open the field.
+fn rename_button(ui: &mut egui::Ui, open: bool) -> bool {
+    let state = ui::FieldButton::on_if(open);
+    let resp = ui::field_button(ui, icon::PENCIL_SIMPLE, ui::CONTROL_H, state)
+        .on_hover_text("Rename table");
+    let id = resp.id.with("open-at-press");
+    if resp.is_pointer_button_down_on() && ui.input(|i| i.pointer.any_pressed()) {
+        ui.data_mut(|d| d.insert_temp(id, open));
+    }
+    if !resp.clicked() {
+        return false;
+    }
+    let was_open = ui.data_mut(|d| d.remove_temp::<bool>(id)).unwrap_or(open);
+    !was_open
 }
 
 /// A toolbar button: its glyph and word, as wide as they need.
@@ -1314,8 +1370,8 @@ fn grid(
     // Scrolled by the wheel and the cursor, its bars hidden as Settings' are.
     let scroll = egui::ScrollArea::both()
         .auto_shrink([false, false])
-        .max_height(GRID_H)
-        .min_scrolled_height(GRID_H)
+        .max_height(s.grid_h)
+        .min_scrolled_height(s.grid_h)
         .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
         .id_salt("chart-data-scroll");
     scroll.show_viewport(ui, |ui, view| {
@@ -2611,6 +2667,100 @@ mod tests {
         assert_eq!(app.chart_data.as_ref().and_then(|d| d.chart), Some(id));
         app.session.undo();
         assert_ne!(name(&app), "Revenue", "one undo step");
+    }
+
+    /// The centres of the texts drawn starting with `s` in one pass.
+    fn texts_starting(ctx: &egui::Context, app: &mut MastikApp, s: &str) -> Vec<egui::Pos2> {
+        let mut frame = eframe::Frame::_new_kittest();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1320.0, 820.0),
+            )),
+            ..Default::default()
+        };
+        let out = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
+        fn find(shape: &egui::Shape, s: &str, all: &mut Vec<egui::Pos2>) {
+            match shape {
+                egui::Shape::Text(t) if t.galley.text().starts_with(s) => {
+                    all.push(t.pos + t.galley.rect.center().to_vec2());
+                }
+                egui::Shape::Vec(v) => v.iter().for_each(|x| find(x, s, all)),
+                _ => {}
+            }
+        }
+        let mut all = Vec::new();
+        out.shapes.iter().for_each(|c| find(&c.shape, s, &mut all));
+        all
+    }
+
+    /// The head's name keeps its line when it turns into a field.
+    /// flip: `card_head_renamable` centring the field on the title's centre
+    /// → fails at "on the note's line".
+    #[test]
+    fn the_heads_name_field_keeps_the_notes_line() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = opened(&ctx);
+        let sid = app.save_chart_table(id).expect("saved");
+        app.chart_data.as_mut().unwrap().naming = None;
+        let name = app.session.doc.data_set(sid).unwrap().name.clone();
+        for _ in 0..3 {
+            pass(&ctx, &mut app, Vec::new());
+        }
+        let note = texts_starting(&ctx, &mut app, &format!("{name} \u{b7}"))[0];
+        app.chart_data.as_mut().unwrap().naming = Some(name.clone());
+        for _ in 0..3 {
+            pass(&ctx, &mut app, Vec::new());
+        }
+        // The layers panel draws the name too; the field's is the one in the head.
+        let field = texts_starting(&ctx, &mut app, &name)
+            .into_iter()
+            .find(|p| (p.y - note.y).abs() < 12.0)
+            .expect("the field's text in the head");
+        assert!(
+            (field.y - note.y).abs() <= 0.5,
+            "on the note's line: field {field:?}, note {note:?}"
+        );
+    }
+
+    /// *Rename table* opens the head's field; pressed again it keeps the
+    /// name typed and does not open it anew.
+    /// flip: `rename_button` answering every click → fails at "kept, closed".
+    #[test]
+    fn the_rename_button_opens_and_keeps_the_name() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = opened(&ctx);
+        let sid = app.save_chart_table(id).expect("saved");
+        app.chart_data.as_mut().unwrap().naming = None;
+        for _ in 0..3 {
+            pass(&ctx, &mut app, Vec::new());
+        }
+        let at = texts_starting(&ctx, &mut app, icon::PENCIL_SIMPLE)[0];
+        let click = |app: &mut MastikApp| {
+            let press = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            pass(&ctx, app, vec![egui::Event::PointerMoved(at)]);
+            pass(&ctx, app, vec![press(true)]);
+            pass(&ctx, app, vec![press(false)]);
+            pass(&ctx, app, Vec::new());
+        };
+        click(&mut app);
+        let naming = |app: &MastikApp| app.chart_data.as_ref().and_then(|d| d.naming.clone());
+        let name = app.session.doc.data_set(sid).unwrap().name.clone();
+        assert_eq!(naming(&app), Some(name), "opened on the name");
+        app.chart_data.as_mut().unwrap().naming = Some("Revenue".into());
+        pass(&ctx, &mut app, Vec::new());
+        click(&mut app);
+        let kept = app.session.doc.data_set(sid).unwrap().name.clone();
+        assert_eq!(
+            (kept.as_str(), naming(&app)),
+            ("Revenue", None),
+            "kept, closed"
+        );
     }
 
     /// A linked chart saved as a table hands its file to the set, which holds

@@ -625,9 +625,10 @@ render overrides minting each chart's ghost ids past the others'.
 
 A canvas card as Clean up's (`settings::movable_canvas_card` with `CardHold::Open`, at
 `ui::canvas_dialog_area`), so the canvas stays live under it and the chart redraws as cells are
-committed. 640 wide (the canvas's width less 32 when narrower, never under 320); the grid is a
-fixed 240 tall and scrolls inside, so the card keeps one size (egui popups shrink but never grow
-back). Rows inset `CANVAS_CARD_PAD`, 10 apart. One at a time, on one chart: it stays on its chart
+committed. 820 wide (the canvas's width less 32 when narrower, never under 320); the grid is a
+fixed 384 tall, fifteen rows under the header, and scrolls inside, so the card keeps one size
+(egui popups shrink but never grow back). On a canvas too short for that the grid is the canvas's
+height less 124, never under 240 (`grid_h`). Rows inset `CANVAS_CARD_PAD`, 10 apart. One at a time, on one chart: it stays on its chart
 when the selection is cleared or moves to anything but a chart, so a click on the board leaves it
 open, and selecting another chart alone moves it there, at its first cell
 (`the_window_stays_open_when_the_selection_moves_off`). It closes on its ✕, on
@@ -664,7 +665,8 @@ window the name opens for typing, the next thing to write.
   `ui::action_button`s at `CONTROL_H`, each as wide as `ui::action_button_w` makes it: *Add row*
   (`icon::ROWS_PLUS_BOTTOM`) and *Add column* (`icon::COLUMNS_PLUS_RIGHT`) on the left, disabled
   at the table's limits with *At most N rows* / *columns*, and *Import…* (`icon::IMPORT`) on the
-  right, then *Save as table* on an own table. Each add adds at the end, moves the
+  right, then *Save as table* on an own table, or *Rename table* over a data set (the shared
+  rename button, `lists.md`, *Data tables*). Each add adds at the end, moves the
   cursor onto the new row or column, and carries a cell being typed into in the same step. A
   linked chart hides the adds and shows its source line under the toolbar.
 - **The grid** is one focusable region that locks the arrows, `Tab` and `Escape` while it has

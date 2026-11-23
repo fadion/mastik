@@ -1392,13 +1392,7 @@ pub(crate) fn title_note(
     );
     job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(0.0));
     let galley = ui.painter().layout_job(job);
-    let title = ui.painter().layout_no_wrap(
-        title.to_owned(),
-        egui::FontId::proportional(ui::TITLE_PT),
-        egui::Color32::PLACEHOLDER,
-    );
-    let baseline = shown.rect.top() + ui::baseline_in(&title);
-    let at = egui::pos2(left, baseline - ui::baseline_in(&galley));
+    let at = egui::pos2(left, on_title_baseline(ui, shown, title, &galley));
     let rect = egui::Rect::from_min_size(at, galley.size());
     let cut = galley.elided;
     ui.painter().galley(at, galley, ink);
@@ -1407,6 +1401,22 @@ pub(crate) fn title_note(
             .on_hover_text(note);
     }
     rect
+}
+
+/// The top at which `galley`, a line beside the title label `shown`, sits on
+/// the title's baseline.
+fn on_title_baseline(
+    ui: &egui::Ui,
+    shown: &egui::Response,
+    title: &str,
+    galley: &egui::Galley,
+) -> f32 {
+    let title = ui.painter().layout_no_wrap(
+        title.to_owned(),
+        egui::FontId::proportional(ui::TITLE_PT),
+        egui::Color32::PLACEHOLDER,
+    );
+    shown.rect.top() + ui::baseline_in(&title) - ui::baseline_in(galley)
 }
 
 /// [`card_head_noted`] whose note leads with `name`, renamed in place: a
@@ -1443,12 +1453,18 @@ pub(crate) fn card_head_renamable(
                     Some(text) => {
                         let left = shown.rect.right() + TITLE_NOTE_GAP - ui::INLINE_EDIT_PAD_X;
                         let right = ui.available_rect_before_wrap().right();
+                        // The field centres its line, so it is centred on the
+                        // note's line, which sits on the title's baseline: on
+                        // the title's centre the text jumps up as it opens.
+                        let line = ui.painter().layout_no_wrap(
+                            text.clone(),
+                            egui::FontId::proportional(ui::SMALL_PT),
+                            egui::Color32::PLACEHOLDER,
+                        );
+                        let mid = on_title_baseline(ui, &shown, title, &line) + line.size().y / 2.0;
                         let field = egui::Rect::from_min_max(
-                            egui::pos2(left, shown.rect.center().y - ui::CONTROL_H / 2.0),
-                            egui::pos2(
-                                right.min(left + 240.0),
-                                shown.rect.center().y + ui::CONTROL_H / 2.0,
-                            ),
+                            egui::pos2(left, mid - ui::CONTROL_H / 2.0),
+                            egui::pos2(right.min(left + 240.0), mid + ui::CONTROL_H / 2.0),
                         );
                         let resp =
                             ui::label_edit_set(ui, field, text, id, ui::SMALL_PT, egui::Align::Min);
