@@ -167,8 +167,9 @@ pub use node::{
 pub use noise::Noise;
 pub use op::{ApplyOutcome, Described, DirtySet, GeometryPatch, OpError, Operation, Transaction};
 pub use query::{
-    boolean_placeholder, chart_part_at, group_chain, hit_test, inside_loop, is_effectively_locked,
-    is_within, local_box, nodes_in_view, outline_at, pivot_world, touches_loop,
+    boolean_placeholder, chart_part_at, clip_box, group_chain, hit_test, inside_loop,
+    is_effectively_locked, is_within, local_box, nodes_in_view, outline_at, pivot_world,
+    touches_loop,
 };
 pub use resolve::Resolved;
 pub use script::{Script, ScriptId};

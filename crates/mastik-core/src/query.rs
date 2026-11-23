@@ -38,6 +38,7 @@ pub fn hit_test(res: &Resolved, doc: &Document, page: NodeId, p: Point, slop: f6
         .into_iter()
         .filter(|id| is_effectively_interactable(doc, *id))
         .filter(|id| !masked_away(doc, res, *id, p))
+        .filter(|id| !clipped_away(doc, res, *id, p))
         .filter(|id| hits_own_shape(res, doc, *id, p, slop))
         .map(|id| crate::chart::owner(doc, id).unwrap_or(id))
         .map(|id| crate::list::copy_owner(doc, id).unwrap_or(id))
@@ -510,6 +511,44 @@ fn masked_away(doc: &Document, res: &Resolved, id: NodeId, p: Point) -> bool {
         }
         cursor = parent;
     }
+}
+
+/// Whether a click at `p` (world) falls outside a frame that clips `id`: a
+/// clipping frame shows its content only inside its own box, so what it cuts away
+/// is never hit. Every ancestor is asked, as [`masked_away`] asks them.
+fn clipped_away(doc: &Document, res: &Resolved, id: NodeId, p: Point) -> bool {
+    let mut cursor = doc.get(id).and_then(|n| n.parent());
+    while let Some(a) = cursor {
+        let Some(node) = doc.get(a) else {
+            return false;
+        };
+        if node.clip() && node.kind().clips_children() && !hits_own_shape(res, doc, a, p, 0.0) {
+            return true;
+        }
+        cursor = node.parent();
+    }
+    false
+}
+
+/// The world box the frames clipping `id` leave it, as an axis-aligned box: the
+/// intersection of every clipping ancestor's own box. `None` when no frame
+/// clips it. A marquee reads a layer's bounds cut to it, so it never takes a
+/// layer only where a frame hides it.
+pub fn clip_box(doc: &Document, res: &Resolved, id: NodeId) -> Option<Rect> {
+    let mut out: Option<Rect> = None;
+    let mut cursor = doc.get(id).and_then(|n| n.parent());
+    while let Some(a) = cursor {
+        let node = doc.get(a)?;
+        if node.clip()
+            && node.kind().clips_children()
+            && let (Some(w), Some(b)) = (res.world_transform(a), local_box(doc, res, a))
+        {
+            let own = w.transform_rect_bbox(b);
+            out = Some(out.map_or(own, |o| o.intersect(own)));
+        }
+        cursor = node.parent();
+    }
+    out
 }
 
 /// The node on `page` whose outline passes within `slop` of `p`, nearest first:

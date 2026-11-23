@@ -3417,11 +3417,16 @@ impl MastikApp {
         }
 
         // A click's `pick_at_pointer` chain, plus a selected frame's whole box.
-        let grabbed = self
-            .frame_label_at(ui, grab, rect, ppp)
-            .or_else(|| self.pick_leaf(grab_world))
-            .or_else(|| self.selected_frame_at(grab_world))
-            .or_else(|| self.frame_edge_at(grab_world));
+        // Ctrl grabs nothing, so the drag draws a marquee over the layers.
+        let over = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+        let grabbed = (!over)
+            .then(|| {
+                self.frame_label_at(ui, grab, rect, ppp)
+                    .or_else(|| self.pick_leaf(grab_world))
+                    .or_else(|| self.selected_frame_at(grab_world))
+                    .or_else(|| self.frame_edge_at(grab_world))
+            })
+            .flatten();
         match grabbed {
             Some(leaf) => {
                 let top = self.pick_for_click(leaf, ui);
@@ -4873,28 +4878,43 @@ impl MastikApp {
         );
         // Half a screen pt: finer than the loop's own sampling.
         let flatness = 0.5 / self.points_per_world();
-        // A marquee picks frame contents, not the frames, plus loose layers.
-        let mut picked = Vec::new();
+        // A marquee picks frame contents, not the frames, plus loose layers; a
+        // page frame it holds whole is picked itself, in place of its contents.
+        let whole = self.frames_held_whole(area, lasso);
+        let mut picked = whole.clone();
+        let (doc, res) = (&self.session.doc, &self.session.resolved);
         for child in self.marquee_candidates() {
-            // A box takes a layer by its bounds, a lasso by its shape.
+            if doc
+                .get(child)
+                .and_then(|n| n.parent())
+                .is_some_and(|p| whole.contains(&p))
+            {
+                continue;
+            }
+            // What a clipping frame hides is not there to take: the layer's
+            // bounds are cut to the clip first.
+            let clip = mastik_core::clip_box(doc, res, child);
+            let shown_bounds = res.world_bounds(child).and_then(|b| match clip {
+                Some(c) if overlaps(b, c) => Some(b.intersect(c)),
+                Some(_) => None,
+                None => Some(b),
+            });
+            // A box takes a layer by its bounds, a lasso by its shape, which a
+            // clip narrows only to its box's reach.
             let inside = match lasso {
-                Some(trail) => mastik_core::touches_loop(
-                    &self.session.resolved,
-                    &self.session.doc,
-                    child,
-                    trail,
-                    flatness,
-                ),
-                None => self
-                    .session
-                    .resolved
-                    .world_bounds(child)
-                    .is_some_and(|b| overlaps(b, area)),
+                Some(trail) => {
+                    let reach = trail.iter().fold(None::<KRect>, |r, &p| {
+                        Some(r.map_or(KRect::from_points(p, p), |r| r.union_pt(p)))
+                    });
+                    shown_bounds.zip(reach).is_some_and(|(b, r)| overlaps(b, r))
+                        && mastik_core::touches_loop(res, doc, child, trail, flatness)
+                }
+                None => shown_bounds.is_some_and(|b| overlaps(b, area)),
             };
             // Locks are filtered in `marquee_candidates`. Visibility is the node's
             // own flag only, so a layer in a hidden group stays selectable
             // (`context-menus.md` §5.9).
-            let selectable = self.session.doc.shown(child);
+            let selectable = doc.shown(child);
             if inside && selectable {
                 picked.push(child);
             }
@@ -4926,6 +4946,38 @@ impl MastikApp {
                 self.session.selection.set_key(key);
             }
         }
+    }
+
+    /// The page frames a marquee holds whole: their own box inside the band
+    /// `area`, or every corner of it inside the lasso. A chart is left out, as
+    /// it is a marquee candidate already, and so is what a marquee may not
+    /// select (locked, hidden).
+    fn frames_held_whole(&self, area: KRect, lasso: Option<&[Point]>) -> Vec<NodeId> {
+        let (doc, res) = (&self.session.doc, &self.session.resolved);
+        self.root_artboards()
+            .into_iter()
+            .filter(|&f| {
+                !crate::app::is_chart(doc, f) && doc.shown(f) && self.may_select_in_bulk(f)
+            })
+            .filter(|&f| {
+                let (Some(w), Some(b)) =
+                    (res.world_transform(f), mastik_core::local_box(doc, res, f))
+                else {
+                    return false;
+                };
+                let corners = [
+                    Point::new(b.x0, b.y0),
+                    Point::new(b.x1, b.y0),
+                    Point::new(b.x1, b.y1),
+                    Point::new(b.x0, b.y1),
+                ]
+                .map(|c| w * c);
+                corners.iter().all(|&c| match lasso {
+                    Some(trail) => mastik_core::inside_loop(trail, c),
+                    None => c.x >= area.x0 && c.x <= area.x1 && c.y >= area.y0 && c.y <= area.y1,
+                })
+            })
+            .collect()
     }
 
     // --- shape creation ---------------------------------------------------
@@ -24075,9 +24127,10 @@ mod marquee_selectability_tests {
             "and its hidden layer really is hidden"
         );
 
+        // Short of the board's far corner, which would take the board whole.
         app.apply_marquee(
             Point::new(-50.0, -50.0),
-            Point::new(200.0, 200.0),
+            Point::new(150.0, 150.0),
             MarqueeMode::Replace,
             &Default::default(),
             None,
@@ -24157,6 +24210,104 @@ mod marquee_selectability_tests {
             MarqueeMode::from_modifiers(false, false),
             MarqueeMode::Replace
         );
+    }
+
+    /// A 100-wide artboard holding rect `a` at x = 0 and rect `b` at x = 150,
+    /// past its edge, the board clipping when `clip`.
+    fn board_and_two(ctx: &egui::Context, clip: bool) -> (MastikApp, NodeId, NodeId, NodeId) {
+        let mut app = MastikApp::headless(ctx);
+        let mut ids = IdSource::new(0x5A13);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let board = ids.mint();
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id: board,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: Size::new(100.0, 100.0),
+                    corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::IDENTITY),
+                name: None,
+            },
+            Operation::SetClip { id: board, clip },
+        ]))
+        .expect("an artboard");
+        let a = rect(&mut doc, &mut ids, board, 0);
+        let b = ids.mint();
+        doc.apply(&Transaction(vec![Operation::CreateNode {
+            id: b,
+            parent: board,
+            index: 1,
+            kind: NodeKind::Rect {
+                size: Size::new(10.0, 10.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((150.0, 0.0))),
+            name: None,
+        }]))
+        .expect("a rect past the board's edge");
+        app.session.adopt_document(doc, None);
+        (app, board, a, b)
+    }
+
+    /// A band holding a page frame whole takes the frame, not its contents;
+    /// one short of its corner takes the contents as before.
+    /// flip: `frames_held_whole` answering nothing → fails at "the frame itself".
+    #[test]
+    fn a_marquee_holding_a_frame_whole_takes_the_frame() {
+        let ctx = egui::Context::default();
+        let (mut app, board, a, _) = board_and_two(&ctx, true);
+        let band = |app: &mut MastikApp, end: f64| {
+            app.apply_marquee(
+                Point::new(-10.0, -10.0),
+                Point::new(end, end),
+                MarqueeMode::Replace,
+                &Default::default(),
+                None,
+            );
+            app.session.selection.ids().to_vec()
+        };
+        assert_eq!(band(&mut app, 90.0), vec![a], "short of the corner");
+        assert_eq!(band(&mut app, 110.0), vec![board], "the frame itself");
+    }
+
+    /// A clipping frame's layer past its edge is neither hit nor marqueed
+    /// there; with the clip off it is both, as it shows.
+    /// flip: `hit_test` without its `clipped_away` filter → fails at "not hit
+    /// where it is clipped"; `apply_marquee` ignoring `clip_box` → fails at
+    /// "nor marqueed".
+    #[test]
+    fn a_layer_a_frame_clips_away_is_neither_hit_nor_marqueed() {
+        let ctx = egui::Context::default();
+        for clip in [true, false] {
+            let (mut app, _, _, b) = board_and_two(&ctx, clip);
+            let hits = mastik_core::hit_test(
+                &app.session.resolved,
+                &app.session.doc,
+                app.session.page,
+                Point::new(155.0, 5.0),
+                0.0,
+            );
+            assert_eq!(
+                hits.contains(&b),
+                !clip,
+                "not hit where it is clipped ({clip})"
+            );
+            app.apply_marquee(
+                Point::new(140.0, -5.0),
+                Point::new(170.0, 15.0),
+                MarqueeMode::Replace,
+                &Default::default(),
+                None,
+            );
+            let got = app.session.selection.ids().to_vec();
+            assert_eq!(got.contains(&b), !clip, "nor marqueed ({clip})");
+        }
     }
 
     /// A Shift or Alt band keeps the key layer while it stays selected, as
@@ -24439,6 +24590,37 @@ mod frame_edge_tests {
             Some(board),
             "and does not clear the entered group, which only the marquee arm does"
         );
+    }
+
+    /// A drag pressed on a layer with Ctrl held draws a marquee, leaving the
+    /// layer unselected; without Ctrl the same press moves it.
+    /// flip: `begin_select_drag` not reading Ctrl → fails at "a marquee".
+    #[test]
+    fn a_ctrl_drag_on_a_layer_draws_a_marquee() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, _, inside) = fixture(&ctx);
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let screen = app.to_screen(Point::new(95.0, 95.0), rect, 1.0);
+        let press = |app: &mut MastikApp, modifiers: egui::Modifiers| {
+            app.drag = Drag::None;
+            app.session.selection.clear();
+            let input = egui::RawInput {
+                modifiers,
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                app.begin_select_drag(ui, screen, rect, 1.0, &None, false);
+            });
+        };
+        press(&mut app, egui::Modifiers::NONE);
+        assert!(
+            matches!(app.drag, Drag::Move { .. }) && app.session.selection.contains(inside),
+            "fixture: a plain press grabs the layer"
+        );
+        press(&mut app, egui::Modifiers::COMMAND);
+        assert!(matches!(app.drag, Drag::Marquee { .. }), "a marquee");
+        assert!(app.session.selection.is_empty(), "the layer is not grabbed");
     }
 
     /// A press inside the selected slice, over the rect, moves the slice; with the
@@ -26296,6 +26478,7 @@ mod flex_canvas_tests {
 
     /// An item pressed on the part that overflows its container stays in it for a small
     /// drag (the pointer was never in the container); dragged clear of the frame it leaves.
+    /// The row does not clip, or the overflow pressed would be hidden and not hit.
     /// flip: delete the pressed-outside clause → fails at "b stays".
     #[test]
     fn an_overflowing_item_pressed_outside_its_container_stays_for_a_nudge() {
@@ -26308,6 +26491,10 @@ mod flex_canvas_tests {
                 root,
                 vec![
                     frame_op(row, root, 0, 200.0, 100.0, Affine::IDENTITY),
+                    Operation::SetClip {
+                        id: row,
+                        clip: false,
+                    },
                     rect_op(a, row, 0, 150.0, 30.0),
                     rect_op(b, row, 1, 150.0, 30.0),
                     Operation::SetDisplay {

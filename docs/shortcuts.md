@@ -427,7 +427,8 @@ measure (`measure.rs`; the overlay is in `canvas.rs`) · middle-mouse pan in **b
 is not the alias in a text session, where it is a character) · right-button drag pan in both modes
 under Settings' *Right click to pan* (a right click still opens the menu) · `Alt`+click eyedropper onto the
 top stroke · `Shift`+click eyedropper stays armed · `Ctrl`+click eyedropper takes the raw pixel,
-not the document colour it would snap to · `Shift`+marquee toggles what it covers ·
+not the document colour it would snap to · `Ctrl`+drag draws a marquee over layers instead of
+moving them · `Shift`+marquee toggles what it covers ·
 `Alt`+marquee removes it (box or lasso, layers and path points alike, read at the press) · `Alt` on
 a corner dot sets that corner alone · `Shift` on an ellipse's arc dot snaps to 15°
 (`design/tools.md`, *Shape handles*).

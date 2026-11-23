@@ -342,6 +342,14 @@ fn a_bound_stroke_width_draws_and_measures_at_its_number() {
     assert_eq!(stroke(&f.doc, f.rect).width, 0.0, "the literal 0");
     assert_eq!(stroke(&f.doc, f.rect).width_var, Some(f.muted));
     assert_eq!(drawn_width(&f.doc, f.rect), 40.0, "Light's 40");
+    // The rect sits at the frame's corner: a clipping frame would hide the
+    // stroke's outer half, and a hidden part is never hit.
+    f.doc
+        .apply(&Transaction(vec![Operation::SetClip {
+            id: f.frame,
+            clip: false,
+        }]))
+        .unwrap();
     let res = mastik_core::Resolved::rebuild(&f.doc);
     let b = res.world_bounds(f.rect).unwrap();
     assert_eq!(b.width(), 80.0, "the bounds reach the bound width");

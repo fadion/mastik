@@ -29,8 +29,11 @@ designation, the Alt measure overlay, and the layers panel's range selection and
 
 The canvas never selects a locked layer by a gesture that describes a **set**:
 
-- Click: `query::hit_test` refuses it.
-- Marquee: `canvas::apply_marquee` picks frame contents plus loose layers, from
+- Click: `query::hit_test` refuses it. It refuses as well a point a clipping frame cuts away from
+  a layer (`clipped_away`, every clipping ancestor asked, as `masked_away` asks masks), so hover
+  and click stop at a clipping frame's edge; overflow from a frame that does not clip is hit.
+- Marquee: `canvas::apply_marquee` picks frame contents plus loose layers (and a page frame it
+  holds whole, below), from
   `MastikApp::marquee_candidates`, filtered by `MastikApp::may_select_in_bulk`
   (`query::is_effectively_locked`, and never a slice: a slice is picked on its own, by its edge, its
   row or the Slice tool, never swept up with the art; and never a chart's part, as a chart selects
@@ -89,6 +92,18 @@ The canvas never selects a locked layer by a gesture that describes a **set**:
 - **Modes.** The modifier held at the press decides what the marquee does (`preview::MarqueeMode`):
   none replaces the selection, `Shift` toggles what it covers, `Alt` removes it. Nothing at the
   pointer shows the mode (`non-goals.md`).
+- **`Ctrl`+drag starts a marquee over layers** (`begin_select_drag`): the press grabs nothing, so a
+  band can begin on top of art instead of moving it. The selection handles are asked first, so
+  `Ctrl` on a side still skews; `Shift` and `Alt` keep their modes.
+- **A page frame held whole is taken itself** (`MastikApp::frames_held_whole`): when the band
+  holds a page frame's own box (the lasso, its four corners), the frame is picked in place of its
+  contents, so several frames are marqueed and moved together. One the band only crosses still
+  gives its contents. Locked, hidden and chart frames are left out; a chart is a candidate whole
+  already.
+- **Clipped content is not there to take.** A layer under a frame that clips its content is
+  taken by its bounds cut to the frame's box (`query::clip_box`), so a band over the part a frame
+  hides takes nothing. A lasso is held to that box's reach only. A frame that does not clip
+  shows its overflow, and the overflow is taken as before.
 - **Live.** Every frame of the drag applies the marquee afresh to what was selected at the press
   (`Drag::Marquee::base`, and in the node tool `Drag::Marquee::points`), so a toggle does not flip
   back and forth, and a cancel (`cancel_gesture`) restores both.

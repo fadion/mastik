@@ -1117,8 +1117,9 @@ impl Resolved {
     /// **Not reduced by any clip, a mask included.** It is conservative (a clip only
     /// removes ink, so the box is never too small for culling and the index) and it
     /// is the box of the thing being edited: a selection outline that shrank to the
-    /// visible part of a masked photograph would leave nothing to aim at. A marquee
-    /// or snap can therefore find clipped-away ink, as with frame clips.
+    /// visible part of a masked photograph would leave nothing to aim at. Snap can
+    /// therefore find clipped-away ink; a marquee cuts the box to the frames that
+    /// clip it itself ([`crate::query::clip_box`]).
     pub fn world_bounds(&self, id: NodeId) -> Option<Rect> {
         self.world_bounds.get(&id).copied()
     }
