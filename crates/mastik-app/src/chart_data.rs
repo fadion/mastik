@@ -553,7 +553,7 @@ impl MastikApp {
         self.chart_data = Some(open);
     }
 
-    /// Write `table` as data set `set`'s, one undo step *Edit list data*: every
+    /// Write `table` as data set `set`'s, one undo step *Edit table*: every
     /// list over it is made again, a fill whose column is gone dropped.
     pub(crate) fn commit_data_table(
         &mut self,
@@ -591,11 +591,11 @@ impl MastikApp {
                 set: Some(Box::new(mastik_core::list::DataSet { table, ..now })),
             },
         );
-        self.session.name_step("Edit list data", icon::TABLE);
+        self.session.name_step("Edit table", icon::TABLE);
         self.commit_edit(Transaction(ops));
     }
 
-    /// Data set `set` renamed, undo step *Rename data*; a name another data set
+    /// Data set `set` renamed, undo step *Rename table*; a name another data set
     /// has is numbered past it.
     pub(crate) fn rename_data_set(&mut self, set: mastik_core::list::DataSetId, name: &str) {
         let Some(now) = self.session.doc.data_set(set).cloned() else {
@@ -609,7 +609,7 @@ impl MastikApp {
             return;
         }
         let name = mastik_core::list::free_name(&self.session.doc, &name);
-        self.session.name_step("Rename data", icon::PENCIL_SIMPLE);
+        self.session.name_step("Rename table", icon::PENCIL_SIMPLE);
         self.commit_edit(Transaction(vec![Operation::SetDataSet {
             id: set,
             set: Some(Box::new(mastik_core::list::DataSet { name, ..now })),
@@ -914,10 +914,9 @@ enum TablesAct {
     Delete(mastik_core::list::DataSetId),
 }
 
-/// The table dropdown's width in *Data tables*' toolbar.
+/// The table dropdown's width in *Data tables*' toolbar, kept whatever the
+/// tables are called.
 const TABLES_PICK_W: f32 = 180.0;
-/// The most tables the dropdown shows before it scrolls.
-const TABLES_SHOWN: f32 = 12.0;
 
 impl MastikApp {
     /// *Data tables*, the window with nothing behind it: the picked table under
@@ -938,18 +937,6 @@ impl MastikApp {
         if state.data.is_some() {
             self.tables_last = state.data;
         }
-        let sets: Vec<(mastik_core::list::DataSetId, String, String)> = doc
-            .data_sets()
-            .iter()
-            .map(|d| {
-                let count = if mastik_core::list::is_read(doc, d.id) {
-                    ui::count_as(d.table.rows.len(), "row", "rows")
-                } else {
-                    "not used".to_string()
-                };
-                (d.id, d.name.clone(), count)
-            })
-            .collect();
         let data = state.data.and_then(|d| doc.data_set(d)).cloned();
         let readers = data
             .as_ref()
@@ -1035,9 +1022,26 @@ impl MastikApp {
             let linked = chart.source.is_some();
             let mut bar = |ui: &mut egui::Ui, slot: Slot| match slot {
                 Slot::Lead => {
-                    if let Some(a) = tables_dropdown(ui, &sets, data) {
-                        asked = Some(a);
-                    }
+                    use crate::list_data::{TablePick, TableRows, table_combo};
+                    let rows = TableRows {
+                        own: None,
+                        new: true,
+                    };
+                    let pick = table_combo(
+                        ui,
+                        "data-tables-pick",
+                        TABLES_PICK_W,
+                        doc,
+                        &data.name,
+                        Some(data.id),
+                        &rows,
+                    );
+                    asked = match pick {
+                        Some(TablePick::Set(d)) => Some(TablesAct::Pick(d)),
+                        Some(TablePick::New) => Some(TablesAct::New),
+                        Some(TablePick::File) => Some(TablesAct::File),
+                        Some(TablePick::Own) | None => asked.take(),
+                    };
                 }
                 Slot::Trail => {
                     let free = readers.is_empty();
@@ -1130,48 +1134,6 @@ impl MastikApp {
         open.focus = true;
         open.reveal = true;
     }
-}
-
-/// *Data tables*' dropdown of the document's tables, `data` ticked: each with
-/// its row count (*not used* for one nothing reads), then *New table* and
-/// *From a file…*. Keeps one width, and scrolls past a dozen tables.
-fn tables_dropdown(
-    ui: &mut egui::Ui,
-    sets: &[(mastik_core::list::DataSetId, String, String)],
-    data: &mastik_core::list::DataSet,
-) -> Option<TablesAct> {
-    let mut out = None;
-    ui.scope(|ui| {
-        ui::combo_height(ui);
-        egui::ComboBox::from_id_salt("data-tables-pick")
-            .icon(ui::combo_chevron)
-            .width(TABLES_PICK_W)
-            .height(ui::MENU_ROW_H * TABLES_SHOWN)
-            .selected_text(ui::glyph_and_text(icon::TABLE, &data.name))
-            .show_ui(ui, |ui| {
-                ui::menu_rows(ui);
-                for (d, name, count) in sets {
-                    let row = format!("{name} \u{b7} {count}");
-                    if ui.selectable_label(*d == data.id, row).clicked() && *d != data.id {
-                        out = Some(TablesAct::Pick(*d));
-                    }
-                }
-                ui::menu_sep(ui);
-                if ui
-                    .selectable_label(false, ui::glyph_and_text(icon::PLUS, "New table"))
-                    .clicked()
-                {
-                    out = Some(TablesAct::New);
-                }
-                if ui
-                    .selectable_label(false, ui::glyph_and_text(icon::IMPORT, "From a file…"))
-                    .clicked()
-                {
-                    out = Some(TablesAct::File);
-                }
-            });
-    });
-    out
 }
 
 /// What the window asks of the app after its pass.

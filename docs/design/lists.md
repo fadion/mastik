@@ -158,7 +158,9 @@ list's description as it drops a misplaced one.
 - **Make a list from data ▸** — a flyout on an instance's context menu (after *Detach instance*),
   dimmed with `list::why_not`'s reason: the layer must be an instance's root, not inside a main,
   set, instance, list or chart, and not in the vault. Its rows: one per data set
-  (`Item::MakeListFrom`, *products.csv · 24 rows*), then *From a file…* and *New table*. The
+  (`Item::MakeListFrom`, in `list_data::table_words`, as every table dropdown: *products.csv · 24
+  rows*, or *products.csv · not used* when no list or chart reads it), then *From a file…* and
+  *New table*. The
   palette offers *Make a list from a file…* and *Make a list from a new table* (*Needs an
   instance* without one), not the per-data-set rows.
 - **Every door ends in `list::make`**, which wraps the instance in a new frame at its place: a flex
@@ -177,7 +179,7 @@ list's description as it drops a misplaced one.
     next thing to write.
 - **The import box** is the chart's (`chart_import.rs`; `charts.md`, *Import and the linked
   file*), headed *Make a list*, with a *Fill · ‹component›* section after the preview: one
-  labelled dropdown per property the List card fills (three to a row, scrolling past six),
+  labelled `ui::fitted_combo` per property the List card fills (three to a row, scrolling past six),
   each starting on the column of its name (`fill_by_name`), *None* offered. The fill is held by
   column name, so the header switch's re-read keeps it where the name survives; a choice the
   re-read table lacks shows *None* and fills nothing, and returns when the header is switched
@@ -204,10 +206,11 @@ The list frame's inspector card (`panels/list.rs`), after Item; the frame keeps 
 card, which arranges the rows. Each edit is one `SetList`, and the list is regenerated in its
 step.
 
-- **Data** — a dropdown with the `TABLE` glyph listing every data set in the document, read or
-  not (*name · N rows*)
-  and, after a separator, *From a file…*; picking a data set moves the list onto it, undo step
-  *List data*: each fill keeps its column where the new table has a column of the same name, and
+- **Data** — `list_data::table_combo`, the one table dropdown (the Chart card's and *Data
+  tables*' too): a `ui::fitted_combo` with the `TABLE` glyph, its width kept whatever the tables
+  are called, listing every data set in the document (`table_words`: *name · N rows*, or *name ·
+  not used* when nothing reads it) and, after a separator, *From a file…*; picking a data set
+  moves the list onto it, undo step *List data*: each fill keeps its column where the new table has a column of the same name, and
   a property left unfilled takes the column of its own name (`MastikApp::list_on`). *From a
   file…* reads a new data set from a picked file and moves this list alone onto it in one step.
   Under it, *N rows · N columns* and *Edit data…* (`ui::action_button`, the data window, as on
@@ -215,31 +218,35 @@ step.
   the accent, *File not found* in the warning ink, the path its tooltip) with *Update* while
   changed, *Relink…* while missing (tooltip *Pick the file again for ‹set›*, or with several
   readers *Pick the file again for the 2 lists, 1 chart reading ‹set›*), and *Unlink*
-  (`data_set_link_rows`, which the Chart card shows for a chart reading a set). *No rows: the template is hidden in play* in the warning ink over an empty table;
-  *Showing 200 of N rows* in the warning ink when `All` is cut at `MAX_DRAWN` (*First* asks for
-  200 at most, so it is never cut). A data
-  set the document lacks reads *Missing data* with *Its data set is not in this document: pick
-  one*.
+  (`data_set_link_rows`, which the Chart card shows for a chart reading a set, painted by
+  `chart_import::link_rows`, the Chart card's own source line's painter too). The card's warnings
+  are `ui::note_line`s, the `WARNING` glyph in the warning ink and the words muted: *No rows: the
+  template is hidden in play* over an empty table; *Showing 200 of N rows* when `All` is cut at
+  `MAX_DRAWN` (*First* asks for 200 at most, so it is never cut). A data set the document lacks
+  reads *Missing data* with *Its table is not in this document: pick one*
+  (`panels::list::MISSING_TABLE`, the Chart card's too).
 - **Rows** (a `ui::fold_rule` section) — `ui::segmented` *All* / *First* / *Opened row*. *First*
-  starts at 3 and shows a *Rows* count field (1 to 200); *Opened row* says *Shows the row opened
-  in play. Row 1 here.* Undo step *List rows*.
-- **Fill · ‹component›** (a fold) — one labelled dropdown per text, boolean and image property,
-  then per variant property: *None* and the data set's columns. Under a variant row, *N values
-  name no ‹X› variant* in the warning ink, the cells its tooltip (an empty one as *an empty
-  cell*); under an image row, *3 pictures
-  not found*, the cells and *looked for next to products.csv* its tooltip. With no such property,
-  *Its component has no text, boolean or variant property*. Undo step *List fill*, which reads the
+  starts at 3 and shows a *Rows* count field (1 to 200) half the column wide, as the cards'
+  number fields; *Opened row* says *Shows the row opened in play, row 1 here*
+  (`ui::selection_note`). Undo step *List rows*.
+- **Fill · ‹component›** (a fold) — one labelled `ui::fitted_combo` per text, boolean and image
+  property, then per variant property: *None* and the data set's columns. Under a variant row,
+  *N values name no ‹X› variant*, the cells its tooltip (an empty one as *an empty cell*); under
+  an image row, *3 pictures not found*, the cells and *looked for next to products.csv* its
+  tooltip. Both are `ui::note_line_tip`s, warning glyph and muted words as above. With no such
+  property, *Its component has no text, boolean, image or variant property*
+  (`list_data::NO_FILL_TARGETS`, the import box's too). Undo step *List fill*, which reads the
   image column's pictures in the same step while the set is linked.
 - **Detach list** at the foot (`ui::action_button`), `Ctrl+E` in its tooltip.
 
 ### The linked file
 
 - **Update** reads the file again under the set's stored header choice and replaces the table,
-  undo step *Update list data*. **Relink…** (and the data window's *Import…*) reads a picked
+  undo step *Update table*. **Relink…** (and the data window's *Import…*) reads a picked
   file into the same data set (`Then::DataSet { relink: true }`): table and link replaced, name
-  kept, undo step *Relink list data*, status *Relinked products.csv for 2 lists, 1 chart · 26
+  kept, undo step *Relink table*, status *Relinked products.csv for 2 lists, 1 chart · 26
   rows* (its readers in words, `readers_words`; without *for …* when nothing reads it); on a set
-  never linked (*New table*) the step is *Link list data* and the status *Linked …*. To point one
+  never linked (*New table*) the step is *Link table* and the status *Linked …*. To point one
   list or chart at another file, the Data dropdown's *From a file…* stays.
 - **Both regenerate every list over the set in the step**, each list's fills remapped onto the new
   table by column name and a fill whose column name is gone dropped, and bring every chart over
@@ -261,7 +268,7 @@ the window is *Data tables* (below).
 
 - **Head**: *List data*, its note the data set's name, then its readers in words (*· 2 lists, 1
   chart*, `readers_words`) when more than one list, or any chart, reads it. A double-click on the name renames the data set in place (`settings::card_head_renamable`), undo
-  step *Rename data*, a taken name numbered past (`list::free_name`).
+  step *Rename table*, a taken name numbered past (`list::free_name`).
 - **The grid is the chart's.** Each header shows in the accent the property its column fills on
   the list the window was opened from (tooltip *Fills Title on this list*); the chart-only header
   rows (*Use as category* / *Use as X*, *Show as series*) are not offered. A cell naming no
@@ -271,7 +278,7 @@ the window is *Data tables* (below).
   where they are fixed. *Import…* relinks the
   data set (*The linked file*). A linked set's grid is read-only with *Edited in products.csv —
   unlink to edit here*, as a chart's.
-- **Each edit is one step, *Edit list data***: a `SetDataSet`, a fill whose column is gone
+- **Each edit is one step, *Edit table***: a `SetDataSet`, a fill whose column is gone
   dropped, every list over the set regenerated and every chart over it brought onto the table.
   `list::regenerate` drops such a fill too, whichever door removed the column, so a column
   minted later under the freed id fills nothing.
@@ -290,18 +297,17 @@ the document's data sets, which it calls tables. Named *Data tables*, not *Conte
   press while it is open leaves it as it is. It opens on the table it last showed this session
   (`MastikApp::tables_last`), else the first; a picked table gone (deleted, undone) moves it to
   the first.
-- **Head**: *Data tables*, its note the picked table's name, renamed as above (*Rename data*),
+- **Head**: *Data tables*, its note the picked table's name, renamed as above (*Rename table*),
   then *· 2 lists, 1 chart* (`readers_words`) or *· not used*. It does not follow the selection;
   its ✕ and `Escape` close it.
-- **Toolbar**: a table dropdown leads it, before *Add row* (`tables_dropdown`: the `TABLE` glyph
-  and the name, 180 wide, scrolling past 12 rows): each table as *name · 24 rows*, or *name · not
-  used* when nothing reads it, the picked one ticked; a separator; *New table* (`icon::PLUS`) and
-  *From a file…* (`icon::IMPORT`). *Delete table* ends the toolbar after *Import…*: a `CONTROL_H`
+- **Toolbar**: the table dropdown leads it, before *Add row* (`list_data::table_combo`,
+  `TABLES_PICK_W` wide, with `TableRows { new }`): each table in `table_words`, the picked one
+  ticked; a separator; *New table* (`icon::PLUS`) and *From a file…* (`icon::IMPORT`). *Delete table* ends the toolbar after *Import…*: a `CONTROL_H`
   square `ui::icon_button_sized` with `icon::TRASH`, tooltip *Delete table*, dimmed while
   anything reads the table with the tooltip *Delete table: used by 2 lists and 1 chart. Point
   them at another table first.* The grid takes these through its `bar` callback (`Slot::Lead`,
   `Slot::Trail`). *Import…* relinks the table (*The linked file*); edits go through
-  `commit_data_table`, *Edit list data*.
+  `commit_data_table`, *Edit table*.
 - **Headers are plain** (`Heads::Plain`): no fill, no role mark, the names in full ink, and the
   header menu without *Use as category* and *Show as series*, which belong to a chart, not the
   table.

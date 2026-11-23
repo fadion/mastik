@@ -283,6 +283,72 @@ pub(crate) fn file_name(path: &str) -> String {
         .map_or_else(|| path.to_string(), |n| n.to_string_lossy().into_owned())
 }
 
+/// What a pick in [`link_rows`] asks for.
+pub(crate) enum LinkAct {
+    Update,
+    Relink,
+    Unlink,
+}
+
+/// A linked file's lines on the Chart and List cards: the link glyph and
+/// *Linked to sales.csv*, *Changed on disk* in the accent or *File not found*
+/// in the warning ink, the path under the pointer; then *Update* while
+/// changed, *Relink…* while missing (`relink_tip` under the pointer) and
+/// *Unlink*.
+pub(crate) fn link_rows(
+    ui: &mut egui::Ui,
+    state: LinkState,
+    path: &str,
+    relink_tip: Option<&str>,
+) -> Option<LinkAct> {
+    /// Between the glyph and the words.
+    const GLYPH_GAP: f32 = 8.0;
+    /// Between the word links.
+    const LINK_GAP: f32 = 12.0;
+    let name = file_name(path);
+    let (said, ink) = match state {
+        LinkState::Current => (format!("Linked to {name}"), theme::text::muted()),
+        LinkState::Changed => (
+            format!("{name} \u{b7} Changed on disk"),
+            color::accent_300(),
+        ),
+        LinkState::Missing => (format!("{name} \u{b7} File not found"), color::warn()),
+    };
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = GLYPH_GAP;
+        ui.label(theme::icon_text(
+            icon::LINK_SIMPLE,
+            ui::NOTE_GLYPH_PT,
+            theme::text::dim(),
+        ));
+        ui.add(
+            egui::Label::new(egui::RichText::new(said).size(ui::SMALL_PT).color(ink)).truncate(),
+        )
+        .on_hover_text(path);
+    });
+    let mut out = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = LINK_GAP;
+        if state == LinkState::Changed && ui::word_link(ui, "Update", false).clicked() {
+            out = Some(LinkAct::Update);
+        }
+        if state == LinkState::Missing {
+            let r = ui::word_link(ui, "Relink…", false);
+            let r = match relink_tip {
+                Some(tip) => r.on_hover_text(tip),
+                None => r,
+            };
+            if r.clicked() {
+                out = Some(LinkAct::Relink);
+            }
+        }
+        if ui::word_link(ui, "Unlink", true).clicked() {
+            out = Some(LinkAct::Unlink);
+        }
+    });
+    out
+}
+
 /// What a linked chart's file is now.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LinkState {
@@ -1036,37 +1102,12 @@ impl MastikApp {
         else {
             return;
         };
-        let name = file_name(&path);
-        let (said, ink) = match state {
-            LinkState::Current => (format!("Linked to {name}"), theme::text::muted()),
-            LinkState::Changed => (format!("{name} · Changed on disk"), color::accent_300()),
-            LinkState::Missing => (format!("{name} · File not found"), color::warn()),
-        };
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            ui.label(theme::icon_text(
-                icon::LINK_SIMPLE,
-                13.0,
-                theme::text::dim(),
-            ));
-            ui.add(
-                egui::Label::new(egui::RichText::new(said).size(ui::SMALL_PT).color(ink))
-                    .truncate(),
-            )
-            .on_hover_text(&path);
-        });
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 12.0;
-            if state == LinkState::Changed && ui::word_link(ui, "Update", false).clicked() {
-                self.update_linked_charts(&path);
-            }
-            if state == LinkState::Missing && ui::word_link(ui, "Relink…", false).clicked() {
-                self.import_chart_data_dialog(id);
-            }
-            if ui::word_link(ui, "Unlink", true).clicked() {
-                self.unlink_chart_data(id);
-            }
-        });
+        match link_rows(ui, state, &path, None) {
+            Some(LinkAct::Update) => self.update_linked_charts(&path),
+            Some(LinkAct::Relink) => self.import_chart_data_dialog(id),
+            Some(LinkAct::Unlink) => self.unlink_chart_data(id),
+            None => {}
+        }
     }
 
     /// The instance a data file dropped at `p` would make a list of: the
@@ -1349,33 +1390,23 @@ fn fill_section(ui: &mut egui::Ui, l: &mut ListImport, table: &chart::Table) {
                                             .filter(|c| table.columns.iter().any(|x| x.name == *c));
                                         let shown =
                                             present.clone().unwrap_or_else(|| "None".into());
-                                        ui::combo_height(ui);
-                                        egui::ComboBox::from_id_salt((
-                                            "list-import-fill",
-                                            &*target,
-                                        ))
-                                        .icon(ui::combo_chevron)
-                                        .width(cell)
-                                        .selected_text(ui::glyph_and_text(glyph, &shown))
-                                        .show_ui(
-                                            ui,
-                                            |ui| {
-                                                ui::menu_rows(ui);
-                                                if ui
-                                                    .selectable_label(present.is_none(), "None")
-                                                    .clicked()
-                                                {
-                                                    *col = None;
+                                        let face = ui::glyph_and_text(glyph, &shown);
+                                        let salt = ("list-import-fill", &*target);
+                                        ui::fitted_combo(ui, salt, cell, face, &shown, |ui| {
+                                            ui::menu_rows(ui);
+                                            if ui
+                                                .selectable_label(present.is_none(), "None")
+                                                .clicked()
+                                            {
+                                                *col = None;
+                                            }
+                                            for c in &table.columns {
+                                                let on = col.as_deref() == Some(c.name.as_str());
+                                                if ui.selectable_label(on, &c.name).clicked() {
+                                                    *col = Some(c.name.clone());
                                                 }
-                                                for c in &table.columns {
-                                                    let on =
-                                                        col.as_deref() == Some(c.name.as_str());
-                                                    if ui.selectable_label(on, &c.name).clicked() {
-                                                        *col = Some(c.name.clone());
-                                                    }
-                                                }
-                                            },
-                                        );
+                                            }
+                                        });
                                     });
                                 });
                             }

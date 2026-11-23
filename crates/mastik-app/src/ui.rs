@@ -457,6 +457,18 @@ pub fn note_line(
     clicked
 }
 
+/// A [`note_line`] with no act whose whole line says `tip` under the pointer
+/// (the List card's warnings naming the cells they count).
+pub fn note_line_tip(ui: &mut egui::Ui, glyph: &str, ink: egui::Color32, text: &str, tip: &str) {
+    let rect = ui
+        .scope(|ui| note_line(ui, glyph, ink, text, None))
+        .response
+        .rect;
+    // A scope's own response is never hovered, so the line is sensed on its rect.
+    ui.interact(rect, ui.id().with(("note-tip", text)), egui::Sense::hover())
+        .on_hover_text(tip);
+}
+
 /// What a whole surface says when it is empty, where [`empty_note`] is too
 /// little: an optional glyph, a [`CONTROL_PT`] heading in `text::strong()` and a
 /// [`SMALL_PT`] `text::dim()` line saying how to fill it, centred. `below` adds
@@ -5433,7 +5445,7 @@ pub fn face_swatch(ui: &egui::Ui, face: egui::Rect, bg: egui::Color32, paint: Sw
 
 /// A [`face_swatch`]'s side: the colour rows' chip, inside the glyph's advance so
 /// the text after it keeps its gap.
-pub const FACE_SWATCH: f32 = 14.0;
+pub const FACE_SWATCH: f32 = COLOUR_CHIP;
 
 /// [`glyph_and_text`] with the glyph in a colour of the caller's choosing.
 ///

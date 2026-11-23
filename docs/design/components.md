@@ -892,7 +892,7 @@ override. Kit mains not yet vendored are offered to a swap only (`kit::swap_offe
   `panels::picture_words`, and *Replace…* with the `SWAP` glyph, the file picker through
   `replace_image_action` on the copy's fill, keeping its framing, dimmed with *Replacing works on
   one layer at a time* unless one root is selected and the property drives one layer) with its
-  mark. The image dropdown's face leads with the
+  mark. The image dropdown is a `ui::fitted_combo`; its face leads with the
   picture's thumbnail, from the first copy's own `ImageRef` so with its framing, when one value
   shows and the thumbnail is ready, else the `IMAGE` glyph (`ui::face_swatch`, *Shared rules*
   in `app-chrome.md`). **On a list's template** (`lists.md`), alone or among the selected roots,

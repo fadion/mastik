@@ -22,6 +22,9 @@ const ROWS: [(&str, &str); 3] = [
     ),
 ];
 
+/// What the List and Chart cards say under a table dropdown whose table is gone.
+pub(crate) const MISSING_TABLE: &str = "Its table is not in this document: pick one";
+
 /// A picture as a row names it: the name of the first layer showing it (a
 /// placed picture is named after its file), with its size; a picture no layer
 /// shows by its size alone.
@@ -158,58 +161,34 @@ impl MastikApp {
 
     /// The data set's dropdown, its summary, its file and its limits.
     fn list_data_rows(&mut self, ui: &mut egui::Ui, id: NodeId, now: &List) {
-        enum Pick {
-            Set(list::DataSetId),
-            File,
-        }
+        use crate::list_data::{TablePick, TableRows, table_combo};
         let doc = &self.session.doc;
         let set = doc.data_set(now.data).cloned();
-        let sets: Vec<(list::DataSetId, String, usize)> = doc
-            .data_sets()
-            .iter()
-            .map(|d| (d.id, d.name.clone(), d.table.rows.len()))
-            .collect();
         let shown = set
             .as_ref()
             .map_or_else(|| "Missing data".to_string(), |s| s.name.clone());
-        let mut pick = None;
-        ui.scope(|ui| {
-            ui::combo_height(ui);
-            egui::ComboBox::from_id_salt(("list-data", id))
-                .icon(ui::combo_chevron)
-                .width(ui.available_width())
-                .selected_text(ui::glyph_and_text(icon::TABLE, &shown))
-                .show_ui(ui, |ui| {
-                    ui::menu_rows(ui);
-                    for (d, name, rows) in &sets {
-                        let row = format!("{name} \u{b7} {}", ui::count_as(*rows, "row", "rows"));
-                        if ui.selectable_label(*d == now.data, row).clicked() {
-                            pick = Some(Pick::Set(*d));
-                        }
-                    }
-                    if !sets.is_empty() {
-                        ui::menu_sep(ui);
-                    }
-                    if ui
-                        .selectable_label(false, ui::glyph_and_text(icon::IMPORT, "From a file…"))
-                        .clicked()
-                    {
-                        pick = Some(Pick::File);
-                    }
-                });
-        });
+        let w = ui.available_width();
+        let pick = table_combo(
+            ui,
+            ("list-data", id),
+            w,
+            doc,
+            &shown,
+            Some(now.data),
+            &TableRows::default(),
+        );
         match pick {
-            Some(Pick::Set(d)) if d != now.data => {
+            Some(TablePick::Set(d)) => {
                 if let Some(table) = self.session.doc.data_set(d).map(|s| s.table.clone()) {
                     let next = self.list_on(id, now, &table, d);
                     self.list_commit(id, "List data", next);
                 }
             }
-            Some(Pick::File) => self.list_data_dialog(id),
+            Some(TablePick::File) => self.list_data_dialog(id),
             _ => {}
         }
         let Some(set) = set else {
-            ui::selection_note(ui, "Its data set is not in this document: pick one");
+            ui::selection_note(ui, MISSING_TABLE);
             return;
         };
         let rows = set.table.rows.len();
@@ -232,11 +211,8 @@ impl MastikApp {
         self.data_set_link_rows(ui, &set);
         let drawn = now.shown_rows(rows).len();
         if rows == 0 {
-            ui.label(
-                egui::RichText::new("No rows: the template is hidden in play")
-                    .size(ui::SMALL_PT)
-                    .color(color::warn()),
-            );
+            let said = "No rows: the template is hidden in play";
+            ui::note_line(ui, icon::WARNING, color::warn(), said, None);
         }
         // Cut only when the cap stops short of what the mode asked for.
         let asked = match now.rows {
@@ -245,11 +221,8 @@ impl MastikApp {
             Rows::Opened => 0,
         };
         if drawn < asked {
-            ui.label(
-                egui::RichText::new(format!("Showing {drawn} of {rows} rows"))
-                    .size(ui::SMALL_PT)
-                    .color(color::warn()),
-            );
+            let said = format!("Showing {drawn} of {rows} rows");
+            ui::note_line(ui, icon::WARNING, color::warn(), &said, None);
         }
     }
 
@@ -257,55 +230,23 @@ impl MastikApp {
     /// disk*, *File not found*) and its *Update*, *Relink…* and *Unlink*, on the
     /// List and Chart cards; nothing while unlinked.
     pub(crate) fn data_set_link_rows(&mut self, ui: &mut egui::Ui, set: &list::DataSet) {
+        use crate::chart_import::{LinkAct, link_rows};
         if let Some(link) = &set.source {
             let state = self.data_link_state(set.id).unwrap_or(LinkState::Current);
-            let name = file_name(&link.path);
-            let (said, ink) = match state {
-                LinkState::Current => (format!("Linked to {name}"), theme::text::muted()),
-                LinkState::Changed => (
-                    format!("{name} \u{b7} Changed on disk"),
-                    color::accent_300(),
+            let tip = match self.readers_of(set.id) {
+                (0..=1, 0) | (0, 1) => format!("Pick the file again for {}", set.name),
+                _ => format!(
+                    "Pick the file again for the {} reading {}",
+                    self.readers_words(set.id),
+                    set.name
                 ),
-                LinkState::Missing => (format!("{name} \u{b7} File not found"), color::warn()),
             };
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                ui.label(theme::icon_text(
-                    icon::LINK_SIMPLE,
-                    13.0,
-                    theme::text::dim(),
-                ));
-                ui.add(
-                    egui::Label::new(egui::RichText::new(said).size(ui::SMALL_PT).color(ink))
-                        .truncate(),
-                )
-                .on_hover_text(&link.path);
-            });
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 12.0;
-                if state == LinkState::Changed && ui::word_link(ui, "Update", false).clicked() {
-                    self.update_data_set(set.id);
-                }
-                if state == LinkState::Missing {
-                    let tip = match self.readers_of(set.id) {
-                        (0..=1, 0) | (0, 1) => format!("Pick the file again for {}", set.name),
-                        _ => format!(
-                            "Pick the file again for the {} reading {}",
-                            self.readers_words(set.id),
-                            set.name
-                        ),
-                    };
-                    if ui::word_link(ui, "Relink…", false)
-                        .on_hover_text(tip)
-                        .clicked()
-                    {
-                        self.relink_data_set(set.id);
-                    }
-                }
-                if ui::word_link(ui, "Unlink", true).clicked() {
-                    self.unlink_data_set(set.id);
-                }
-            });
+            match link_rows(ui, state, &link.path, Some(&tip)) {
+                Some(LinkAct::Update) => self.update_data_set(set.id),
+                Some(LinkAct::Relink) => self.relink_data_set(set.id),
+                Some(LinkAct::Unlink) => self.unlink_data_set(set.id),
+                None => {}
+            }
         }
     }
 
@@ -347,9 +288,11 @@ impl MastikApp {
         match now.rows {
             Rows::First(n) => {
                 let mut v = f64::from(n);
+                // A half column, as the cards' number fields take.
+                let half = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
                 let resp = ui::value_field(
                     ui,
-                    egui::vec2(96.0, ui::CONTROL_H),
+                    egui::vec2(half, ui::CONTROL_H),
                     Prefix::Label("Rows"),
                     &mut v,
                     Scrub::whole(0.25).range(1.0..=list::MAX_DRAWN as f64),
@@ -367,11 +310,7 @@ impl MastikApp {
                 self.named_valve("List rows", icon::TABLE, &resp, tx);
             }
             Rows::Opened => {
-                ui.label(
-                    egui::RichText::new("Shows the row opened in play. Row 1 here.")
-                        .size(ui::SMALL_PT)
-                        .color(theme::text::muted()),
-                );
+                ui::selection_note(ui, "Shows the row opened in play, row 1 here");
             }
             Rows::All => {}
         }
@@ -428,47 +367,39 @@ impl MastikApp {
                 .to_string();
             let mut pick: Option<Option<ColumnId>> = None;
             ui::labelled(ui, &name, |ui| {
-                ui::combo_height(ui);
-                egui::ComboBox::from_id_salt(("list-fill", id, name.as_str()))
-                    .icon(ui::combo_chevron)
-                    .width(ui.available_width())
-                    .selected_text(ui::combo_text(&shown))
-                    .show_ui(ui, |ui| {
-                        ui::menu_rows(ui);
-                        if ui.selectable_label(now_col.is_none(), "None").clicked() {
-                            pick = Some(None);
+                let w = ui.available_width();
+                let salt = ("list-fill", id, name.as_str());
+                ui::fitted_combo(ui, salt, w, ui::combo_text(&shown), &shown, |ui| {
+                    ui::menu_rows(ui);
+                    if ui.selectable_label(now_col.is_none(), "None").clicked() {
+                        pick = Some(None);
+                    }
+                    for (c, n) in &columns {
+                        if ui.selectable_label(now_col == Some(*c), n).clicked() {
+                            pick = Some(Some(*c));
                         }
-                        for (c, n) in &columns {
-                            if ui.selectable_label(now_col == Some(*c), n).clicked() {
-                                pick = Some(Some(*c));
-                            }
-                        }
-                    });
+                    }
+                });
             });
             if let Target::Variant(v) = &target
                 && let Some((_, cells)) = unmatched.iter().find(|(p, _)| p == v)
             {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} name no {v} variant",
-                        ui::count_as(cells.len(), "value", "values")
-                    ))
-                    .size(ui::SMALL_PT)
-                    .color(color::warn()),
-                )
-                .on_hover_text(
-                    cells
-                        .iter()
-                        .map(|c| {
-                            if c.is_empty() {
-                                "an empty cell"
-                            } else {
-                                c.as_str()
-                            }
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                let said = format!(
+                    "{} name no {v} variant",
+                    ui::count_as(cells.len(), "value", "values")
                 );
+                let tip = cells
+                    .iter()
+                    .map(|c| {
+                        if c.is_empty() {
+                            "an empty cell"
+                        } else {
+                            c.as_str()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                ui::note_line_tip(ui, icon::WARNING, color::warn(), &said, &tip);
             }
             if matches!(target, Target::Prop(_))
                 && let Some((_, cells)) = no_picture.iter().find(|(p, _)| *p == name)
@@ -477,15 +408,11 @@ impl MastikApp {
                     Some(f) => format!("{}: looked for next to {f}", cells.join(", ")),
                     None => cells.join(", "),
                 };
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} not found",
-                        ui::count_as(cells.len(), "picture", "pictures")
-                    ))
-                    .size(ui::SMALL_PT)
-                    .color(color::warn()),
-                )
-                .on_hover_text(tip);
+                let said = format!(
+                    "{} not found",
+                    ui::count_as(cells.len(), "picture", "pictures")
+                );
+                ui::note_line_tip(ui, icon::WARNING, color::warn(), &said, &tip);
             }
             if let Some(col) = pick.filter(|c| *c != now_col) {
                 let mut fill: Vec<list::Fill> = now

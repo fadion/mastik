@@ -3739,10 +3739,7 @@ impl MastikApp {
                 .doc
                 .data_sets()
                 .iter()
-                .map(|d| {
-                    let rows = crate::ui::count_as(d.table.rows.len(), "row", "rows");
-                    (d.id, format!("{} \u{b7} {rows}", d.name))
-                })
+                .map(|d| (d.id, crate::list_data::table_words(&self.session.doc, d)))
                 .collect(),
         }
     }

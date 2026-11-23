@@ -21,6 +21,99 @@ const FILTER: (&str, &[&str]) = ("Data", &["csv", "tsv", "json"]);
 pub(crate) const NO_FILL_TARGETS: &str =
     "Its component has no text, boolean, image or variant property";
 
+/// A table as every table dropdown and flyout lists it: *Products · 24 rows*,
+/// or *Products · not used* when no list or chart reads it.
+pub(crate) fn table_words(doc: &mastik_core::Document, set: &DataSet) -> String {
+    let count = if list::is_read(doc, set.id) {
+        crate::ui::count_as(set.table.rows.len(), "row", "rows")
+    } else {
+        "not used".to_string()
+    };
+    format!("{} \u{b7} {count}", set.name)
+}
+
+/// What a pick in [`table_combo`] asks for.
+pub(crate) enum TablePick {
+    /// *Own table*: a chart's table of its own.
+    Own,
+    Set(DataSetId),
+    /// *New table*.
+    New,
+    /// *From a file…*.
+    File,
+}
+
+/// The rows a [`table_combo`] offers beside the document's tables: *Own table*
+/// first, ticked when `own` is `Some(true)`, and *New table* before *From a
+/// file…*.
+#[derive(Default)]
+pub(crate) struct TableRows {
+    pub own: Option<bool>,
+    pub new: bool,
+}
+
+/// The dropdown of the document's tables on the List card, the Chart card and
+/// *Data tables*' toolbar: `width` wide whatever the tables are called
+/// ([`crate::ui::fitted_combo`]), its face the `TABLE` glyph and `face`, each
+/// table as [`table_words`] with `ticked` ticked, then `extra` and *From a
+/// file…*. Picking the ticked table answers nothing.
+pub(crate) fn table_combo(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    width: f32,
+    doc: &mastik_core::Document,
+    face: &str,
+    ticked: Option<DataSetId>,
+    extra: &TableRows,
+) -> Option<TablePick> {
+    use crate::ui;
+    let mut pick = None;
+    ui::fitted_combo(
+        ui,
+        salt,
+        width,
+        ui::glyph_and_text(icon::TABLE, face),
+        face,
+        |ui| {
+            ui::menu_rows(ui);
+            if let Some(on) = extra.own {
+                if ui
+                    .selectable_label(on, "Own table")
+                    .on_hover_text("A table of the chart's own, which nothing else reads")
+                    .clicked()
+                    && !on
+                {
+                    pick = Some(TablePick::Own);
+                }
+                ui::menu_sep(ui);
+            }
+            for d in doc.data_sets() {
+                let on = ticked == Some(d.id);
+                if ui.selectable_label(on, table_words(doc, d)).clicked() && !on {
+                    pick = Some(TablePick::Set(d.id));
+                }
+            }
+            if !doc.data_sets().is_empty() {
+                ui::menu_sep(ui);
+            }
+            if extra.new
+                && ui
+                    .selectable_label(false, ui::glyph_and_text(icon::PLUS, "New table"))
+                    .clicked()
+            {
+                pick = Some(TablePick::New);
+            }
+            if ui
+                .selectable_label(false, ui::glyph_and_text(icon::IMPORT, "From a file…"))
+                .clicked()
+            {
+                pick = Some(TablePick::File);
+            }
+        },
+    );
+    pick
+}
+
 /// Whether list `id` reads a data set with no rows.
 pub(crate) fn list_is_empty(doc: &mastik_core::Document, id: NodeId) -> bool {
     doc.get(id)
@@ -758,7 +851,7 @@ impl MastikApp {
     }
 
     /// Data set `set`'s table replaced with `parsed`'s and its link restamped to
-    /// `path`, undo step *Update list data* (*Relink list data* when `relink`);
+    /// `path`, undo step *Update table* (*Relink table* when `relink`);
     /// every list reading it follows in the step, each fill kept on the column
     /// of its name and dropped where the new table has none.
     pub(crate) fn replace_data_set_table(
@@ -825,9 +918,9 @@ impl MastikApp {
         );
         ops.splice(0..0, images);
         let (label, glyph) = match (relink, first_link) {
-            (true, true) => ("Link list data", icon::LINK_SIMPLE),
-            (true, false) => ("Relink list data", icon::LINK_SIMPLE),
-            (false, _) => ("Update list data", icon::IMPORT),
+            (true, true) => ("Link table", icon::LINK_SIMPLE),
+            (true, false) => ("Relink table", icon::LINK_SIMPLE),
+            (false, _) => ("Update table", icon::IMPORT),
         };
         self.session.name_step(label, glyph);
         if self.commit_edit(Transaction(ops)) {

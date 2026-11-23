@@ -531,18 +531,20 @@ in `collapsed_panels` (Marks, Axes, Values, Legend and Text start folded, `chart
   theme*) of every chart the card writes (`chart_each`), each over its own colours; it sits
   here rather than beside the palette dropdown because Series serves one chart only.
 - **Data** — led by the table the chart reads (`chart_table_dropdown`), the List card's Data
-  dropdown (`lists.md`, *The List card*) with a first row *Own table* (tooltip *A table of the
-  chart's own, which nothing else reads*), a separator, every data set in the document, read or
-  not (*name · N rows*), a separator and *From a file…*. The closed face shows *Own table*, the set's name, or
-  *Missing data* with the note *Its data set is not in this document: pick one*. Picking a set
+  dropdown, `list_data::table_combo` (`lists.md`, *The List card*), with a first row *Own table*
+  (`TableRows { own }`, tooltip *A table of the chart's own, which nothing else reads*), a
+  separator, every data set in the document (*name · N rows*, or *name · not used*), a separator
+  and *From a file…*. The closed face shows *Own table*, the set's name, or *Missing data* with
+  the note *Its table is not in this document: pick one*. Picking a set
   moves the chart onto it (`move_chart_to_set`, `Chart::reading`), undo step *Chart data*,
   status *The chart reads ‹name›*; *Own table* keeps the rows as they are and stops reading the set, which
   stays (`chart_own_table`), undo step *Chart data*; *From a file…* reads the picked file on the
   worker (`chart_data_dialog`, `Then::ChartData`) into a new data set named for the file, linked,
   and moves the chart onto it in one step. Then the summary (*3 series · 12 rows*, a Sankey's
   *8 flows*), *Edit data…* (an `ui::action_button`, tooltip *Open the chart's table over the
-  canvas*), the source line while linked (a chart reading a set shows the set's, the List card's
-  `data_set_link_rows`), the left-out line (*2
+  canvas*), the source line while linked (`chart_source_line`; a chart reading a set shows the
+  set's, the List card's `data_set_link_rows`; both painted by `chart_import::link_rows`), the
+  left-out line (*2
   values left out*, the reasons in its tooltip) or the refusal (*Too many marks: …*, *Flows loop
   back: …*) in the warning ink, and the mapping: *Category* (*X* for a scatter) or a Sankey's
   *From*, *To* and *Value* as dropdowns of columns.
@@ -638,7 +640,7 @@ marks, a list's fills, or plain). The import box serves *Make a list* and *Data 
 **Over a chart reading a data set** the window stays the chart's: its head note is *‹chart name› ·
 ‹set name›*, the grid is the chart's table with its role marks, *Use as category* and *Show as
 series*, and the linked line and read-only rule follow the set's link. A table edit writes the
-set (`commit_data_table`, a `SetDataSet`, undo step *Edit list data*), every list over it is made
+set (`commit_data_table`, a `SetDataSet`, undo step *Edit table*), every list over it is made
 again and the chart follows in the same step; a mapping-only edit is the chart's own `SetChart`.
 
 - **Head**: `settings::card_head_noted` — *Chart data*, the chart's layer name as the note, the

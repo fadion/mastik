@@ -944,6 +944,28 @@ fn with_an_overridden_instance(ctx: &egui::Context) -> MastikApp {
     app
 }
 
+/// A list made from the overridden instance over a new table, selected, its
+/// data window closed.
+fn with_a_list(ctx: &egui::Context) -> MastikApp {
+    let mut app = with_an_overridden_instance(ctx);
+    let inst = app.session.selection.single().expect("the instance");
+    app.make_list_new_table(inst);
+    app.close_chart_data();
+    let frame = app
+        .session
+        .selection
+        .single()
+        .expect("the list is selected");
+    assert!(
+        app.session
+            .doc
+            .get(frame)
+            .is_some_and(|n| n.list().is_some()),
+        "fixture: a list"
+    );
+    app
+}
+
 /// The rect's document saved to `scratch`, then the rect renamed and two more
 /// added, and the two compared: the bar and the changes card, three rows.
 fn compared(app: &mut MastikApp, scratch: &std::path::Path) {
@@ -1323,6 +1345,15 @@ fn sweep_on(theme: Theme) {
     app.close_chart_data();
     let found = opened(&ctx, &mut app, |_, a| a.open_data_tables());
     check("data tables", app, found);
+    let mut app = with_a_list(&ctx);
+    let found = inspector(&ctx, &mut app);
+    check("list card", app, found);
+    let mut app = with_a_list(&ctx);
+    let found = opened(&ctx, &mut app, |_, a| {
+        let id = a.session.selection.ids()[0];
+        a.open_list_data(id);
+    });
+    check("list data", app, found);
 
     let mut app = with_a_rect(&ctx);
     let found = opened(&ctx, &mut app, |_, a| a.stroke_menu = Some(0));

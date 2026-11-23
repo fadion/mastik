@@ -2354,42 +2354,38 @@ impl MastikApp {
                         let mut replace = false;
                         let one_layer =
                             roots.len() == 1 && variant::counterparts(doc, first, p).len() == 1;
-                        ui::combo_height(ui);
                         let face = match thumb {
                             Some(_) => ui::swatch_face_text(&shown),
                             None => ui::glyph_and_text(icon::IMAGE, &shown),
                         };
-                        let combo = egui::ComboBox::from_id_salt(("prop-image", first, p.id))
-                            .icon(ui::combo_chevron)
-                            .width(w)
-                            .selected_text(face)
-                            .show_ui(ui, |ui| {
-                                ui::menu_rows(ui);
-                                for id in &pictures {
-                                    let on = current.as_ref() == Some(id);
-                                    let words = crate::panels::picture_words(doc, id);
-                                    if ui.selectable_label(on, words).clicked() && !on {
-                                        pick = Some(id.clone());
+                        let salt = ("prop-image", first, p.id);
+                        let combo = ui::fitted_combo(ui, salt, w, face, &shown, |ui| {
+                            ui::menu_rows(ui);
+                            for id in &pictures {
+                                let on = current.as_ref() == Some(id);
+                                let words = crate::panels::picture_words(doc, id);
+                                if ui.selectable_label(on, words).clicked() && !on {
+                                    pick = Some(id.clone());
+                                }
+                            }
+                            ui::menu_sep(ui);
+                            // The file lands on one layer, so it waits for one.
+                            if super::inspector::menu_action(
+                                ui,
+                                one_layer,
+                                icon::SWAP,
+                                "Replace…",
+                                &|on| {
+                                    if on {
+                                        "Pick a file to show here, keeping the framing".into()
+                                    } else {
+                                        "Replacing works on one layer at a time".into()
                                     }
-                                }
-                                ui::menu_sep(ui);
-                                // The file lands on one layer, so it waits for one.
-                                if super::inspector::menu_action(
-                                    ui,
-                                    one_layer,
-                                    icon::SWAP,
-                                    "Replace…",
-                                    &|on| {
-                                        if on {
-                                            "Pick a file to show here, keeping the framing".into()
-                                        } else {
-                                            "Replacing works on one layer at a time".into()
-                                        }
-                                    },
-                                ) {
-                                    replace = true;
-                                }
-                            });
+                                },
+                            ) {
+                                replace = true;
+                            }
+                        });
                         if let Some(id) = thumb {
                             let paint = ui::Swatch::Picture { id, alpha: 1.0 };
                             let ground = theme::color::field();
