@@ -29,8 +29,8 @@ remains is below.
   - *One file per row, the rest.* The files are built (`export.md`, *Plan*). Left: *One PDF*, a
     page per row; a *Fill* fold overriding which column fills which target; the preview stepping
     through rows; reading picture files per row on the worker, as a list reads them beside a
-    linked table; missing pictures and overflowing rows reported on the status line
-    (`RowFilled::missing_pictures` is counted and read by nothing); and MCP `run_exports` taking
+    linked table; rows whose text overflows a fixed box counted on the status line, as missing
+    pictures are (*2 rows overflow their box*); and MCP `run_exports` taking
     `rows: {from, count}` for a per-row spec past the answer budget.
 
 ## Next · Editing parity

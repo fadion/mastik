@@ -2625,6 +2625,7 @@ impl MastikApp {
             asker,
             name,
             cancelled: _,
+            missing_pictures,
         } = d;
         // A report landing on another tab says which document it was for.
         let whose = match &asker {
@@ -2664,6 +2665,10 @@ impl MastikApp {
         let head = match skipped {
             0 => head,
             n => format!("{head} — {n} had no size"),
+        };
+        let head = match missing_pictures {
+            0 => head,
+            n => format!("{head} \u{b7} {} not found", ui::count(n, "picture")),
         };
         match failed {
             Some(e) => self.session.fail(format!("{whose}Could not write: {e}")),
@@ -3531,6 +3536,9 @@ pub(crate) struct Delivered {
     name: Option<String>,
     /// Cancelled before it wrote anything ([`MastikApp::cancel_exports`]).
     cancelled: bool,
+    /// The cells of *One file per row* files naming no picture the table or
+    /// the document holds, whose layers kept their own.
+    missing_pictures: usize,
 }
 
 impl Delivered {
@@ -3547,6 +3555,7 @@ impl Delivered {
             asker: None,
             name: None,
             cancelled: false,
+            missing_pictures: 0,
         }
     }
 
@@ -3621,11 +3630,14 @@ fn deliver(
 ) -> Delivered {
     let mut rendered: Vec<(String, Vec<u8>)> = Vec::with_capacity(files.len());
     let mut skipped = 0usize;
+    let mut missing_pictures = 0usize;
     for f in files {
         if cancel.cancelled() {
             return Delivered::cancelled();
         }
-        match mastik_export::plan::render(doc, resolved, f) {
+        let (bytes, filled) = mastik_export::plan::render_noted(doc, resolved, f);
+        missing_pictures += filled.missing_pictures;
+        match bytes {
             Some(bytes) => rendered.push((f.path.clone(), bytes)),
             // The one refusal both writers make: a subject with no bounds at
             // all — an empty group, a layer whose contents are all hidden.
@@ -3634,6 +3646,7 @@ fn deliver(
     }
     let mut out = Delivered {
         skipped,
+        missing_pictures,
         ..Delivered::empty(Default::default())
     };
     if rendered.is_empty() {

@@ -283,6 +283,12 @@ fn a_rows_file_is_drawn_from_a_filled_copy_and_the_document_is_untouched() {
         panic!("the text");
     };
     assert_eq!(content, "Placeholder", "the document keeps its own text");
+    let noted = |i: usize| mastik_export::plan::render_noted(&f.doc, &f.res, &planned[i]).1;
+    assert_eq!(
+        (noted(0).missing_pictures, noted(1).missing_pictures),
+        (1, 0),
+        "the report hears of row 1's missing picture"
+    );
 
     let (copy, _, filled) =
         mastik_export::plan::filled_copy(&f.doc, f.frame, &spec, 0).expect("a table");

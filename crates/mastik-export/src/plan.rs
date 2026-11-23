@@ -415,6 +415,16 @@ pub fn drawn_roots(doc: &Document, res: &Resolved, node: NodeId, spec: &ExportSp
 /// halfway through a drag cannot leak an uncommitted position into a file
 /// (§15 D264). Nothing here can check that.
 pub fn render(doc: &Document, res: &Resolved, file: &PlannedFile) -> Option<Vec<u8>> {
+    render_noted(doc, res, file).0
+}
+
+/// [`render`], and for a row's file what its fill left as it was
+/// ([`mastik_core::list::RowFilled`]), for the export's report.
+pub fn render_noted(
+    doc: &Document,
+    res: &Resolved,
+    file: &PlannedFile,
+) -> (Option<Vec<u8>>, mastik_core::list::RowFilled) {
     // A row's file is drawn from its own filled copy; a table gone since the
     // plan draws the layer as it is.
     if let Some(row) = file.row {
@@ -423,10 +433,15 @@ pub fn render(doc: &Document, res: &Resolved, file: &PlannedFile) -> Option<Vec<
             ..file.clone()
         };
         return match filled_copy(doc, file.node, &file.spec, row) {
-            Some((copy, res, _)) => render(&copy, &res, &plain),
-            None => render(doc, res, &plain),
+            Some((copy, res, filled)) => (render_plain(&copy, &res, &plain), filled),
+            None => (render_plain(doc, res, &plain), Default::default()),
         };
     }
+    (render_plain(doc, res, file), Default::default())
+}
+
+/// [`render`] for a file that is no row's.
+fn render_plain(doc: &Document, res: &Resolved, file: &PlannedFile) -> Option<Vec<u8>> {
     // Once at most: the copy holds no fill left to take off.
     if let Some((doc, res)) = for_export(doc, &drawn_roots(doc, res, file.node, &file.spec)) {
         return render(&doc, &res, file);
