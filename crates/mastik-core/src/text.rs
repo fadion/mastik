@@ -903,6 +903,20 @@ impl TextLayout {
         Rect::from_origin_size(self.origin.to_point(), self.size)
     }
 
+    /// Whether the lines of a text laid out at `sizing` run outside its fixed
+    /// box by more than `slack`, above its top or below its bottom. Type on a
+    /// rail has no baselines to measure and never does.
+    pub fn runs_outside(&self, sizing: &TextSizing, slack: f64) -> bool {
+        let TextSizing::Fixed(s) = sizing else {
+            return false;
+        };
+        self.warp.is_none()
+            && matches!(
+                (self.baselines.first(), self.baselines.last()),
+                (Some(first), Some(last)) if *last > s.height + slack || *first < -slack
+            )
+    }
+
     /// The node's box before trim — the full line box, at the local origin. Only
     /// drawn; every measurement reads [`Self::bounds`]. On a rail it is always equal
     /// to it: a bent box has no looser second rectangle.

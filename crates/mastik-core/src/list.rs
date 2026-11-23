@@ -1507,6 +1507,10 @@ pub struct RowFilled {
     /// Cells naming no picture the table or the document holds, whose layer or
     /// property kept its own.
     pub missing_pictures: usize,
+    /// Whether a shown text in the filled frame is cut, or runs outside its
+    /// fixed box, once laid out with the row's cells. Set by whoever lays the
+    /// copy out; [`fill_row`] leaves it `false`.
+    pub overflows: bool,
 }
 
 /// Fill `frame` in `doc` from row `row` (from 0) of `set` through `targets`

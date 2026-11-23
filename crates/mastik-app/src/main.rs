@@ -1810,9 +1810,16 @@ fn export_all(
     let mut written = Vec::new();
     let mut skipped = 0usize;
     let mut missing_pictures = 0usize;
+    let mut overflowing: Vec<(mastik_core::NodeId, usize)> = Vec::new();
     for f in &plan {
         let (data, filled) = mastik_export::plan::render_noted(&doc, &res, f);
         missing_pictures += filled.missing_pictures;
+        if let Some(row) = f.row
+            && filled.overflows
+            && !overflowing.contains(&(f.node, row))
+        {
+            overflowing.push((f.node, row));
+        }
         match data {
             Some(data) => written.push((dir.join(&f.path), data)),
             None => {
@@ -1838,9 +1845,14 @@ fn export_all(
     // `write_export`'s, a separate implementation of the same walk.
     let replaced = write_planned(&written)?;
     let report = export_all_report(written.len(), replaced, skipped, &dir);
-    Ok(match missing_pictures {
+    let report = match missing_pictures {
         0 => report,
         n => format!("{report} ({} not found)", ui::count(n, "picture")),
+    };
+    Ok(match overflowing.len() {
+        0 => report,
+        1 => format!("{report} (1 row overflows its box)"),
+        n => format!("{report} ({n} rows overflow their box)"),
     })
 }
 

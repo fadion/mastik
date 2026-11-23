@@ -220,9 +220,29 @@ pub fn filled_copy(
     let set = doc.data_set(spec.per_row.as_ref()?.table)?.clone();
     let targets = mastik_core::list::row_targets(doc, node, &set.table);
     let mut copy = doc.clone();
-    let filled = mastik_core::list::fill_row(&mut copy, node, &set, row, &targets);
+    let mut filled = mastik_core::list::fill_row(&mut copy, node, &set, row, &targets);
     let res = Resolved::rebuild(&copy);
+    filled.overflows = text_overflows(&copy, &res, node);
     Some((copy, res, filled))
+}
+
+/// Whether a shown text at or under `node` is cut, or runs outside its fixed
+/// box by more than a unit: a row whose long name no longer fits.
+fn text_overflows(doc: &Document, res: &Resolved, node: NodeId) -> bool {
+    let mut stack = vec![node];
+    while let Some(id) = stack.pop() {
+        let Some(n) = doc.get(id).filter(|n| n.visible()) else {
+            continue;
+        };
+        if let NodeKind::Text { sizing, .. } = n.kind()
+            && let Some(l) = res.text_layout(id)
+            && (l.truncated || l.runs_outside(sizing, 1.0))
+        {
+            return true;
+        }
+        stack.extend(n.children().iter().copied());
+    }
+    false
 }
 
 /// The files a component set writes under [`ExportSpec::each_variant`]: each

@@ -27,10 +27,8 @@ remains is below.
     on the played copy, but `PlayHost::commit` regenerates no list, so a list over a table it
     edits keeps its old rows.
   - *One file per row, the rest.* The files are built (`export.md`, *Plan*). Left: *One PDF*, a
-    page per row; a *Fill* fold overriding which column fills which target; the preview stepping
-    through rows; rows whose text overflows a fixed box counted on the status line, as missing
-    pictures are (*2 rows overflow their box*); and MCP `run_exports` taking
-    `rows: {from, count}` for a per-row spec past the answer budget.
+    page per row; a *Fill* fold overriding which column fills which target; and the preview
+    stepping through rows.
 
 ## Next · Editing parity
 

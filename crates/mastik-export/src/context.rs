@@ -1264,9 +1264,7 @@ fn walk(
                     "Its content does not fit: lines past its box or line limit are cut.".into(),
                 ));
             } else if let TextSizing::Fixed(s) = sizing
-                && l.warp.is_none()
-                && let (Some(first), Some(last)) = (l.baselines.first(), l.baselines.last())
-                && (*last > s.height + SLACK || *first < -SLACK)
+                && l.runs_outside(sizing, SLACK)
             {
                 issues.push(one(
                     "text_overflow",

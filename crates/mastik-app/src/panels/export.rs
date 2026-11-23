@@ -2627,6 +2627,7 @@ impl MastikApp {
             name,
             cancelled: _,
             missing_pictures,
+            overflowing_rows,
         } = d;
         // A report landing on another tab says which document it was for.
         let whose = match &asker {
@@ -2670,6 +2671,11 @@ impl MastikApp {
         let head = match missing_pictures {
             0 => head,
             n => format!("{head} \u{b7} {} not found", ui::count(n, "picture")),
+        };
+        let head = match overflowing_rows {
+            0 => head,
+            1 => format!("{head} \u{b7} 1 row overflows its box"),
+            n => format!("{head} \u{b7} {n} rows overflow their box"),
         };
         match failed {
             Some(e) => self.session.fail(format!("{whose}Could not write: {e}")),
@@ -3540,6 +3546,9 @@ pub(crate) struct Delivered {
     /// The cells of *One file per row* files naming no picture the table or
     /// the document holds, whose layers kept their own.
     missing_pictures: usize,
+    /// The *One file per row* rows whose text is cut or runs outside its
+    /// fixed box ([`mastik_core::list::RowFilled::overflows`]).
+    overflowing_rows: usize,
 }
 
 impl Delivered {
@@ -3557,6 +3566,7 @@ impl Delivered {
             name: None,
             cancelled: false,
             missing_pictures: 0,
+            overflowing_rows: 0,
         }
     }
 
@@ -3677,12 +3687,20 @@ fn deliver(
     let mut rendered: Vec<(String, Vec<u8>)> = Vec::with_capacity(files.len());
     let mut skipped = 0usize;
     let mut missing_pictures = 0usize;
+    // A row counts once however many files it writes.
+    let mut overflowing: Vec<(NodeId, usize)> = Vec::new();
     for f in files {
         if cancel.cancelled() {
             return Delivered::cancelled();
         }
         let (bytes, filled) = mastik_export::plan::render_noted(doc, resolved, f);
         missing_pictures += filled.missing_pictures;
+        if let Some(row) = f.row
+            && filled.overflows
+            && !overflowing.contains(&(f.node, row))
+        {
+            overflowing.push((f.node, row));
+        }
         match bytes {
             Some(bytes) => rendered.push((f.path.clone(), bytes)),
             // The one refusal both writers make: a subject with no bounds at
@@ -3693,6 +3711,7 @@ fn deliver(
     let mut out = Delivered {
         skipped,
         missing_pictures,
+        overflowing_rows: overflowing.len(),
         ..Delivered::empty(Default::default())
     };
     if rendered.is_empty() {

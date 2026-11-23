@@ -299,3 +299,31 @@ fn a_rows_file_is_drawn_from_a_filled_copy_and_the_document_is_untouched() {
         "and the layer keeps its fill"
     );
 }
+
+/// A row whose name no longer fits its fixed box is marked as overflowing;
+/// a short one is not.
+///
+/// flip: `plan::filled_copy` leaving `overflows` unset → fails at "the long name".
+#[test]
+fn a_row_whose_text_outgrows_its_fixed_box_is_marked() {
+    let long = "Ada Augusta King, Countess of Lovelace, who wrote the first program";
+    let mut f = fixture(&[["Ada", "", ""], [long, "", ""]]);
+    f.doc
+        .apply(&Transaction(vec![Operation::SetGeometry {
+            id: f.name,
+            geometry: mastik_core::GeometryPatch::TextSizing(mastik_core::TextSizing::Fixed(
+                Size::new(60.0, 16.0),
+            )),
+        }]))
+        .expect("a fixed box");
+    let spec = row_spec(f.table, None);
+    set_exports(&mut f, spec.clone());
+    let overflows = |row: usize| {
+        mastik_export::plan::filled_copy(&f.doc, f.frame, &spec, row)
+            .expect("a table")
+            .2
+            .overflows
+    };
+    assert!(!overflows(0), "a short name fits");
+    assert!(overflows(1), "the long name");
+}
