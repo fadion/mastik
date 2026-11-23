@@ -148,6 +148,8 @@ pub(crate) struct PreviewKey {
     node: NodeId,
     spec: ExportSpec,
     revision: u64,
+    /// The table row a *One file per row* preview is filled from.
+    row: Option<usize>,
 }
 
 /// One rendered preview, kept until something it was built from changes.
@@ -691,10 +693,16 @@ impl MastikApp {
             if !open {
                 return;
             }
+            // A row per file steps through its table's rows.
+            let stepping = self.preview_rows(&spec);
+            if let Some((rows, _)) = &stepping {
+                self.export_preview_row = self.export_preview_row.min(rows - 1);
+            }
             let key = PreviewKey {
                 node: subject,
                 spec: spec.clone(),
                 revision: self.session.revision(),
+                row: stepping.as_ref().map(|_| self.export_preview_row),
             };
             if let Some(p) = &mut self.export_preview {
                 land_icons(ui.ctx(), p);
@@ -728,12 +736,80 @@ impl MastikApp {
                 let at = egui::Rect::from_center_size(ground.center(), shown);
                 p.image(tex.id(), at, crate::thumbs::FULL_UV, egui::Color32::WHITE);
             }
+            if let Some((rows, marks)) = &stepping {
+                let row = self.export_preview_row;
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.0;
+                    let back = ui::icon_button(
+                        ui,
+                        icon::CARET_LEFT,
+                        ui::CONTROL_H,
+                        ui::CONTROL_GLYPH_PT,
+                        false,
+                        row > 0,
+                    )
+                    .on_hover_text("Previous row");
+                    let mut line = format!("Row {} of {rows}", row + 1);
+                    if let Some(mark) = marks.get(row).filter(|m| !m.is_empty()) {
+                        line = format!("{line} \u{b7} {mark}");
+                    }
+                    let w = ui.available_width() - ui::CONTROL_H;
+                    ui.add_sized(
+                        egui::vec2(w.max(0.0), ui::CONTROL_H),
+                        egui::Label::new(
+                            egui::RichText::new(line)
+                                .size(ui::CAPTION_PT)
+                                .color(theme::text::dim()),
+                        )
+                        .truncate(),
+                    );
+                    let next = ui::icon_button(
+                        ui,
+                        icon::CARET_RIGHT,
+                        ui::CONTROL_H,
+                        ui::CONTROL_GLYPH_PT,
+                        false,
+                        row + 1 < *rows,
+                    )
+                    .on_hover_text("Next row");
+                    if back.clicked() && row > 0 {
+                        self.export_preview_row = row - 1;
+                    }
+                    if next.clicked() && row + 1 < *rows {
+                        self.export_preview_row = row + 1;
+                    }
+                });
+            }
             ui.label(
                 egui::RichText::new(&preview.summary)
                     .size(ui::CAPTION_PT)
                     .color(theme::text::faint()),
             );
         });
+    }
+
+    /// For a row writing a file per table row whose table has rows: how many,
+    /// and each row's *Name by* cell (empty without a column), which the
+    /// preview's stepper shows beside the row number.
+    fn preview_rows(&self, spec: &ExportSpec) -> Option<(usize, Vec<String>)> {
+        let per_row = spec.per_row.as_ref()?;
+        let set = self.session.doc.data_set(per_row.table)?;
+        let rows = set.table.rows.len();
+        if rows == 0 {
+            return None;
+        }
+        let col = per_row.name_by.and_then(|c| set.table.index_of(c));
+        let marks = set
+            .table
+            .rows
+            .iter()
+            .map(|cells| {
+                col.and_then(|c| cells.get(c))
+                    .map(|cell| cell.trim().to_string())
+                    .unwrap_or_default()
+            })
+            .collect();
+        Some((rows, marks))
     }
 
     /// What a vector row's file cannot say exactly (`fidelity_clauses`), read off
@@ -810,7 +886,15 @@ impl MastikApp {
         if !key.spec.format.is_raster() {
             return None;
         }
-        let (doc, res) = (&self.session.doc, &self.session.resolved);
+        // A row's file is drawn from its row's filled copy, as `plan::render`
+        // draws it.
+        let filled = key.row.and_then(|row| {
+            mastik_export::plan::filled_copy(&self.session.doc, key.node, &key.spec, row)
+        });
+        let (doc, res) = match &filled {
+            Some((copy, res, _)) => (copy, res),
+            None => (&self.session.doc, &self.session.resolved),
+        };
         // The copy the file is drawn from, frames' fills left out as asked.
         let roots = mastik_export::plan::drawn_roots(doc, res, key.node, &key.spec);
         let stripped = mastik_export::plan::for_export(doc, &roots);
@@ -1899,6 +1983,7 @@ impl MastikApp {
             node,
             spec: spec.clone(),
             revision: self.session.revision(),
+            row: None,
         };
         if let Some((k, n)) = &self.export_merged
             && *k == key
@@ -4793,6 +4878,7 @@ mod tests {
                     node,
                     spec,
                     revision: rev,
+                    row: None,
                 },
             )
             .expect("the row has a subject")
@@ -5857,6 +5943,73 @@ mod code_export_tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A per-row preview draws the row it is keyed on, and the stepper reads
+    /// each row's *Name by* cell.
+    ///
+    /// flip: `build_export_preview` ignoring `PreviewKey::row` → fails at
+    /// "each row draws its own".
+    #[test]
+    fn a_per_row_preview_draws_the_row_it_steps_to() {
+        use mastik_core::list::DataSet;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = crate::app::MastikApp::headless(&ctx);
+        let page = app.session.doc.first_page();
+        let frame = app.session.doc.get(page).expect("the page").children()[0];
+        let table = app.session.ids.mint_data_set();
+        let mut t = mastik_core::chart::Table::default();
+        let column = t.next_column_id();
+        t.columns.push(mastik_core::chart::Column {
+            id: column,
+            name: "Name".into(),
+        });
+        let long = "A name long enough to fill the line with ink, and then some more of it";
+        t.rows = vec![vec!["I".into()], vec![long.into()]];
+        let name = app.session.ids.mint();
+        assert!(app.session.commit(Transaction(vec![
+            Operation::SetDataSet {
+                id: table,
+                set: Some(Box::new(DataSet {
+                    id: table,
+                    name: "Speakers".into(),
+                    table: t,
+                    source: None,
+                    pictures: Vec::new(),
+                })),
+            },
+            Operation::CreateNode {
+                id: name,
+                parent: frame,
+                index: 0,
+                kind: crate::control_audit::text_kind("Placeholder"),
+                transform: None,
+                name: Some("name".into()),
+            },
+        ])));
+        let spec = ExportSpec {
+            per_row: Some(PerRow {
+                name_by: Some(column),
+                ..PerRow::new(table)
+            }),
+            ..ExportSpec::new(ExportFormat::Png, ExportScale::Times(1.0))
+        };
+        let (rows, marks) = app.preview_rows(&spec).expect("a table with rows");
+        assert_eq!((rows, marks), (2, vec!["I".to_string(), long.to_string()]));
+        let mut summary = |row| {
+            let key = PreviewKey {
+                node: frame,
+                spec: spec.clone(),
+                revision: app.session.revision(),
+                row: Some(row),
+            };
+            app.build_export_preview(&ctx, key)
+                .expect("a preview")
+                .summary
+        };
+        let (first, second) = (summary(0), summary(1));
+        assert_ne!(first, second, "each row draws its own");
+    }
+
     /// A row writing a file per table row counts its files on the size line,
     /// and warns when its frame fills nothing, its table has no rows or is gone.
     ///
@@ -6283,6 +6436,7 @@ mod code_export_tests {
                 node: icon,
                 spec,
                 revision: app.session.revision(),
+                row: None,
             };
             let job = app
                 .build_export_preview(&ctx, key)

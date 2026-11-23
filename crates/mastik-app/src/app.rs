@@ -976,6 +976,9 @@ pub struct MastikApp {
     pub(crate) export_clipboard: Option<Vec<mastik_core::ExportSpec>>,
     /// The Export panel's rendered preview and what it was built from; one slot.
     pub(crate) export_preview: Option<crate::panels::ExportPreview>,
+    /// The table row, from 0, a *One file per row* preview draws; held to the
+    /// table's last row where it is read.
+    pub(crate) export_preview_row: usize,
     /// How many solid colours an SVG row's `currentColor` would merge, and what that
     /// was counted from: the settings card's warning, counted once per edit.
     pub(crate) export_merged: Option<(crate::panels::PreviewKey, usize)>,
@@ -2146,6 +2149,7 @@ impl MastikApp {
             export_menu: false,
             export_clipboard: None,
             export_preview: None,
+            export_preview_row: 0,
             export_merged: None,
             export_prefix_text: None,
             export_suffix_text: None,

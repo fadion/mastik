@@ -27,7 +27,7 @@ remains is below.
     on the played copy, but `PlayHost::commit` regenerates no list, so a list over a table it
     edits keeps its old rows.
   - *One file per row, the rest.* The files are built (`export.md`, *Plan*). Left: a *Fill* fold
-    overriding which column fills which target, and the preview stepping through rows.
+    overriding which column fills which target.
 
 ## Next · Editing parity
 
