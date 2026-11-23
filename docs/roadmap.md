@@ -17,6 +17,26 @@ remains is below.
   (`at_names` in `panels/prototype.rs`), but typing `{`, which is the form the field shows,
   suggests nothing. `{` should open the same list, narrowing as the name is typed and closing on
   `}`.
+- **Data tables beyond lists and charts.** Lists and charts are the only readers of a data set
+  today (`lists.md`); no verb, script, expression, export or *Fill with content* reads or writes
+  one, and a table is fixed in play save for the opened row. Five uses, largest gap first:
+  - *Tables in play.* Expressions reading a cell or a row count; a list filtered or sorted by a
+    variable (a search field narrowing it); actions adding, editing and deleting a row (a cart,
+    a to-do list, a form). The played copy holds the edited table, as it holds variables, and the
+    exported page plays it through `mastik-play`.
+  - *Export per row.* A frame and a table give one file per row (PNG, SVG, PDF): social cards,
+    certificates, badges. The list's fill maps a row onto an instance; a frame that is no
+    instance would fill its text layers by name from the columns. Each row is drawn on a
+    throwaway copy, never written to the document.
+  - *Tables for agents and scripts.* Verbs to read, write and add a table, and to make and edit a
+    list, through the one verb registry MCP, Command Mode and scripts share. `set_chart_data`
+    gives the chart a table of its own (`mcp.md`), so an agent editing a chart over a set leaves
+    the set's other readers behind; a set-aware form would write the set.
+  - *Fill with content from a table.* A *From table ▸ column* source in the box
+    (`content_fill`), so hand-built cards that are no instances take real rows, record by record
+    as `record_roots` groups them.
+  - *A list showing one fixed row.* A *Row N* choice beside *All*, *First* and *Opened row*, for
+    a stat card or a detail panel bound to one row in the document.
 
 ## Next · Editing parity
 
@@ -113,27 +133,6 @@ place, saved in the same shape so existing files load. It is matched in about 60
 ## Considerations
 
 Ideas worth weighing, not yet decided or scheduled.
-
-- **Data tables beyond lists and charts.** Lists and charts are the only readers of a data set
-  today (`lists.md`); no verb, script, expression, export or *Fill with content* reads or writes
-  one, and a table is fixed in play save for the opened row. Five uses, largest gap first:
-  - *Tables in play.* Expressions reading a cell or a row count; a list filtered or sorted by a
-    variable (a search field narrowing it); actions adding, editing and deleting a row (a cart,
-    a to-do list, a form). The played copy holds the edited table, as it holds variables, and the
-    exported page plays it through `mastik-play`.
-  - *Export per row.* A frame and a table give one file per row (PNG, SVG, PDF): social cards,
-    certificates, badges. The list's fill maps a row onto an instance; a frame that is no
-    instance would fill its text layers by name from the columns. Each row is drawn on a
-    throwaway copy, never written to the document.
-  - *Tables for agents and scripts.* Verbs to read, write and add a table, and to make and edit a
-    list, through the one verb registry MCP, Command Mode and scripts share. `set_chart_data`
-    gives the chart a table of its own (`mcp.md`), so an agent editing a chart over a set leaves
-    the set's other readers behind; a set-aware form would write the set.
-  - *Fill with content from a table.* A *From table ▸ column* source in the box
-    (`content_fill`), so hand-built cards that are no instances take real rows, record by record
-    as `record_roots` groups them.
-  - *A list showing one fixed row.* A *Row N* choice beside *All*, *First* and *Opened row*, for
-    a stat card or a detail panel bound to one row in the document.
 
 - **A lighter scripts player.** A file that runs a script carries about 2.6 MB more, gzipped,
   mostly the verb layer a script reaches the document through (`Host::verb` → `verbs::call`

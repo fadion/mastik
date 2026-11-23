@@ -132,7 +132,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **Comments in the player** — the comment tool is a non-goal, in the player as on the canvas.
 - **Hosted links** — the export is one HTML file the designer sends or hosts anywhere; Mastik runs no server.
 - **Data from a URL or formulas in a list's data set** — as for a chart's table (*Charts*, below): a data set holds values read from a local file (`design/lists.md`).
-- **Sorting or filtering a list's rows in the app** — a list draws its data set's rows in table order.
+- **Grouped or formula filters on a list** — a list's filter is a few column tests joined by one *All* or *Any*, and its sort a column and one *Then by*; anything past that is a script.
 
 ## Charts
 
