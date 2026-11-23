@@ -395,7 +395,7 @@ pub fn touched(doc: &Document, tx: &Transaction, dirty: &DirtySet) -> Vec<NodeId
 }
 
 /// A cell read as a boolean: true, yes, on or 1 is shown; false, no, off, 0 or
-/// empty is hidden; anything else leaves the property as the template has it.
+/// empty is hidden; anything else is `None`, and the row takes the main's value.
 pub fn cell_bool(cell: &str) -> Option<bool> {
     match cell.trim().to_ascii_lowercase().as_str() {
         "true" | "yes" | "on" | "1" | "y" => Some(true),
@@ -866,7 +866,9 @@ pub fn regenerate<E>(
         set.table.rows.get(row)?.get(i).map(|c| c.trim())
     };
 
-    // Each row switched to the variant its cells name, from the variant it shows.
+    // Each row switched to the variant its cells name. A filled property whose
+    // cell names no value takes the default variant's, not the one the row was
+    // captured showing: that is row 1's last fill, so it would follow history.
     let mut switches = Vec::new();
     for (root, row) in &roots {
         let Some(main) = crate::component::main_of(doc, *root) else {
@@ -876,6 +878,10 @@ pub fn regenerate<E>(
             continue;
         };
         let props = variant_props(doc, *root);
+        let default: Option<Vec<String>> = crate::variant::set_of(doc, main)
+            .and_then(|s| crate::kit::default_variant(doc, s))
+            .and_then(|d| doc.get(d))
+            .map(|d| d.variant().to_vec());
         let mut want = values.clone();
         for f in &list.fill {
             let Target::Variant(name) = &f.target else {
@@ -887,10 +893,13 @@ pub fn regenerate<E>(
             ) else {
                 continue;
             };
-            if props[i].values.iter().any(|v| v == c)
-                && let Some(w) = want.get_mut(i)
-            {
-                *w = c.to_string();
+            let value = if props[i].values.iter().any(|v| v == c) {
+                Some(c)
+            } else {
+                default.as_ref().and_then(|d| d.get(i)).map(String::as_str)
+            };
+            if let (Some(v), Some(w)) = (value, want.get_mut(i)) {
+                *w = v.to_string();
             }
         }
         if want == values {
@@ -907,7 +916,8 @@ pub fn regenerate<E>(
     }
     step(doc, ids, switches)?;
 
-    // Then each row's text, boolean and image properties.
+    // Then each row's text, boolean and image properties. A cell that reads as
+    // no value resets the property to the main's, for the reason above.
     let mut props = Vec::new();
     for (root, row) in &roots {
         let offered = crate::variant::instance_properties(doc, *root);
@@ -920,19 +930,15 @@ pub fn regenerate<E>(
                 continue;
             };
             let value = match p.kind {
-                PropKind::Text => PropValue::Text(c.to_string()),
-                PropKind::Boolean => match cell_bool(c) {
-                    Some(b) => PropValue::Boolean(b),
-                    None => continue,
-                },
-                // A cell naming no picture leaves the row the template's.
-                PropKind::Image => match set.picture(doc, c) {
-                    Some(id) => PropValue::Image(id),
-                    None => continue,
-                },
+                PropKind::Text => Some(PropValue::Text(c.to_string())),
+                PropKind::Boolean => cell_bool(c).map(PropValue::Boolean),
+                PropKind::Image => set.picture(doc, c).map(PropValue::Image),
                 PropKind::Swap | PropKind::Nested => continue,
             };
-            props.extend(crate::variant::set_property(doc, &[*root], p, &value));
+            props.extend(match value {
+                Some(v) => crate::variant::set_property(doc, &[*root], p, &v),
+                None => crate::variant::reset_property(doc, &[*root], p),
+            });
         }
     }
     step(doc, ids, props)?;

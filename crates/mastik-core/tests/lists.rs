@@ -137,6 +137,17 @@ fn commit(history: &mut History, doc: &mut Document, ids: &mut IdSource, tx: Tra
     list::regenerate_in_history(history, doc, ids, &lists, &mut dirty).expect("regenerates");
 }
 
+/// Regenerate list `l` once more as an edit of its description would, the
+/// description left as it is.
+fn regenerate_again(history: &mut History, doc: &mut Document, ids: &mut IdSource, l: NodeId) {
+    let same = doc.get(l).unwrap().list().unwrap().clone();
+    let tx = Transaction(vec![Operation::SetList {
+        id: l,
+        list: Some(Box::new(same)),
+    }]);
+    commit(history, doc, ids, tx);
+}
+
 /// The text each row of list `l` draws, the template first.
 fn titles(doc: &Document, l: NodeId) -> Vec<String> {
     let n = doc.get(l).unwrap();
@@ -265,6 +276,23 @@ fn rows_follow_the_data_the_mode_and_the_template() {
     assert_eq!(titles(&doc, l), ["A", "B", "C"]);
 }
 
+/// A boolean cell that reads as neither shown nor hidden gives its row the
+/// main's value, not the one row 1 last filled into the template.
+/// flip: `regenerate` skipping the property on an unread cell → fails at "made again".
+#[test]
+fn an_unread_boolean_cell_takes_the_mains_value() {
+    let (mut doc, mut ids, page) = blank();
+    let (_, inst) = row_component(&mut doc, &mut ids, page);
+    let set = data(&mut ids, &[("A", "0"), ("B", "maybe")]);
+    let res = Resolved::rebuild(&doc);
+    let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).unwrap();
+    let mut history = History::default();
+    commit(&mut history, &mut doc, &mut ids, tx);
+    assert_eq!(badges(&doc, l), [false, true]);
+    regenerate_again(&mut history, &mut doc, &mut ids, l);
+    assert_eq!(badges(&doc, l), [false, true], "made again");
+}
+
 /// A list saves and loads with its data set, and a duplicated list keeps its
 /// copies under the new ids.
 #[test]
@@ -295,9 +323,10 @@ fn a_list_saves_and_duplicates() {
 }
 
 /// A column named after a variant property switches each row to the variant
-/// its cell names, and a cell naming no variant leaves the row as the template
-/// shows it.
-/// flip: `regenerate` skipping the variant pass → fails at "switches".
+/// its cell names, and a cell naming no variant takes the default variant's
+/// value, however many times the list was made before.
+/// flip: `regenerate` skipping the variant pass → fails at "switches"; an
+/// unmatched cell keeping the captured variant → fails at "the default variant".
 #[test]
 fn a_variant_column_switches_each_row() {
     let (mut doc, mut ids, page) = blank();
@@ -375,6 +404,17 @@ fn a_variant_column_switches_each_row() {
         list::unmatched_variant_cells(&doc, l),
         [(prop.name.clone(), 2, 0, "Nope".to_string())],
         "the cell the data window marks"
+    );
+
+    // Made again, the template now shows row 1's Due; the unmatched row
+    // still takes the default variant, not the template's last fill.
+    assert_eq!(mastik_core::kit::default_variant(&doc, set), Some(mains[0]));
+    regenerate_again(&mut history, &mut doc, &mut ids, l);
+    let copies = doc.get(l).unwrap().list().unwrap().copies.clone();
+    assert_eq!(
+        mastik_core::component::main_of(&doc, copies[1]),
+        Some(mains[0]),
+        "the default variant"
     );
 }
 
@@ -537,9 +577,10 @@ fn pictures(doc: &Document, l: NodeId) -> Vec<mastik_core::ImageId> {
 
 /// An image property drives the picture of its layer's image fill, keeping the
 /// fill's framing; a list's column fills it from a cell naming a picture's id
-/// or a cell the data set read a picture for, and a cell naming none leaves the
-/// template's picture and is reported.
-/// flip: `regenerate` skipping the `PropKind::Image` arm → fails at "by id".
+/// or a cell the data set read a picture for, and a cell naming none takes the
+/// main's picture, however many times the list was made before, and is reported.
+/// flip: `regenerate` skipping the `PropKind::Image` arm → fails at "by id"; an
+/// unmatched cell leaving the captured picture → fails at "made again".
 #[test]
 fn a_column_of_pictures_fills_an_image_property() {
     let (mut doc, mut ids, page) = blank();
@@ -627,7 +668,13 @@ fn a_column_of_pictures_fills_an_image_property() {
     let shown = pictures(&doc, l);
     assert_eq!(shown[0], b, "by id");
     assert_eq!(shown[1], c, "by the data set's read");
-    assert_eq!(shown[2], a, "the template's own");
+    assert_eq!(shown[2], a, "the main's own");
+    regenerate_again(&mut history, &mut doc, &mut ids, l);
+    assert_eq!(
+        pictures(&doc, l),
+        [b.clone(), c.clone(), a.clone()],
+        "made again"
+    );
     assert_eq!(
         list::unmatched_pictures(&doc, l),
         [("Photo".to_string(), vec!["missing.png".to_string()])]

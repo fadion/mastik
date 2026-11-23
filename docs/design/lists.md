@@ -74,11 +74,14 @@ list's description as it drops a misplaced one.
 
 - **Columns fill component properties, not any layer's field**: a text property takes the cell,
   trimmed; a boolean takes `list::cell_bool` (true, yes, on, 1, y shown; false, no, off, 0, n or
-  empty hidden; anything else leaves the property as the template has it); an image property
+  empty hidden; anything else gives the row the main's value); an image property
   takes the picture the cell names (*Picture columns*); a variant column switches the copy to the
   variant whose value the cell names. Swap and nested properties are not filled.
-- **A variant cell naming no value** of its property leaves that property where the template
-  has it, as does a combination of values no variant of the set has.
+- **A cell naming no value takes the component's own**: a variant cell naming no value of its
+  property gives the row the default variant's value of it, and an unread boolean or picture
+  cell resets the property to the main's. Never the template's: row 1 fills the template, so
+  what it shows is the last fill, and the result would depend on history. A combination of
+  values no variant of the set has leaves the row's variant as it was captured.
   `list::unmatched_variant_cells` answers each such cell of the drawn rows (property, row,
   column, cell); the List card counts them (`list::unmatched_variants`, built from it) and the
   data window draws them in the warning ink.
@@ -95,7 +98,7 @@ list's description as it drops a misplaced one.
   picture `pictures` maps the trimmed cell to, else the document's picture of that id. A document
   picture has no name of its own, so there is nothing else to name it by; a web address is not
   read.
-- **A cell naming nothing leaves the template's picture.** The List card warns under that fill
+- **A cell naming nothing gives the row the main's picture.** The List card warns under that fill
   row (`list::unmatched_pictures`, *Fill*, below).
 - **The app reads the files** (`list_data::read_pictures`): only a plain relative path beside the
   data file (no absolute path, no `..`), only in the rows a list can draw (`MAX_DRAWN`), each file
