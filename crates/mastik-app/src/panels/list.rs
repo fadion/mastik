@@ -839,6 +839,42 @@ mod tests {
         );
     }
 
+    /// *Reset all* on a list's template takes back its other overrides and
+    /// leaves each filled property at its row's cell, since the list is made
+    /// again in the reset's step; so it stays offered there.
+    /// flip: `list::touched` not counting a list whose template the commit
+    /// dirtied → fails at "refilled".
+    #[test]
+    fn reset_all_on_a_template_keeps_its_filled_values() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let (l, _) = listed(&mut app, inst, &["Linen", "Wool"]);
+        verb(
+            &mut app,
+            "set_opacity",
+            json!({ "nodes": [inst.to_wire()], "opacity": 0.5 }),
+        );
+        assert_eq!(app.session.doc.get(inst).unwrap().opacity(), 0.5, "fixture");
+        app.session.selection.set_one(inst);
+        let depth = app.session.history.undo_depth();
+        app.reset_selection(mastik_core::reset::Kind::All);
+        let doc = &app.session.doc;
+        assert_eq!(
+            doc.get(inst).unwrap().opacity(),
+            1.0,
+            "the override taken back"
+        );
+        let text = mastik_core::build::subtree_nodes(doc, &[inst])
+            .into_iter()
+            .find_map(|id| match doc.get(id)?.kind() {
+                NodeKind::Text { content, .. } => Some(content.clone()),
+                _ => None,
+            });
+        assert_eq!(text.as_deref(), Some("Linen"), "refilled");
+        assert_eq!(doc.get(l).unwrap().list().unwrap().copies.len(), 1);
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
+    }
+
     /// An edit in the data window writes the data set in one step, every list
     /// over it made again, a fill on a deleted column dropped; the data set is
     /// renamed past a name another has.
