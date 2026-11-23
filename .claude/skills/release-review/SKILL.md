@@ -1,6 +1,6 @@
 ---
 name: release-review
-description: Review everything that changed since the last release, autonomously, before tagging — takes the commit range (default last tag..HEAD, or one you name), cuts it into slices, and runs the whole multi-pass subagent review end to end without checkpoints. Takes an optional subagent count: how many slice passes run in parallel (the slicing never changes); "no subagents" runs the review in this session. Use when the user asks to review the changes since the last release/tag, review what's about to ship, "review before I release", "review v0.1.0..HEAD", or asks for a pre-release audit. Produces a triaged ledger under review/ and stops there — it fixes nothing and releases nothing. For the periodic whole-codebase review use codebase-review; for the working diff use /code-review.
+description: Review everything that changed since the last release, autonomously, before tagging — takes the commit range (default last tag..HEAD, or one you name), cuts it into slices, and runs the whole multi-pass subagent review end to end without checkpoints. Takes an optional subagent count: how many slice passes run in parallel (the slicing never changes); "no subagents" runs the review in this session. Use when the user asks to review the changes since the last release/tag, review what's about to ship, "review before I release", "review v0.1.0..HEAD", or asks for a pre-release audit. Produces a triaged ledger under review/ and stops there — it fixes none of its findings and releases nothing; a minor red gate in its Phase 0 it repairs and commits first, rather than stopping. For the periodic whole-codebase review use codebase-review; for the working diff use /code-review.
 ---
 
 # Review a release range
@@ -140,8 +140,16 @@ tree the release will reject:
    that path is **unverified** rather than quietly proceeding.
 9. Record `git rev-parse HEAD` and the base SHA at the top of the ledger.
 
-**A failure here is one of the run's few hard stops.** Report it and stop — don't fix it, and don't
-review past it. A red tree isn't shippable, so a review of it answers a question nobody asked.
+**A red gate is repaired, or else the run stops. It is never reviewed past.** A red tree isn't
+shippable, so a review of it answers a question nobody asked. The rule is
+`../codebase-review/SKILL.md`'s *Repairing the ground*, followed as written, so the two skills
+keep one copy of it. In short: diagnose to a known cause, then repair a small, local fix that
+needs no decision and stays out of Bucket 3. Flip-check a re-tuned test, and commit the repair as
+its own change before step 9. Stop and report anything bigger. A step-1 failure (a dirty tree) is
+never repaired: that is the user's work.
+
+The repair commit lands on `main` inside the range under review, so step 9 records the head
+*after* it. The report names that commit, because the tag will ship it.
 
 Two environment facts that have already cost a pass: on Windows, stop a running `mastik.exe` before
 building; and **never launch the GUI** (CLAUDE.md) — it grabs focus and the mouse. A pass with a
@@ -346,9 +354,9 @@ The periodic review's attended set is replaced, not dropped:
 | Triage checkpoints | One delegated final triage; an interim one only past ~60 open findings |
 | Critical escalation breaks the loop | Recorded, marked in the ledger, and **led with in the final report** — the run is one session, so stopping buys nothing that reporting doesn't. An introduced Critical additionally opens the triage verdict |
 
-**The only hard stops:** a Phase 0 ground failure; HEAD moving mid-run; a pass degrading twice; a
-ledger integrity failure that a snapshot restore doesn't fix. Everything else is recorded and the
-run continues.
+**The only hard stops:** a Phase 0 ground failure that *Repairing the ground* does not cover;
+HEAD moving mid-run (after the repair commit); a pass degrading twice; a ledger integrity failure
+that a snapshot restore doesn't fix. Everything else is recorded and the run continues.
 
 ## Resuming
 
@@ -466,7 +474,8 @@ Close by naming the two follow-ups the review deliberately doesn't do: a writer 
 ## Hard rules
 
 - **Edit no source file** — this session or any subagent. Findings only. Fixing is a separate
-  session's job and mixing them loses the ledger and the ranking.
+  session's job and mixing them loses the ledger and the ranking. The one exception is Phase 0's
+  ground repair, which is committed before the head SHA is recorded and never during a pass.
 - **Never mutate any ledger from a shell script** (reference §5, and CLAUDE.md's splicing ban);
   snapshot before every pass; append, never rewrite.
 - **The verification gate is not optional** (reference §3). This codebase is deliberately

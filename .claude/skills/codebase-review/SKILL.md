@@ -113,8 +113,55 @@ Before Pass 0, verify in order (these are the project's own gates, in CLAUDE.md'
    commit the round opened at, not a frozen one — and say there that the tree is deliberately not
    frozen, so that a reader a month later does not mistake a drifted line ref for a wrong finding.
 
-**If any of these fails, stop and report.** Don't fix them uninvited and don't review anyway — the
-user decides.
+**If a gate fails, repair the ground when the repair is small and safe; otherwise stop and
+report.** Never review on top of a red gate. *Repairing the ground*, below, sets out the line
+between the two.
+
+### Repairing the ground
+
+A red gate is usually a minor issue: formatting drift, a clippy lint, a broken doc link, or a
+test that is flaky or whose budget is too tight. Stopping a whole review for one of these costs
+the user a round-trip and buys nothing, so the session repairs it, commits the repair, and starts
+the review on the repaired tree. This is the one source edit a review makes, and it happens
+before Pass 0. Pass 0 onwards is still findings only.
+
+1. **Diagnose before you touch anything, and write down the evidence.** First establish whether the
+   failure is deterministic. A failed test gate is re-run with `--no-fail-fast` first, because
+   cargo stops at the first failing target and hides the rest. Then re-run the failing target
+   alone, several times, in both spellings (`--workspace` and `-p <crate>`, since they compile
+   different code). Then isolate the failing test. Then find the cause with a measurement rather than a guess — a throwaway probe test is
+   fine, deleted afterwards. A repair is allowed only once the cause is **known**. "It passed on
+   re-run" is a classification, not a cause.
+2. **Repair it when all of these hold:**
+   - the cause is known;
+   - the fix is local: one test or one item, about 40 changed lines or fewer;
+   - the fix needs no design decision;
+   - the fix touches none of Bucket 3's areas (reference §6): the document write path, migration,
+     crash recovery, the library store, credentials, or anything destructive.
+
+   In practice that covers formatting, mechanical lints, doc links, a test fixture or budget that
+   is wrong while the product path is sound, and a small product bug fixed test-first. For a test
+   whose budget is wrong, **keep what the test proves**. Re-tune it so it still fails on the
+   regression it exists to catch, and **flip-check that** in every profile it runs in (AGENTS.md).
+   Loosening an assertion until it goes green is not a repair.
+3. **Stop and report instead** when any of these hold:
+   - the cause is still unknown after the diagnosis;
+   - the fix touches a Bucket 3 area, or needs a decision;
+   - the failure is in vendored code;
+   - the tree was dirty before the review started (that is the user's work, not the ground);
+   - the repair's own re-run fails;
+   - a third gate needs repairing (by then the ground is not "minor").
+4. **Verify the repair.** Re-run every gate the change can reach — `fmt`, clippy on the edited
+   crate in both spellings, the doc gate if a doc comment moved, and the failing target. Run the
+   failing target ~20 times if it was intermittent. Then re-run the test bar from the top: a
+   suite that stopped at the first failure never ran the targets after it.
+5. **Commit it as its own change**, through the `commit` skill's flow. Stage the specific files,
+   use a Conventional Commits subject (`fix(<scope>): …` or `test(<scope>): …`), and in the body say
+   what was red, the cause, and how it was verified. Invoking the review is the ask for **this
+   commit only**. The review commits nothing else, and it does not push.
+6. **Record it.** The ledger header lists each repair: the gate, the cause, the commit SHA, and
+   the flip-check. The final report repeats the list in one line. The review then records that
+   commit as its starting SHA.
 
 Two environment facts that will otherwise cost a pass:
 
@@ -384,8 +431,9 @@ escalated Critical, or a pass that degraded twice. Don't keep going yourself unl
 ## Hard rules (both skills, every pass)
 
 - **Edit no source file.** This phase produces findings; fixing is a separate phase with its own
-  risk buckets. A session that starts fixing loses the ledger and the ranking. A headless probe is
-  the one exception and it must be removed before the pass returns.
+  risk buckets. A session that starts fixing loses the ledger and the ranking. There are two
+  exceptions. A headless probe, which must be removed before the pass returns. And Phase 0's
+  ground repair (*Repairing the ground*), which is committed before Pass 0 and never during a pass.
 - **A Critical is escalated, not queued** (reference §3) — written up, surfaced in that pass's
   report immediately, and fixed on `main` (there is no frozen tag to branch from, and CLAUDE.md
   wants small commits rather than a branch). The fix is a separate act from the review: the pass
