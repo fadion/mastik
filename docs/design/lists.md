@@ -179,7 +179,9 @@ list's description as it drops a misplaced one.
   file*), headed *Make a list*, with a *Fill · ‹component›* section after the preview: one
   labelled dropdown per property the List card fills (three to a row, scrolling past six),
   each starting on the column of its name (`fill_by_name`), *None* offered. The fill is held by
-  column name, so the header switch's re-read keeps it where the name survives. *Make list*
+  column name, so the header switch's re-read keeps it where the name survives; a choice the
+  re-read table lacks shows *None* and fills nothing, and returns when the header is switched
+  back. *Make list*
   commits a new data set named for the file (`list::free_name` numbering a taken name), linked to
   it, and the list with that fill, one step.
 - **Dropping a data file on an instance**: a single CSV, TSV or JSON file dragged over an instance

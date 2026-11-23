@@ -738,9 +738,10 @@ mod tests {
     }
 
     /// *Relink…* reads the picked file into the same data set, so every list
-    /// over it follows in one step, each fill kept on the column of its name.
-    /// flip: `replace_data_set_table` skipping the fills' remap → fails at "kept
-    /// by name", the new file's `title` column having another id.
+    /// over it follows in one step, and a reordered file's columns keep their
+    /// ids by name, which a chart on the set reads them by.
+    /// flip: `replace_data_set_table` skipping `take_ids_by_name` → fails at
+    /// "the old id"; the fills' remap is a second defence the flip leaves standing.
     #[test]
     fn relink_reads_into_the_data_set_for_every_list() {
         let ctx = egui::Context::default();
@@ -794,6 +795,11 @@ mod tests {
             .find(|c| c.name == "title")
             .unwrap()
             .id;
+        assert_eq!(
+            title,
+            ColumnId(0),
+            "the old id, though the file moved it second"
+        );
         for list_id in [l, l2] {
             let x = doc.get(list_id).unwrap().list().unwrap();
             assert_eq!(x.copies.len(), 2, "every list over it follows");

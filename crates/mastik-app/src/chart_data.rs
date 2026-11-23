@@ -706,6 +706,7 @@ impl MastikApp {
                 name = format!("{name} \u{b7} {}", s.name);
                 Chart {
                     source: s.source.clone(),
+                    table: s.table.clone(),
                     ..chart.clone()
                 }
             }
@@ -714,7 +715,7 @@ impl MastikApp {
         let w = W.min(canvas.width() - 32.0).max(320.0);
         let linked = shown.source.is_some();
         // Each column's series swatch, a binding read where the chart is.
-        let swatches: Vec<Option<egui::Color32>> = chart
+        let swatches: Vec<Option<egui::Color32>> = shown
             .table
             .columns
             .iter()
@@ -763,7 +764,7 @@ impl MastikApp {
                 (Act::Table(t), None) => self.commit_table(id, &chart, t),
                 // A mapping edit is the chart's; a table edit is the set's, and
                 // the chart's mapping follows it at the commit.
-                (Act::Chart(c), Some(s)) if c.table != chart.table => {
+                (Act::Chart(c), Some(s)) if c.table != shown.table => {
                     self.commit_data_table(s, c.table);
                 }
                 (Act::Chart(c), _) => self.commit_chart(

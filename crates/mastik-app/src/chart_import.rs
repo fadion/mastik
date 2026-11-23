@@ -1095,11 +1095,18 @@ impl MastikApp {
 
     /// The instance a data file dropped at `p` would make a list of: the
     /// topmost layer there, when it is or sits in an instance `list::why_not`
-    /// takes.
+    /// takes and no chart is under the pointer, since a chart takes the drop
+    /// first ([`Self::drop_chart_data`]); the canvas's ring asks the same.
     pub(crate) fn list_drop_target(&self, p: mastik_core::kurbo::Point) -> Option<NodeId> {
         let doc = &self.session.doc;
-        let top = *mastik_core::hit_test(&self.session.resolved, doc, self.session.page, p, 0.0)
-            .first()?;
+        let hits = mastik_core::hit_test(&self.session.resolved, doc, self.session.page, p, 0.0);
+        if hits
+            .iter()
+            .any(|id| doc.get(*id).is_some_and(|n| n.chart().is_some()))
+        {
+            return None;
+        }
+        let top = *hits.first()?;
         let root = mastik_core::component::instance_root(doc, top)?;
         mastik_core::list::why_not(doc, root)
             .is_none()
@@ -1344,15 +1351,6 @@ fn fill_section(ui: &mut egui::Ui, l: &mut ListImport, table: &chart::Table) {
                 ui::selection_note(ui, crate::list_data::NO_FILL_TARGETS);
                 return;
             }
-            // A column the table no longer has (the header switched) fills nothing.
-            for (_, _, _, col) in &mut l.rows {
-                if col
-                    .as_ref()
-                    .is_some_and(|c| !table.columns.iter().any(|x| x.name == *c))
-                {
-                    *col = None;
-                }
-            }
             let gap = ui::CARD_COL_GAP;
             let cell = ((W - 2.0 * PAD) - 2.0 * gap) / 3.0;
             let rows_h = ui::CONTROL_H + 18.0;
@@ -1368,7 +1366,13 @@ fn fill_section(ui: &mut egui::Ui, l: &mut ListImport, table: &chart::Table) {
                                 ui.allocate_ui(egui::vec2(cell, rows_h), |ui| {
                                     ui.set_width(cell);
                                     ui::labelled(ui, name, |ui| {
-                                        let shown = col.clone().unwrap_or_else(|| "None".into());
+                                        // A choice the table lacks (the header switched off)
+                                        // shows and fills nothing, and comes back with it.
+                                        let present = col
+                                            .clone()
+                                            .filter(|c| table.columns.iter().any(|x| x.name == *c));
+                                        let shown =
+                                            present.clone().unwrap_or_else(|| "None".into());
                                         ui::combo_height(ui);
                                         egui::ComboBox::from_id_salt((
                                             "list-import-fill",
@@ -1382,7 +1386,7 @@ fn fill_section(ui: &mut egui::Ui, l: &mut ListImport, table: &chart::Table) {
                                             |ui| {
                                                 ui::menu_rows(ui);
                                                 if ui
-                                                    .selectable_label(col.is_none(), "None")
+                                                    .selectable_label(present.is_none(), "None")
                                                     .clicked()
                                                 {
                                                     *col = None;

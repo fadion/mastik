@@ -286,8 +286,10 @@ impl MastikApp {
                 path,
                 linkable,
             } => {
-                if list::why_not(&self.session.doc, instance).is_none() {
-                    self.open_list_import_box(instance, path, linkable, parsed);
+                match list::why_not(&self.session.doc, instance) {
+                    None => self.open_list_import_box(instance, path, linkable, parsed),
+                    // The instance stopped qualifying while the file was read.
+                    Some(why) => self.session.info(why),
                 }
             }
             Then::ListData {
@@ -352,12 +354,13 @@ impl MastikApp {
                 })
             })
             .collect();
-        let name = list::name_for_path(path);
+        // The status line names the set as made, numbered past a taken name.
+        let name = list::free_name(&self.session.doc, &list::name_for_path(path));
         let columns = picture_columns_of(&self.session.doc, instance, &fill);
         let (images, pictures) = read_pictures(&self.session.doc, dir, &table, &columns);
         let set = DataSet {
             id: self.session.ids.mint_data_set(),
-            name: list::free_name(&self.session.doc, &name),
+            name: name.clone(),
             table,
             source: link,
             pictures,
@@ -771,7 +774,10 @@ impl MastikApp {
         let header = now.source.as_ref().and_then(|s| s.header);
         // A set never linked (*New table*) is linked by the window's *Import…*.
         let first_link = relink && now.source.is_none();
-        let table = parsed.read.table.clone();
+        // Every reader keeps its columns by id: a chart on its own set does, so
+        // the re-read columns take the old ids by name.
+        let mut table = parsed.read.table.clone();
+        table.take_ids_by_name(&now.table);
         let mut ops = Vec::new();
         let mut lost = 0;
         let mut columns = Vec::new();

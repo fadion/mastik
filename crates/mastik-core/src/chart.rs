@@ -230,6 +230,30 @@ impl Table {
             .map_or(0, |m| m.wrapping_add(1));
         free_column_id(&taken, past)
     }
+
+    /// This freshly read table's columns renumbered against `old`: a column
+    /// whose name `old` also has takes that column's id, the rest ids `old`
+    /// never used. Answers the ids kept. A re-read file numbers its columns by
+    /// position, so a reordered file would otherwise move every reader onto the
+    /// wrong column.
+    pub fn take_ids_by_name(&mut self, old: &Table) -> FxHashSet<ColumnId> {
+        let next = old.next_column_id().0.max(self.next_column_id().0);
+        let mut taken: FxHashSet<ColumnId> = old.columns.iter().map(|c| c.id).collect();
+        let mut kept = FxHashSet::default();
+        for c in &mut self.columns {
+            let same = old
+                .columns
+                .iter()
+                .find(|o| o.name == c.name && !kept.contains(&o.id));
+            c.id = match same {
+                Some(o) => o.id,
+                None => free_column_id(&taken, next),
+            };
+            taken.insert(c.id);
+            kept.insert(c.id);
+        }
+        kept
+    }
 }
 
 /// The first id from `from` up, wrapping, that `taken` does not hold. A table
@@ -1225,22 +1249,7 @@ impl Chart {
     /// ([`Mapping::guess`]). The link, the parts and the stamp are left as they
     /// were, for the caller to say.
     pub fn with_table(&self, mut table: Table) -> Chart {
-        let old = &self.table;
-        let next = old.next_column_id().0.max(table.next_column_id().0);
-        let mut taken: FxHashSet<ColumnId> = old.columns.iter().map(|c| c.id).collect();
-        let mut kept = FxHashSet::default();
-        for c in &mut table.columns {
-            let same = old
-                .columns
-                .iter()
-                .find(|o| o.name == c.name && !kept.contains(&o.id));
-            c.id = match same {
-                Some(o) => o.id,
-                None => free_column_id(&taken, next),
-            };
-            taken.insert(c.id);
-            kept.insert(c.id);
-        }
+        let kept = table.take_ids_by_name(&self.table);
         let keep = |c: &Option<ColumnId>| c.filter(|id| kept.contains(id));
         let m = &self.mapping;
         let mut mapping = Mapping {
