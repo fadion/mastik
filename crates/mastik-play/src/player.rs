@@ -629,7 +629,39 @@ impl Player {
         let settled = self.res.settle(&mut self.doc);
         self.dirty.extend(out.dirty.0);
         self.dirty.extend(settled.0);
+        self.follow_tables(&tables_written(&tx));
         Ok(())
+    }
+
+    /// Every chart over the tables `sets` brought onto its table and every list
+    /// over them made again on the copy, as the editor follows a table edit:
+    /// after a row action or a script writes one in play.
+    pub(crate) fn follow_tables(&mut self, sets: &[mastik_core::list::DataSetId]) {
+        use mastik_core::list;
+        for &set in sets {
+            let Some(table) = self.doc.data_set(set).map(|d| d.table.clone()) else {
+                continue;
+            };
+            let charts: Vec<mastik_core::Operation> = list::charts_over(&self.doc, set)
+                .into_iter()
+                .filter_map(|id| {
+                    let chart = self.doc.get(id)?.chart()?;
+                    (chart.table != table).then(|| mastik_core::Operation::SetChart {
+                        id,
+                        chart: Some(Box::new(chart.reading(set, &table))),
+                    })
+                })
+                .collect();
+            if !charts.is_empty()
+                && let Ok(out) = self.doc.apply(&Transaction(charts))
+            {
+                self.res.update(&self.doc, &out.dirty);
+                self.dirty.extend(out.dirty.0);
+            }
+            for l in mastik_core::verbs::readers(&self.doc, set).0 {
+                self.regenerate_list(l);
+            }
+        }
     }
 
     /// A tap inside a list's row opens that row of its data set: every list
@@ -1042,6 +1074,19 @@ fn resolve_start(doc: &Document, start: Start) -> Result<Started, StartError> {
     let page = doc.page_of(frame).filter(|_| is_frame);
     let page = page.ok_or(StartError::NoFrame)?;
     Ok((page, frame, modes, cells))
+}
+
+/// The data sets `tx` writes, each once, in the order it writes them.
+pub(crate) fn tables_written(tx: &Transaction) -> Vec<mastik_core::list::DataSetId> {
+    let mut out = Vec::new();
+    for op in &tx.0 {
+        if let mastik_core::Operation::SetDataSet { id, set: Some(_) } = op
+            && !out.contains(id)
+        {
+            out.push(*id);
+        }
+    }
+    out
 }
 
 /// The kind of variable `v` is a value of.

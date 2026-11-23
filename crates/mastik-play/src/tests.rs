@@ -1282,6 +1282,66 @@ fn a_script_runs_on_the_copy_and_a_failed_one_rolls_back() {
     );
 }
 
+/// A script adding a row to a table in play makes the list over it again on
+/// the copy, so the new row shows; the document keeps its one row.
+///
+/// flip: `run_script_source` not calling `follow_tables` → fails at "the list
+/// follows".
+#[cfg(feature = "scripts")]
+#[test]
+fn a_script_editing_a_table_redraws_the_list_over_it() {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    use mastik_core::list::{DataSet, Source};
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 200.0);
+    let main = fx.frame("Row", 600.0, 180.0, 30.0);
+    fx.apply(vec![Operation::SetComponent {
+        id: main,
+        component: true,
+    }]);
+    let item = row_instance(&mut fx, main, a);
+    let set = DataSet {
+        id: fx.ids.mint_data_set(),
+        name: "rows".into(),
+        table: Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "title".into(),
+            }],
+            rows: vec![vec!["A".into()]],
+        },
+        source: None,
+        pictures: Vec::new(),
+    };
+    let l = listed(&mut fx, item, Source::New(set));
+    let add = fx.ids.mint_script();
+    fx.apply(vec![Operation::AddScript {
+        script: mastik_core::Script {
+            id: add,
+            name: "Add".into(),
+            source: "tables.rows:add({ title = \"B\" })".into(),
+        },
+        index: 0,
+    }]);
+    let button = fx.rect(a, "Add", 150.0, 150.0, 40.0, 40.0);
+    fx.on(
+        button,
+        Trigger::Click,
+        vec![Action::RunScript { script: add }],
+    );
+    let mut p = fx.play(a);
+    let rows = |p: &Player| p.document().get(l).map_or(0, |n| n.children().len());
+    assert_eq!(rows(&p), 1);
+    click(&mut p, 160.0, 160.0);
+    assert!(p.take_notices().is_empty());
+    assert_eq!(rows(&p), 2, "the list follows");
+    assert_eq!(
+        fx.doc.get(l).unwrap().children().len(),
+        1,
+        "the file untouched"
+    );
+}
+
 // ── Live update ─────────────────────────────────────────────────────────────
 
 /// An edit the copy takes keeps play where it is; one it refuses re-clones and

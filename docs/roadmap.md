@@ -23,9 +23,8 @@ remains is below.
   one. Largest gap first:
   - *Tables in play.* Expressions reading a cell or a row count; actions adding, editing and
     deleting a row (a cart, a to-do list, a form). The played copy holds the edited table, as it holds variables, and the
-    exported page plays it through `mastik-play`. A *Run script* already reaches the table verbs
-    on the played copy, but `PlayHost::commit` regenerates no list, so a list over a table it
-    edits keeps its old rows.
+    exported page plays it through `mastik-play`. A *Run script* already edits the played copy's
+    tables, and the lists and charts over them follow (`Player::follow_tables`).
 
 ## Next · Editing parity
 

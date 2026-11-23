@@ -17,6 +17,9 @@ mod host {
         pub(super) ids: &'a mut IdSource,
         pub(super) page: NodeId,
         pub(super) dirty: Vec<NodeId>,
+        /// The tables the run wrote, for the lists and charts over them to
+        /// follow once it ends.
+        pub(super) tables: Vec<mastik_core::list::DataSetId>,
     }
 
     impl mastik_vm::Host for PlayHost<'_> {
@@ -52,6 +55,11 @@ mod host {
             let out = self.doc.apply(&tx).map_err(|e| e.to_string())?;
             self.res.update(self.doc, &out.dirty);
             self.dirty.extend(out.dirty.0);
+            for set in crate::player::tables_written(&tx) {
+                if !self.tables.contains(&set) {
+                    self.tables.push(set);
+                }
+            }
             Ok(())
         }
     }
@@ -99,14 +107,17 @@ impl Player {
             ids: &mut self.ids,
             page,
             dirty: Vec::new(),
+            tables: Vec::new(),
         };
         let run = mastik_vm::run_script(&mut host, &env, source);
         let dirty = std::mem::take(&mut host.dirty);
+        let tables = std::mem::take(&mut host.tables);
         match run {
             Ok(out) => {
                 self.dirty.extend(dirty);
                 self.log.extend(out.printed);
                 let _ = self.res.settle(&mut self.doc);
+                self.follow_tables(&tables);
             }
             Err(e) => {
                 self.doc = doc;

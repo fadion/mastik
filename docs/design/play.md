@@ -211,7 +211,10 @@ out both ends.
 - **Run script** runs the document script through `mastik-vm` on the copy, under a person's act
   only (the door's rule, checked again). The selection is empty, no labels, no input form — a
   script whose header asks for input is not run, with a notice — and `print` goes to the log. The
-  copy and its resolve are snapshotted first and put back whole if the run fails. Behind the
+  copy and its resolve are snapshotted first and put back whole if the run fails. A run that
+  wrote a table ends with `Player::follow_tables` over the tables it wrote: every chart over one
+  brought onto its table and every list over one made again on the copy, as the editor follows a
+  table edit; `Player::commit` does the same for any transaction writing a table. Behind the
   default `scripts` feature; without it the action is skipped with `ScriptsOff`.
 
 ## Inputs
