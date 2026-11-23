@@ -1886,7 +1886,8 @@ fn commit_edit_text(chart: &Chart, s: &mut ChartData, linked: bool, act: &mut Ve
 }
 
 /// Write the header being renamed, if any, onto its column wherever it now
-/// sits: a name left empty or unchanged, or a column gone, writes nothing.
+/// sits: a name left empty or unchanged, or a column gone, writes nothing, and
+/// a name another column has is numbered past it.
 fn commit_rename(t: &chart::Table, s: &mut ChartData, act: &mut Vec<Act>) {
     let Some((id, name)) = s.rename.take() else {
         return;
@@ -1899,7 +1900,7 @@ fn commit_rename(t: &chart::Table, s: &mut ChartData, act: &mut Vec<Act>) {
         return;
     }
     let mut next = t.clone();
-    next.columns[c].name = name;
+    next.columns[c].name = t.free_column_name(&name, Some(id));
     act.push(Act::Table(next));
 }
 
@@ -2897,6 +2898,25 @@ mod tests {
             .map(|c| c.id)
             .collect();
         assert_eq!(named, [picked], "its own column");
+    }
+
+    /// A header renamed to another column's name is numbered past it, so a
+    /// list's fill by name finds each column.
+    /// flip: `commit_rename` writing the name as typed → fails at "numbered".
+    #[test]
+    fn a_rename_onto_a_taken_name_is_numbered() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = opened(&ctx);
+        let first = table_of(&app, id).columns[0].name.clone();
+        let picked = table_of(&app, id).columns[1].id;
+        let data = app.chart_data.as_mut().unwrap();
+        (data.rename, data.focus) = (Some((picked, first.clone())), true);
+        pass(&ctx, &mut app, Vec::new());
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter)]);
+        pass(&ctx, &mut app, Vec::new());
+        let t = table_of(&app, id);
+        assert_eq!(t.columns[0].name, first, "the first keeps its name");
+        assert_eq!(t.columns[1].name, format!("{first} 2"), "numbered");
     }
 
     /// `Escape` on an open header menu closes the menu and leaves the window.

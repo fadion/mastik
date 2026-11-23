@@ -55,7 +55,9 @@ everything below.
   chart while its mapping has a size column.
 - **`table`** — `Table { columns: Vec<Column { id, name }>, rows: Vec<Vec<String>> }`: every cell
   is text, one per column, and a column is a number column while every non-empty cell parses as
-  one (`chart::parse_number`).
+  one (`chart::parse_number`). A file's header named twice and a rename onto another
+  column's name are numbered past it (*Price 2*, `Table::free_column_name`), since a list's
+  fill and a re-read's remap find a column by its name; an agent's table is taken as written.
 - **`mapping`** — which column is the category (or, for a scatter, X), which columns are series,
   for a scatter the optional size and group columns, and for a Sankey the *From*, *To* and
   *Value* columns. Columns are named by `ColumnId`, so a rename keeps the mapping.

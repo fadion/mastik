@@ -194,6 +194,19 @@ impl Table {
         self.columns.iter().find(|c| c.id == id)
     }
 
+    /// A name no column but `except` has: `wanted`, else numbered past it
+    /// (*Price 2*), since a list's fill and a re-read's remap find a column
+    /// by its name, and two of one name would always find the first.
+    pub fn free_column_name(&self, wanted: &str, except: Option<ColumnId>) -> String {
+        let taken: FxHashSet<&str> = self
+            .columns
+            .iter()
+            .filter(|c| Some(c.id) != except)
+            .map(|c| c.name.as_str())
+            .collect();
+        free_among(&taken, wanted)
+    }
+
     /// The cells of column `id`, top to bottom; empty when the table has none.
     pub fn cells(&self, id: ColumnId) -> impl Iterator<Item = &str> + '_ {
         let at = self.index_of(id);
@@ -253,6 +266,17 @@ impl Table {
             kept.insert(c.id);
         }
         kept
+    }
+}
+
+/// `wanted` when `taken` lacks it or it is empty, else numbered past it.
+pub(crate) fn free_among(taken: &FxHashSet<&str>, wanted: &str) -> String {
+    if wanted.is_empty() || !taken.contains(wanted) {
+        return wanted.to_owned();
+    }
+    match crate::naming::numbered(wanted) {
+        Some((stem, n)) => crate::naming::free_name(taken, stem, n.saturating_add(1)),
+        None => crate::naming::free_name(taken, wanted, 2),
     }
 }
 

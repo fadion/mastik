@@ -397,11 +397,27 @@ fn build(
             if cut == 1 { "cell" } else { "cells" }
         ));
     }
+    // A header named twice is numbered past (*Price 2*), as a rename in the
+    // data window is (`Table::free_column_name`).
+    let mut names: Vec<String> = names
+        .into_iter()
+        .map(|n| n.chars().take(MAX_CELL_CHARS).collect())
+        .collect();
+    let mut taken: rustc_hash::FxHashSet<String> = names.iter().cloned().collect();
+    let mut seen: rustc_hash::FxHashSet<String> = Default::default();
+    for n in &mut names {
+        if !n.is_empty() && !seen.insert(n.clone()) {
+            let t: rustc_hash::FxHashSet<&str> = taken.iter().map(String::as_str).collect();
+            *n = super::free_among(&t, n);
+            taken.insert(n.clone());
+            seen.insert(n.clone());
+        }
+    }
     let columns = (0u32..)
         .zip(names)
         .map(|(id, name)| Column {
             id: ColumnId(id),
-            name: name.chars().take(MAX_CELL_CHARS).collect(),
+            name,
         })
         .collect();
     Read {
@@ -439,6 +455,16 @@ mod tests {
                 vec!["Lee", "", "4"]
             ]
         );
+    }
+
+    /// A header named twice is numbered past, so each column is found by its
+    /// name, numbered past any name the header already holds.
+    /// flip: `build` keeping the names as read → fails at "numbered".
+    #[test]
+    fn a_repeated_header_is_numbered() {
+        let r = read("Price,Price,Price 2\n1,2,3\n", Format::Csv, None).unwrap();
+        let names: Vec<&str> = r.table.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["Price", "Price 3", "Price 2"], "numbered");
     }
 
     /// A semicolon file is read as one; a first row of numbers is data, not a
