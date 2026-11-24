@@ -1825,11 +1825,16 @@ fn export_all(
     let doc = panels::with_row_pictures(doc, &plan);
     let mut written = Vec::new();
     let mut skipped = 0usize;
-    let mut missing_pictures = 0usize;
+    // A cell naming a missing picture counts once however many files read it.
+    let mut missing = Vec::new();
     let mut overflowing: Vec<(mastik_core::NodeId, usize)> = Vec::new();
     for f in &plan {
         let (data, filled) = mastik_export::plan::render_noted(&doc, &res, f);
-        missing_pictures += filled.missing_pictures;
+        for cell in filled.missing_pictures {
+            if !missing.contains(&cell) {
+                missing.push(cell);
+            }
+        }
         for row in filled.overflowing {
             if !overflowing.contains(&(f.node, row)) {
                 overflowing.push((f.node, row));
@@ -1860,7 +1865,7 @@ fn export_all(
     // `write_export`'s, a separate implementation of the same walk.
     let replaced = write_planned(&written)?;
     let report = export_all_report(written.len(), replaced, skipped, &dir);
-    let report = match missing_pictures {
+    let report = match missing.len() {
         0 => report,
         n => format!("{report} ({} not found)", ui::count(n, "picture")),
     };
@@ -3837,10 +3842,10 @@ mod tests {
     }
 
     /// `--all` reads the pictures beside a linked table for a per-row export,
-    /// and counts a cell naming none.
+    /// and counts a cell naming none once, though two settings' files read it.
     ///
     /// flip: `export_all` not calling `with_row_pictures` → fails at "found
-    /// beside the table".
+    /// beside the table"; summing each file's count → fails at "counted once".
     #[test]
     fn export_all_reads_the_pictures_beside_a_linked_table() {
         use mastik_core::chart::{Column, DataLink, Table};
@@ -3918,10 +3923,10 @@ mod tests {
                 },
                 Operation::SetExports {
                     id: frame,
-                    exports: mastik_core::keyed_by_position([ExportSpec {
+                    exports: mastik_core::keyed_by_position([1.0, 2.0].map(|scale| ExportSpec {
                         per_row: Some(PerRow::new(table)),
-                        ..ExportSpec::new(Fmt::Png, ExportScale::Times(1.0))
-                    }]),
+                        ..ExportSpec::new(Fmt::Png, ExportScale::Times(scale))
+                    })),
                 },
             ]))
             .unwrap();
@@ -3945,7 +3950,7 @@ mod tests {
         let missing = run("nobody.png");
         assert!(
             missing.ends_with("(1 picture not found)"),
-            "a cell naming no file is counted: {missing}"
+            "a cell naming no file is counted once, though two files read it: {missing}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -531,7 +531,7 @@ pub fn each_row_page(
     let mut filled = mastik_core::list::RowFilled::default();
     for (row, cells) in set.table.rows.iter().enumerate() {
         let (copy, res, one) = filled_copy(doc, file.node, &file.spec, row)?;
-        filled.missing_pictures += one.missing_pictures;
+        filled.missing_pictures.extend(one.missing_pictures);
         filled.overflowing.extend(one.overflowing);
         // Each copy keeps a flagged frame's fill out, as one file's does.
         let roots = drawn_roots(&copy, &res, file.node, &file.spec);

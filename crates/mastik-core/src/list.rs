@@ -1693,8 +1693,9 @@ pub fn row_targets_with(
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RowFilled {
     /// Cells naming no picture the table or the document holds, whose layer or
-    /// property kept its own.
-    pub missing_pictures: usize,
+    /// property kept its own: each once, by table, row (from 0) and column, so a
+    /// report over several files counts a cell once however many files read it.
+    pub missing_pictures: Vec<(DataSetId, usize, ColumnId)>,
     /// The rows (from 0) in which a shown text of the filled frame is cut, or
     /// runs outside its fixed box, once laid out with the row's cells. Set by
     /// whoever lays the copy out; [`fill_row`] leaves it empty.
@@ -1719,6 +1720,12 @@ pub fn fill_row(
         cells?.get(i).map(|c| c.trim())
     };
     let missing = |c: &str| !c.is_empty() && set.picture(doc, c).is_none();
+    let note = |filled: &mut RowFilled, column: ColumnId| {
+        let at = (set.id, row, column);
+        if !filled.missing_pictures.contains(&at) {
+            filled.missing_pictures.push(at);
+        }
+    };
     let fill: Vec<Fill> = targets
         .iter()
         .filter_map(|t| match t {
@@ -1735,7 +1742,7 @@ pub fn fill_row(
                 .any(|p| p.id == *item && p.kind == PropKind::Image)
             && cell(f.column).is_some_and(missing)
         {
-            filled.missing_pictures += 1;
+            note(&mut filled, f.column);
         }
     }
     let mut layers = Vec::new();
@@ -1760,7 +1767,7 @@ pub fn fill_row(
                 spans: spans.replaced(0, content.len(), c.len(), style),
                 para_spans: para_spans.replaced(0, content.len(), c.len(), paragraph),
             }),
-            _ if missing(c) => filled.missing_pictures += 1,
+            _ if missing(c) => note(&mut filled, *column),
             _ => {
                 // The picture alone: the fill's fit and crop stay the layer's.
                 let (Some(picture), Some(i)) = (set.picture(doc, c), n.paint().image_fill()) else {

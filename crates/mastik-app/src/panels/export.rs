@@ -3960,15 +3960,20 @@ fn deliver(
 ) -> Delivered {
     let mut rendered: Vec<(String, Vec<u8>)> = Vec::with_capacity(files.len());
     let mut skipped = 0usize;
-    let mut missing_pictures = 0usize;
-    // A row counts once however many files it writes.
+    // A row, and a cell naming a missing picture, count once however many
+    // files read them.
+    let mut missing = Vec::new();
     let mut overflowing: Vec<(NodeId, usize)> = Vec::new();
     for f in files {
         if cancel.cancelled() {
             return Delivered::cancelled();
         }
         let (bytes, filled) = mastik_export::plan::render_noted(doc, resolved, f);
-        missing_pictures += filled.missing_pictures;
+        for cell in filled.missing_pictures {
+            if !missing.contains(&cell) {
+                missing.push(cell);
+            }
+        }
         for row in filled.overflowing {
             if !overflowing.contains(&(f.node, row)) {
                 overflowing.push((f.node, row));
@@ -3983,7 +3988,7 @@ fn deliver(
     }
     let mut out = Delivered {
         skipped,
-        missing_pictures,
+        missing_pictures: missing.len(),
         overflowing_rows: overflowing.len(),
         ..Delivered::empty(Default::default())
     };
@@ -5704,6 +5709,93 @@ mod export_all_scope_tests {
             "landed unsaid"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cell naming a missing picture counts once, though two settings write
+    /// a file of its row each.
+    ///
+    /// flip: `deliver` adding each file's cells without looking for them first
+    /// → fails at "counted once".
+    #[test]
+    fn a_missing_picture_counts_once_across_the_files_reading_it() {
+        use mastik_core::NodeKind;
+        use mastik_core::chart::{Column, Table};
+        use mastik_core::list::DataSet;
+        let mut ids = mastik_core::IdSource::new(0xC0E);
+        let root = ids.mint();
+        let mut doc = mastik_core::Document::new(root);
+        let (frame, photo, table) = (ids.mint(), ids.mint(), ids.mint_data_set());
+        let mut t = Table::default();
+        let id = t.next_column_id();
+        t.columns.push(Column {
+            id,
+            name: "Photo".into(),
+        });
+        t.rows = vec![vec!["nobody.png".into()]];
+        let size = mastik_core::kurbo::Size::new(16.0, 16.0);
+        doc.apply(&mastik_core::Transaction(vec![
+            Operation::CreateNode {
+                id: frame,
+                parent: root,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size,
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: Some("Card".into()),
+            },
+            Operation::CreateNode {
+                id: photo,
+                parent: frame,
+                index: 0,
+                kind: NodeKind::Rect {
+                    size,
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: Some("Photo".into()),
+            },
+            Operation::SetFills {
+                id: photo,
+                fills: mastik_core::keyed_by_position([mastik_core::Fill {
+                    brush: mastik_core::image_brush(mastik_core::ImageId("seal".into())).into(),
+                    visible: true,
+                }]),
+            },
+            Operation::SetDataSet {
+                id: table,
+                set: Some(Box::new(DataSet {
+                    id: table,
+                    name: "People".into(),
+                    table: t,
+                    source: None,
+                    pictures: Vec::new(),
+                })),
+            },
+            Operation::SetExports {
+                id: frame,
+                exports: mastik_core::keyed_by_position([1.0, 2.0].map(|scale| ExportSpec {
+                    per_row: Some(PerRow::new(table)),
+                    ..ExportSpec::new(ExportFormat::Png, ExportScale::Times(scale))
+                })),
+            },
+        ]))
+        .expect("the fixture");
+        let res = mastik_core::Resolved::rebuild(&doc);
+        let files = mastik_export::plan(&doc, &res, &[frame], PlanOptions::default());
+        assert_eq!(files.len(), 2, "fixture: a file per setting");
+        let dir = std::env::temp_dir().join(format!("mastik-missing-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut turns = ExportTurns::default();
+        let flags = ExportFlags::default();
+        let destination = Destination::Folder(dir.clone());
+        let out = deliver(&doc, &res, &files, destination, &turns.ticket(), &flags);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(out.missing_pictures, 1, "counted once");
     }
 
     /// An export renders on a worker: `write_export` returns before a file exists

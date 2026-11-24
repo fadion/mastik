@@ -286,13 +286,17 @@ fn a_rows_file_is_drawn_from_a_filled_copy_and_the_document_is_untouched() {
     let noted = |i: usize| mastik_export::plan::render_noted(&f.doc, &f.res, &planned[i]).1;
     assert_eq!(
         (noted(0).missing_pictures, noted(1).missing_pictures),
-        (1, 0),
+        (vec![(f.table, 0, f.columns[2])], vec![]),
         "the report hears of row 1's missing picture"
     );
 
     let (copy, _, filled) =
         mastik_export::plan::filled_copy(&f.doc, f.frame, &spec, 0).expect("a table");
-    assert_eq!(filled.missing_pictures, 1, "nowhere.jpg names no picture");
+    assert_eq!(
+        filled.missing_pictures.len(),
+        1,
+        "nowhere.jpg names no picture"
+    );
     assert_eq!(
         copy.get(f.photo).map(|n| n.paint().fills.clone()),
         f.doc.get(f.photo).map(|n| n.paint().fills.clone()),
