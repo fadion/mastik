@@ -479,18 +479,13 @@ pub(crate) fn published_said(
 /// components, the variables and styles they read, its scripts, or any of them
 /// together — as the subject of *"… changed since v4"*.
 fn not_a_component(c: &Changes) -> String {
-    let mut s = joined(&[
+    crate::ui::upper_first(&joined(&[
         (c.renamed, "the kit's name"),
         (c.reordered, "the order of its components"),
         // A variable or a style its components read — not a rename.
         (c.tokens, "the variables and styles its components read"),
         (c.scripts, "the kit's scripts"),
-    ]);
-    if let Some(first) = s.get(..1) {
-        let up = first.to_uppercase();
-        s.replace_range(..1, &up);
-    }
-    s
+    ]))
 }
 
 /// The parts that hold, as *a, b and c* — the kit's name when none does, the

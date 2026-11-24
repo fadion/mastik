@@ -1466,12 +1466,7 @@ impl MastikApp {
         let first = self.session.ids.mint_mode();
         let table = self.session.doc.variables();
         let (mut ops, modes) = mastik_core::variable::columns_for_new(table, collection, first);
-        let stem = match key.kind() {
-            VarKind::Color => "colour",
-            VarKind::Number => "number",
-            VarKind::Boolean => "boolean",
-            VarKind::String => "string",
-        };
+        let stem = key.kind().word();
         let taken: Vec<&str> = table
             .of_collection(collection)
             .map(|v| v.name.as_str())

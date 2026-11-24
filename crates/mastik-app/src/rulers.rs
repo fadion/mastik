@@ -217,14 +217,7 @@ impl GuideLine {
     /// To the segment, not the infinite line, so a scoped guide is grabbable
     /// exactly where it is drawn. The dotted continuation is not a target.
     fn distance_to(&self, p: egui::Pos2) -> f32 {
-        let (a, b) = (self.a, self.b);
-        let along = b - a;
-        let len_sq = along.length_sq();
-        if len_sq < f32::EPSILON {
-            return (p - a).length();
-        }
-        let t = (((p - a).dot(along)) / len_sq).clamp(0.0, 1.0);
-        (p - (a + along * t)).length()
+        crate::canvas::distance_to_segment(p, self.a, self.b)
     }
 }
 

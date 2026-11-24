@@ -1210,7 +1210,7 @@ pub fn review(
                 taken.insert(v.id);
                 left_out.push(LeftOut {
                     path: tk.path.join("."),
-                    ty: format!("a {} here", kind_word(v.kind)),
+                    ty: format!("a {} here", v.kind.word()),
                 });
                 continue;
             }
@@ -1275,7 +1275,7 @@ pub fn review(
         if k != kind {
             return refuse(
                 path,
-                format!("refers to {{{}}}, a {}", to.join("."), kind_word(k)),
+                format!("refers to {{{}}}, a {}", to.join("."), k.word()),
             );
         }
         Ok(id)
@@ -2550,15 +2550,6 @@ fn count(n: usize, what: &str) -> String {
     match n {
         1 => format!("1 {what}"),
         n => format!("{n} {what}s"),
-    }
-}
-
-fn kind_word(k: VarKind) -> &'static str {
-    match k {
-        VarKind::Color => "colour",
-        VarKind::Number => "number",
-        VarKind::Boolean => "boolean",
-        VarKind::String => "string",
     }
 }
 
