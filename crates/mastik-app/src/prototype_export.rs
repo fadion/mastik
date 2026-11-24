@@ -139,12 +139,20 @@ pub(crate) fn every_flow(doc: &Document) -> Vec<(FlowRef, String)> {
     out
 }
 
+/// The flows of `list` that `all` still holds: deleting a flow leaves the
+/// export's list as it was. Empty, every flow, when it names none that does,
+/// as `prototype::chosen_flows` reads it.
+fn live_flows(list: &[FlowRef], all: &[FlowRef]) -> Vec<FlowRef> {
+    list.iter().filter(|f| all.contains(f)).copied().collect()
+}
+
 /// `list` (empty is every one of `all`) with `flow` in (`on`) or out. Turning
 /// one off writes out the rest, and the last one back on empties it again.
 fn toggled(list: &[FlowRef], all: &[FlowRef], flow: FlowRef, on: bool) -> Vec<FlowRef> {
+    let list = live_flows(list, all);
     let mut list = match list.is_empty() {
         true => all.to_vec(),
-        false => list.to_vec(),
+        false => list,
     };
     list.retain(|f| *f != flow);
     if on {
@@ -618,14 +626,16 @@ impl MastikApp {
             .unwrap_or_default();
         let s = &mut card.settings;
         ui::labelled(ui, "Flows", |ui| {
-            if let Some(r) = flow_ticks(ui, all, &s.flows, "The file holds at least one flow") {
-                let on = s.flows.is_empty() || s.flows.contains(&r);
+            let chosen = live_flows(&s.flows, &refs);
+            if let Some(r) = flow_ticks(ui, all, &chosen, "The file holds at least one flow") {
+                let on = chosen.is_empty() || chosen.contains(&r);
                 *s = with_flow(s, &refs, r, !on);
             }
         });
+        let chosen = live_flows(&s.flows, &refs);
         let included: Vec<&(FlowRef, String)> = all
             .iter()
-            .filter(|(r, _)| s.flows.is_empty() || s.flows.contains(r))
+            .filter(|(r, _)| chosen.is_empty() || chosen.contains(r))
             .collect();
         ui::labelled(ui, "Opens on", |ui| {
             let shown = s
@@ -902,9 +912,12 @@ impl MastikApp {
     /// with the document when they changed, and write it on an export worker.
     fn export_prototype_from_card(&mut self, card: ExportCard) {
         let settings = card.settings.clone();
-        let flow = every_flow(&self.session.doc)
+        let every = every_flow(&self.session.doc);
+        let refs: Vec<FlowRef> = every.iter().map(|(r, _)| *r).collect();
+        let chosen = live_flows(&settings.flows, &refs);
+        let flow = every
             .into_iter()
-            .filter(|(r, _)| settings.flows.is_empty() || settings.flows.contains(r))
+            .filter(|(r, _)| chosen.is_empty() || chosen.contains(r))
             .find(|(r, _)| settings.opens.is_none_or(|o| o == *r))
             .and_then(|(r, _)| {
                 let page = self.session.doc.page(r.page)?;
@@ -1187,6 +1200,23 @@ mod tests {
         assert_eq!(off.opens, None, "the opening flow went out with it");
         let on = with_flow(&off, &all, all[1], true);
         assert!(on.flows.is_empty(), "all on is empty");
+    }
+
+    /// A deleted flow left in the list counts for nothing: a list naming only
+    /// gone flows is every flow, so unticking one writes out the rest, and a
+    /// list of one live flow beside a gone one holds that flow alone.
+    /// flip: `toggled` reading `list` without `live_flows` → fails at "the rest".
+    #[test]
+    fn a_gone_flow_in_the_list_counts_for_nothing() {
+        let all = [flow(1), flow(2)];
+        let gone = flow(3);
+        let s = PlayExport {
+            flows: vec![gone],
+            ..PlayExport::default()
+        };
+        let off = with_flow(&s, &all, all[0], false);
+        assert_eq!(off.flows, vec![all[1]], "the rest");
+        assert_eq!(live_flows(&[all[0], gone], &all), [all[0]], "one left");
     }
 
     /// The HTML file and the flow map need a flow, so on a document without one

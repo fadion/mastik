@@ -52,19 +52,30 @@ impl std::fmt::Display for PackError {
 impl std::error::Error for PackError {}
 
 /// The flows the export takes, in page order: [`PlayExport::flows`] where they
-/// still exist, every flow when it names none. A named flow that is gone is
-/// skipped, as play skips a missing target.
+/// still exist, every flow when it names none that does. A named flow that is
+/// gone is skipped, as play skips a missing target, and deleting a flow leaves
+/// the list as it was, so a list naming only gone flows names none.
 pub fn chosen_flows(doc: &Document) -> Vec<FlowRef> {
-    let every = doc.pages().iter().flat_map(|p| {
-        p.flows.iter().map(|f| FlowRef {
-            page: p.id,
-            flow: f.id,
+    let every: Vec<FlowRef> = doc
+        .pages()
+        .iter()
+        .flat_map(|p| {
+            p.flows.iter().map(|f| FlowRef {
+                page: p.id,
+                flow: f.id,
+            })
         })
-    });
+        .collect();
     let named = &doc.play_export().flows;
-    every
-        .filter(|r| named.is_empty() || named.contains(r))
-        .collect()
+    let chosen: Vec<FlowRef> = every
+        .iter()
+        .filter(|r| named.contains(r))
+        .copied()
+        .collect();
+    match chosen.is_empty() {
+        true => every,
+        false => chosen,
+    }
 }
 
 /// The pages a prototype of `flows` can show, in document order: each flow's own

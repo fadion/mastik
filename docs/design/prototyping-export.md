@@ -100,7 +100,8 @@ the DevTools protocol):
 `prototype::prune` trims the document to the flows the export takes:
 
 - **The flows**: `PlayExport::flows` where they still exist, every flow when it names none
-  (`chosen_flows`). The file opens on `PlayExport::opens` when it is among them, else the
+  that does (`chosen_flows`): deleting a flow leaves the list as it was, and the export card
+  ticks and counts only the flows it names that exist. The file opens on `PlayExport::opens` when it is among them, else the
   first. With no flow at all there is nothing to export.
 - **The pages, whole** (`reached_pages`): each flow's page and its start's page, then every
   page a layer on a reached page navigates to, opens or swaps an overlay from, scrolls to or

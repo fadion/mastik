@@ -389,6 +389,30 @@ fn naming_no_flow_takes_every_flow() {
     assert_eq!(pruned.play_export().opens, Some(f.main), "the first flow");
 }
 
+/// A list naming only flows that are gone names none: every flow goes in,
+/// rather than the export refusing a document that has flows. A gone flow
+/// beside a live one is skipped.
+///
+/// flip: `chosen_flows` filtering by the named list alone → fails at "every
+/// flow".
+#[test]
+fn a_list_of_gone_flows_takes_every_flow() {
+    let mut f = fixture();
+    let gone = FlowRef {
+        page: f.main.page,
+        flow: IdSource::new(0x60E).mint_item(),
+    };
+    choose(&mut f.doc, vec![gone]);
+    assert_eq!(
+        chosen_flows(&f.doc),
+        vec![f.main, f.spare, f.other],
+        "every flow"
+    );
+    assert!(prune(&f.doc).is_ok(), "the document exports");
+    choose(&mut f.doc, vec![gone, f.spare]);
+    assert_eq!(chosen_flows(&f.doc), vec![f.spare], "the live one");
+}
+
 /// A document without flows has nothing to export.
 #[test]
 fn a_document_without_flows_is_refused() {
