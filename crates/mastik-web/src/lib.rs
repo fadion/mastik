@@ -18,7 +18,7 @@ use mastik_core::kurbo::{Point, Rect, Size};
 use mastik_core::measure;
 use mastik_core::peniko::Color;
 use mastik_core::prototype::FlowRef;
-use mastik_core::{Document, NodeId, NodeKind, subtree_nodes};
+use mastik_core::{Document, NodeId, subtree_nodes};
 use mastik_play::{Input, Notice, Request, Scene, Start};
 use mastik_render::{ImageStore, VelloCpuRenderer, VelloGpuRenderer, Viewport};
 use shell::Placement;
@@ -67,24 +67,9 @@ pub async fn start(
         false => std::panic::AssertUnwindSafe(Gpu::new(&canvas)).await,
     };
     let doc = mastik_core::io::load(&document).map_err(|e| err(&e))?;
-    let flows = flows(&doc);
-    let opens = doc.play_export().opens;
-    let flow = flows
-        .iter()
-        .position(|(r, _)| Some(*r) == opens)
-        .or((!flows.is_empty()).then_some(0));
-    let asked = NodeId::from_wire(&frame).filter(|id| {
-        doc.get(*id)
-            .is_some_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }))
-    });
-    let start = match (asked, flow) {
-        (Some(f), _) => Start::Frame(f),
-        (None, Some(i)) => Start::Flow(flows[i].0),
-        (None, None) => {
-            Start::Frame(first_frame(&doc).ok_or_else(|| err(&"the export has no frame"))?)
-        }
-    };
-    let flow = flow.filter(|_| asked.is_none());
+    let flows = shell::flows(&doc);
+    let (start, flow) =
+        shell::opening(&doc, &flows, &frame).ok_or_else(|| err(&"the export has no frame"))?;
     let play = mastik_play::Player::new(&doc, start, ACTOR).map_err(|e| err(&e))?;
     let mut images = ImageStore::new();
     images.prepare(&doc);
@@ -111,31 +96,6 @@ pub async fn start(
         drawn: None,
         turned: None,
         on_phone: false,
-    })
-}
-
-/// Every flow in the document, in page order, with its name.
-fn flows(doc: &Document) -> Vec<(FlowRef, String)> {
-    doc.pages()
-        .iter()
-        .flat_map(|p| {
-            p.flows.iter().map(|f| {
-                let r = FlowRef {
-                    page: p.id,
-                    flow: f.id,
-                };
-                (r, f.value.name.clone())
-            })
-        })
-        .collect()
-}
-
-/// The first page's first frame, where a file with no flow opens.
-fn first_frame(doc: &Document) -> Option<NodeId> {
-    let page = doc.first_page();
-    doc.get(page)?.children().iter().copied().find(|c| {
-        doc.get(*c)
-            .is_some_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }))
     })
 }
 
@@ -224,7 +184,7 @@ impl Player {
         self.images.prepare(&doc);
         self.play.rebase(&doc);
         self.settings = doc.play_export().clone();
-        self.flows = flows(&doc);
+        self.flows = shell::flows(&doc);
         self.flow = self.flow.filter(|i| *i < self.flows.len());
         self.doc = doc;
         self.drawn = None;

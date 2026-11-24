@@ -220,9 +220,11 @@ canvas, the drawing and the page around them.
   is over 32 KB is left out, and the panel says to copy it from Mastik) and
   `prototype::inspect_files`, rendered through `plan`. Boxes are read off the played copy's
   layout, moved by scroll offsets; a sticky or fixed child is boxed where it would scroll to.
-- The page's arithmetic (`shell.rs`: placing, the pointer's and wheel's mapping, key names)
-  builds on the desktop too, and `mastik-export`'s `tests/web_shell.rs` includes and tests it;
-  `tests/prototype.rs` checks the page's script calls only what the player exports.
+- The page's arithmetic (`shell.rs`: placing, the pointer's and wheel's mapping, key names,
+  and where play opens) builds on the desktop too, and `mastik-export`'s `tests/web_shell.rs`
+  includes and tests it; `tests/prototype.rs` checks the page's script calls only what the
+  player exports, with as many arguments as each takes, and reads `frame`'s answer by the slots
+  `frame` fills.
 
 ## The flow map
 

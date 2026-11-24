@@ -1,10 +1,63 @@
 //! The page's arithmetic, apart from the browser so it builds and is tested on the
 //! desktop (`mastik-export`'s `tests/web_shell.rs` includes this file): where the
-//! screen goes under a *Scaling*, how a pointer maps back into screen space, and
-//! how a browser key is named the way a key trigger names it.
+//! screen goes under a *Scaling*, how a pointer maps back into screen space, how
+//! a browser key is named the way a key trigger names it, and where play opens.
 
 use mastik_core::kurbo::{Point, Size, Vec2};
-use mastik_core::prototype::Scaling;
+use mastik_core::prototype::{FlowRef, Scaling};
+use mastik_core::{Document, NodeId, NodeKind};
+use mastik_play::Start;
+
+/// Every flow in the document, in page order, with its name.
+pub fn flows(doc: &Document) -> Vec<(FlowRef, String)> {
+    doc.pages()
+        .iter()
+        .flat_map(|p| {
+            p.flows.iter().map(|f| {
+                let r = FlowRef {
+                    page: p.id,
+                    flow: f.id,
+                };
+                (r, f.value.name.clone())
+            })
+        })
+        .collect()
+}
+
+/// The first page's first frame, where a file with no flow opens.
+pub fn first_frame(doc: &Document) -> Option<NodeId> {
+    let page = doc.first_page();
+    doc.get(page)?.children().iter().copied().find(|c| {
+        doc.get(*c)
+            .is_some_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }))
+    })
+}
+
+/// Where play opens: frame `asked` (a frame's id; a mirrored page's) when the
+/// document holds that frame, else the export's opening flow among `flows`, else
+/// the first flow, else the first page's first frame. With it, the index in
+/// `flows` of the flow playing, none when a frame was asked. `None` when the
+/// document has no frame to open.
+pub fn opening(
+    doc: &Document,
+    flows: &[(FlowRef, String)],
+    asked: &str,
+) -> Option<(Start, Option<usize>)> {
+    let opens = doc.play_export().opens;
+    let flow = flows
+        .iter()
+        .position(|(r, _)| Some(*r) == opens)
+        .or((!flows.is_empty()).then_some(0));
+    let asked = NodeId::from_wire(asked).filter(|id| {
+        doc.get(*id)
+            .is_some_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }))
+    });
+    match (asked, flow) {
+        (Some(f), _) => Some((Start::Frame(f), None)),
+        (None, Some(i)) => Some((Start::Flow(flows[i].0), Some(i))),
+        (None, None) => Some((Start::Frame(first_frame(doc)?), None)),
+    }
+}
 
 /// The device frame's bezel round the screen, in screen units.
 pub const BEZEL: f64 = 14.0;
