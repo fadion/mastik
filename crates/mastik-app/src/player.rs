@@ -150,6 +150,11 @@ pub(crate) struct Playing {
     /// opens; `None` until then. Fixed for the window's life: a builder fed
     /// the position read back each frame moves the window against the drag.
     window_from: Option<Option<[f32; 2]>>,
+    /// The detached window's inner size, the screen's as it opens; `None`
+    /// until then. Fixed for the window's life like `window_from`: a builder
+    /// fed the screen's size each frame undoes a resize, and under
+    /// *Responsive* shrinks the window every frame.
+    window_size: Option<egui::Vec2>,
     /// The player's own renderer and texture; `None` headless.
     canvas: Option<CanvasRenderer>,
     texture: Option<egui::TextureId>,
@@ -334,6 +339,7 @@ impl Playing {
             was_fullscreen: false,
             detached_full: false,
             window_from: None,
+            window_size: None,
             canvas: None,
             texture: None,
             drawn: None,
@@ -378,6 +384,16 @@ impl Playing {
             ui.ctx().request_repaint();
         }
         shown
+    }
+
+    /// The detached window's inner size: the screen's, under the window's
+    /// head, as the window opens, then the same for its life.
+    fn window_size(&mut self) -> egui::Vec2 {
+        let scene = self.player.scene();
+        *self.window_size.get_or_insert_with(|| {
+            egui::vec2(scene.size.width as f32, scene.size.height as f32 + 48.0)
+                .clamp(egui::vec2(OVER_MIN_W, 200.0), egui::vec2(1600.0, 1200.0))
+        })
     }
 
     /// Whether the side column is open: the state card or the sharing card,
@@ -1410,6 +1426,7 @@ impl crate::app::MastikApp {
         p.from_present = false;
         p.detached_full = false;
         p.window_from = None;
+        p.window_size = None;
         p.place = place;
         p.focused = true;
     }
@@ -1739,12 +1756,9 @@ impl crate::app::MastikApp {
     fn player_window(&mut self, ctx: &egui::Context, p: &mut Playing) -> Option<BarAct> {
         let chrome = crate::chrome::Chrome::current();
         let title = format!("{} — Mastik", self.play_title(p));
-        let scene = p.player.scene();
-        let mut size = egui::vec2(scene.size.width as f32, scene.size.height as f32 + 48.0);
-        size = size.clamp(egui::vec2(OVER_MIN_W, 200.0), egui::vec2(1600.0, 1200.0));
         let mut builder = egui::ViewportBuilder::default()
             .with_title(title.clone())
-            .with_inner_size(size)
+            .with_inner_size(p.window_size())
             .with_min_inner_size(egui::vec2(OVER_MIN_W, 200.0));
         if let Some([x, y]) = *p.window_from.get_or_insert(self.prefs.player_window) {
             builder = builder.with_position(egui::pos2(x, y));
@@ -2827,6 +2841,38 @@ mod tests {
         assert!(
             (0.9..=1.0).contains(&left),
             "a pass when the timer is due: {left} s"
+        );
+    }
+
+    /// The detached window keeps the size it opened at while the screen's size
+    /// changes (a *Responsive* layout at the window's room, a frame of another
+    /// size), so its viewport builder never resizes it; moving the player
+    /// reads it again.
+    ///
+    /// flip: `Playing::window_size` reading the screen's size every call →
+    /// fails at "the size it opened at".
+    #[test]
+    fn the_detached_window_keeps_the_size_it_opened_at() {
+        let ctx = egui::Context::default();
+        let (mut app, [a, ..]) = fixture(&ctx, false);
+        app.session.selection.set_one(a);
+        // No whole frame: headless, the window's viewport is embedded, and two
+        // drag strips then share one id.
+        app.play(&ctx, Place::Detached, false);
+        let p = app.playing.as_mut().expect("playing");
+        let opened = p.window_size();
+        assert!(
+            p.player.set_play_size(Some(Size::new(700.0, 500.0))),
+            "fixture: the screen's size changed"
+        );
+        assert_eq!(p.window_size(), opened, "the size it opened at");
+        app.place_player(&ctx, Place::Over);
+        app.place_player(&ctx, Place::Detached);
+        let p = app.playing.as_mut().expect("playing");
+        assert_eq!(
+            p.window_size(),
+            egui::vec2(700.0, 548.0),
+            "read again as it opens again"
         );
     }
 

@@ -47,8 +47,11 @@ card opens. The export card lists only the takes of a player playing the documen
   (`chrome::Chrome::viewport`), where it last stood (`Prefs::player_window`). That position is
   read once as the window opens (`Playing::window_from`, cleared when the player's place
   changes) and is the one its viewport builder keeps giving, never the position read back each
-  frame, which would fight a drag. Its keys are its
-  own; its *Fullscreen* fills its own screen.
+  frame, which would fight a drag. Its size is fixed the same way (`Playing::window_size`): the
+  screen's, under the head, as it opens, never the screen's size each frame, which would undo a
+  resize and, under *Responsive*, shrink the window every frame as the screen took its room. A
+  frame of another size is fitted to the window. Its keys are its own; its *Fullscreen* fills
+  its own screen.
 - **Fullscreen**: present mode's branch of `MastikApp::frame_body`, the editor hidden. A modal
   coming up (the bar's Export, a disk clash, a chord's card) is drawn over the editor, so the
   player goes back over the canvas for it, its takes and sharing kept.
