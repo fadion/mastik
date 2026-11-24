@@ -39,6 +39,13 @@ const LEFT_OUT: &str = "Prototype interactions";
 /// The report row for a link to a layer the import did not bring in.
 const NO_TARGET: &str = "Prototype links to layers not brought in";
 
+/// The links of a layer the importer leaves out, each counted as left out.
+pub(crate) fn left_out(links: Vec<Link>, tally: &mut Tally) {
+    if !links.is_empty() {
+        tally.count(LEFT_OUT, links.len(), "", "Left out");
+    }
+}
+
 /// The ops giving each holder its links as reactions, a target found through
 /// `nodes`. A step whose target is not there is counted and dropped, and a
 /// link left with no step with it.

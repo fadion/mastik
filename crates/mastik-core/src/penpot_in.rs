@@ -239,6 +239,12 @@ impl Builder<'_> {
         self.tally.count(what, n, unit, how);
     }
 
+    /// The links of `shape`, which the import leaves out, counted.
+    fn links_left_out(&mut self, shape: &Value) {
+        let links = crate::prototype_in::penpot(shape, &mut self.tally);
+        crate::prototype_in::left_out(links, &mut self.tally);
+    }
+
     fn commit(&mut self, ops: Vec<Operation>) -> Result<(), OpError> {
         if ops.is_empty() {
             return Ok(());
@@ -434,6 +440,7 @@ impl Builder<'_> {
         };
         if depth > MAX_NESTING {
             self.count("Layers nested too deeply", 1, "", "Left out");
+            self.links_left_out(&shape);
             return false;
         }
         let kind = str_of(&shape, "type");
@@ -501,6 +508,7 @@ impl Builder<'_> {
                 let world = corner_world(&shape);
                 let Some(path) = path_of(&shape, world) else {
                     self.count("Paths that could not be read", 1, "", "Left out");
+                    self.links_left_out(&shape);
                     return false;
                 };
                 (
@@ -515,10 +523,12 @@ impl Builder<'_> {
             }
             "svg-raw" => {
                 self.count("SVG layers", 1, "", "Left out");
+                self.links_left_out(&shape);
                 return false;
             }
             _ => {
                 self.count("Layers of an unknown kind", 1, "", "Left out");
+                self.links_left_out(&shape);
                 return false;
             }
         };

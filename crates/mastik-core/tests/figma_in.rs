@@ -327,6 +327,68 @@ fn a_filled_open_path_is_not_stroked_along_its_closing_edge() {
     assert_eq!(rows, ["Filled open paths"]);
 }
 
+/// A layer made by another path keeps its links: a split filled open path's
+/// click lands on its group and an outlined stroke's on its path; a layer left
+/// out counts its links as left out.
+///
+/// flip: `Builder::split` not reading the node's links → fails at "the split
+/// group's click"; the unknown-kind arm not counting them → fails at "the left
+/// out layer's link".
+#[test]
+fn a_layer_made_another_way_keeps_its_links() {
+    use mastik_core::prototype::{Action, Trigger};
+    let back = json!({ "interactions": [
+        { "trigger": { "type": "ON_CLICK" }, "actions": [{ "type": "BACK" }] },
+    ] });
+    let with_back = |mut extra: Value| {
+        extra
+            .as_object_mut()
+            .unwrap()
+            .extend(back.as_object().unwrap().clone());
+        extra
+    };
+    let split = node(
+        "V",
+        "VECTOR",
+        (0.0, 0.0, 10.0, 10.0),
+        with_back(json!({
+            "fills": [solid(rgb(1.0, 0.0, 0.0))],
+            "strokes": [solid(rgb(0.0, 0.0, 0.0))], "strokeWeight": 2,
+            "fillGeometry": [{ "path": "M0 0L5 10L10 0Z", "windingRule": "NONZERO" }],
+            "strokeGeometry": [{ "path": "M-1 0L5 12L11 0L9 0L5 8L1 0Z" }],
+        })),
+    );
+    let outlined = node(
+        "O",
+        "VECTOR",
+        (20.0, 0.0, 10.0, 10.0),
+        with_back(json!({
+            "strokes": [solid(rgb(0.0, 0.0, 0.0))],
+            "fillGeometry": [], "strokeGeometry": [{ "path": "M0 -1L10 -1L10 1L0 1Z" }],
+        })),
+    );
+    let unknown = node("W", "WIDGET", (40.0, 0.0, 10.0, 10.0), back.clone());
+    let r = import(fetched(vec![split, outlined, unknown], json!({}), &[]));
+    let doc = &r.doc;
+    let clicks_back = |name: &str| {
+        let reactions = doc.get(one(doc, name)).unwrap().reactions();
+        reactions.len() == 1
+            && reactions[0].value.trigger == Trigger::Click
+            && reactions[0].value.actions[0].value == Action::Back
+    };
+    assert!(clicks_back("V"), "the split group's click");
+    assert!(clicks_back("O"), "the outlined path's click");
+    let rows: Vec<(&str, &str)> = r
+        .report
+        .iter()
+        .map(|u| (u.what, u.count.as_str()))
+        .collect();
+    assert!(
+        rows.contains(&("Prototype interactions", "1")),
+        "the left out layer's link: {rows:?}"
+    );
+}
+
 /// A filled open path split in its main but not in an instance whose copy has
 /// its fill turned off is left out of the instance's links, a plain layer
 /// there, while the instance stays linked. flip: drop the split comparison in

@@ -331,6 +331,7 @@ impl Builder<'_> {
                         }
                         (None, None) => {
                             self.count("Shapes without geometry", 1, "", "Left out");
+                            self.links_left_out(n);
                             return;
                         }
                     },
@@ -340,6 +341,7 @@ impl Builder<'_> {
             "SLICE" => NodeKind::Slice { size },
             _ => {
                 self.count("Layers of a kind Mastik does not have", 1, "", "Left out");
+                self.links_left_out(n);
                 return;
             }
         };
@@ -353,10 +355,7 @@ impl Builder<'_> {
         });
         let fid = str_of(n, "id").to_owned();
         self.nodes.insert(fid.clone(), id);
-        let links = crate::prototype_in::figma(n, &mut self.tally);
-        if !links.is_empty() {
-            self.links.push((id, links));
-        }
+        self.read_links(id, n);
         self.flags(id, n, kind);
         self.paint(id, n, kind, size);
         if let Some(style) = self.pending_type.take() {
@@ -406,6 +405,20 @@ impl Builder<'_> {
         }
     }
 
+    /// Node `n`'s prototype links, kept for layer `id` until every layer is made.
+    fn read_links(&mut self, id: NodeId, n: &Value) {
+        let links = crate::prototype_in::figma(n, &mut self.tally);
+        if !links.is_empty() {
+            self.links.push((id, links));
+        }
+    }
+
+    /// The links of node `n`, which the import leaves out, counted.
+    fn links_left_out(&mut self, n: &Value) {
+        let links = crate::prototype_in::figma(n, &mut self.tally);
+        crate::prototype_in::left_out(links, &mut self.tally);
+    }
+
     /// An open path drawn as its outlined stroke, the stroke's paints as fills.
     fn outlined(
         &mut self,
@@ -431,6 +444,7 @@ impl Builder<'_> {
             name: Some(str_of(n, "name").to_owned()),
         });
         self.nodes.insert(str_of(n, "id").to_owned(), id);
+        self.read_links(id, n);
         self.flags(id, n, "VECTOR");
         let size = size_of(n);
         let fills = self.paints(arr(n, "strokes"), size);
@@ -487,6 +501,7 @@ impl Builder<'_> {
             name: Some(str_of(n, "name").to_owned()),
         });
         self.nodes.insert(str_of(n, "id").to_owned(), id);
+        self.read_links(id, n);
         self.flags(id, n, "GROUP");
         self.push(Operation::CreateNode {
             id: f,

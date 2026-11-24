@@ -735,3 +735,24 @@ fn interactions_come_in_as_reactions_and_flows_as_flows() {
         .collect();
     assert_eq!(rows, [("Prototype interactions", "1")]);
 }
+
+/// A shape left out (an SVG layer) counts its interactions as left out.
+///
+/// flip: the `svg-raw` arm of `Builder::shape` not counting its links →
+/// fails at the rows.
+#[test]
+fn a_left_out_shape_counts_its_interactions() {
+    let mut raw = shape("raw", "svg-raw", "home", (10.0, 10.0, 40.0, 20.0));
+    raw["interactions"] = json!([
+        { "eventType": "click", "actionType": "prev-screen" },
+    ]);
+    let mut home = shape("home", "frame", ROOT, (0.0, 0.0, 200.0, 100.0));
+    home["shapes"] = json!(["raw"]);
+    let r = import(export(&["home"], vec![home, raw], &[]));
+    let rows: Vec<(&str, &str)> = r
+        .report
+        .iter()
+        .map(|u| (u.what, u.count.as_str()))
+        .collect();
+    assert!(rows.contains(&("Prototype interactions", "1")), "{rows:?}");
+}
