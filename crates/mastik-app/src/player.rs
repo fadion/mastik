@@ -1478,8 +1478,11 @@ impl crate::app::MastikApp {
             return;
         }
         let journal = self.session.history.take_journal();
-        for tx in &journal {
-            let _ = p.player.apply_edit(tx);
+        for a in &journal {
+            let _ = match a.restoring {
+                true => p.player.apply_restoring(&a.tx),
+                false => p.player.apply_edit(&a.tx),
+            };
         }
         if !journal.is_empty() {
             p.pulse_at = Some(now);

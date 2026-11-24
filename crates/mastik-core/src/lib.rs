@@ -140,7 +140,7 @@ pub use guide::{
     DEFAULT_GUIDE_COLOR, Guide, GuideAxis, GuideId, guide_coord_of, guide_point, guide_span,
 };
 pub use history::{
-    History, Origin, RedoStack, RevertError, SavedHistory, SavedStep, StepNote, StepView,
+    Applied, History, Origin, RedoStack, RevertError, SavedHistory, SavedStep, StepNote, StepView,
 };
 pub use id::{IdSource, NodeId, with_short_ids};
 pub use image::{

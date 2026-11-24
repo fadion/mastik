@@ -26,7 +26,10 @@ of its commands.
 The session's `History` keeps a journal of every transaction it applies — commits, undos,
 redos, reverts — while a player plays (`History::keep_journal`). Each pass the player takes the
 journal and hands each transaction to `Player::apply_edit`, so only commits reach it, never a
-gesture's preview, and commits arriving faster than it draws land together. A parked tab's
+gesture's preview, and commits arriving faster than it draws land together. An undo, redo or
+revert is journaled as a history step (`Applied::restoring`) and goes to
+`Player::apply_restoring`, which applies it as the editor did, so a value a file carried past
+an operation's check (a blur past the cap) comes back in play too. A parked tab's
 journal waits, and its player catches up when the tab is in front again. A document read in
 again starts play over from the same start.
 

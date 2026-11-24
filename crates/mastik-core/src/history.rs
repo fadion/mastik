@@ -162,7 +162,17 @@ pub struct History {
     next_serial: u64,
     /// While kept ([`Self::keep_journal`]), every transaction this history applied
     /// to the document, in order: what a prototype player follows the editor by.
-    journal: Option<Vec<Transaction>>,
+    journal: Option<Vec<Applied>>,
+}
+
+/// One transaction a [`History`] applied, as its journal keeps it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Applied {
+    pub tx: Transaction,
+    /// Applied through [`Document::apply_restoring`] (an undo, a redo or a
+    /// revert), so a follower applies it the same way: plain `apply` may refuse
+    /// a value the document held already.
+    pub restoring: bool,
 }
 
 impl History {
@@ -193,7 +203,7 @@ impl History {
 
     /// The transactions applied since the last take, oldest first; empty while
     /// the journal is not kept.
-    pub fn take_journal(&mut self) -> Vec<Transaction> {
+    pub fn take_journal(&mut self) -> Vec<Applied> {
         self.journal
             .as_mut()
             .map(std::mem::take)
@@ -201,8 +211,19 @@ impl History {
     }
 
     fn note_applied(&mut self, tx: &Transaction) {
+        self.note(tx, false);
+    }
+
+    fn note_restored(&mut self, tx: &Transaction) {
+        self.note(tx, true);
+    }
+
+    fn note(&mut self, tx: &Transaction, restoring: bool) {
         if let Some(j) = self.journal.as_mut() {
-            j.push(tx.clone());
+            j.push(Applied {
+                tx: tx.clone(),
+                restoring,
+            });
         }
     }
 
@@ -392,7 +413,7 @@ impl History {
                 return Err(e);
             }
         };
-        self.note_applied(&step.tx);
+        self.note_restored(&step.tx);
         self.redo.push(Step {
             tx: outcome.inverse,
             ..step
@@ -418,7 +439,7 @@ impl History {
                 return Err(e);
             }
         };
-        self.note_applied(&step.tx);
+        self.note_restored(&step.tx);
         self.undo.push(Step {
             tx: outcome.inverse,
             ..step
@@ -468,7 +489,7 @@ impl History {
         let mut tx = step.clone();
         tx.0.extend(carried_pictures(&[&unwound, doc], &reverted));
         let outcome = doc.apply_restoring(&tx).map_err(RevertError::Op)?;
-        self.note_applied(&tx);
+        self.note_restored(&tx);
         note.reverts = Some(serial);
         self.next_serial += 1;
         self.undo.push(Step {

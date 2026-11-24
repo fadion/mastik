@@ -1995,6 +1995,49 @@ fn live_update_keeps_play_state() {
     );
 }
 
+/// An undo the editor's journal hands over as a history step reaches the
+/// player even when it puts back a value plain `apply` refuses: a layer whose
+/// blur a file carried past the cap, deleted and undeleted.
+///
+/// flip: `Player::apply_restoring` following with plain `apply` → fails at
+/// "the player follows".
+#[test]
+fn an_undo_putting_back_a_refused_value_reaches_the_player() {
+    let (mut fx, a, _, _) = two_screens(Transition::INSTANT);
+    let blurred = fx.rect(a, "Blurred", 100.0, 50.0, 10.0, 10.0);
+    let past = mastik_core::effect::MAX_BLUR * 2.0;
+    fx.doc
+        .apply_restoring(&Transaction(vec![Operation::SetEffects {
+            id: blurred,
+            effects: mastik_core::keyed_by_position([mastik_core::Effect::new(
+                mastik_core::EffectKind::LayerBlur { radius: past },
+            )]),
+        }]))
+        .expect("a file's value, as the loader keeps it");
+    let mut p = fx.play(a);
+    let mut history = mastik_core::History::default();
+    history.keep_journal(true);
+    let delete = mastik_core::build::delete(&fx.doc, &[blurred]);
+    history.commit(&mut fx.doc, delete).unwrap();
+    history.undo(&mut fx.doc).unwrap();
+    let journal = history.take_journal();
+    assert_eq!(
+        journal.iter().map(|a| a.restoring).collect::<Vec<_>>(),
+        [false, true],
+        "the undo is journaled as a history step"
+    );
+    for a in &journal {
+        match a.restoring {
+            true => p.apply_restoring(&a.tx),
+            false => p.apply_edit(&a.tx),
+        }
+        .expect("the player follows");
+    }
+    assert!(p.base.get(blurred).is_some(), "the undo reached the player");
+    assert!(p.document().get(blurred).is_some());
+    assert!(p.base == fx.doc, "the player's document is the editor's");
+}
+
 /// The start screen deleted under an open overlay: the overlay closes as a
 /// navigation would, and the frame fallen back to becomes the start, so a
 /// take recorded now begins there and replays.

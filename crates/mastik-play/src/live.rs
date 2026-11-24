@@ -20,10 +20,27 @@ impl Player {
     /// started from either: the shell passed a commit of another document, or
     /// missed one. The player is unchanged then.
     pub fn apply_edit(&mut self, tx: &Transaction) -> Result<(), OpError> {
+        self.follow(tx, false)
+    }
+
+    /// [`Self::apply_edit`] for an undo, a redo or a revert, which the editor
+    /// applied with `Document::apply_restoring`: it puts back values the
+    /// document held, which plain `apply` may refuse.
+    pub fn apply_restoring(&mut self, tx: &Transaction) -> Result<(), OpError> {
+        self.follow(tx, true)
+    }
+
+    /// Follow one of the editor's transactions as [`Self::apply_edit`] says,
+    /// applied as a history step when `restoring`.
+    fn follow(&mut self, tx: &Transaction, restoring: bool) -> Result<(), OpError> {
         let played = self.played_tables();
         let began = self.start_frame();
-        self.base.apply(tx)?;
-        match self.doc.apply(tx) {
+        let apply = |doc: &mut mastik_core::Document| match restoring {
+            true => doc.apply_restoring(tx),
+            false => doc.apply(tx),
+        };
+        apply(&mut self.base)?;
+        match apply(&mut self.doc) {
             Ok(out) => {
                 self.res.update(&self.doc, &out.dirty);
                 let settled = self.res.settle(&mut self.doc);
