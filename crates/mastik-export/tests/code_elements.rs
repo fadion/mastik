@@ -413,3 +413,26 @@ fn an_annotation_is_written_atop_its_element() {
     assert!(at < el, "{html}");
     assert!(html.contains("<!-- 48 px - - touch target -->"), "{html}");
 }
+
+/// A note with a run of three dashes before `>` cannot close its comment: its
+/// tail stays inside, never live markup.
+/// flip: the note's escape as one `replace("--", "- -")` → fails at "no live
+/// markup".
+#[test]
+fn a_note_cannot_close_its_comment_early() {
+    let (mut doc, _, made) = doc_of(&[(0, frame(), "Card")], &[]);
+    doc.apply(&Transaction(vec![Operation::SetNote {
+        id: made[1],
+        text: "a ---> <b>x</b> <!--".into(),
+    }]))
+    .unwrap();
+    let res = Resolved::rebuild(&doc);
+    let html = file(&Target::Html.export(&doc, &res, &[made[0]]), "index.html");
+    let line = html
+        .lines()
+        .find(|l| l.contains("<b>x</b>"))
+        .expect("the note");
+    let inner = line.trim().strip_prefix("<!--").unwrap();
+    let inner = inner.strip_suffix("-->").expect("one comment");
+    assert!(!inner.contains("--"), "no live markup: {line}");
+}

@@ -441,7 +441,7 @@ impl Element {
                 let _ = match syntax {
                     Syntax::Jsx => writeln!(out, "{pad}{{/* {} */}}", line.replace("*/", "* /")),
                     Syntax::Html | Syntax::Vue => {
-                        writeln!(out, "{pad}<!-- {} -->", line.replace("--", "- -"))
+                        writeln!(out, "{pad}<!-- {} -->", super::comment_safe(line))
                     }
                 };
             }

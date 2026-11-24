@@ -88,14 +88,7 @@ impl Target {
             Target::Html | Target::Vue => {
                 let body: String = lines
                     .iter()
-                    .map(|l| {
-                        // `--` may not appear in a comment; `---` needs two passes.
-                        let mut l = l.clone();
-                        while l.contains("--") {
-                            l = l.replace("--", "- -");
-                        }
-                        format!("  {l}\n")
-                    })
+                    .map(|l| format!("  {}\n", comment_safe(l)))
                     .collect();
                 let path = match self {
                     Target::Html => "index.html",
@@ -307,6 +300,16 @@ impl Report {
             self.elements,
         ]
     }
+}
+
+/// `text` safe inside an HTML comment: no `--`, so nothing in it can close the
+/// comment. One `replace` is not enough, since `---` becomes `- --`.
+pub(crate) fn comment_safe(text: &str) -> String {
+    let mut text = text.to_owned();
+    while text.contains("--") {
+        text = text.replace("--", "- -");
+    }
+    text
 }
 
 /// `tokens.css`, the pictures and `report.txt`, which every emitter writes the
