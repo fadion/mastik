@@ -3689,12 +3689,20 @@ impl MastikApp {
 
     /// Prototype mode's cards for what is selected.
     pub(super) fn prototype_inspector(&mut self, ui: &mut egui::Ui) {
-        if self
-            .proto
-            .open
-            .is_some_and(|o| !self.session.selection.contains(o.node))
-        {
+        // An undo can take the open action away while its layer stays selected; a
+        // popover left naming it would be drawn nowhere yet still hold the lane.
+        let held = |o: &ActionAt| {
+            self.session.selection.contains(o.node)
+                && self.session.doc.get(o.node).is_some_and(|n| {
+                    n.reactions()
+                        .iter()
+                        .find(|r| r.id == o.reaction)
+                        .is_some_and(|r| find(&r.actions, o.action).is_some())
+                })
+        };
+        if self.proto.open.as_ref().is_some_and(|o| !held(o)) {
             self.proto.open = None;
+            self.proto.opened_on_canvas = false;
         }
         if self
             .proto
@@ -9761,6 +9769,39 @@ mod tests {
             to: Expr("true".into()),
         };
         assert_eq!(repicked_change(a, bool_, b, bool_, &typed), typed, "kept");
+    }
+
+    /// Undoing the step that added the open action closes its popover, though
+    /// its layer stays selected.
+    /// flip: `prototype_inspector`'s guard asking the selection alone → fails at
+    /// "the action is gone".
+    #[test]
+    fn undoing_an_open_actions_add_closes_its_popover() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        let open = one_action(&mut f, Action::Back);
+        f.app.session.selection.set_one(f.add);
+        f.app.proto.open = Some(open);
+        let frame = |app: &mut MastikApp| {
+            ctx.run_ui(Default::default(), |ui| {
+                ui.set_max_width(280.0);
+                app.inspector_ui(ui)
+            })
+        };
+        frame(&mut f.app);
+        assert_eq!(f.app.proto.open, Some(open), "fixture: open");
+        // As a canvas click leaves it, for the popover's first frame.
+        f.app.proto.opened_on_canvas = true;
+        f.app.undo();
+        f.app.session.selection.set_one(f.add);
+        assert!(
+            f.app.session.doc.get(f.add).unwrap().reactions().is_empty(),
+            "fixture: undone"
+        );
+        frame(&mut f.app);
+        assert_eq!(f.app.proto.open, None, "the action is gone");
+        assert!(!f.app.proto.opened_on_canvas);
     }
 
     /// Prototype mode is remembered by the library for the document, as the
