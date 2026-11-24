@@ -287,6 +287,58 @@ fn measure(doc: &Document, fonts: &[mastik_core::peniko::FontData]) -> Result<Me
     })
 }
 
+/// Where a document's browser player is found: `player_build`, or a test's
+/// stand-in, since no test builds one.
+pub(crate) type PlayerLookup = fn(&Document) -> Result<(Vec<u8>, String), String>;
+
+/// The HTML file of `doc` under its own export settings: the player `lookup`
+/// finds, packed with the document by `prototype::Parts`. What the card writes
+/// and `export_prototype` answers.
+pub(crate) fn html(doc: &Document, lookup: PlayerLookup) -> Result<String, String> {
+    let (wasm, glue) = lookup(doc)?;
+    let player = mastik_export::prototype::Player {
+        wasm: &wasm,
+        glue: &glue,
+    };
+    mastik_export::prototype::Parts::of(doc, player)
+        .map(|p| p.html())
+        .map_err(|e| e.to_string())
+}
+
+/// The name the export's files start with: the document's file name, or
+/// *Prototype* for one never saved.
+pub(crate) fn stem_of(path: Option<&std::path::Path>) -> String {
+    path.and_then(|p| p.file_stem())
+        .map_or_else(|| "Prototype".into(), |s| s.to_string_lossy().into_owned())
+}
+
+/// The HTML file's name under `settings`: `stem — flow.html` after the flow it
+/// opens on, or `stem.html` when no flow goes in.
+pub(crate) fn html_name(doc: &Document, settings: &PlayExport, stem: &str) -> String {
+    let every = every_flow(doc);
+    let refs: Vec<FlowRef> = every.iter().map(|(r, _)| *r).collect();
+    let chosen = live_flows(&settings.flows, &refs);
+    let flow = every
+        .into_iter()
+        .filter(|(r, _)| chosen.is_empty() || chosen.contains(r))
+        .find(|(r, _)| settings.opens.is_none_or(|o| o == *r))
+        .and_then(|(r, _)| {
+            let page = doc.page(r.page)?;
+            let at = page.flows.iter().position(|f| f.id == r.flow)?;
+            Some(crate::private::flow(&page.flows[at].name, at).into_owned())
+        })
+        .unwrap_or_default();
+    match flow.is_empty() {
+        true => format!("{stem}.html"),
+        false => format!("{stem} — {}.html", file_safe(&flow)),
+    }
+}
+
+/// The flow map's file name.
+pub(crate) fn flow_map_name(stem: &str) -> String {
+    format!("{stem} — Flow map.pdf")
+}
+
 /// *On a phone*'s choices: the setting, its words and its caption.
 const ON_PHONE: [(OnPhone, &str, &str); 2] = [
     (
@@ -582,7 +634,7 @@ impl MastikApp {
                     }
                 }
                 Output::FlowMap => {
-                    let name = format!("{} — Flow map.pdf", self.export_stem());
+                    let name = flow_map_name(&self.export_stem());
                     if let Some(path) = self.ask_path("PDF", "pdf", &name) {
                         self.export_flow_map_to(card.map_flows.clone(), path);
                         return;
@@ -888,11 +940,7 @@ impl MastikApp {
 
     /// The name the export's files start with: the document's file name.
     fn export_stem(&self) -> String {
-        self.session
-            .path
-            .as_ref()
-            .and_then(|p| p.file_stem())
-            .map_or_else(|| "Prototype".into(), |s| s.to_string_lossy().into_owned())
+        stem_of(self.session.path.as_deref())
     }
 
     /// Ask where to write a file of `ext`, offering `name`.
@@ -908,23 +956,7 @@ impl MastikApp {
     /// with the document when they changed, and write it on an export worker.
     fn export_prototype_from_card(&mut self, card: ExportCard) {
         let settings = card.settings.clone();
-        let every = every_flow(&self.session.doc);
-        let refs: Vec<FlowRef> = every.iter().map(|(r, _)| *r).collect();
-        let chosen = live_flows(&settings.flows, &refs);
-        let flow = every
-            .into_iter()
-            .filter(|(r, _)| chosen.is_empty() || chosen.contains(r))
-            .find(|(r, _)| settings.opens.is_none_or(|o| o == *r))
-            .and_then(|(r, _)| {
-                let page = self.session.doc.page(r.page)?;
-                let at = page.flows.iter().position(|f| f.id == r.flow)?;
-                Some(crate::private::flow(&page.flows[at].name, at).into_owned())
-            })
-            .unwrap_or_default();
-        let name = match flow.is_empty() {
-            true => format!("{}.html", self.export_stem()),
-            false => format!("{} — {}.html", self.export_stem(), file_safe(&flow)),
-        };
+        let name = html_name(&self.session.doc, &settings, &self.export_stem());
         let Some(path) = self.ask_path("HTML file", "html", &name) else {
             self.proto_export = Some(card);
             return;

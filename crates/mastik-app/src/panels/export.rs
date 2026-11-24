@@ -3401,15 +3401,7 @@ fn write_prototype(
     }
     // The file carries the faces the canvas draws with, registered on this thread.
     mastik_core::text::register_font_data(&resolved.text_fonts());
-    let made = crate::player_build(doc).and_then(|(wasm, glue)| {
-        let player = mastik_export::prototype::Player {
-            wasm: &wasm,
-            glue: &glue,
-        };
-        mastik_export::prototype::Parts::of(doc, player)
-            .map(|p| p.html())
-            .map_err(|e| e.to_string())
-    });
+    let made = crate::prototype_export::html(doc, crate::player_build);
     if !cancel.begin_write() {
         return Delivered::cancelled();
     }
