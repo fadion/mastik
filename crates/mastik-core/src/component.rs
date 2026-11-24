@@ -1185,12 +1185,26 @@ fn mains_inside_to_instances(
     if made.is_empty() {
         return made;
     }
+    // A layer linked into one of those mains keeps its source's reactions and
+    // scroll effect unmapped, as `make_copy_of` does: `remap_subtree` pointed
+    // them at the main's copy, which is no longer a main.
+    let made_inside = |id: NodeId| {
+        in_template.get(&id).is_some_and(|t| {
+            std::iter::once(*t)
+                .chain(above(t))
+                .any(|a| made.contains(&a.id))
+        })
+    };
     for (c, t) in copy.iter_mut().zip(template) {
         if made.contains(&t.id) {
             c.make_copy_of(t);
         } else {
             if t.link.is_some_and(|l| made.contains(&l)) {
                 c.link = t.link;
+            }
+            if t.link.is_some_and(made_inside) {
+                c.reactions = t.reactions.clone();
+                c.play = t.play.clone();
             }
             if t.swap.is_some_and(|s| made.contains(&s)) {
                 c.swap = t.swap;

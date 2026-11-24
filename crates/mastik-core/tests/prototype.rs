@@ -352,6 +352,76 @@ fn an_instance_holds_its_mains_targets_and_reads_its_own_layers() {
     );
 }
 
+/// Copying a frame holding a main and an instance of it leaves the instance
+/// copy holding the main's reactions as they are, not pointed at the main's
+/// copy, so they are no override and read as its own layers.
+///
+/// flip: `mains_inside_to_instances` not restoring a linked layer's reactions
+/// → fails at "the main's own list".
+#[test]
+fn a_copied_instance_beside_its_main_keeps_the_mains_targets() {
+    let (mut doc, mut ids, a, _) = two_frames();
+    let page = doc.pages()[0].id;
+    let (main, button, panel) = (ids.mint(), ids.mint(), ids.mint());
+    doc.apply(&Transaction(vec![
+        frame(main, a, 0, "Accordion"),
+        frame(button, main, 0, "Button"),
+        frame(panel, main, 1, "Panel"),
+        Operation::SetComponent {
+            id: main,
+            component: true,
+        },
+    ]))
+    .expect("a main");
+    let reactions = vec![on(
+        &mut ids,
+        Trigger::Click,
+        vec![Action::ScrollTo {
+            layer: panel,
+            transition: Transition::INSTANT,
+        }],
+    )];
+    doc.apply(&set(button, reactions.clone())).expect("taken");
+    let (tx, instance) =
+        mastik_core::build::place_instance(&doc, &mut ids, main, a, None).expect("placed");
+    doc.apply(&tx).expect("instance");
+    doc.apply(&Transaction(vec![Operation::SetName {
+        id: instance,
+        name: "Placed".into(),
+    }]))
+    .expect("named");
+
+    let (tx, made) = mastik_core::build::insert_subtrees(
+        &doc,
+        &mut ids,
+        &[mastik_core::Placement {
+            nodes: doc.capture_subtree(a).unwrap(),
+            parent: page,
+            index: None,
+        }],
+        mastik_core::kurbo::Vec2::ZERO,
+    );
+    doc.apply(&tx).expect("copied");
+    let under = |root: NodeId, name: &str| {
+        mastik_core::build::subtree_nodes(&doc, &[root])
+            .into_iter()
+            .find(|id| doc.get(*id).unwrap().name() == name)
+            .unwrap()
+    };
+    let placed = under(made[0], "Placed");
+    let (copy_button, copy_panel) = (under(placed, "Button"), under(placed, "Panel"));
+    assert_eq!(
+        doc.get(copy_button).unwrap().reactions(),
+        reactions,
+        "the main's own list"
+    );
+    assert_eq!(
+        mastik_core::prototype::resolve_target(&doc, copy_button, panel),
+        copy_panel,
+        "read as the instance's panel"
+    );
+}
+
 /// A fresh instance holds its main's scroll effect as it is, naming the main's
 /// frame, so it is no override; read, it is the instance's own frame.
 ///

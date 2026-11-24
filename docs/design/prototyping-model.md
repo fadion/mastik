@@ -165,4 +165,7 @@ variable counts as a target here, not as a binding, which the loader does refuse
   `remap_subtree` and then `Node::make_copy_of`, which puts the source's reactions and `play` (a
   scroll effect's frame) back unmapped; without it a fresh instance's would all be overrides and
   stop following the main. `an_instance_holds_its_mains_targets_and_reads_its_own_layers` and
-  `an_instances_scroll_effect_names_its_mains_frame` pin it.
+  `an_instances_scroll_effect_names_its_mains_frame` pin it. A copy holding a main and an instance
+  of it does the same for the instance's layers (`component::mains_inside_to_instances`), since
+  the main's copy becomes an instance too
+  (`a_copied_instance_beside_its_main_keeps_the_mains_targets`).
