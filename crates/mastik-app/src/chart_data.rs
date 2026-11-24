@@ -570,6 +570,30 @@ impl MastikApp {
         self.chart_data = Some(open);
     }
 
+    /// The chart window's edit `next` to chart `id`, held as `chart` and drawn
+    /// as `shown`: a mapping edit is the chart's own; one that changes the table
+    /// of a chart reading data set `set` is the set's, and the chart's mapping
+    /// follows it at the commit.
+    pub(crate) fn commit_chart_act(
+        &mut self,
+        id: NodeId,
+        chart: &Chart,
+        shown: &Chart,
+        set: Option<mastik_core::list::DataSetId>,
+        next: Chart,
+    ) {
+        match set {
+            Some(s) if next.table != shown.table => self.commit_data_table(s, next.table),
+            _ => self.commit_chart(
+                id,
+                Chart {
+                    source: chart.source.clone(),
+                    ..next
+                },
+            ),
+        }
+    }
+
     /// Write `table` as data set `set`'s, one undo step *Edit table*: every
     /// list over it is made again, a fill, filter test or sort key whose column
     /// is gone dropped.
@@ -828,18 +852,7 @@ impl MastikApp {
                 (Act::Import, _) => self.import_chart_data_dialog(id),
                 (Act::Table(t), Some(s)) => self.commit_data_table(s, t),
                 (Act::Table(t), None) => self.commit_table(id, &chart, t),
-                // A mapping edit is the chart's; a table edit is the set's, and
-                // the chart's mapping follows it at the commit.
-                (Act::Chart(c), Some(s)) if c.table != shown.table => {
-                    self.commit_data_table(s, c.table);
-                }
-                (Act::Chart(c), _) => self.commit_chart(
-                    id,
-                    Chart {
-                        source: chart.source.clone(),
-                        ..*c
-                    },
-                ),
+                (Act::Chart(c), set) => self.commit_chart_act(id, &chart, &shown, set, *c),
                 (Act::Copy(text), _) => ctx.copy_text(text),
                 (Act::Note(text), _) => self.session.info(text),
                 (Act::Gutter(_), _) => {}
@@ -2693,6 +2706,66 @@ mod tests {
         app.session.undo();
         assert_eq!(set_cell(&app), "42");
         assert_eq!(table_of(&app, id).rows[0][1], "42", "one undo step");
+    }
+
+    /// On a chart reading a data set, a window edit that only remaps columns is
+    /// the chart's own and leaves the set alone; one that changes the table is
+    /// the set's, which the chart follows.
+    /// flip: `commit_chart_act` sending every edit to `commit_data_table` →
+    /// fails at "the chart's mapping"; sending every edit to `commit_chart` →
+    /// fails at "the set loses the column".
+    #[test]
+    fn a_chart_on_a_set_remaps_itself_and_edits_the_sets_table() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = opened(&ctx);
+        let set = mastik_core::list::DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "Sales".into(),
+            table: table_of(&app, id),
+            source: None,
+            pictures: Vec::new(),
+        };
+        let sid = set.id;
+        app.move_chart_to_set(id, sid, Some(set));
+        let held = app.session.doc.get(id).unwrap().chart().unwrap().clone();
+        let set_table = |app: &MastikApp| app.session.doc.data_set(sid).unwrap().table.clone();
+        let shown = Chart {
+            table: set_table(&app),
+            ..held.clone()
+        };
+        assert!(
+            !held.mapping.series.is_empty(),
+            "fixture: the chart draws a series"
+        );
+        let before = set_table(&app);
+        let mut remapped = shown.clone();
+        remapped.mapping.series.clear();
+        app.commit_chart_act(id, &held, &shown, Some(sid), remapped);
+        let now = app.session.doc.get(id).unwrap().chart().unwrap().clone();
+        assert!(now.mapping.series.is_empty(), "the chart's mapping");
+        assert_eq!(set_table(&app), before, "the set untouched");
+
+        let held = app.session.doc.get(id).unwrap().chart().unwrap().clone();
+        let shown = Chart {
+            table: set_table(&app),
+            ..held.clone()
+        };
+        let mut cut = shown.clone();
+        let gone = cut.table.columns.last().unwrap().id;
+        let at = cut.table.index_of(gone).unwrap();
+        cut.table.columns.remove(at);
+        for r in &mut cut.table.rows {
+            r.remove(at);
+        }
+        app.commit_chart_act(id, &held, &shown, Some(sid), cut);
+        assert!(
+            set_table(&app).index_of(gone).is_none(),
+            "the set loses the column"
+        );
+        assert!(
+            table_of(&app, id).index_of(gone).is_none(),
+            "the chart follows"
+        );
     }
 
     /// *Data tables* opens on a document with no table; *New table* makes
