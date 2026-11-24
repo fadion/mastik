@@ -2406,6 +2406,55 @@ fn id_arguments_complete_by_name_and_run_on_what_they_name() {
     assert!(err.message.contains("script"), "{}", err.message);
 }
 
+/// A layer's reactions and play settings and its page's flows read in the
+/// shapes their verbs take, so a script copies them from one layer to others.
+/// flip: `props::read` answering nil for `reactions` → fails at "copied to
+/// both".
+#[test]
+fn prototype_properties_read_as_their_verbs_take_them() {
+    let mut h = TestHost::new();
+    let a = h.frame("A", 100.0, 100.0);
+    let b = h.frame("B", 100.0, 100.0);
+    let one = h.rect(a, "One", 0.0, 0.0, 10.0, 10.0);
+    let two = h.rect(a, "Two", 20.0, 0.0, 10.0, 10.0);
+    let three = h.rect(a, "Three", 40.0, 0.0, 10.0, 10.0);
+    h.make(
+        "set_reactions",
+        json!({ "nodes": [one.to_wire()], "reactions": [
+            { "trigger": "click", "actions": [{ "navigate": { "to": b.to_wire() } }] },
+        ] }),
+    );
+    h.make(
+        "set_play",
+        json!({ "nodes": [a.to_wire()], "play": { "scroll": "Vertical" } }),
+    );
+    let labels = FxHashMap::default();
+    let selected = [two, three];
+    let e = env(&selected, &labels);
+    run_script(
+        &mut h,
+        &e,
+        "sel.reactions = One.reactions\nB.play = A.play\nA.flows = { { name = \"Main\", start = A.id } }",
+    )
+    .unwrap();
+    let held = |h: &TestHost, id: NodeId| h.doc.get(id).unwrap().reactions().len();
+    assert_eq!((held(&h, two), held(&h, three)), (1, 1), "copied to both");
+    assert_eq!(
+        h.doc.get(two).unwrap().reactions()[0].value.actions[0].value,
+        h.doc.get(one).unwrap().reactions()[0].value.actions[0].value,
+        "the same action"
+    );
+    assert_eq!(
+        h.doc.get(b).unwrap().play(),
+        h.doc.get(a).unwrap().play(),
+        "the settings copied"
+    );
+    let out = run_script(&mut h, &e, "return One.flows[1].name").unwrap();
+    assert_eq!(out.copied.as_deref(), Some("Main"), "the page's flows");
+    let out = run_script(&mut h, &e, "return #Two.reactions[1].actions").unwrap();
+    assert_eq!(out.copied.as_deref(), Some("1"));
+}
+
 /// A run that fails part-way writes no table, and a write names what is wrong.
 #[test]
 fn tables_refuses_and_a_failed_run_writes_nothing() {

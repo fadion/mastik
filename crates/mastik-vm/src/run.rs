@@ -1873,6 +1873,9 @@ const MODELLED: &[&str] = &[
     "gap",
     "padding",
     "layout_item",
+    "reactions",
+    "play",
+    "flows",
 ];
 
 /// `v` as plain JSON for a verb's argument of `kind`, with no leap labels to read.
@@ -2072,6 +2075,56 @@ fn write_model(
             let item = plain_json(lua, &v, Some(ParamKind::Model("LayoutItem"))).map_err(fail)?;
             st.apply("set_layout_item", &json!({ "nodes": wires, "item": item }))
                 .map_err(fail)?;
+        }
+        "reactions" => {
+            let reactions = match &v {
+                Value::Nil => json!([]),
+                Value::Table(_) => {
+                    plain_json(lua, &v, Some(ParamKind::Model("[Reaction]"))).map_err(fail)?
+                }
+                _ => return Err(wrong()),
+            };
+            st.apply(
+                "set_reactions",
+                &json!({ "nodes": wires, "reactions": reactions }),
+            )
+            .map_err(fail)?;
+        }
+        "play" => {
+            let play = match &v {
+                Value::Nil => json!({}),
+                Value::Table(_) => {
+                    plain_json(lua, &v, Some(ParamKind::Model("LayerPlay"))).map_err(fail)?
+                }
+                _ => return Err(wrong()),
+            };
+            st.apply("set_play", &json!({ "nodes": wires, "play": play }))
+                .map_err(fail)?;
+        }
+        "flows" => {
+            let flows = match &v {
+                Value::Nil => json!([]),
+                Value::Table(_) => {
+                    plain_json(lua, &v, Some(ParamKind::Model("[Flow]"))).map_err(fail)?
+                }
+                _ => return Err(wrong()),
+            };
+            // Each page the layers are on, once.
+            let mut pages: Vec<NodeId> = Vec::new();
+            for id in ids {
+                if let Some(p) = st.host.doc().page_of(*id)
+                    && !pages.contains(&p)
+                {
+                    pages.push(p);
+                }
+            }
+            for page in pages {
+                st.apply(
+                    "set_flows",
+                    &json!({ "page": page.to_wire(), "flows": flows }),
+                )
+                .map_err(fail)?;
+            }
         }
         "direction" | "gap" | "padding" => {
             let (key, value) = match (prop, &v) {

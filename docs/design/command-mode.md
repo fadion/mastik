@@ -145,6 +145,8 @@ decision 2):
 | `layout` | a frame's flex or grid layout as its table, `{ Flex = { … } }` or `{ Grid = { … } }`, nil for none | `set_display`; nil turns it off |
 | `gap`, `padding`, `direction` | as laid out, a bound one at its variable's value: the layout's gap (no one value when its rows and columns differ), its padding (one number when the sides agree, else `{ top, right, bottom, left }`) and a flex layout's direction; nil without a layout | `set_display`, the rest of the layout kept; refused where nothing is laid out, and `direction` on a grid |
 | `layout_item` | how the layer sizes and places itself in its parent's layout, as its table (`{}` for the defaults): as authored, a bound limit at its variable's value, never the width a frame with width queries is laid at (`Document::bound_item`) | `set_layout_item` |
+| `reactions`, `play` | the layer's prototype reactions and settings, in the shapes MCP reads them (`verbs::reactions_value`, a transition left out where it is the page's default; `verbs::play_value`), so `others.reactions = a.reactions` copies them | `set_reactions` / `set_play`; nil clears |
+| `flows` | the flows of the page the layer is on (`verbs::play_value`); a page's own layer reads its own | `set_flows` on each page the layers are on; nil clears |
 | `id`, `kind`, `parent`, `children`, `prev`, `next` | read-only | — |
 
 **Read and write round-trip**: a read gives what is drawn in the model's own terms — a bound

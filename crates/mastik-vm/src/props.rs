@@ -278,6 +278,27 @@ pub static PROPERTIES: &[Property] = &[
         "How a layer sizes and places itself in its parent's layout: grow, basis, align_self…",
     ),
     prop(
+        "reactions",
+        PropType::Table,
+        true,
+        "reaction lists",
+        "The prototype reactions, each a trigger and its actions, as `set_reactions` takes them",
+    ),
+    prop(
+        "play",
+        PropType::Table,
+        true,
+        "prototype settings",
+        "The prototype settings: a frame's scroll, a child's pin, an input, as `set_play` takes them",
+    ),
+    prop(
+        "flows",
+        PropType::Table,
+        true,
+        "flow lists",
+        "The prototype flows of the page the layers are on, as `set_flows` takes them",
+    ),
+    prop(
         "id",
         PropType::Text,
         false,
@@ -903,6 +924,23 @@ pub(crate) fn read(doc: &Document, res: &Resolved, id: NodeId, prop: &str) -> Re
         "layout_item" => {
             serde_json::to_value(doc.bound_item(id)).map_or(Val::Nil, |v| short("layout_item", v))
         }
+        // A transition left out where it is the page's default, as
+        // `set_reactions` fills it back in on the page it writes to.
+        "reactions" => {
+            let base = doc
+                .page_of(id)
+                .and_then(|p| doc.page(p))
+                .map(|p| p.play.transition)
+                .unwrap_or_default();
+            Val::Json(mastik_core::verbs::reactions_value(node.reactions(), &base))
+        }
+        "play" => Val::Json(mastik_core::verbs::play_value(node.play())),
+        "flows" => doc
+            .page_of(id)
+            .and_then(|p| doc.page(p))
+            .map_or(Val::Nil, |p| {
+                Val::Json(mastik_core::verbs::play_value(&p.flows))
+            }),
         "name" => Val::Str(node.name().to_owned()),
         "visible" => Val::Bool(node.visible()),
         "locked" => Val::Bool(node.locked()),
