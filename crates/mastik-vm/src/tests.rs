@@ -2395,6 +2395,38 @@ fn tables_refuses_and_a_failed_run_writes_nothing() {
     assert_eq!(cells(&h, "Cart"), [["Shirt"]]);
 }
 
+/// A write to a table linked to a file is refused at its line, naming the
+/// file, and writes nothing.
+/// flip: `editable` not judging the set's `source` → fails at "refused at its
+/// line".
+#[test]
+fn a_write_to_a_linked_table_is_refused_at_its_line() {
+    let mut h = people();
+    let mut set = verbs::find_table(&h.doc, "People").unwrap().clone();
+    set.source = Some(mastik_core::chart::DataLink {
+        path: "C:/data/people.csv".into(),
+        size: 0,
+        modified: 0,
+        header: None,
+    });
+    h.doc
+        .apply(&Transaction(vec![mastik_core::Operation::SetDataSet {
+            id: set.id,
+            set: Some(Box::new(set)),
+        }]))
+        .unwrap();
+    let labels = FxHashMap::default();
+    let e = env(&[], &labels);
+    let src = "local n = 1\ntables.People:set(1, { Name = \"X\" })";
+    let err = run_script(&mut h, &e, src).unwrap_err();
+    assert_eq!(
+        (err.line, err.message.as_str()),
+        (Some(2), "People is linked to people.csv: unlink it first"),
+        "refused at its line"
+    );
+    assert_eq!(cells(&h, "People")[0][0], "Ada", "nothing written");
+}
+
 /// A number a script writes to a cell is written as Luau prints it, every
 /// digit kept.
 /// flip: `cell_text` writing a number through `format_number` → fails at
