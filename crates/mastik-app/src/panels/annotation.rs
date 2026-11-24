@@ -140,14 +140,20 @@ impl MastikApp {
                 ui.id().with(("annotation-mark", id)),
                 egui::Sense::hover(),
             );
-            if let Some(n) = self.session.doc.get(id) {
-                let words = match crate::private::on() {
-                    true => "Annotation hidden in private mode".to_string(),
-                    false => n.note().to_string(),
-                };
+            if let Some(words) = self.annotation_mark_words(id) {
                 hover.on_hover_text(words);
             }
         }
+    }
+
+    /// What hovering `id`'s mark reads: its note, or in private mode only that
+    /// one is hidden.
+    fn annotation_mark_words(&self, id: NodeId) -> Option<String> {
+        let n = self.session.doc.get(id)?;
+        Some(match crate::private::on() {
+            true => "Annotation hidden in private mode".to_string(),
+            false => n.note().to_string(),
+        })
     }
 }
 
@@ -250,6 +256,53 @@ mod tests {
             marks(&ctx, &app, None).len(),
             2,
             "every mark with the switch on"
+        );
+    }
+
+    /// Private mode hides a layer's annotation in the identity card's field and
+    /// in its mark's hover text, and says so.
+    /// flip: `annotation_field` filling the field with the note in private mode →
+    /// fails at "the field hides it"; `annotation_mark_words` giving the note →
+    /// fails at "the mark hides it".
+    #[test]
+    fn private_mode_hides_an_annotation() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, frame, _) = fixture(&ctx);
+        let field = |app: &mut MastikApp| {
+            let out = ctx.run_ui(Default::default(), |ui| app.annotation_field(ui, frame));
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            field(&mut app).iter().any(|t| t.contains("Swipes left")),
+            "control: the field shows the note"
+        );
+        assert_eq!(
+            app.annotation_mark_words(frame).as_deref(),
+            Some("Swipes left"),
+            "control: the mark reads it"
+        );
+        crate::private::set(true);
+        let drawn = field(&mut app);
+        let mark = app.annotation_mark_words(frame);
+        crate::private::set(false);
+        assert!(
+            !drawn.iter().any(|t| t.contains("Swipes"))
+                && drawn
+                    .iter()
+                    .any(|t| t == "Annotation hidden in private mode"),
+            "the field hides it: {drawn:?}"
+        );
+        assert_eq!(
+            mark.as_deref(),
+            Some("Annotation hidden in private mode"),
+            "the mark hides it"
         );
     }
 
