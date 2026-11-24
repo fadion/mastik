@@ -7363,8 +7363,30 @@ impl MastikApp {
                     let w = ui.available_width() - ui::CONTROL_H - COL;
                     let half = (w - COL) / 2.0;
                     let key = DraftKey::FlowName(f.id);
-                    if let Some(n) = app.name_draft_field(ui, key, &f.name, half, "Flow name", None)
-                    {
+                    // Private mode shows the name masked by its place, in a
+                    // field that does not rename, as the page header does.
+                    let renamed = match crate::private::on() {
+                        true => {
+                            let mut shown = crate::private::flow(&f.name, n).into_owned();
+                            let field = ui
+                                .add_enabled_ui(false, |ui| {
+                                    ui::text_field(
+                                        ui,
+                                        egui::vec2(half, ui::CONTROL_H),
+                                        &mut shown,
+                                        "Flow name",
+                                    )
+                                })
+                                .inner;
+                            let id = egui::Id::new(("masked-flow-name", f.id));
+                            if ui.interact(field.rect, id, egui::Sense::click()).clicked() {
+                                app.session.info(crate::private::DECLINE_RENAME);
+                            }
+                            None
+                        }
+                        false => app.name_draft_field(ui, key, &f.name, half, "Flow name", None),
+                    };
+                    if let Some(n) = renamed {
                         let list = flows
                             .iter()
                             .map(|x| match x.id == f.id {
@@ -9265,6 +9287,47 @@ mod tests {
         let masked = words(&f.app);
         crate::private::set(false);
         assert_eq!(masked, vec!["Flow 2"], "its place among the page's flows");
+    }
+
+    /// The Flows card's name field shows a flow's name masked by its place in
+    /// private mode, as every other flow name is.
+    /// flip: `flows_card` drawing `name_draft_field` in private mode → fails at
+    /// "masked in the card".
+    #[test]
+    fn the_flows_card_masks_a_flows_name() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let page = f.app.session.page;
+        assert!(f.app.session.commit(Transaction(vec![Operation::SetFlows {
+            id: page,
+            flows: vec![Keyed::new(
+                item(1),
+                Flow {
+                    name: "Zqx checkout".into(),
+                    start: f.cart,
+                    modes: Vec::new(),
+                    values: Vec::new(),
+                },
+            )],
+        }])));
+        let drawn = |app: &mut MastikApp| {
+            let out = ctx.run_ui(Default::default(), |ui| app.flows_card(ui));
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<String>()
+        };
+        assert!(drawn(&mut f.app).contains("Zqx"), "control: the name shows");
+        crate::private::set(true);
+        let masked = drawn(&mut f.app);
+        crate::private::set(false);
+        assert!(
+            masked.contains("Flow 1") && !masked.contains("Zqx"),
+            "masked in the card: {masked}"
+        );
     }
 
     /// A manual overlay's ghost sits at its offset from the opening layer's
