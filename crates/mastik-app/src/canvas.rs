@@ -9748,9 +9748,7 @@ impl MastikApp {
         // is empty, wherever it sits on the page.
         let doc = &self.session.doc;
         for l in mastik_core::list::lists(doc) {
-            if !ids.contains(&l)
-                && doc.page_of(l) == Some(self.session.page)
-                && (self.session.selection.contains(l) || crate::list_data::list_is_empty(doc, l))
+            if !ids.contains(&l) && doc.page_of(l) == Some(self.session.page) && self.list_tabbed(l)
             {
                 ids.push(l);
             }
@@ -9760,6 +9758,12 @@ impl MastikApp {
             ids.push(entered);
         }
         ids
+    }
+
+    /// Whether list `l` wears its tab off the page's top level: while selected,
+    /// or while its table is empty.
+    fn list_tabbed(&self, l: NodeId) -> bool {
+        self.session.selection.contains(l) || crate::list_data::list_is_empty(&self.session.doc, l)
     }
 
     /// Where a frame's name tag sits, and its text: above the top-left corner and
@@ -9780,8 +9784,10 @@ impl MastikApp {
         let entered = self.entered_instance() == Some(id);
         let is_list = node.list().is_some();
         // An entered instance is tagged wherever it sits: the tag says how to leave.
-        // A list is tagged where `canvas_tags` puts it.
-        if !crate::app::wears_tag(&self.session.doc, id) && !entered && !is_list {
+        // A list is tagged where `canvas_tags` puts it, so an annotation's mark
+        // never hangs off a tab that is not drawn.
+        let tabbed = is_list && self.list_tabbed(id);
+        if !crate::app::wears_tag(&self.session.doc, id) && !entered && !tabbed {
             return None;
         }
         if !self.shown_visible(id) {

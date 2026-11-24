@@ -1319,6 +1319,61 @@ mod tests {
         assert_eq!(app.list_row_moved, None, "the note goes with a new pick");
     }
 
+    /// A list inside a frame wears its tab, and so hangs an annotation's mark
+    /// after it, only while selected or empty; unselected with rows, it has no
+    /// tab and its mark goes outside its corner like any layer's.
+    /// flip: `frame_label` answering for every list → fails at "no tab".
+    #[test]
+    fn a_nested_list_has_a_tab_only_while_selected_or_empty() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let page = app.session.doc.first_page().to_wire();
+        let frame = serde_json::to_value(NodeKind::Artboard {
+            size: mastik_core::kurbo::Size::new(600.0, 600.0),
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        })
+        .unwrap();
+        let screen = verb(
+            &mut app,
+            "create_node",
+            json!({ "parent": page, "kind": frame, "name": "Screen", "x": 500, "y": 400 }),
+        )[0];
+        let main = mastik_core::component::main_of(&app.session.doc, inst).unwrap();
+        let inner = verb(
+            &mut app,
+            "create_instance",
+            json!({ "main": main.to_wire(), "parent": screen.to_wire(), "x": 20, "y": 20 }),
+        )[0];
+        let (l, _) = listed(&mut app, inner, &["A", "B"]);
+        assert_eq!(
+            app.session.doc.get(l).and_then(|n| n.parent()),
+            Some(screen),
+            "fixture: the list sits in the frame"
+        );
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 800.0));
+        let tagged = |app: &mut MastikApp| {
+            let mut out = false;
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(rect),
+                    ..Default::default()
+                },
+                |ui| out = app.frame_label(ui, l, rect, 1.0).is_some(),
+            );
+            out
+        };
+        app.session.selection.clear();
+        let corner = app.selection_quad(l, rect, 1.0).map(|q| q[0]);
+        assert!(
+            corner.is_some_and(|c| rect.contains(c)),
+            "fixture: the list is on screen at {corner:?}"
+        );
+        assert!(!tagged(&mut app), "no tab");
+        app.session.selection.set_one(l);
+        assert!(tagged(&mut app), "a tab while selected");
+    }
+
     /// The moved-row note goes with an undo of the delete, and when the
     /// inspector shows another layer.
     /// flip: `document_rewound` keeping `list_row_moved` → fails at "undo";
