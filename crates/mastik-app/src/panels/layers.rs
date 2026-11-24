@@ -2604,7 +2604,7 @@ impl MastikApp {
         Some(cursor)
     }
 
-    fn drop_is_legal(&self, dragged: NodeId, parent: NodeId) -> bool {
+    pub(super) fn drop_is_legal(&self, dragged: NodeId, parent: NodeId) -> bool {
         let Some(node) = self.session.doc.get(dragged) else {
             return false;
         };
@@ -2621,8 +2621,14 @@ impl MastikApp {
                 && matches!(node.kind(), NodeKind::Slice { .. }))
             && (doc.frame_may_sit_under(parent) || !doc.holds_a_frame(dragged))
             && mastik_core::component::can_hold(doc, parent, dragged)
-            // A list frame holds its template and copies only (`list::bad_templates`).
-            && (parent_node.list().is_none() || node.parent() == Some(parent))
+            // A list frame holds its template and copies only, and keeps them
+            // (`list::bad_templates`): nothing enters one, nothing leaves one.
+            && (node.parent() == Some(parent)
+                || (parent_node.list().is_none()
+                    && node
+                        .parent()
+                        .and_then(|p| doc.get(p))
+                        .is_none_or(|p| p.list().is_none())))
     }
 
     /// The x-range of the tree in view, inset by its padding: where a row's tint,

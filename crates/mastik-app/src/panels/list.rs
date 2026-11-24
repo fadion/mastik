@@ -1147,6 +1147,21 @@ mod tests {
         }
     }
 
+    /// The layers tree offers no drop that takes a list's template out of its
+    /// list, while a reorder inside the list stays legal.
+    /// flip: `drop_is_legal` guarding only the destination → fails at "stays in
+    /// its list".
+    #[test]
+    fn a_lists_template_cannot_be_dragged_out() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let (l, _) = listed(&mut app, inst, &["A", "B"]);
+        let page = app.session.doc.first_page();
+        let template = list::template(&app.session.doc, l).expect("the template");
+        assert!(app.drop_is_legal(template, l), "a reorder in the list");
+        assert!(!app.drop_is_legal(template, page), "stays in its list");
+    }
+
     /// An *Update* whose read lands after *Unlink* writes nothing: the set stays
     /// unlinked with its table, and the landing adds no step.
     /// flip: `replace_data_set_table` not checking the set's link → fails at
