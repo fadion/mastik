@@ -224,6 +224,35 @@ fn edit_table_edits_in_one_step() {
     assert!(doc == before, "one undo takes the edit back");
 }
 
+/// A number sent as JSON is written in its shortest form, a whole float with
+/// no `.0`; one sent as a string keeps its spelling.
+/// flip: `CellIn::text` writing every number as serde prints it → fails at
+/// "no trailing .0".
+#[test]
+fn a_number_sent_to_a_cell_is_written_in_its_shortest_form() {
+    let (mut doc, mut ids, _) = blank();
+    let mut h = History::default();
+    let set = people(&mut h, &mut doc, &mut ids, json!([["Ana", "31"]]));
+    let numbers = serde_json::from_str::<Value>(r#"[1.50, 1e3, 7, "1.50", "007"]"#).unwrap();
+    let mut written = Vec::new();
+    for v in numbers.as_array().unwrap() {
+        let s = json!({ "row": 1, "column": "Age", "value": v });
+        run(
+            &mut h,
+            &mut doc,
+            &mut ids,
+            "edit_table",
+            json!({ "table": "People", "set": [s] }),
+        );
+        written.push(cells(&doc, set)[0][1].clone());
+    }
+    assert_eq!(written[0], "1.5", "the shortest form");
+    assert_eq!(written[1], "1000", "no trailing .0");
+    assert_eq!(written[2], "7");
+    assert_eq!(written[3], "1.50", "a string keeps its spelling");
+    assert_eq!(written[4], "007");
+}
+
 /// Every cell edit of a linked table is refused naming its file; a row past
 /// the end is refused with the row count; a name matching no table, or two,
 /// is refused listing the tables.

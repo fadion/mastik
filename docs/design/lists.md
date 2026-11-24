@@ -446,9 +446,12 @@ The tables and lists for agents, Command Mode and scripts: registry verbs (`verb
 MCP's Phase 3 (`mcp.md`), each acting as its door in the app.
 
 - **Naming.** A table is named by id or name (`verbs::find_table`); a name matching none or
-  several is refused listing the tables. Rows count from 1. Cells are text in and out, a number
-  or true/false sent in kept as its text, and the table models are read as written
-  (`verbs::as_written`), since cells and column names are the person's words.
+  several is refused listing the tables. Rows count from 1. Cells are text in and out, and the
+  table models are read as written (`verbs::as_written`), since cells and column names are the
+  person's words. A number or true/false sent in is written as text too, but JSON has parsed a
+  number before the verb sees it, so it is stored in its shortest form (`1.50` as `1.5`, `1e3`
+  as `1000`): a caller keeps a spelling — a price's trailing zero, a code's leading one — by
+  sending the cell as a string.
 - **`add_table(name?, columns?, rows?)`** is *New table*: *Table N* unnamed, a taken name
   numbered past and said; with no columns, *Column 1* and one empty row. Answers its id.
 - **`edit_table(table, set?, add?, at?, delete?, columns?)`** is one *Edit table*: `columns`

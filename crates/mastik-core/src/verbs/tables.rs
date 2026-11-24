@@ -13,7 +13,10 @@ use crate::variant::PropKind;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
-/// A cell as a caller sends it: text, or a number or true/false, kept as written.
+/// A cell as a caller sends it: text, kept as written, or a number or
+/// true/false. JSON has parsed a number before the verb sees it, so its
+/// spelling is gone: it is written in its shortest form (`1.50` as `1.5`, `1e3`
+/// as `1000`), and a caller keeps a spelling by sending the cell as text.
 #[derive(Deserialize)]
 #[serde(untagged)]
 pub(super) enum CellIn {
@@ -26,7 +29,10 @@ impl CellIn {
     fn text(self) -> String {
         match self {
             CellIn::Text(s) => s,
-            CellIn::Number(n) => n.to_string(),
+            // An integer as JSON gave it; a float as Rust writes it, which
+            // drops serde's trailing `.0` from a whole one.
+            CellIn::Number(n) if n.is_i64() || n.is_u64() => n.to_string(),
+            CellIn::Number(n) => n.as_f64().map_or_else(|| n.to_string(), |x| x.to_string()),
             CellIn::Bool(b) => b.to_string(),
         }
     }
