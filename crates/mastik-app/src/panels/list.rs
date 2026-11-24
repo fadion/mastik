@@ -564,6 +564,13 @@ impl MastikApp {
                         let mut l = now.clone();
                         l.filter.tests.remove(i);
                         next = Some(l);
+                        // A test has no id of its own: a refused value's draft,
+                        // keyed by place, would move onto the test taking it.
+                        if self.proto.draft.as_ref().is_some_and(|d| {
+                            matches!(d.key, super::prototype::DraftKey::ListTest(l, _) if l == id)
+                        }) {
+                            self.proto.draft = None;
+                        }
                     }
                 });
                 if set.table.index_of(t.column).is_none() {
@@ -1145,6 +1152,86 @@ mod tests {
             assert_eq!(x.copies.len(), 2, "every list over it follows");
             assert_eq!(x.fill[0].column, title, "kept by name");
         }
+    }
+
+    /// A refused value typed into a filter test does not move onto the test
+    /// taking its place when a test above it is removed.
+    /// flip: the remove button keeping the draft → fails at "not moved".
+    #[test]
+    fn a_refused_test_draft_stays_with_its_test() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, inst) = with_row(&ctx);
+        let (l, _) = listed(&mut app, inst, &["A", "B"]);
+        let mut next = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        for v in ["\"A\"", "\"B\"", "\"C\""] {
+            next.filter.tests.push(list::Test {
+                column: ColumnId(0),
+                op: list::TestOp::Is,
+                value: mastik_core::prototype::Expr(v.into()),
+            });
+        }
+        app.list_commit(l, "List filter", next);
+        app.proto.draft = Some(
+            crate::ui::Draft::new(
+                &ctx,
+                super::super::prototype::DraftKey::ListTest(l, 1),
+                "zz(".into(),
+            )
+            .refuse("Not read".into()),
+        );
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                ui.set_max_width(280.0);
+                let now = app.session.doc.get(l).unwrap().list().unwrap().clone();
+                app.list_filter_rows(ui, l, &now);
+            })
+        };
+        let at = |out: &egui::FullOutput, text: &str| -> Vec<egui::Pos2> {
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == text => {
+                        Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut out = frame(&mut app, vec![]);
+        for _ in 0..3 {
+            out = frame(&mut app, vec![]);
+        }
+        assert_eq!(at(&out, "zz(").len(), 1, "fixture: the refused draft shows");
+        let mut xs = at(&out, crate::theme::icon::X);
+        xs.sort_by(|a, b| a.y.total_cmp(&b.y));
+        assert_eq!(xs.len(), 3, "fixture: a remove per test");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: xs[0],
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(
+            &mut app,
+            vec![egui::Event::PointerMoved(xs[0]), press(true)],
+        );
+        frame(&mut app, vec![press(false)]);
+        let mut out = frame(&mut app, vec![]);
+        for _ in 0..3 {
+            out = frame(&mut app, vec![]);
+        }
+        let tests = &app.session.doc.get(l).unwrap().list().unwrap().filter.tests;
+        assert_eq!(tests.len(), 2, "fixture: the first test removed");
+        assert!(at(&out, "zz(").is_empty(), "not moved");
     }
 
     /// The layers tree offers no drop that takes a list's template out of its
