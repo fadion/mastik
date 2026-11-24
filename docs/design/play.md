@@ -337,8 +337,10 @@ or no scrolling frame above, means no effect (`effect_now`).
   way. An overlay opens by the same kinds over its own place and closes by them in reverse; its
   backdrop fades with it.
 - **Smart animate between frames** pairs layers by path below each frame: each step the layer's
-  name, or for a layer of an instance the lineage key of the main layer it follows, and which of
-  its siblings with that key it is — so a pair's parents are paired too. Both ends are laid out
+  name, or for an instance the lineage key of its main — of the main's set when the main is a
+  variant, since variant roots share no lineage, so a toggle showing *Off* in one frame and *On*
+  in the next morphs — and which of its siblings with that key it is, so a pair's parents are
+  paired too. Both ends are laid out
   when it starts and never again. A paired layer's transform (moved, turned the short way, scaled
   and sheared, each interpolated), box size, opacity and corner radii (a polygon's or star's one)
   interpolate; so do fills and strokes, brush by brush, when both ends have as many (and stroke

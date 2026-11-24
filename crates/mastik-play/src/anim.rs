@@ -13,7 +13,7 @@ use mastik_core::prototype::{
     Direction, ScrollAxis, ScrollProp, Timing, Transition, TransitionKind,
 };
 use mastik_core::{
-    Brush, BrushSource, Effect, EffectKind, Keyed, NodeId, Paint, Shadow, subtree_nodes,
+    Brush, BrushSource, Effect, EffectKind, Keyed, NodeId, Paint, Shadow, subtree_nodes, variant,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -484,11 +484,17 @@ impl Player {
                 let Some(child) = self.doc.get(*c) else {
                     continue;
                 };
+                // An instance pairs by its main, and an instance of a variant by
+                // its set, so a toggle showing *Off* in one frame and *On* in the
+                // next morphs between them: variant roots share no lineage.
                 let key = match child.link() {
-                    Some(main) => format!(
-                        "\u{1}{}",
-                        self.doc.get(main).map_or(main, |m| m.lineage()).to_wire()
-                    ),
+                    Some(main) => {
+                        let by = variant::set_of(&self.doc, main).unwrap_or(main);
+                        format!(
+                            "\u{1}{}",
+                            self.doc.get(by).map_or(by, |m| m.lineage()).to_wire()
+                        )
+                    }
                     None => child.name().to_owned(),
                 };
                 let k = seen.entry(key.clone()).or_insert(0);

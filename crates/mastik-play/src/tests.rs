@@ -957,6 +957,84 @@ fn smart_animate_with_no_side_fades() {
     assert_eq!(n.transform, None, "not moved");
 }
 
+/// Smart animate pairs an instance of one variant with an instance of another
+/// variant of the same set: the toggle moves between its places rather than
+/// one leaving and the other arriving.
+///
+/// flip: `Player::paths` keying an instance by its main's lineage alone →
+/// fails at "the variants pair".
+#[test]
+fn smart_animate_pairs_two_variants_of_one_set() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let b = fx.frame("B", 300.0, 200.0, 100.0);
+    let set = fx.frame("Toggle", 600.0, 200.0, 100.0);
+    let off = fx.node(set, "Off", frame_kind(40.0, 20.0), (0.0, 0.0));
+    let on = fx.node(set, "On", frame_kind(40.0, 20.0), (100.0, 0.0));
+    let mut ops: Vec<Operation> = [off, on]
+        .iter()
+        .map(|id| Operation::SetComponent {
+            id: *id,
+            component: true,
+        })
+        .collect();
+    ops.push(Operation::SetVariantSet {
+        id: set,
+        set: Some(VariantSet {
+            props: vec![VariantProp::new("On", vec!["Off".into(), "On".into()])],
+        }),
+    });
+    for (id, v) in [(off, "Off"), (on, "On")] {
+        ops.push(Operation::SetVariant {
+            id,
+            values: vec![v.into()],
+        });
+    }
+    fx.apply(ops);
+    let mut place = |main: NodeId, parent: NodeId, at: (f64, f64)| {
+        let (tx, made) = mastik_core::insert_subtrees(
+            &fx.doc,
+            &mut fx.ids,
+            &[Placement {
+                nodes: fx.doc.capture_subtree(main).unwrap(),
+                parent,
+                index: None,
+            }],
+            Default::default(),
+        );
+        fx.apply(tx.0);
+        fx.apply(vec![Operation::SetTransform {
+            id: made[0],
+            transform: Affine::translate(at),
+        }]);
+        made[0]
+    };
+    let from = place(off, a, (10.0, 10.0));
+    let to = place(on, b, (50.0, 40.0));
+    let go = fx.rect(a, "Go", 150.0, 60.0, 20.0, 20.0);
+    fx.on(
+        go,
+        Trigger::Click,
+        vec![Action::Navigate {
+            to: b,
+            transition: linear(TransitionKind::SmartAnimate, 100),
+            keep_scroll: false,
+        }],
+    );
+    let mut p = fx.play(a);
+    assert_eq!(p.doc.get(to).and_then(|n| n.link()), Some(on), "fixture");
+    click(&mut p, 155.0, 65.0);
+    p.tick(50.0);
+    let s = p.scene();
+    let patch = |id| s.patches.iter().find(|x| x.node == id).cloned();
+    assert_eq!(
+        patch(to).and_then(|x| x.transform).map(|t| t.translation()),
+        Some(Vec2::new(30.0, 25.0)),
+        "the variants pair"
+    );
+    assert_eq!(patch(from).and_then(|x| x.visible), Some(false), "hidden");
+}
+
 /// A spring-timed transition settles and ends.
 ///
 /// flip: `advance_anims` never ending the screen animation → fails at "ended".
