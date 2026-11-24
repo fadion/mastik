@@ -43,7 +43,7 @@ const FILES_BUDGET: usize = 16 * 1024 * 1024;
 /// A raster past [`EXPORT_PIXELS`] is refused before anything is drawn, and
 /// the answer stops once its files pass [`FILES_BUDGET`]. `rows` keeps a
 /// *One file per row* setting to those rows; a run of rows past the budget is
-/// refused naming how many fit.
+/// refused naming how many fit, and one past the table's end naming its rows.
 pub(super) fn run_exports(
     s: &EditorSession,
     ids: Option<Vec<NodeId>>,
@@ -61,7 +61,20 @@ pub(super) fn run_exports(
     };
     let mut plan = mastik_export::plan(&s.doc, &s.resolved, &subjects, opts);
     if let Some(rows) = &rows {
+        let longest = plan.iter().filter_map(|f| f.row).max().map(|r| r + 1);
         plan.retain(|f| f.row.is_none_or(|r| rows.contains(&r)));
+        if let Some(n) = longest
+            && !plan.iter().any(|f| f.row.is_some())
+        {
+            let has = crate::ui::count_as(n, "row", "rows");
+            return Err(match rows.start >= n {
+                true => format!(
+                    "The longest table has {has}, so `rows` from {} is past its end",
+                    rows.start + 1
+                ),
+                false => format!("`rows` asks for no row; the longest table has {has}"),
+            });
+        }
     }
     if plan.is_empty() {
         return Err("No layer has export settings: add them with `set_exports`.".into());
@@ -90,15 +103,32 @@ pub(super) fn run_exports(
     let mut listed = Vec::new();
     let mut files = Vec::new();
     let mut total = 0;
-    // The rows whose files have all fit so far, for the refusal's advice.
-    let mut fitted: Vec<usize> = Vec::new();
+    // Each row's bytes drawn so far and how many files they are, and the bytes
+    // of the files that are no row's, for the refusal's advice.
+    let mut drawn: Vec<RowDrawn> = Vec::new();
+    let mut plain = 0;
     for file in &plan {
         let entry = match mastik_export::plan::render(doc, &s.resolved, file) {
             Some(bytes) => {
                 total += bytes.len();
+                match file.row {
+                    Some(row) => match drawn.iter_mut().find(|d| d.row == row) {
+                        Some(d) => {
+                            d.bytes += bytes.len();
+                            d.files += 1;
+                        }
+                        None => drawn.push(RowDrawn {
+                            row,
+                            bytes: bytes.len(),
+                            files: 1,
+                        }),
+                    },
+                    None => plain += bytes.len(),
+                }
                 if total > FILES_BUDGET {
                     let mb = FILES_BUDGET / (1024 * 1024);
-                    let fit = fitted.iter().filter(|r| Some(**r) != file.row).count();
+                    let files_of = |r| plan.iter().filter(|f| f.row == Some(r)).count();
+                    let fit = rows_that_fit(&drawn, files_of, FILES_BUDGET.saturating_sub(plain));
                     let from = rows.as_ref().map_or(1, |r| r.start + 1);
                     return Err(match file.row {
                         Some(_) if fit > 0 => format!(
@@ -116,11 +146,6 @@ pub(super) fn run_exports(
                         ),
                     });
                 }
-                if let Some(r) = file.row
-                    && !fitted.contains(&r)
-                {
-                    fitted.push(r);
-                }
                 let mut entry = json!({ "path": file.path, "layer": file.node.to_wire(), "bytes": bytes.len() });
                 if let Some(r) = file.row {
                     entry["row"] = json!(r + 1);
@@ -137,6 +162,33 @@ pub(super) fn run_exports(
         listed.push(entry);
     }
     Ok(Answer::Files(json!({ "files": listed }), files))
+}
+
+/// One table row's files drawn so far by `run_exports`.
+struct RowDrawn {
+    row: usize,
+    bytes: usize,
+    files: usize,
+}
+
+/// How many rows, from the first drawn, an answer of `room` bytes carries:
+/// each row's bytes so far scaled to all `files_of(row)` of its files, since
+/// a second setting's files for a row are drawn only after the first
+/// setting's for every row.
+fn rows_that_fit(drawn: &[RowDrawn], files_of: impl Fn(usize) -> usize, room: usize) -> usize {
+    let mut order: Vec<&RowDrawn> = drawn.iter().collect();
+    order.sort_by_key(|d| d.row);
+    let mut left = room;
+    let mut fit = 0;
+    for d in order {
+        let whole = d.bytes * files_of(d.row).max(d.files) / d.files.max(1);
+        if whole > left {
+            break;
+        }
+        left -= whole;
+        fit += 1;
+    }
+    fit
 }
 
 /// Layers as code, with the three lists of what it could not say exactly.
@@ -561,6 +613,30 @@ mod tests {
         Cell, CollectionId, KitMode, KitModes, Mode, VarKind, VarOrigin, Variable,
     };
     use mastik_core::{IdSource, Operation, Transaction};
+
+    /// Two settings over 100 rows, the budget passed at the second setting's
+    /// row 11: the advice counts both files of a row, so it asks for rows that
+    /// then fit, not for the 99 rows the first setting drew.
+    ///
+    /// flip: `rows_that_fit` counting a row's bytes so far without scaling to
+    /// its files → fails at "both files of a row".
+    #[test]
+    fn the_advice_counts_every_file_of_a_row() {
+        let mut drawn: Vec<RowDrawn> = (0..100)
+            .map(|row| RowDrawn {
+                row,
+                bytes: 1000,
+                files: 1,
+            })
+            .collect();
+        for d in drawn.iter_mut().take(11) {
+            d.bytes += 1000;
+            d.files += 1;
+        }
+        let fit = rows_that_fit(&drawn, |_| 2, 110_000);
+        assert_eq!(fit, 55, "both files of a row");
+        assert_eq!(rows_that_fit(&drawn, |_| 2, 1999), 0, "not one row");
+    }
 
     /// A kit's variable, its cells keyed by the kit's own mode, names its kit
     /// collection, the document collection it is read from, and the kit mode

@@ -3169,9 +3169,10 @@ mod tests {
     }
 
     /// `rows` keeps a *One file per row* setting to the rows asked for, each
-    /// file saying its row.
+    /// file saying its row; a run past the table's end says how many rows it has.
     ///
-    /// flip: `run_exports` not keeping the plan to `rows` → fails at "row 2 alone".
+    /// flip: `run_exports` not keeping the plan to `rows` → fails at "row 2 alone";
+    /// without its past-the-end check → fails at "the row count".
     #[test]
     fn run_exports_takes_a_run_of_rows() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
@@ -3192,6 +3193,14 @@ mod tests {
         assert_eq!(listed[0]["path"], json!("Badge/2.png"));
         let bad = json!({ "rows": { "from": 0, "count": 1 } });
         assert!(call(&mut engine, &mut docs, 1, "run_exports", bad).is_error);
+        let past = json!({ "rows": { "from": 4, "count": 1 } });
+        let past = call(&mut engine, &mut docs, 1, "run_exports", past);
+        let said = format!("{:?}", past.content);
+        assert!(past.is_error, "{said}");
+        assert!(
+            said.contains("3 rows") && said.contains("past its end"),
+            "the row count: {said}"
+        );
     }
 
     /// `export_code` answers files and the three report lists.
