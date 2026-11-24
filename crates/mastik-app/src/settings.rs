@@ -2110,9 +2110,7 @@ fn effort_label(word: &str) -> String {
     if word == "xhigh" {
         return "Extra high".into();
     }
-    let mut c = word.chars();
-    c.next()
-        .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+    ui::upper_first(word)
 }
 
 /// Add `key` to `on`, or take it out if it is there.

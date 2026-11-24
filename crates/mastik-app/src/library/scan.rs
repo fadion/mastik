@@ -90,12 +90,7 @@ pub fn name_from_stem(stem: &str) -> String {
 }
 
 fn de_slug(stem: &str) -> String {
-    let spaced = stem.replace('-', " ");
-    let mut chars = spaced.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => spaced,
-    }
+    crate::ui::upper_first(&stem.replace('-', " "))
 }
 
 /// How sure a filename is that a sync client, rather than a person, put it there.

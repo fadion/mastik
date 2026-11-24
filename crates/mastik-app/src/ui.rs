@@ -9007,6 +9007,14 @@ pub fn count_as(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// `s` with its first letter capitalised, the rest kept: a word or a reason
+/// opening a sentence, in the app's sentence case.
+pub fn upper_first(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+}
+
 /// How many characters a colour field accepts: room for any CSS colour anyone
 /// pastes (`crate::colour_text`), since a field that refuses to hold one refuses
 /// the paste outright.

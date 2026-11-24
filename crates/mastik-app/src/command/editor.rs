@@ -3213,7 +3213,7 @@ fn input_field(ui: &mut egui::Ui, w: f32, input: &mastik_vm::Input, value: &mut 
             if words.len() <= 3 {
                 if let Some(i) =
                     ui::segmented(ui, w, ui::SEGMENT_CELL_H, words.len(), at, |p, i, r, on| {
-                        ui::segment_label(p, r, &title_case(&words[i]), on);
+                        ui::segment_label(p, r, &ui::upper_first(&words[i]), on);
                     })
                 {
                     *value = Value::String(words[i].clone());
@@ -3223,25 +3223,16 @@ fn input_field(ui: &mut egui::Ui, w: f32, input: &mastik_vm::Input, value: &mut 
                 egui::ComboBox::from_id_salt(("script-input", &input.name))
                     .width(w)
                     .icon(ui::combo_chevron)
-                    .selected_text(title_case(&words[at]))
+                    .selected_text(ui::upper_first(&words[at]))
                     .show_ui(ui, |ui| {
                         ui::menu_rows(ui);
                         for (i, word) in words.iter().enumerate() {
-                            ui.selectable_value(&mut picked, i, title_case(word));
+                            ui.selectable_value(&mut picked, i, ui::upper_first(word));
                         }
                     });
                 *value = Value::String(words[picked].clone());
             }
         }
-    }
-}
-
-/// `rows` as a choice reads in the form: `Rows`.
-fn title_case(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        Some(f) => f.to_uppercase().chain(c).collect(),
-        None => String::new(),
     }
 }
 

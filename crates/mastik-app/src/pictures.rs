@@ -69,7 +69,7 @@ impl Weight {
                 Some(e) => format!("Missing · {} × {} when saved", e.width, e.height),
                 None => "Missing".to_string(),
             };
-            return (first, capital(&layers), false);
+            return (first, ui::upper_first(&layers), false);
         };
         let first = format!(
             "{} · {} × {} · {}",
@@ -87,13 +87,6 @@ impl Weight {
         };
         (first, format!("{drawn} · {layers}"), heavy)
     }
-}
-
-fn capital(s: &str) -> String {
-    let mut c = s.chars();
-    c.next()
-        .map(|f| f.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
 }
 
 impl MastikApp {

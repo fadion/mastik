@@ -94,20 +94,10 @@ impl Marks {
     /// Whether `at` is on the guide's bare stretch, where a click adds a stop.
     fn on_guide(&self, at: egui::Pos2) -> bool {
         match self.guide {
-            Guide::Segment(a, b) => segment_distance(at, a, b) <= GUIDE_PICK_PX,
+            Guide::Segment(a, b) => crate::canvas::distance_to_segment(at, a, b) <= GUIDE_PICK_PX,
             Guide::Ring(c, r) => (at.distance(c) - r).abs() <= GUIDE_PICK_PX,
         }
     }
-}
-
-fn segment_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
-    let ab = b - a;
-    let len2 = ab.length_sq();
-    let t = match len2 > 1e-6 {
-        true => ((p - a).dot(ab) / len2).clamp(0.0, 1.0),
-        false => 0.0,
-    };
-    p.distance(a + ab * t)
 }
 
 /// `v` turned a quarter, clockwise on screen.
@@ -712,8 +702,9 @@ mod tests {
     #[test]
     fn a_point_off_the_segment_measures_to_its_nearest_end() {
         let (a, b) = (egui::pos2(0.0, 0.0), egui::pos2(10.0, 0.0));
-        assert_eq!(segment_distance(egui::pos2(5.0, 3.0), a, b), 3.0);
-        assert_eq!(segment_distance(egui::pos2(14.0, 3.0), a, b), 5.0);
+        let d = crate::canvas::distance_to_segment;
+        assert_eq!(d(egui::pos2(5.0, 3.0), a, b), 3.0);
+        assert_eq!(d(egui::pos2(14.0, 3.0), a, b), 5.0);
     }
 }
 

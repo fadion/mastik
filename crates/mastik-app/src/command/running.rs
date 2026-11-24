@@ -45,14 +45,7 @@ fn inline_wait() -> Duration {
 /// The status line's refusal while `name` runs: *“Card grid” is running — Esc
 /// stops it*.
 pub(crate) fn held(name: &str) -> String {
-    format!("{} is running — Esc stops it", upper_first(name))
-}
-
-/// `s` with its first letter in upper case.
-fn upper_first(s: &str) -> String {
-    let mut c = s.chars();
-    c.next()
-        .map_or_else(String::new, |f| f.to_uppercase().chain(c).collect())
+    format!("{} is running — Esc stops it", crate::ui::upper_first(name))
 }
 
 /// What to run.

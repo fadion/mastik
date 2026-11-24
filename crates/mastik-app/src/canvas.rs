@@ -1851,8 +1851,9 @@ fn box_edge_distance(box_: KRect, handle: Handle, p: Point) -> f64 {
     (across - edge).hypot(over)
 }
 
-/// Shortest distance from `p` to the segment `a`..`b`.
-fn distance_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+/// Shortest distance from `p` to the segment `a`..`b`: every screen-space hit
+/// test against a segment (handles, gradient guides, connectors) reads this one.
+pub(crate) fn distance_to_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
     let ab = b - a;
     let len_sq = ab.length_sq();
     if len_sq <= f32::EPSILON {

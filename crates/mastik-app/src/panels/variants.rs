@@ -883,15 +883,6 @@ fn state_rows(
     true
 }
 
-/// `text` with its first letter capitalised, for a reason that opens a sentence.
-fn sentence_case(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
-    }
-}
-
 /// *2 variants are Large, Hover* — or `None` without a clash.
 pub(crate) fn clash_text(doc: &mastik_core::Document, set: NodeId) -> Option<String> {
     let clashing = variant::clashes(doc, set);
@@ -991,7 +982,7 @@ impl MastikApp {
                 )
                 .on_hover_text(format!(
                     "{}, so in code {shown} is only the {} prop",
-                    sentence_case(&u.why),
+                    ui::upper_first(&u.why),
                     state_prop.as_deref().unwrap_or_default()
                 ));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
