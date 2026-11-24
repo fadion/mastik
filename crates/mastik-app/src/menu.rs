@@ -1150,7 +1150,7 @@ impl Item {
                     ViewSwitch::SizeBadge => icon::BOUNDING_BOX,
                     // The glyph an annotation wears everywhere.
                     ViewSwitch::Annotations => icon::NOTE,
-                    ViewSwitch::PrototypeMode => icon::INTERACTION,
+                    ViewSwitch::PrototypeMode => icon::PROTOTYPE,
                     // Placeholders: no menu builds a row for these, and spelling
                     // them out makes a new switch a compile error here.
                     ViewSwitch::Layers

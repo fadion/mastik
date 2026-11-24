@@ -1351,8 +1351,7 @@ pub mod icon {
     /// *System health*: a pulse line. Not [`GAUGE`], whose dial is JPEG quality.
     pub const PULSE: &str = "\u{f089}";
     /// A prototype's interactions: a pointer clicking, with the click's rays.
-    /// Prototype mode's top-bar button and palette row, its trigger rows and its
-    /// undo steps.
+    /// Trigger rows, *Copy/Paste interactions* and prototype mode's undo steps.
     pub const INTERACTION: &str = "\u{f08a}";
     /// *Change to*, an instance switched to another variant: a square turning
     /// into the filled one. Not [`SWAP`], which replaces text or an instance.
@@ -1379,6 +1378,10 @@ pub mod icon {
     /// where [`ROWS_PLUS_BOTTOM`] has its plus. Not [`PENCIL_SIMPLE`], which
     /// renames.
     pub const ROWS_PENCIL: &str = "\u{f093}";
+    /// *Prototype mode*: two screens, a link dot on the first one's edge and a
+    /// connector into the second. Not [`INTERACTION`], whose pointer beside
+    /// [`PLAY`] in the top bar reads as a second play triangle.
+    pub const PROTOTYPE: &str = "\u{f094}";
     /// Every icon this module names, paired with its name in
     /// `assets/icons/glyphs.json` (lower-kebab).
     ///
@@ -1723,6 +1726,7 @@ pub mod icon {
         ("phone", PHONE),
         ("turn-device", TURN_DEVICE),
         ("rows-pencil", ROWS_PENCIL),
+        ("prototype", PROTOTYPE),
     ];
 }
 

@@ -10,7 +10,7 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - **A workspace mode, not an inspector tab.** It changes the canvas (connectors, link dots, flow
   chips, the hover outline) as well as the inspector's cards, so it is a `ViewSwitch` beside
   outline, focus and private mode (`ViewSwitch::PrototypeMode`, *Prototype mode*). Its switch is
-  an `icon::INTERACTION` icon button in the top bar, immediately left of *Play*, so authoring and
+  an `icon::PROTOTYPE` icon button in the top bar, immediately left of *Play*, so authoring and
   playing are one spot; lit while on, its tooltip *Prototype mode*, or *Leave prototype mode*
   while lit; a click calls `set_prototype_mode`, which says *Prototype mode on* / *off* on the
   status line. The palette's row flips it too. **No chord and no menu**: the keymap's chords are

@@ -8426,7 +8426,7 @@ impl MastikApp {
                         // *Prototype mode*, left of Play: it swaps the inspector's
                         // cards and draws the connectors, so it sits over both.
                         let proto = self.prototype_mode();
-                        if icon_button(ui, icon::INTERACTION, 26.0, 16.0, proto, true)
+                        if icon_button(ui, icon::PROTOTYPE, 26.0, 16.0, proto, true)
                             .on_hover_text(match proto {
                                 true => "Leave prototype mode",
                                 false => "Prototype mode",
@@ -15939,7 +15939,7 @@ mod library_wiring_tests {
             })
         };
         let redo = x(icon::ARROW_U_UP_RIGHT).expect("redo");
-        let mode = x(icon::INTERACTION).expect("the mode button");
+        let mode = x(icon::PROTOTYPE).expect("the mode button");
         let play = x(icon::PLAY).expect("play");
         assert!(
             redo < mode && mode < play,

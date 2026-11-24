@@ -317,7 +317,7 @@ colour deficiencies barely move.
 
 ## The top bar's right cluster
 
-After undo and redo, a rule, then **Prototype mode** (`icon::INTERACTION`, lit while on;
+After undo and redo, a rule, then **Prototype mode** (`icon::PROTOTYPE`, lit while on;
 `prototyping-authoring.md`) and **Play** (lit while a prototype plays; `prototyping-player.md`),
 a rule, **View** (eye + caret), **Snap** (magnet + caret) and **Tools** (toolbox + caret), a rule,
 then the zoom readout and Settings. Prototype mode sits beside Play because it changes both the
