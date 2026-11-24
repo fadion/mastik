@@ -96,10 +96,14 @@ impl Shared {
         p
     }
 
-    /// `id`'s stream closed: greyed unless another of its streams is open.
+    /// `id`'s stream closed: greyed unless another of its streams is open, and
+    /// kept for [`FORGET`] from now, however long it sat quiet on one screen.
     fn went_quiet(&mut self, id: &str) {
         let open = self.streams.iter().any(|(s, _)| s == id);
         if let Some(p) = self.phones.iter_mut().find(|p| p.id == id) {
+            if p.live && !open {
+                p.seen = Instant::now();
+            }
             p.live = open;
         }
     }
@@ -1030,6 +1034,40 @@ mod tests {
         assert_eq!(next_event(), "2", "hears the new version");
         drop(share);
         assert_eq!(next_event(), "stop", "hears the stop");
+    }
+
+    /// A phone that sat on one screen longer than `FORGET` and then closes its
+    /// stream stays listed, greyed, rather than vanishing at once.
+    /// flip: `Shared::went_quiet` not refreshing `seen` → fails at "still listed".
+    #[test]
+    fn a_phone_quiet_for_long_is_greyed_when_it_sleeps() {
+        let share = share();
+        let t = token_of(&share);
+        let host = share.url.trim_start_matches("http://").split('/').next();
+        let mut events = TcpStream::connect(host.expect("host")).expect("connect");
+        events
+            .write_all(format!("GET /{t}/events?id=p1 HTTP/1.1\r\n\r\n").as_bytes())
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(5);
+        while !share.phones().iter().any(|p| p.live) {
+            assert!(Instant::now() < until, "fixture: listening");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        lock(&share.shared).phones[0].seen = Instant::now()
+            .checked_sub(FORGET * 2)
+            .expect("a clock past two minutes");
+        drop(events);
+        // A write to a closed stream fails only once the peer's reset is back.
+        let mut version = 2;
+        while lock(&share.shared).phones.iter().any(|p| p.live) {
+            assert!(Instant::now() < until, "fixture: the stream fails");
+            share.publish(b"DOC".to_vec(), version);
+            version += 1;
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let phones = share.phones();
+        assert_eq!(phones.len(), 1, "still listed");
+        assert!(!phones[0].live, "greyed");
     }
 
     /// Only private, link-local and loopback addresses may follow.
