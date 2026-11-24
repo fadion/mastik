@@ -6490,7 +6490,7 @@ impl MastikApp {
             (false, Reads::Vars) => "An expression, such as {count} + 1, or @ for a variable",
             (false, Reads::Tables(_)) => "An expression, such as {count} + 1, or @ for a name",
         };
-        let resp = ui::refusable_field(
+        let (resp, text_left) = ui::refusable_field_at(
             ui,
             egui::vec2(w, ui::CONTROL_H),
             &mut text,
@@ -6501,7 +6501,7 @@ impl MastikApp {
             && let Some((k, at)) = &self.proto.expr_fault
             && *k == key
         {
-            ui::field_underline(ui, &resp, ui::CONTROL_H, &text, at.clone());
+            ui::field_underline(ui, &resp, ui::CONTROL_H, &text, at.clone(), text_left);
         }
         // A press on the list keeps the field's focus and its draft.
         if pressed_in && resp.lost_focus() {

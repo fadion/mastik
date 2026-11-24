@@ -2884,15 +2884,18 @@ pub fn text_field(
 }
 
 /// Underline, in the error colour, the byte range `at` of `text` as the
-/// [`text_field`] `field` (its response, a row `row_h` tall) draws it: where a
-/// refusal says the fault is. A range past the text's end marks a short stroke
-/// after it, where something is missing.
+/// [`text_field`] `field` (its response, a row `row_h` tall) draws it, its
+/// text starting at screen x `text_left` ([`refusable_field_at`], which counts
+/// the scroll of a text wider than the field): where a refusal says the fault
+/// is. A range past the text's end marks a short stroke after it, where
+/// something is missing.
 pub fn field_underline(
     ui: &egui::Ui,
     field: &egui::Response,
     row_h: f32,
     text: &str,
     at: std::ops::Range<usize>,
+    text_left: f32,
 ) {
     let font = egui::FontId::proportional(Scale::of(row_h).text_pt());
     let boundary = |i: usize| {
@@ -2908,9 +2911,8 @@ pub fn field_underline(
                 .x
         })
     };
-    let left = field.rect.left() + FIELD_PAD_X;
-    let x0 = left + width(&text[..boundary(at.start)]);
-    let x1 = (left + width(&text[..boundary(at.end)])).max(x0 + 4.0);
+    let x0 = text_left + width(&text[..boundary(at.start)]);
+    let x1 = (text_left + width(&text[..boundary(at.end)])).max(x0 + 4.0);
     let y = field.rect.center().y + font.size * 0.62;
     ui.painter().with_clip_rect(field.rect).line_segment(
         [egui::pos2(x0, y), egui::pos2(x1, y)],
@@ -3933,6 +3935,19 @@ pub fn refusable_field(
     hint: &str,
     refused: Option<&str>,
 ) -> egui::Response {
+    refusable_field_at(ui, size, text, hint, refused).0
+}
+
+/// [`refusable_field`], with the screen x its text starts at: the field's
+/// inset less how far a text wider than the field has scrolled, which
+/// [`field_underline`] measures from.
+pub fn refusable_field_at(
+    ui: &mut egui::Ui,
+    size: egui::Vec2,
+    text: &mut String,
+    hint: &str,
+    refused: Option<&str>,
+) -> (egui::Response, f32) {
     let pt = Scale::of(size.y).text_pt();
     let font = egui::FontId::proportional(pt);
     ui.scope(|ui| {
@@ -3946,13 +3961,14 @@ pub fn refusable_field(
                 Some(_) => ui.available_width() - REFUSAL_SLOT_W,
                 None => f32::INFINITY,
             };
-            let edit = frame.add(
+            let out = frame.show(
                 ui,
                 room,
                 egui::TextEdit::singleline(text)
                     .font(font)
                     .hint_text(egui::RichText::new(hint).size(pt)),
             );
+            let edit = (out.response.response, out.galley_pos.x);
             if let Some(why) = refused {
                 let (slot, glyph) = ui.allocate_exact_size(
                     egui::vec2(REFUSAL_SLOT_W, size.y - FIELD_BORDER_H),
@@ -11068,6 +11084,78 @@ mod tests {
             _ => false,
         });
         assert!(glyph, "the warning glyph inside the right end");
+    }
+
+    /// A refused field whose text is wider than it, scrolled to the caret at its
+    /// end, underlines its fault under the glyphs drawn there, inside the field.
+    /// flip: `field_underline` measuring from the field's inset rather than
+    /// where the scrolled text starts → fails at "inside the field".
+    #[test]
+    fn a_scrolled_fields_fault_is_underlined_where_it_is_drawn() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut text = format!("{} + oops", "{checkout_total} * {discount} ".repeat(3));
+        let fault = text.len() - 4..text.len();
+        let mut drawn = None;
+        let mut frame = |ctx: &egui::Context, text: &mut String| {
+            ctx.run_ui(Default::default(), |ui| {
+                let (resp, left) = refusable_field_at(
+                    ui,
+                    egui::vec2(160.0, CONTROL_H),
+                    text,
+                    "",
+                    Some("Not a name"),
+                );
+                if !resp.has_focus() {
+                    resp.request_focus();
+                    let mut state =
+                        egui::text_edit::TextEditState::load(ui.ctx(), resp.id).unwrap_or_default();
+                    let end = egui::text::CCursor::new(text.chars().count());
+                    state
+                        .cursor
+                        .set_char_range(Some(egui::text::CCursorRange::one(end)));
+                    state.store(ui.ctx(), resp.id);
+                }
+                field_underline(ui, &resp, CONTROL_H, text, fault.clone(), left);
+                drawn = Some(resp.rect);
+            })
+        };
+        let mut out = frame(&ctx, &mut text);
+        for _ in 0..4 {
+            out = frame(&ctx, &mut text);
+        }
+        let field = drawn.expect("drawn");
+        let line = out
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::LineSegment { points, stroke } if stroke.color == color::error() => {
+                    Some(*points)
+                }
+                _ => None,
+            })
+            .expect("the underline");
+        let (start, word) = out
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == text => Some((
+                    t.pos.x + t.galley.rect.left(),
+                    t.pos.x + t.galley.rect.right(),
+                )),
+                _ => None,
+            })
+            .expect("the text");
+        assert!(start < field.left(), "fixture: the text scrolled: {start}");
+        assert!(
+            line[0].x >= field.left() && line[1].x <= field.right(),
+            "inside the field: {line:?} in {field:?}"
+        );
+        assert!(
+            (line[1].x - word).abs() < 2.0,
+            "ends where the text does: {} vs {word}",
+            line[1].x
+        );
     }
 
     /// A search box holding text shows a clear button with an arrow pointer; a
