@@ -807,6 +807,9 @@ impl State<'_> {
     }
 
     /// Answer and commit verb `name`; what it created and the id of what else it made.
+    /// A table the verb writes is read afresh by `tables` after it, and the verb is
+    /// refused when `tables` holds writes to that table for the run's end, which
+    /// would write over it.
     fn apply(
         &mut self,
         name: &str,
@@ -814,6 +817,30 @@ impl State<'_> {
     ) -> Result<(Vec<NodeId>, Option<String>), String> {
         self.hosted.set(true);
         let done = self.host.verb(name, args)?;
+        let written: Vec<mastik_core::list::DataSetId> = done
+            .tx
+            .0
+            .iter()
+            .filter_map(|op| match op {
+                mastik_core::Operation::SetDataSet { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        if let Some(w) = self
+            .tables
+            .iter()
+            .find(|w| w.dirty && written.contains(&w.id))
+        {
+            let table = self
+                .host
+                .doc()
+                .data_set(w.id)
+                .map_or_else(|| "a table".to_owned(), |d| d.name.clone());
+            return Err(format!(
+                "{name} changes {table}, which this run has written to: call it before the writes"
+            ));
+        }
+        self.tables.retain(|w| !written.contains(&w.id));
         self.commit(done.tx)?;
         if let Some(said) = done.said
             && !self.say(said)

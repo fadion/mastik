@@ -2387,3 +2387,45 @@ fn tables_refuses_and_a_failed_run_writes_nothing() {
     assert_eq!(out.copied.as_deref(), Some("Cart"));
     assert_eq!(cells(&h, "Cart"), [["Shirt"]]);
 }
+
+/// A table verb a run calls is seen by `tables`' later reads and kept by the
+/// run's own writes after it; one called after the run wrote that table is
+/// refused, since the run's end would write over it.
+/// flip: `State::apply` not dropping the working copies a verb wrote → the first
+/// run fails, its read of row 4 refused as past the stale count; `State::apply`
+/// not refusing → the last run succeeds where it should fail.
+#[test]
+fn a_table_verb_in_a_run_is_read_after_and_never_written_over() {
+    let mut h = people();
+    let labels = FxHashMap::default();
+    let e = env(&[], &labels);
+    let src = "local p = tables.People\n\
+               local before = p.rows\n\
+               edit_table{ table = \"People\", add = {{ Name = \"Mae\" }} }\n\
+               return before .. \" \" .. p.rows .. \" \" .. p[4].Name";
+    let out = run_script(&mut h, &e, src).unwrap();
+    assert_eq!(
+        out.copied.as_deref(),
+        Some("3 4 Mae"),
+        "a read after the verb sees it"
+    );
+    let src = "local p = tables.People\n\
+               local _ = p[1].Name\n\
+               edit_table{ table = \"People\", columns = { add = {\"Age\"} } }\n\
+               p:set(1, { Age = 36 })";
+    run_script(&mut h, &e, src).unwrap();
+    assert_eq!(
+        cells(&h, "People")[0],
+        ["Ada", "", "36"],
+        "the verb's column and the run's write both land"
+    );
+    let before = cells(&h, "People");
+    let src = "tables.People:set(1, { Name = \"X\" })\n\
+               edit_table{ table = \"People\", add = {{ Name = \"Y\" }} }";
+    let err = run_script(&mut h, &e, src).unwrap_err();
+    assert_eq!(
+        err.message,
+        "edit_table changes People, which this run has written to: call it before the writes"
+    );
+    assert_eq!(cells(&h, "People"), before, "neither edit lands");
+}

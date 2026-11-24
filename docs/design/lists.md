@@ -468,8 +468,10 @@ MCP's Phase 3 (`mcp.md`), each acting as its door in the app.
   `t:set(3, {…})`, `t:remove(3)` and `t:column("Price")`; `tables.new(name, columns)` is
   `add_table`. A run reads a table once and works on its own copy, so a read after a write sees
   it; the writes land at the run's end as one `set_table` per table written, so a loop of writes
-  is one edit, the run one undo step, and a run that fails part-way writes no table. A live
-  read writes nothing, and a linked table refuses the first write.
+  is one edit, the run one undo step, and a run that fails part-way writes no table. A table
+  verb the run calls (`edit_table`, `set_chart_data`…) is read afresh after it; one called on a
+  table the run has already written through `tables` is refused, since the run's end would write
+  over it. A live read writes nothing, and a linked table refuses the first write.
 - **Command Mode completes table names** after `tables.`, in the bar and the script editor, and
   for a verb's `table` argument, each with its size (*12 rows · 4 columns*).
 

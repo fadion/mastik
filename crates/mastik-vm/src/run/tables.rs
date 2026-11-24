@@ -3,7 +3,8 @@
 //! library keeps its name. A run reads a table once and then works on its own
 //! copy; the writes are gathered and land at the run's end as one `set_table`
 //! per table written, so a loop of writes is one edit and a run that fails
-//! part-way writes no table.
+//! part-way writes no table. A verb the run calls drops the copies of the tables
+//! it writes (`State::apply`).
 
 use std::cell::RefCell;
 
