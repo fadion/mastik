@@ -2388,6 +2388,26 @@ fn tables_refuses_and_a_failed_run_writes_nothing() {
     assert_eq!(cells(&h, "Cart"), [["Shirt"]]);
 }
 
+/// A number a script writes to a cell is written as Luau prints it, every
+/// digit kept.
+/// flip: `cell_text` writing a number through `format_number` → fails at
+/// "not rounded".
+#[test]
+fn a_number_written_to_a_cell_keeps_its_digits() {
+    let mut h = people();
+    let labels = FxHashMap::default();
+    let e = env(&[], &labels);
+    let write = |h: &mut TestHost, n: &str| {
+        let src = format!("tables.People:set(1, {{ Name = {n} }})");
+        run_script(h, &e, &src).unwrap();
+        cells(h, "People")[0][0].clone()
+    };
+    assert_eq!(write(&mut h, "41.32765"), "41.32765", "not rounded");
+    assert_eq!(write(&mut h, "0.0004"), "0.0004");
+    assert_eq!(write(&mut h, "36"), "36");
+    assert_eq!(write(&mut h, "-2.5"), "-2.5");
+}
+
 /// A table verb a run calls is seen by `tables`' later reads and kept by the
 /// run's own writes after it; one called after the run wrote that table is
 /// refused, since the run's end would write over it.

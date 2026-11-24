@@ -84,7 +84,11 @@ fn cell_text(lua: &Lua, v: &Value) -> mlua::Result<String> {
         Value::Nil => Ok(String::new()),
         Value::String(s) => Ok(s.to_str()?.to_owned()),
         Value::Integer(n) => Ok(n.to_string()),
-        Value::Number(n) => Ok(crate::format_number(*n)),
+        // Luau's own `tostring`, which keeps every digit `41.32765` has.
+        Value::Number(_) => Ok(lua
+            .coerce_string(v.clone())?
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_default()),
         Value::Boolean(b) => Ok(b.to_string()),
         other => Err(raise(
             lua,
