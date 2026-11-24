@@ -82,6 +82,9 @@ keeps every key, Escape included (`Playing::take_keys` asks `text_edit_focused` 
   so a resized window or fullscreen shows the real layout), and *Fit*, *Fill width* and *Actual
   size* play it as drawn, never wider than the room; *Responsive* places as *Fit*. Over the
   canvas the card is sized from the screen, so there a screen with no device plays as drawn.
+  A screen taller than the room (*Actual size*, *Fill width*) scrolls the stage, as the export's
+  does: the wheel the prototype leaves unused (`Player::input` answering false) moves it
+  (`Playing::stage_y`), so a scroller inside scrolls to its end first.
 - **Turning**: a page's device plays on its side when the page is turned or the bar's
   `TURN_DEVICE` button turned it for this run (`Playing::turned`, play state, never the
   document's); the screen is laid out at the turned size, never a rotated picture. The button

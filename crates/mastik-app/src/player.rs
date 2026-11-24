@@ -196,6 +196,12 @@ pub(crate) struct Playing {
     /// The table the state card's *Show* opened, read-only over the screen,
     /// with its grid's state.
     table_shown: Option<(mastik_core::list::DataSetId, crate::chart_data::ChartData)>,
+    /// How far the stage is scrolled down, in points, while the screen is
+    /// taller than the room (*Actual size*, *Fill width*), as the export's does.
+    stage_y: f32,
+    /// The wheel's vertical travel this pass that the prototype did not use,
+    /// which scrolls the stage instead, as a page scrolls past a scroller's end.
+    wheel_left: f32,
 }
 
 /// Where play starts on `page` of `doc`: the selected top-level `frame` when
@@ -359,6 +365,8 @@ impl Playing {
             pulse_at: None,
             touch: false,
             table_shown: None,
+            stage_y: 0.0,
+            wheel_left: 0.0,
         }
     }
 
@@ -481,10 +489,18 @@ impl Playing {
         }
     }
 
-    /// Feed `ui`'s pointer over `rect` (the screen drawn at `scale`, its foot
-    /// cut off under a floating bar; its top-left is the screen's) to the
-    /// player. Answers whether the pointer is over it.
-    fn drive_pointer(&mut self, ui: &egui::Ui, rect: egui::Rect, scale: f32) -> bool {
+    /// Feed `ui`'s pointer over `rect` (the part of the screen shown: its foot
+    /// cut off under a floating bar, its head above a scrolled stage) to the
+    /// player, measured from `screen`, the whole screen drawn at `scale`.
+    /// Answers whether the pointer is over it.
+    fn drive_pointer(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        screen: egui::Rect,
+        scale: f32,
+    ) -> bool {
+        self.wheel_left = 0.0;
         let id = ui.id().with("player-screen");
         let resp = ui.interact(rect, id, egui::Sense::click_and_drag());
         let hovered = resp.hovered() || self.pressing;
@@ -496,7 +512,7 @@ impl Playing {
                 i.smooth_scroll_delta,
             )
         });
-        let at = pos.map(|p| to_screen(p, rect, scale));
+        let at = pos.map(|p| to_screen(p, screen, scale));
         // A finger hovers nothing: tell the player which hand moves it. A touch
         // this pass is a finger; a move with none, nothing touching, a mouse.
         let hand = ui.input(|i| {
@@ -532,7 +548,9 @@ impl Playing {
             }
             if wheel != egui::Vec2::ZERO && resp.hovered() {
                 let delta = Vec2::new(f64::from(-wheel.x), f64::from(-wheel.y)) / f64::from(scale);
-                self.player.input(Input::Wheel { at, delta });
+                if !self.player.input(Input::Wheel { at, delta }) {
+                    self.wheel_left = wheel.y;
+                }
             }
         } else if self.pointer.take().is_some() {
             self.player.input(Input::PointerLeave);
@@ -1596,6 +1614,11 @@ impl crate::app::MastikApp {
             .with_min_x((screen_area.center().x - size.x / 2.0).max(screen_area.left()))
             .with_min_y((screen_area.center().y - size.y / 2.0).max(screen_area.top()));
         let screen = egui::Rect::from_min_size(screen.min, size);
+        // A screen taller than the room scrolls the stage, as the export's does:
+        // the wheel the prototype leaves unused moves it.
+        let overflow = (size.y - room.y).max(0.0);
+        p.stage_y = p.stage_y.clamp(0.0, overflow);
+        let screen = screen.translate(egui::vec2(0.0, -p.stage_y));
         let ground =
             crate::ui::color_to_egui(crate::session::page_ground(p.player.document(), scene.page));
         ui.painter().rect_filled(screen_area, 0.0, ground);
@@ -1615,9 +1638,14 @@ impl crate::app::MastikApp {
         }
         ui.scope_builder(egui::UiBuilder::new().max_rect(screen_area), |ui| {
             ui.set_clip_rect(screen_area.intersect(ui.clip_rect()));
-            p.drive_pointer(ui, hit, scale);
+            p.drive_pointer(ui, hit, screen, scale);
             p.paint_screen(ui, screen, scale, ground);
         });
+        let scrolled = (p.stage_y - p.wheel_left).clamp(0.0, overflow);
+        if scrolled != p.stage_y {
+            p.stage_y = scrolled;
+            ui.ctx().request_repaint();
+        }
         // One pulse round the screen when a live edit lands.
         if let Some(at) = p.pulse_at {
             let age = now - at;
@@ -2159,6 +2187,56 @@ mod tests {
         }
         assert!(app.playing.is_some(), "fixture: playing over the canvas");
         assert_eq!(bar_grounds(&ctx, &mut app), 0, "none over the canvas");
+    }
+
+    /// An *Actual size* screen taller than the room scrolls the stage with the
+    /// wheel the prototype leaves unused, up to its foot and no further.
+    /// flip: `player_body` dropping `wheel_left` → fails at "scrolled".
+    #[test]
+    fn a_screen_taller_than_the_room_scrolls_the_stage() {
+        use mastik_core::prototype::{PagePlay, Scaling};
+        let ctx = egui::Context::default();
+        let (mut app, _) = fixture(&ctx, false);
+        let page = app.session.page;
+        assert!(app.session.commit(Transaction(vec![Operation::SetPagePlay {
+            id: page,
+            play: PagePlay {
+                scaling: Scaling::ActualSize,
+                ..Default::default()
+            },
+        }])));
+        app.play(&ctx, Place::Detached, false);
+        let mut p = app.playing.take().expect("playing");
+        // The bar takes 36 of the 60, so the 80-tall screen overflows by 56.
+        let body = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(400.0, 60.0));
+        let over = egui::pos2(200.0, 10.0);
+        let run = |app: &mut MastikApp, p: &mut Playing, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(body),
+                events,
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                app.player_body(ui, p, body);
+            });
+        };
+        for _ in 0..3 {
+            run(&mut app, &mut p, vec![egui::Event::PointerMoved(over)]);
+        }
+        assert_eq!(p.stage_y, 0.0, "fixture: at rest at the top");
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0.0, -400.0),
+            modifiers: egui::Modifiers::NONE,
+            phase: egui::TouchPhase::Move,
+        };
+        run(&mut app, &mut p, vec![wheel]);
+        for _ in 0..40 {
+            run(&mut app, &mut p, Vec::new());
+        }
+        assert!(p.stage_y > 0.0, "scrolled");
+        assert_eq!(p.stage_y, 56.0, "to the screen's foot and no further");
+        app.playing = Some(p);
     }
 
     /// A page with frames A (holding a rectangle) and B to its right; A's key
