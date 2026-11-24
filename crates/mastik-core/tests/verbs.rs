@@ -7575,12 +7575,14 @@ fn set_reactions_reads_the_short_forms_and_refuses_an_unasked_script() {
 
 /// `set_reactions` stores an expression written with names in the id form, as the
 /// Prototype tab's field does, and refuses one that names nothing, does not read
-/// or comes to the variable's wrong kind; an expression read back naming a
-/// variable since deleted is written back as it was.
+/// or comes to the variable's wrong kind; a blank cell is dropped from Add row
+/// and refused by Edit row; an expression read back naming a variable since
+/// deleted is written back as it was.
 ///
 /// flip: `exprs_stored` not called from `set_reactions` → fails at "stored by
-/// id"; `exprs_stored` without its pass for a stored read of what is gone →
-/// the dangling write back is refused at its `run`.
+/// id"; its cells keeping a blank one for Add row → fails at "Add row";
+/// `exprs_stored` without its pass for a stored read of what is gone → the
+/// dangling write back is refused at its `run`.
 #[test]
 fn set_reactions_stores_names_by_id_and_refuses_what_does_not_read() {
     use mastik_core::prototype::{Action, VarChange};
@@ -7649,6 +7651,33 @@ fn set_reactions_stores_names_by_id_and_refuses_what_does_not_read() {
             "{when} / {to} refused naming {says}: {why}"
         );
     }
+
+    // A blank cell: dropped from Add row, refused by Edit row.
+    let price = doc.data_sets()[0].table.columns[1].id;
+    let row_action = |kind: &str| {
+        let mut body = json!({ "table": t, "cells": [
+            { "column": price, "to": "" }, { "column": price, "to": "{Count} * 2" }] });
+        if kind == "EditRow" {
+            body["row"] = json!("Opened");
+        }
+        json!({ "nodes": [a.to_wire()], "reactions": [{ "trigger": "Click", "actions": [{ kind: body }] }] })
+    };
+    let done = answer(&doc, &mut ids, "set_reactions", row_action("AddRow")).expect("Add row");
+    let Some(Operation::SetReactions { reactions, .. }) = done.tx.0.first() else {
+        panic!("one SetReactions: {:?}", done.tx)
+    };
+    assert!(
+        matches!(&reactions[0].actions[0].value, Action::AddRow { cells, .. } if cells.len() == 1),
+        "the blank cell is dropped: {reactions:?}"
+    );
+    let why = format!(
+        "{:?}",
+        answer(&doc, &mut ids, "set_reactions", row_action("EditRow")).err()
+    );
+    assert!(
+        why.contains("cells[0]"),
+        "Edit row refuses a blank cell: {why}"
+    );
 
     let tree = json!({ "kind": frame(10.0, 10.0), "reactions": [{ "trigger": "Click",
         "actions": [{ "SetVariable": { "var": c, "change": { "Set": { "to": "{Count} * 2" } } } }] }] });

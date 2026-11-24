@@ -8524,13 +8524,22 @@ fn exprs_stored(
             .map_err(|(why, _)| format!("at `{at}`: `{text}`: {why}"))?;
         Ok(())
     };
-    // A row action's cell left empty writes an empty cell, as the field's does.
-    let cells = |cells: &mut [crate::prototype::CellWrite], reads: Reads, at: &str| {
-        cells
-            .iter_mut()
-            .enumerate()
-            .filter(|(_, c)| !c.to.0.trim().is_empty())
-            .try_for_each(|(i, c)| store(&mut c.to, None, reads, &format!("{at}.cells[{i}].to")))
+    // A blank cell is dropped from *Add row*, which leaves an unlisted column
+    // empty, as its field drops one; *Edit row* refuses it, as its field does,
+    // since play could not evaluate it.
+    let cells = |cells: &mut Vec<crate::prototype::CellWrite>, add: bool, reads, at: &str| {
+        if add {
+            cells.retain(|c| !c.to.0.trim().is_empty());
+        }
+        cells.iter_mut().enumerate().try_for_each(|(i, c)| {
+            let at = format!("{at}.cells[{i}].to");
+            if c.to.0.trim().is_empty() {
+                return Err(format!(
+                    "at `{at}`: a cell is an expression; write \"\" to empty it, or leave its column out"
+                ));
+            }
+            store(&mut c.to, None, reads, &at)
+        })
     };
     let row = |row: &mut WhichRow, table, at: &str| match row {
         WhichRow::FirstWhere { when } => store(
@@ -8567,14 +8576,14 @@ fn exprs_stored(
                 }
                 exprs_stored(doc, otherwise, &format!("{at}.otherwise"))?;
             }
-            Action::AddRow { cells: c, .. } => cells(c, Reads::Tables(None), &at)?,
+            Action::AddRow { cells: c, .. } => cells(c, true, Reads::Tables(None), &at)?,
             Action::EditRow {
                 table,
                 row: r,
                 cells: c,
             } => {
                 row(r, *table, &at)?;
-                cells(c, Reads::Tables(Some(*table)), &at)?;
+                cells(c, false, Reads::Tables(Some(*table)), &at)?;
             }
             Action::DeleteRow { table, row: r } => row(r, *table, &at)?,
             _ => {}
