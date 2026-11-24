@@ -264,55 +264,75 @@ fn one_file(mut report: Value, name: String, bytes: Vec<u8>) -> Result<Answer, S
     Ok(Answer::Files(report, vec![file]))
 }
 
-/// The prototype as the export card's one HTML file, under the document's own
-/// export settings (`Document::play_export`), which the report repeats. Refused
-/// while an interaction holds it, naming each layer, as the card is.
-pub(super) fn export_prototype(s: &EditorSession) -> Result<Answer, String> {
+/// The file-packing work of an export, started on the owning thread and run on
+/// a worker.
+pub(super) type ExportWork = Box<dyn FnOnce() -> Result<Answer, String> + Send>;
+
+/// `export_prototype` or `export_flow_map` checked against `s` now, and its
+/// file left to pack on a copy of the document: the work a worker runs, as the
+/// export card's does. `None` for any other tool.
+pub(super) fn export_work(tool: &str, s: &EditorSession) -> Option<Result<ExportWork, String>> {
+    let stem = crate::prototype_export::stem_of(s.path.as_deref());
+    match tool {
+        "export_prototype" => Some(prototype_held(s).map(|()| {
+            let doc = s.doc.clone();
+            Box::new(move || {
+                let html = crate::prototype_export::html(&doc, PLAYER)?;
+                let settings = doc.play_export();
+                let name = crate::prototype_export::html_name(&doc, settings, &stem);
+                let settings = serde_json::to_value(settings).unwrap_or(Value::Null);
+                one_file(json!({ "settings": settings }), name, html.into_bytes())
+            }) as ExportWork
+        })),
+        "export_flow_map" => {
+            if mastik_export::flow_map::plans(&s.doc).is_empty() {
+                return Some(Err(NO_FLOW_TO_MAP.into()));
+            }
+            let (doc, resolved) = (s.doc.clone(), s.resolved.clone());
+            Some(Ok(Box::new(move || {
+                let export = mastik_export::flow_map::flow_map(&doc, &resolved)
+                    .ok_or("The flow map could not be made")?;
+                let name = crate::prototype_export::flow_map_name(&stem);
+                one_file(
+                    json!({ "approximated": export.approximated }),
+                    name,
+                    export.pdf,
+                )
+            })))
+        }
+        _ => None,
+    }
+}
+
+const NO_FLOW_TO_MAP: &str = "No page has a flow to map: add one with `set_flows`";
+
+/// Why `export_prototype` cannot run on `s`: no flow, or an interaction holding
+/// it, each named by its layer, as the card is held.
+fn prototype_held(s: &EditorSession) -> Result<(), String> {
     use mastik_export::prototype::HoldWhy;
     if crate::prototype_export::every_flow(&s.doc).is_empty() {
         return Err("No page has a flow to export: add one with `set_flows`".into());
     }
     let holds = mastik_export::prototype::holds(&s.doc);
-    if !holds.is_empty() {
-        let each: Vec<String> = holds
-            .iter()
-            .map(|h| match &h.why {
-                HoldWhy::Missing => format!(
-                    "`{}` acts on a layer or table that is gone",
-                    h.layer.to_wire()
-                ),
-                HoldWhy::Expression(e) => {
-                    format!("`{}`'s expression doesn't read: {e}", h.layer.to_wire())
-                }
-            })
-            .collect();
-        return Err(format!(
-            "The export is held until these interactions are fixed with `set_reactions`: {}",
-            each.join("; ")
-        ));
+    if holds.is_empty() {
+        return Ok(());
     }
-    let html = crate::prototype_export::html(&s.doc, PLAYER)?;
-    let settings = s.doc.play_export();
-    let stem = crate::prototype_export::stem_of(s.path.as_deref());
-    let name = crate::prototype_export::html_name(&s.doc, settings, &stem);
-    let report = json!({ "settings": serde_json::to_value(settings).unwrap_or(Value::Null) });
-    one_file(report, name, html.into_bytes())
-}
-
-/// The flow map of every flow, the export card's *Flow map* PDF, with what it
-/// drew differently.
-pub(super) fn export_flow_map(s: &EditorSession) -> Result<Answer, String> {
-    use mastik_export::flow_map;
-    let export = flow_map::flow_map(&s.doc, &s.resolved).ok_or_else(|| {
-        match flow_map::plans(&s.doc).is_empty() {
-            true => "No page has a flow to map: add one with `set_flows`".to_string(),
-            false => "The flow map could not be made".to_string(),
-        }
-    })?;
-    let stem = crate::prototype_export::stem_of(s.path.as_deref());
-    let name = crate::prototype_export::flow_map_name(&stem);
-    let report = json!({ "approximated": export.approximated });
-    one_file(report, name, export.pdf)
+    let each: Vec<String> = holds
+        .iter()
+        .map(|h| match &h.why {
+            HoldWhy::Missing => format!(
+                "`{}` acts on a layer or table that is gone",
+                h.layer.to_wire()
+            ),
+            HoldWhy::Expression(e) => {
+                format!("`{}`'s expression doesn't read: {e}", h.layer.to_wire())
+            }
+        })
+        .collect();
+    Err(format!(
+        "The export is held until these interactions are fixed with `set_reactions`: {}",
+        each.join("; ")
+    ))
 }
 
 /// Every main component and variant set, in document order.

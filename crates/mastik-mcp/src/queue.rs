@@ -83,6 +83,12 @@ impl Call {
         }
     }
 
+    /// Whether `other` is this call or a copy [`Self::again`] made of it: what a
+    /// host matches work it started for a waiting call by.
+    pub fn is(&self, other: &Call) -> bool {
+        Arc::ptr_eq(&self.claim, &other.claim)
+    }
+
     /// Claim the call for the owning thread; `false` when its connection already
     /// gave up, so it must not run: the agent was told nothing changed.
     pub fn take(&self) -> bool {

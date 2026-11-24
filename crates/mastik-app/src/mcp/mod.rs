@@ -144,6 +144,26 @@ struct Connection {
     used: u64,
     /// The `group_steps` group it has open, on its current document.
     group: Option<group::Group>,
+    /// Its exports packing on a worker, each answered to its call when done.
+    exports: Vec<Exporting>,
+}
+
+/// An export call's file packing on a worker ([`reads::export_work`]).
+struct Exporting {
+    call: Call,
+    done: std::sync::mpsc::Receiver<Result<Answer, String>>,
+}
+
+/// The tools whose file packs on a worker while the call waits.
+const EXPORTS: [&str; 2] = ["export_prototype", "export_flow_map"];
+
+/// Whether `call` is one of [`EXPORTS`], named or through `call`.
+fn export_call(call: &Call) -> bool {
+    let tool = match call.tool.as_str() {
+        "call" => call.args.get("tool").and_then(Value::as_str),
+        tool => Some(tool),
+    };
+    tool.is_some_and(|t| EXPORTS.contains(&t))
 }
 
 /// Whose state a call reads: a keyed client's, which outlives its connections,
@@ -366,8 +386,9 @@ impl Engine {
         docs: &mut impl Documents,
         call: Call,
     ) -> Option<Output> {
-        // Only an asset call waits, and the rest can carry megabytes of arguments.
-        let again = assets_tool(&call).map(|_| call.again());
+        // Only an asset call or an export waits, and the rest can carry megabytes
+        // of arguments.
+        let again = (assets_tool(&call).is_some() || export_call(&call)).then(|| call.again());
         self.waiting = false;
         let out = self.handle_now(docs, call);
         let (true, Some(again)) = (std::mem::take(&mut self.waiting), again) else {
@@ -409,7 +430,11 @@ impl Engine {
                 }
                 continue;
             }
-            if l.pending.is_none() && l.since.elapsed() >= assets::WAIT {
+            // An export waits for its worker, however long the packing takes.
+            if l.pending.is_none()
+                && assets_tool(&again).is_some()
+                && l.since.elapsed() >= assets::WAIT
+            {
                 // The download goes on; a proposal asked again finds it.
                 if assets_tool(&again) == Some("propose_edit") {
                     let _ = again.reply.send(Output::error(format!(
@@ -749,6 +774,46 @@ impl Engine {
             kits::run(docs, &path, &call)
         } else if actions::TOOLS.contains(&call.tool.as_str()) {
             actions::run(docs, &path, &call)
+        } else if EXPORTS.contains(&call.tool.as_str()) {
+            // Checked now, packed on a worker, answered when it is done: packing
+            // the player would hold the window's frame for seconds.
+            match conn.exports.iter().position(|e| e.call.is(&call)) {
+                Some(i) => match conn.exports[i].done.try_recv() {
+                    Ok(answer) => {
+                        conn.exports.remove(i);
+                        answer
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        wait = true;
+                        Ok(Answer::Json(Value::Null))
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        conn.exports.remove(i);
+                        Err("The export stopped before it finished".into())
+                    }
+                },
+                None => match reads::export_work(&call.tool, session) {
+                    Some(Ok(work)) => {
+                        let (send, done) = std::sync::mpsc::channel();
+                        std::thread::Builder::new()
+                            .name("mastik-mcp-export".into())
+                            .spawn(move || {
+                                let _ = send.send(work());
+                            })
+                            .map_err(|e| format!("The export could not start: {e}"))
+                            .map(|_| {
+                                conn.exports.push(Exporting {
+                                    call: call.again(),
+                                    done,
+                                });
+                                wait = true;
+                                Answer::Json(Value::Null)
+                            })
+                    }
+                    Some(Err(why)) => Err(why),
+                    None => Err(format!("`{}` is no export", call.tool)),
+                },
+            }
         } else if call.tool == "get_view" {
             Ok(Answer::Json(view(session, canvas)))
         } else if call.tool == "group_steps" {
@@ -1577,8 +1642,6 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
         }
         "run_exports" => reads::run_exports(s, nodes(args, "ids")?, row_range(args)),
         "export_code" => reads::export_code(s, args, nodes(args, "ids")?),
-        "export_prototype" => reads::export_prototype(s),
-        "export_flow_map" => reads::export_flow_map(s),
         "list_components" => json(reads::named(reads::components(&s.doc), "components", args)),
         "list_variables" => json(reads::named(reads::variables(&s.doc), "variables", args)),
         "list_styles" => json(reads::named(reads::styles(&s.doc), "styles", args)),
@@ -1885,11 +1948,24 @@ mod tests {
         tool: &str,
         args: Value,
     ) -> Output {
-        let (reply, _answer) = sync_channel(1);
-        engine.handle(
-            docs,
-            Call::new(conn, key.map(str::to_owned), tool, args, reply),
-        )
+        let (reply, answer) = sync_channel(1);
+        let call = Call::new(conn, key.map(str::to_owned), tool, args, reply);
+        if !export_call(&call) {
+            return engine.handle(docs, call);
+        }
+        // An export waits for its worker: settle it as the window does.
+        if let Some(out) = engine.handle_or_wait(docs, call) {
+            return out;
+        }
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            engine.run_later(docs);
+            if let Ok(out) = answer.try_recv() {
+                return out;
+            }
+            assert!(std::time::Instant::now() < until, "the export settles");
+            std::thread::yield_now();
+        }
     }
 
     pub(in crate::mcp) fn ok(out: &Output) -> &Value {
@@ -3365,6 +3441,43 @@ mod tests {
         let (name, bytes) = only_file(&out);
         assert_eq!(name, "Prototype — Flow map.pdf");
         assert!(bytes.starts_with(b"%PDF"), "a PDF");
+    }
+
+    /// An export's file packs on a worker: the call is kept waiting, not
+    /// answered on the pass that starts it, and `run_later` answers it on its own
+    /// reply once the worker is done; a refused export is answered at once.
+    ///
+    /// flip: the export arm skipped, so the export reaches no tool → fails at
+    /// "kept waiting"; it dropping the worker's answer and waiting on → the
+    /// call is answered "stopped", failing at `only_file`.
+    #[test]
+    fn an_export_waits_for_its_worker_and_is_answered_on_its_reply() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let start = |engine: &mut Engine, docs: &mut One| {
+            let (reply, answer) = sync_channel(1);
+            let call = Call::new(1, None, "export_flow_map", json!({}), reply);
+            (engine.handle_or_wait(docs, call), answer)
+        };
+        let (refused, _) = start(&mut engine, &mut docs);
+        assert!(
+            refused.is_some_and(|o| o.is_error),
+            "no flow: answered at once"
+        );
+        two_flows(&mut engine, &mut docs);
+        let (now, answer) = start(&mut engine, &mut docs);
+        assert!(now.is_none() && engine.has_later(), "kept waiting");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        let out = loop {
+            engine.run_later(&mut docs);
+            if let Ok(out) = answer.try_recv() {
+                break out;
+            }
+            assert!(std::time::Instant::now() < until, "answered");
+            std::thread::yield_now();
+        };
+        assert!(only_file(&out).1.starts_with(b"%PDF"), "the PDF");
+        assert!(!engine.has_later(), "nothing left waiting");
     }
 
     /// The three table reads list what the verbs made: a variable with its
