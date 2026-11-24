@@ -1849,6 +1849,30 @@ fn keeps(var: VarId) -> Expr {
     Expr(format!("{{{}}}", var.0.to_wire()))
 }
 
+/// *Set variable*'s change once `old` (of `kind`) is swapped for `new`: one that
+/// cannot apply to the new kind becomes its nearest, and a value still the old
+/// variable's [`keeps`] is re-seeded, or the action would copy `old` into `new`.
+fn repicked_change(
+    old: VarId,
+    kind: Option<VarKind>,
+    new: VarId,
+    new_kind: Option<VarKind>,
+    change: &VarChange,
+) -> VarChange {
+    match (new_kind, change) {
+        (Some(VarKind::Boolean), VarChange::Increment { .. }) => VarChange::Toggle,
+        (Some(VarKind::Number), VarChange::Toggle) => VarChange::Increment { by: 1.0 },
+        (
+            Some(VarKind::String | VarKind::Color),
+            VarChange::Toggle | VarChange::Increment { .. },
+        ) => VarChange::Set { to: keeps(new) },
+        // A value written for another kind would not read.
+        (Some(_), VarChange::Set { .. }) if new_kind != kind => VarChange::Set { to: keeps(new) },
+        (_, VarChange::Set { to }) if *to == keeps(old) => VarChange::Set { to: keeps(new) },
+        (_, c) => c.clone(),
+    }
+}
+
 /// A new action of `kind` for a reaction on `holder`, its target the likeliest
 /// one: another screen, the holder's own instance, the first variable or script.
 /// `None` where the document has nothing it could name.
@@ -5324,21 +5348,7 @@ impl MastikApp {
                 let kind = doc.variables().get(*var).map(|v| v.kind);
                 if let Some(v) = self.variable_combo(ui, ("set-var", k.id), Some(*var), None) {
                     let new_kind = self.session.doc.variables().get(v).map(|x| x.kind);
-                    let change = match (new_kind, change) {
-                        (Some(VarKind::Boolean), VarChange::Increment { .. }) => VarChange::Toggle,
-                        (Some(VarKind::Number), VarChange::Toggle) => {
-                            VarChange::Increment { by: 1.0 }
-                        }
-                        (
-                            Some(VarKind::String | VarKind::Color),
-                            VarChange::Toggle | VarChange::Increment { .. },
-                        ) => VarChange::Set { to: keeps(v) },
-                        // A value written for another kind would not read.
-                        (Some(_), VarChange::Set { .. }) if new_kind != kind => {
-                            VarChange::Set { to: keeps(v) }
-                        }
-                        (_, c) => c.clone(),
-                    };
+                    let change = repicked_change(*var, kind, v, new_kind, change);
                     // Answered, with the rows below still drawn this frame.
                     out = Some((
                         Action::SetVariable { var: v, change },
@@ -9731,6 +9741,26 @@ mod tests {
         );
         frame(&mut f.app, vec![]);
         assert_eq!(ms(&f.app), 2000, "Enter commits");
+    }
+
+    /// Swapping *Set variable*'s variable for another of its kind re-seeds a
+    /// value that still only read the old one, and keeps one that was typed.
+    /// flip: `repicked_change` without its `keeps(old)` arm → fails at "re-seeded".
+    #[test]
+    fn a_repicked_variable_does_not_copy_the_old_one() {
+        let mut ids = IdSource::new(0xC4);
+        let (a, b) = (ids.mint_var(), ids.mint_var());
+        let bool_ = Some(VarKind::Boolean);
+        let held = VarChange::Set { to: keeps(a) };
+        assert_eq!(
+            repicked_change(a, bool_, b, bool_, &held),
+            VarChange::Set { to: keeps(b) },
+            "re-seeded"
+        );
+        let typed = VarChange::Set {
+            to: Expr("true".into()),
+        };
+        assert_eq!(repicked_change(a, bool_, b, bool_, &typed), typed, "kept");
     }
 
     /// Prototype mode is remembered by the library for the document, as the
