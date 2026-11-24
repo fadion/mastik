@@ -86,7 +86,8 @@ otherwise the player returns over the canvas).
     its frame, with no bar or device frame, and no device unless the export's *On a phone* keeps
     the page's, so *Responsive* lays out at the phone's size and follows its turn. An edit is sent once the document has sat still for 0.25 s as a new
     version the phone plays where it is (`Player::rebase`); one needing fonts the page lacks
-    sends `reload`. The phone toasts *Updated from Mastik*, and when sharing stops dims its last
+    sends `reload`, and the reloaded page keeps the phone's id (`sessionStorage`), so it is
+    still one phone. The phone toasts *Updated from Mastik*, and when sharing stops dims its last
     frame under *Mastik stopped sharing*.
   - **The firewall.** The first share on Windows raises the system's prompt for the app, which
     the card's help line names on Windows (*allow it so the phone can reach this computer*),

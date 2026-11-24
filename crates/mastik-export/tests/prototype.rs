@@ -911,6 +911,33 @@ fn only_the_mirrored_page_is_in_mirror_mode() {
     );
 }
 
+/// The mirrored page keeps its phone's id across the reload a page needing
+/// fonts takes, and takes it back on load, so the app counts the phone once.
+/// A text check: no test here runs the boot script.
+/// flip: the `reload` event not storing the id → fails at "stored".
+#[test]
+fn a_mirrored_page_keeps_its_phone_id_across_a_reload() {
+    let f = fixture();
+    let settings = f.doc.get(f.settings_page).expect("page").children()[0];
+    let player = Player {
+        wasm: WASM,
+        glue: GLUE,
+    };
+    let parts = Parts::mirror(&f.doc, player, Opening::Frame(settings)).expect("parts");
+    let page = parts.mirror_html(Some(settings), 3);
+    let reload = page
+        .find("if (e.data === \"reload\")")
+        .expect("the reload event");
+    let stored = page[reload..]
+        .find("sessionStorage.setItem(\"mastik-phone\", id)")
+        .zip(page[reload..].find("location.reload()"));
+    assert!(matches!(stored, Some((s, r)) if s < r), "stored");
+    assert!(
+        page.contains("id = sessionStorage.getItem(\"mastik-phone\")"),
+        "taken back on load"
+    );
+}
+
 /// A layer's annotation reaches the page in the packed document, where inspect
 /// mode reads it (`Player::layer_note`).
 ///

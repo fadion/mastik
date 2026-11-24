@@ -1182,7 +1182,14 @@ const BOOT: &str = r##"(async () => {
     // in place of the old where play is, the screen shown is reported, and once
     // the app stops sharing the last frame stays, dimmed, under a line saying so.
     function mirror() {
-      const id = Array.from(crypto.getRandomValues(new Uint32Array(2))).join("-");
+      // The id outlives the reload a page needing fonts takes, so the app counts
+      // the phone once; it is taken as it is read, so a duplicated tab picks its own.
+      let id = null;
+      try {
+        id = sessionStorage.getItem("mastik-phone");
+        sessionStorage.removeItem("mastik-phone");
+      } catch (_) {}
+      if (!id) id = Array.from(crypto.getRandomValues(new Uint32Array(2))).join("-");
       let version = mirrored.version, screen = null, ended = false;
       const report = () => {
         const now = player.screen_name();
@@ -1210,7 +1217,10 @@ const BOOT: &str = r##"(async () => {
       };
       events.onmessage = async e => {
         if (e.data === "stop") return end();
-        if (e.data === "reload") return location.reload();
+        if (e.data === "reload") {
+          try { sessionStorage.setItem("mastik-phone", id); } catch (_) {}
+          return location.reload();
+        }
         const v = Number(e.data);
         if (!(v > version)) return;
         version = v;
