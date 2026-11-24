@@ -1230,12 +1230,13 @@ pub(crate) fn at_rows(doc: &Document, text: &str, reads: Reads) -> Vec<AtRow> {
         1 => "1 row".to_string(),
         n => format!("{n} rows"),
     };
-    // The columns of `t`, each named whole after `head` or opening its totals.
+    // The columns of `t`, each named whole after `head` or opening its totals;
+    // only a number column has totals, so a text one is left out of those.
     let columns = |t: &mastik_core::list::DataSet, head: &str, rest: &str, whole: bool| {
         t.table
             .columns
             .iter()
-            .filter(|c| holds(&c.name, rest))
+            .filter(|c| holds(&c.name, rest) && (whole || t.table.is_numeric(c.id)))
             .map(|c| {
                 let numbers = t.table.is_numeric(c.id);
                 let note = match (numbers, whole) {
@@ -1263,8 +1264,11 @@ pub(crate) fn at_rows(doc: &Document, text: &str, reads: Reads) -> Vec<AtRow> {
         let head = format!("{}.", t.name);
         // After a column: its totals.
         if let Some((c, q)) = rest.rsplit_once('.')
-            && t.table.columns.iter().any(|x| x.name == c)
+            && let Some(column) = t.table.columns.iter().find(|x| x.name == c)
         {
+            if !t.table.is_numeric(column.id) {
+                return Vec::new();
+            }
             return Agg::ALL
                 .iter()
                 .filter(|a| a.word().starts_with(q))
@@ -8866,9 +8870,10 @@ mod tests {
     }
 
     /// `@` lists the tables after the variables; a table's dot lists its count,
-    /// its rows and its columns, a column's dot its totals, and a pick of the
-    /// last step writes the whole read, which stores by ids.
-    /// flip: `at_rows` leaving out the tables → fails at "tables after".
+    /// its rows and its number columns, a column's dot its totals, and a pick of
+    /// the last step writes the whole read, which stores by ids.
+    /// flip: `at_rows` leaving out the tables → fails at "tables after";
+    /// listing text columns at the table's step → fails at "no totals to open".
     #[test]
     fn an_at_lists_tables_and_then_what_they_hold() {
         use mastik_core::chart::{Column, ColumnId, Table};
@@ -8922,8 +8927,10 @@ mod tests {
         );
         assert_eq!(
             labels("@Cart items."),
-            vec!["rows", "opened", "first", "last", "Name", "Line"]
+            vec!["rows", "opened", "first", "last", "Line"],
+            "a text column has no totals to open"
         );
+        assert!(labels("@Cart items.Name.").is_empty(), "nor after its dot");
         let line = rows("@Cart items.Li").pop().unwrap();
         assert_eq!(
             (line.insert.as_str(), line.done),

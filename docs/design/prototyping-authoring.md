@@ -227,8 +227,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   holds one), a list opens under it of the variables whose names hold that text, then under *Tables* the
   tables with their row counts (`row`, the row acted on, first inside a row action), at most
   `AT_LIST_MAX` (12). After `<table>.` it lists *rows*, *opened*, *first*, *last*, a typed row
-  number and the columns (a number column noted *# · sum min max avg*); after a row, its columns;
-  after a column, its totals. The arrows move its light; Enter or Tab, or a click, replaces the
+  number and its number columns, noted *# · sum min max avg* (a text column has no totals, and
+  `{Table.Column}` alone reads nothing); after a row, every column; after a number column, its
+  totals. The arrows move its light; Enter or Tab, or a click, replaces the
   opener and what follows with `{name}`, the caret after it, or, for a step that names nothing
   whole yet (a table, a row, a column before its total), with the same opener and that step and a
   dot, so the next step's list opens (`picked`).
