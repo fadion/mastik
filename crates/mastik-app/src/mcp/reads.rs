@@ -57,6 +57,7 @@ pub(super) fn run_exports(
         folders_from_names: false,
         scale_override: None,
         unset: None,
+        rows_unfilled: false,
     };
     let mut plan = mastik_export::plan(&s.doc, &s.resolved, &subjects, opts);
     if let Some(rows) = &rows {

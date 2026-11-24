@@ -2677,6 +2677,7 @@ impl MastikApp {
                 // (§15 D361).
                 scale_override: None,
                 unset: None,
+                rows_unfilled: false,
             },
         )
     }
@@ -3021,6 +3022,7 @@ impl MastikApp {
                 folders_from_names: self.prefs.export_folders_from_names,
                 scale_override: None,
                 unset: Some(ExportSpec::new(ExportFormat::Png, ExportScale::Times(1.0))),
+                rows_unfilled: false,
             },
         )
     }

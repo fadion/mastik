@@ -698,6 +698,80 @@ fn inspect_carries_each_layers_css_and_export_files() {
     assert_eq!(&file.bytes[..8], b"\x89PNG\r\n\x1a\n");
 }
 
+/// A *One file per row* setting offers inspect mode the layer's one file as it
+/// stands, a file per setting whatever the table's length, *One PDF* included.
+///
+/// flip: `inspect_files` planning without `rows_unfilled` → fails at "one file
+/// a setting".
+#[test]
+fn inspect_offers_a_per_row_setting_as_one_file() {
+    use mastik_core::chart::{Column, Table};
+    use mastik_core::{ExportFormat, ExportScale, ExportSpec, PerRow, RowsAs};
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let button = f
+        .doc
+        .node_ids()
+        .find(|id| f.doc.get(*id).is_some_and(|n| n.name() == "Button"))
+        .expect("the button");
+    let table = IdSource::new(0x7AB).mint_data_set();
+    let mut t = Table::default();
+    let id = t.next_column_id();
+    t.columns.push(Column {
+        id,
+        name: "Name".into(),
+    });
+    t.rows = (0..5).map(|r| vec![format!("Row {r}")]).collect();
+    let png = ExportSpec {
+        per_row: Some(PerRow::new(table)),
+        ..ExportSpec::new(ExportFormat::Png, ExportScale::Times(1.0))
+    };
+    let pdf = ExportSpec {
+        per_row: Some(PerRow {
+            rows_as: RowsAs::Pages,
+            ..PerRow::new(table)
+        }),
+        ..ExportSpec::new(ExportFormat::Pdf, ExportScale::Times(1.0))
+    };
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::SetDataSet {
+                id: table,
+                set: Some(Box::new(mastik_core::list::DataSet {
+                    id: table,
+                    name: "People".into(),
+                    table: t,
+                    source: None,
+                    pictures: Vec::new(),
+                })),
+            },
+            Operation::SetExports {
+                id: button,
+                exports: keyed_by_position([png, pdf]),
+            },
+        ]))
+        .expect("export settings");
+    let parts = Parts::of(
+        &f.doc,
+        Player {
+            wasm: WASM,
+            glue: GLUE,
+        },
+    )
+    .expect("parts");
+    let paths: Vec<&str> = parts
+        .files
+        .iter()
+        .filter(|f| f.layer == button)
+        .map(|f| f.path.as_str())
+        .collect();
+    assert_eq!(paths, ["Button.png", "Button.pdf"], "one file a setting");
+    let pdf = parts.files.iter().find(|f| f.path == "Button.pdf");
+    let text = String::from_utf8_lossy(&pdf.expect("the PDF").bytes);
+    let pages = text.matches("/Type/Page").count() - text.matches("/Type/Pages").count();
+    assert_eq!(pages, 1, "the PDF is the layer's one page");
+}
+
 /// A mirror of one flow keeps that flow alone and the pages it reaches, and
 /// plays the page as the phone shows it: no bar, no device frame, and no device
 /// unless the export keeps the page's, a setting the file saves.

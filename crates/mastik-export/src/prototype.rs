@@ -437,15 +437,20 @@ pub struct InspectFile {
 }
 
 /// Every file the layers' own export settings write ([`crate::plan::plan`]), rendered
-/// now, since the page carries no exporter.
+/// now, since the page carries no exporter. A *One file per row* setting offers
+/// the layer's one file as it stands, not a file per row.
 pub fn inspect_files(doc: &Document, res: &Resolved) -> Vec<InspectFile> {
     let pages: Vec<NodeId> = doc.page_ids().collect();
+    let opts = crate::plan::PlanOptions {
+        rows_unfilled: true,
+        ..Default::default()
+    };
     let mut out = Vec::new();
     for id in mastik_core::subtree_nodes(doc, &pages) {
         if doc.get(id).is_none_or(|n| n.exports().is_empty()) {
             continue;
         }
-        for file in crate::plan::plan(doc, res, &[id], Default::default()) {
+        for file in crate::plan::plan(doc, res, &[id], opts.clone()) {
             if let Some(bytes) = crate::plan::render(doc, res, &file) {
                 out.push(InspectFile {
                     layer: id,

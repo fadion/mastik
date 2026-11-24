@@ -34,6 +34,10 @@ pub struct PlanOptions {
     /// What a subject with no specs of its own exports as — *Export all frames*'
     /// 1× PNG. `None` plans nothing for it.
     pub unset: Option<ExportSpec>,
+    /// Plan a *One file per row* spec as the layer's one file, drawn as it
+    /// stands: what a prototype's inspect mode offers, since a file or page per
+    /// row would render the whole table into the page.
+    pub rows_unfilled: bool,
 }
 
 /// One file an export will produce.
@@ -96,6 +100,17 @@ pub fn plan(
             });
         }
         for spec in &specs {
+            let unfilled;
+            let spec = match opts.rows_unfilled && spec.per_row.is_some() {
+                true => {
+                    unfilled = ExportSpec {
+                        per_row: None,
+                        ..spec.clone()
+                    };
+                    &unfilled
+                }
+                false => spec,
+            };
             if let Some(files) = row_files(doc, node, spec, &opts) {
                 // One PDF, a page per row: named as the layer's one file is.
                 if spec.rows_as_pages() {

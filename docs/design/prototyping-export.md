@@ -228,8 +228,10 @@ canvas, the drawing and the page around them.
   button, and the files its export settings write, to download. The page has no exporter, so
   both are made when the file is: `prototype::inspect_css` for every layer (a layer whose CSS
   is over 32 KB is left out, and the panel says to copy it from Mastik) and
-  `prototype::inspect_files`, rendered through `plan`. Boxes are read off the played copy's
-  layout, moved by scroll offsets; a sticky or fixed child is boxed where it would scroll to.
+  `prototype::inspect_files`, rendered through `plan`. A *One file per row* setting gives one
+  file, the layer as it stands (`PlanOptions::rows_unfilled`): a file or page per row would
+  render the whole table into the page, and again on every measure of the export card. Boxes
+  are read off the played copy's layout, moved by scroll offsets; a sticky or fixed child is boxed where it would scroll to.
 - The page's arithmetic (`shell.rs`: placing, the pointer's and wheel's mapping, key names,
   and where play opens) builds on the desktop too, and `mastik-export`'s `tests/web_shell.rs`
   includes and tests it; `tests/prototype.rs` checks the page's script calls only what the

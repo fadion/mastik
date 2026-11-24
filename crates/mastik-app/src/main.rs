@@ -1811,6 +1811,7 @@ fn export_all(
             folders_from_names: folders,
             scale_override,
             unset: None,
+            rows_unfilled: false,
         },
     );
 
