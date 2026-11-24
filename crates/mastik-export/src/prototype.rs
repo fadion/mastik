@@ -1100,6 +1100,7 @@ const BOOT: &str = r##"(async () => {
         return after();
       }
       canvas.setPointerCapture(e.pointerId);
+      commitComposition();
       player.pointer_down(...local(e));
       after();
     });
@@ -1143,8 +1144,22 @@ const BOOT: &str = r##"(async () => {
       followFocus();
       after();
     });
+    // A word a composing keyboard holds open (Gboard's, until a space) is typed
+    // before a tap reaches play: the tap may move play's focus, and the
+    // composition's own end comes only after, when nothing would take it.
+    let composing = false, committed = false;
+    typing.addEventListener("compositionstart", () => { composing = true; committed = false; });
+    function commitComposition() {
+      if (!composing || !typing.value) return;
+      player.type_text(typing.value);
+      committed = true;
+      typing.value = "";
+      typing.blur();
+    }
     typing.addEventListener("compositionend", e => {
-      if (e.data) player.type_text(e.data);
+      composing = false;
+      if (e.data && !committed) player.type_text(e.data);
+      committed = false;
       typing.value = "";
       followFocus();
       after();

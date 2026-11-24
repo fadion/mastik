@@ -563,6 +563,46 @@ fn the_page_takes_text_from_a_phones_keyboard() {
     }
 }
 
+/// A tap commits the word a composing keyboard holds open before play sees the
+/// pointer, and the composition's end that follows does not type it twice. Only
+/// the page's text is checked; the event order is a browser's.
+/// flip: `commitComposition()` moved after `player.pointer_down` → fails at
+/// "before the pointer".
+#[test]
+fn a_tap_commits_the_open_composition_first() {
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let html = Parts::of(
+        &f.doc,
+        Player {
+            wasm: WASM,
+            glue: GLUE,
+        },
+    )
+    .expect("parts")
+    .html();
+    let down = &html[html.find("\"pointerdown\"").expect("pointerdown")..];
+    let down = &down[..down.find("});").expect("its end")];
+    let commit = down.find("commitComposition();").expect("the tap commits");
+    let pointer = down
+        .find("player.pointer_down(")
+        .expect("the tap reaches play");
+    assert!(commit < pointer, "before the pointer");
+    let body = &html[html
+        .find("function commitComposition()")
+        .expect("the commit")..];
+    let body = &body[..body.find("\n    }").expect("its end")];
+    assert!(
+        body.contains("player.type_text(typing.value)"),
+        "types the open word"
+    );
+    assert!(body.contains("committed = true"), "marks it typed");
+    assert!(
+        html.contains("if (e.data && !committed) player.type_text(e.data);"),
+        "the end does not type it again"
+    );
+}
+
 /// The arguments inside the bracket `s` opens with, split at the commas outside
 /// any inner bracket (and, for JavaScript, string); `angle` counts `<>` as
 /// brackets, for a Rust parameter list.
