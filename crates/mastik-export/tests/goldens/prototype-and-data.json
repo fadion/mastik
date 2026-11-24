@@ -1,0 +1,1927 @@
+{
+  "snapshot_version": 29,
+  "pages": [
+    {
+      "id": "60d:1",
+      "name": "Page 1",
+      "ground": "#171718",
+      "draft": false,
+      "mode": null,
+      "flows": [
+        {
+          "id": "60d:11",
+          "name": "Browse",
+          "start": "60d:9"
+        }
+      ],
+      "play": {
+        "device": "iPhone 18 Pro"
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "id": "11ec423e9bee757e:1",
+      "kind": "artboard",
+      "name": "Row",
+      "page": "60d:1",
+      "parent": "60d:8",
+      "children": [
+        "11ec423e9bee757e:2"
+      ],
+      "artboard": "60d:8",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        48.0
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        400.0,
+        48.0
+      ],
+      "world_bounds": [
+        400.0,
+        48.0,
+        200.0,
+        40.0
+      ],
+      "clip": true,
+      "geometry": {
+        "type": "Artboard",
+        "width": 200.0,
+        "height": 40.0
+      },
+      "list_copy": "60d:8",
+      "component": {
+        "role": "instance",
+        "main": "60d:2",
+        "source": "60d:2",
+        "properties": [
+          {
+            "name": "Title",
+            "kind": "text",
+            "value": "B",
+            "overridden": true
+          }
+        ]
+      },
+      "specified": {
+        "local_transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "11ec423e9bee757e:2",
+      "kind": "text",
+      "name": "Text 1",
+      "page": "60d:1",
+      "parent": "11ec423e9bee757e:1",
+      "artboard": "11ec423e9bee757e:1",
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        400.0,
+        48.0
+      ],
+      "world_bounds": [
+        400.0,
+        48.0,
+        10.4375,
+        19.3594
+      ],
+      "geometry": {
+        "type": "Text",
+        "content": "B",
+        "font_family": "Inter",
+        "font_size": 16.0,
+        "weight": 400,
+        "line_height": "auto",
+        "sizing": {
+          "type": "Auto"
+        }
+      },
+      "list_copy": "60d:8",
+      "component": {
+        "role": "copy",
+        "source": "60d:3",
+        "overrides": [
+          "text"
+        ]
+      }
+    },
+    {
+      "id": "2575648b3093b633:1",
+      "kind": "artboard",
+      "name": "Legend",
+      "page": "60d:1",
+      "parent": "60d:10",
+      "children": [
+        "2575648b3093b633:2"
+      ],
+      "artboard": "60d:10",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        16.0,
+        16.0
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        616.0,
+        416.0
+      ],
+      "world_bounds": [
+        616.0,
+        416.0,
+        268.0,
+        14.5195
+      ],
+      "geometry": {
+        "type": "Artboard",
+        "width": 268.0,
+        "height": 14.5195
+      },
+      "role": "Legend",
+      "display": {
+        "Flex": {
+          "wrap": "Wrap",
+          "align_items": "Center",
+          "row_gap": 6.0,
+          "column_gap": 12.0
+        }
+      },
+      "item": {
+        "width": {
+          "Percent": 100.0
+        },
+        "height": "FitContent",
+        "shrink": 0.0
+      }
+    },
+    {
+      "id": "2575648b3093b633:10",
+      "kind": "text",
+      "name": "Tick 2",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:6",
+      "artboard": "2575648b3093b633:6",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.3975,
+        74.7925
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        616.3975,
+        517.3081
+      ],
+      "world_bounds": [
+        616.3975,
+        517.3081,
+        6.7085,
+        13.3096
+      ],
+      "geometry": {
+        "type": "Text",
+        "content": "2",
+        "font_family": "Inter",
+        "font_size": 11.0,
+        "weight": 400,
+        "line_height": "auto",
+        "sizing": {
+          "type": "Auto"
+        }
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#595959",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "TickLabel",
+      "insets": {
+        "top": {
+          "Percent": 66.66666666666667
+        },
+        "right": {
+          "Px": 6.0
+        },
+        "bottom": {
+          "Percent": 33.33333333333333
+        },
+        "margin_auto": {
+          "top": true,
+          "bottom": true
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:11",
+      "kind": "text",
+      "name": "Tick 4",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:6",
+      "artboard": "2575648b3093b633:6",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        34.0688
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        616.0,
+        476.5845
+      ],
+      "world_bounds": [
+        616.0,
+        476.5845,
+        7.106,
+        13.3096
+      ],
+      "geometry": {
+        "type": "Text",
+        "content": "4",
+        "font_family": "Inter",
+        "font_size": 11.0,
+        "weight": 400,
+        "line_height": "auto",
+        "sizing": {
+          "type": "Auto"
+        }
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#595959",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "TickLabel",
+      "insets": {
+        "top": {
+          "Percent": 33.333333333333336
+        },
+        "right": {
+          "Px": 6.0
+        },
+        "bottom": {
+          "Percent": 66.66666666666666
+        },
+        "margin_auto": {
+          "top": true,
+          "bottom": true
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:12",
+      "kind": "text",
+      "name": "Tick 6",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:6",
+      "artboard": "2575648b3093b633:6",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.2847,
+        -6.6548
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        616.2847,
+        435.8608
+      ],
+      "world_bounds": [
+        616.2847,
+        435.8608,
+        6.8213,
+        13.3096
+      ],
+      "geometry": {
+        "type": "Text",
+        "content": "6",
+        "font_family": "Inter",
+        "font_size": 11.0,
+        "weight": 400,
+        "line_height": "auto",
+        "sizing": {
+          "type": "Auto"
+        }
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#595959",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "TickLabel",
+      "insets": {
+        "top": {
+          "Percent": 0.0
+        },
+        "right": {
+          "Px": 6.0
+        },
+        "bottom": {
+          "Percent": 100.0
+        },
+        "margin_auto": {
+          "top": true,
+          "bottom": true
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:13",
+      "kind": "artboard",
+      "name": "Grid",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:8",
+      "children": [
+        "2575648b3093b633:14",
+        "2575648b3093b633:15",
+        "2575648b3093b633:16",
+        "2575648b3093b633:17",
+        "2575648b3093b633:18"
+      ],
+      "artboard": "2575648b3093b633:8",
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        629.1094,
+        442.5156
+      ],
+      "world_bounds": [
+        629.1094,
+        442.5156,
+        254.894,
+        122.1709
+      ],
+      "geometry": {
+        "type": "Artboard",
+        "width": 254.894,
+        "height": 122.1709
+      },
+      "role": "Grid",
+      "insets": {
+        "top": {
+          "Px": 0.0
+        },
+        "right": {
+          "Px": 0.0
+        },
+        "bottom": {
+          "Px": 0.0
+        },
+        "left": {
+          "Px": 0.0
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:14",
+      "kind": "rect",
+      "name": "Gridline 0",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:13",
+      "artboard": "2575648b3093b633:13",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        121.6709
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        629.1094,
+        564.1865
+      ],
+      "world_bounds": [
+        629.1094,
+        564.1865,
+        254.894,
+        1.0
+      ],
+      "geometry": {
+        "type": "Rect",
+        "width": 254.894,
+        "height": 1.0
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#e6e6e6",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "Gridline",
+      "insets": {
+        "top": {
+          "Percent": 100.0
+        },
+        "right": {
+          "Px": 0.0
+        },
+        "bottom": {
+          "Percent": 0.0
+        },
+        "left": {
+          "Px": 0.0
+        },
+        "margin_auto": {
+          "top": true,
+          "bottom": true
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:15",
+      "kind": "rect",
+      "name": "Gridline 2",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:13",
+      "artboard": "2575648b3093b633:13",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        80.9473
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        629.1094,
+        523.4629
+      ],
+      "world_bounds": [
+        629.1094,
+        523.4629,
+        254.894,
+        1.0
+      ],
+      "geometry": {
+        "type": "Rect",
+        "width": 254.894,
+        "height": 1.0
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#e6e6e6",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "Gridline",
+      "insets": {
+        "top": {
+          "Percent": 66.66666666666667
+        },
+        "right": {
+          "Px": 0.0
+        },
+        "bottom": {
+          "Percent": 33.33333333333333
+        },
+        "left": {
+          "Px": 0.0
+        },
+        "margin_auto": {
+          "top": true,
+          "bottom": true
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:16",
+      "kind": "rect",
+      "name": "Gridline 4",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:13",
+      "artboard": "2575648b3093b633:13",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        40.2236
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        629.1094,
+        482.7393
+      ],
+      "world_bounds": [
+        629.1094,
+        482.7393,
+        254.894,
+        1.0
+      ],
+      "geometry": {
+        "type": "Rect",
+        "width": 254.894,
+        "height": 1.0
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#e6e6e6",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "Gridline",
+      "insets": {
+        "top": {
+          "Percent": 33.333333333333336
+        },
+        "right": {
+          "Px": 0.0
+        },
+        "bottom": {
+          "Percent": 66.66666666666666
+        },
+        "left": {
+          "Px": 0.0
+        },
+        "margin_auto": {
+          "top": true,
+          "bottom": true
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:17",
+      "kind": "rect",
+      "name": "Gridline 6",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:13",
+      "artboard": "2575648b3093b633:13",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        -0.5
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        629.1094,
+        442.0156
+      ],
+      "world_bounds": [
+        629.1094,
+        442.0156,
+        254.894,
+        1.0
+      ],
+      "geometry": {
+        "type": "Rect",
+        "width": 254.894,
+        "height": 1.0
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#e6e6e6",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "Gridline",
+      "insets": {
+        "top": {
+          "Percent": 0.0
+        },
+        "right": {
+          "Px": 0.0
+        },
+        "bottom": {
+          "Percent": 100.0
+        },
+        "left": {
+          "Px": 0.0
+        },
+        "margin_auto": {
+          "top": true,
+          "bottom": true
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:18",
+      "kind": "rect",
+      "name": "Baseline",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:13",
+      "artboard": "2575648b3093b633:13",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        121.6709
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        629.1094,
+        564.1865
+      ],
+      "world_bounds": [
+        629.1094,
+        564.1865,
+        254.894,
+        1.0
+      ],
+      "geometry": {
+        "type": "Rect",
+        "width": 254.894,
+        "height": 1.0
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#bfbfbf",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "AxisLine",
+      "insets": {
+        "top": {
+          "Percent": 100.0
+        },
+        "right": {
+          "Px": 0.0
+        },
+        "bottom": {
+          "Percent": 0.0
+        },
+        "left": {
+          "Px": 0.0
+        },
+        "margin_auto": {
+          "top": true,
+          "bottom": true
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:19",
+      "kind": "artboard",
+      "name": "Series count",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:8",
+      "children": [
+        "2575648b3093b633:20",
+        "2575648b3093b633:21"
+      ],
+      "artboard": "2575648b3093b633:8",
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        629.1094,
+        442.5156
+      ],
+      "world_bounds": [
+        629.1094,
+        442.5156,
+        254.894,
+        122.1709
+      ],
+      "geometry": {
+        "type": "Artboard",
+        "width": 254.894,
+        "height": 122.1709
+      },
+      "role": "Series",
+      "insets": {
+        "top": {
+          "Px": 0.0
+        },
+        "right": {
+          "Px": 0.0
+        },
+        "bottom": {
+          "Px": 0.0
+        },
+        "left": {
+          "Px": 0.0
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:2",
+      "kind": "artboard",
+      "name": "Legend · count",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:1",
+      "children": [
+        "2575648b3093b633:3",
+        "2575648b3093b633:4"
+      ],
+      "artboard": "2575648b3093b633:1",
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        616.0,
+        416.0
+      ],
+      "world_bounds": [
+        616.0,
+        416.0,
+        48.1621,
+        14.5195
+      ],
+      "geometry": {
+        "type": "Artboard",
+        "width": 48.1621,
+        "height": 14.5195
+      },
+      "role": "LegendItem",
+      "display": {
+        "Flex": {
+          "align_items": "Center",
+          "column_gap": 6.0
+        }
+      },
+      "item": {
+        "width": "FitContent",
+        "height": "FitContent",
+        "shrink": 0.0
+      }
+    },
+    {
+      "id": "2575648b3093b633:20",
+      "kind": "rect",
+      "name": "count · A",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:19",
+      "artboard": "2575648b3093b633:19",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        19.1171,
+        61.0854
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        648.2264,
+        503.6011
+      ],
+      "world_bounds": [
+        648.2264,
+        503.6011,
+        89.2129,
+        61.0854
+      ],
+      "geometry": {
+        "type": "Rect",
+        "width": 89.2129,
+        "height": 61.0854,
+        "corner_radii": {
+          "top_left": 2.0,
+          "top_right": 2.0,
+          "bottom_right": 0.0,
+          "bottom_left": 0.0
+        }
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#3b6fe0",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "Bar",
+      "insets": {
+        "top": {
+          "Percent": 50.0
+        },
+        "right": {
+          "Percent": 57.49999999999999
+        },
+        "bottom": {
+          "Percent": 0.0
+        },
+        "left": {
+          "Percent": 7.500000000000001
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:21",
+      "kind": "rect",
+      "name": "count · B",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:19",
+      "artboard": "2575648b3093b633:19",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        146.5641,
+        20.3618
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        775.6734,
+        462.8774
+      ],
+      "world_bounds": [
+        775.6734,
+        462.8774,
+        89.2129,
+        101.8091
+      ],
+      "geometry": {
+        "type": "Rect",
+        "width": 89.2129,
+        "height": 101.8091,
+        "corner_radii": {
+          "top_left": 2.0,
+          "top_right": 2.0,
+          "bottom_right": 0.0,
+          "bottom_left": 0.0
+        }
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#3b6fe0",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "Bar",
+      "insets": {
+        "top": {
+          "Percent": 16.666666666666664
+        },
+        "right": {
+          "Percent": 7.500000000000007
+        },
+        "bottom": {
+          "Percent": 0.0
+        },
+        "left": {
+          "Percent": 57.49999999999999
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:22",
+      "kind": "text",
+      "name": "Category A",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:7",
+      "artboard": "2575648b3093b633:7",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        59.9288,
+        6.0
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        689.0382,
+        570.6875
+      ],
+      "world_bounds": [
+        689.0382,
+        570.6875,
+        7.5894,
+        13.3096
+      ],
+      "geometry": {
+        "type": "Text",
+        "content": "A",
+        "font_family": "Inter",
+        "font_size": 11.0,
+        "weight": 400,
+        "line_height": "auto",
+        "sizing": {
+          "type": "Auto"
+        }
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#595959",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "CategoryLabel",
+      "insets": {
+        "top": {
+          "Px": 6.0
+        },
+        "right": {
+          "Percent": 75.0
+        },
+        "left": {
+          "Percent": 25.0
+        },
+        "margin_auto": {
+          "right": true,
+          "left": true
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:23",
+      "kind": "text",
+      "name": "Category B",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:7",
+      "artboard": "2575648b3093b633:7",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        187.5719,
+        6.0
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        816.6813,
+        570.6875
+      ],
+      "world_bounds": [
+        816.6813,
+        570.6875,
+        7.1973,
+        13.3096
+      ],
+      "geometry": {
+        "type": "Text",
+        "content": "B",
+        "font_family": "Inter",
+        "font_size": 11.0,
+        "weight": 400,
+        "line_height": "auto",
+        "sizing": {
+          "type": "Auto"
+        }
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#595959",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "CategoryLabel",
+      "insets": {
+        "top": {
+          "Px": 6.0
+        },
+        "right": {
+          "Percent": 25.0
+        },
+        "left": {
+          "Percent": 75.0
+        },
+        "margin_auto": {
+          "right": true,
+          "left": true
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:3",
+      "kind": "rect",
+      "name": "Swatch · count",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:2",
+      "artboard": "2575648b3093b633:2",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        2.2656
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        616.0,
+        418.2656
+      ],
+      "world_bounds": [
+        616.0,
+        418.2656,
+        10.0,
+        10.0
+      ],
+      "geometry": {
+        "type": "Rect",
+        "width": 10.0,
+        "height": 10.0,
+        "corner_radii": {
+          "top_left": 2.0,
+          "top_right": 2.0,
+          "bottom_right": 2.0,
+          "bottom_left": 2.0
+        }
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#3b6fe0",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "LegendSwatch",
+      "specified": {
+        "local_transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          0.0,
+          2.2598
+        ]
+      }
+    },
+    {
+      "id": "2575648b3093b633:4",
+      "kind": "text",
+      "name": "Label · count",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:2",
+      "artboard": "2575648b3093b633:2",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        16.0,
+        0.0
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        632.0,
+        416.0
+      ],
+      "world_bounds": [
+        632.0,
+        416.0,
+        32.1621,
+        14.5195
+      ],
+      "geometry": {
+        "type": "Text",
+        "content": "count",
+        "font_family": "Inter",
+        "font_size": 12.0,
+        "weight": 400,
+        "line_height": "auto",
+        "sizing": {
+          "type": "Auto"
+        }
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#595959",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "LegendLabel"
+    },
+    {
+      "id": "2575648b3093b633:5",
+      "kind": "artboard",
+      "name": "Body",
+      "page": "60d:1",
+      "parent": "60d:10",
+      "children": [
+        "2575648b3093b633:6",
+        "2575648b3093b633:7",
+        "2575648b3093b633:8"
+      ],
+      "artboard": "60d:10",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        16.0,
+        42.5156
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        616.0,
+        442.5156
+      ],
+      "world_bounds": [
+        616.0,
+        442.5156,
+        268.0,
+        141.4805
+      ],
+      "geometry": {
+        "type": "Artboard",
+        "width": 268.0,
+        "height": 141.4805
+      },
+      "role": "Body",
+      "display": {
+        "Grid": {
+          "columns": [
+            {
+              "Px": 13.10595703125
+            },
+            {
+              "min": {
+                "Px": 0.0
+              },
+              "max": {
+                "Fr": 1.0
+              }
+            }
+          ],
+          "rows": [
+            {
+              "min": {
+                "Px": 0.0
+              },
+              "max": {
+                "Fr": 1.0
+              }
+            },
+            {
+              "Px": 19.3095703125
+            }
+          ]
+        }
+      },
+      "item": {
+        "width": {
+          "Percent": 100.0
+        },
+        "min_height": {
+          "Px": 0.0
+        },
+        "grow": 1.0,
+        "basis": {
+          "Px": 0.0
+        }
+      },
+      "specified": {
+        "local_transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          16.0,
+          42.5195
+        ]
+      }
+    },
+    {
+      "id": "2575648b3093b633:6",
+      "kind": "artboard",
+      "name": "Value axis",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:5",
+      "children": [
+        "2575648b3093b633:9",
+        "2575648b3093b633:10",
+        "2575648b3093b633:11",
+        "2575648b3093b633:12"
+      ],
+      "artboard": "2575648b3093b633:5",
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        616.0,
+        442.5156
+      ],
+      "world_bounds": [
+        616.0,
+        442.5156,
+        13.106,
+        122.1709
+      ],
+      "geometry": {
+        "type": "Artboard",
+        "width": 13.106,
+        "height": 122.1709
+      },
+      "role": "ValueAxis",
+      "item": {
+        "width": {
+          "Percent": 100.0
+        },
+        "height": {
+          "Percent": 100.0
+        },
+        "grid_column": {
+          "start": {
+            "Line": 1
+          }
+        },
+        "grid_row": {
+          "start": {
+            "Line": 1
+          }
+        }
+      }
+    },
+    {
+      "id": "2575648b3093b633:7",
+      "kind": "artboard",
+      "name": "Category axis",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:5",
+      "children": [
+        "2575648b3093b633:22",
+        "2575648b3093b633:23"
+      ],
+      "artboard": "2575648b3093b633:5",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        13.1094,
+        122.1719
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        629.1094,
+        564.6875
+      ],
+      "world_bounds": [
+        629.1094,
+        564.6875,
+        254.894,
+        19.3096
+      ],
+      "geometry": {
+        "type": "Artboard",
+        "width": 254.894,
+        "height": 19.3096
+      },
+      "role": "CategoryAxis",
+      "item": {
+        "width": {
+          "Percent": 100.0
+        },
+        "height": {
+          "Percent": 100.0
+        },
+        "grid_column": {
+          "start": {
+            "Line": 2
+          }
+        },
+        "grid_row": {
+          "start": {
+            "Line": 2
+          }
+        }
+      },
+      "specified": {
+        "local_transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          13.106,
+          122.1709
+        ]
+      }
+    },
+    {
+      "id": "2575648b3093b633:8",
+      "kind": "artboard",
+      "name": "Plot",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:5",
+      "children": [
+        "2575648b3093b633:13",
+        "2575648b3093b633:19"
+      ],
+      "artboard": "2575648b3093b633:5",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        13.1094,
+        0.0
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        629.1094,
+        442.5156
+      ],
+      "world_bounds": [
+        629.1094,
+        442.5156,
+        254.894,
+        122.1709
+      ],
+      "geometry": {
+        "type": "Artboard",
+        "width": 254.894,
+        "height": 122.1709
+      },
+      "role": "Plot",
+      "item": {
+        "width": {
+          "Percent": 100.0
+        },
+        "height": {
+          "Percent": 100.0
+        },
+        "grid_column": {
+          "start": {
+            "Line": 2
+          }
+        },
+        "grid_row": {
+          "start": {
+            "Line": 1
+          }
+        }
+      },
+      "specified": {
+        "local_transform": [
+          1.0,
+          0.0,
+          0.0,
+          1.0,
+          13.106,
+          0.0
+        ]
+      }
+    },
+    {
+      "id": "2575648b3093b633:9",
+      "kind": "text",
+      "name": "Tick 0",
+      "page": "60d:1",
+      "parent": "2575648b3093b633:6",
+      "artboard": "2575648b3093b633:6",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.1665,
+        115.5161
+      ],
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        616.1665,
+        558.0317
+      ],
+      "world_bounds": [
+        616.1665,
+        558.0317,
+        6.9395,
+        13.3096
+      ],
+      "geometry": {
+        "type": "Text",
+        "content": "0",
+        "font_family": "Inter",
+        "font_size": 11.0,
+        "weight": 400,
+        "line_height": "auto",
+        "sizing": {
+          "type": "Auto"
+        }
+      },
+      "fills": [
+        {
+          "id": "0:0",
+          "index": 0,
+          "paint": {
+            "type": "Solid",
+            "color": "#595959",
+            "alpha": 1.0
+          }
+        }
+      ],
+      "role": "TickLabel",
+      "insets": {
+        "top": {
+          "Percent": 100.0
+        },
+        "right": {
+          "Px": 6.0
+        },
+        "bottom": {
+          "Percent": 0.0
+        },
+        "margin_auto": {
+          "top": true,
+          "bottom": true
+        }
+      }
+    },
+    {
+      "id": "60d:1",
+      "kind": "root",
+      "name": "Page 1",
+      "page": "60d:1",
+      "children": [
+        "60d:10",
+        "60d:9",
+        "60d:2",
+        "60d:8"
+      ],
+      "world_bounds": [
+        0.0,
+        0.0,
+        900.0,
+        1200.0
+      ]
+    },
+    {
+      "id": "60d:10",
+      "kind": "artboard",
+      "name": "Counts",
+      "page": "60d:1",
+      "parent": "60d:1",
+      "children": [
+        "2575648b3093b633:1",
+        "2575648b3093b633:5"
+      ],
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        600.0,
+        400.0
+      ],
+      "world_bounds": [
+        600.0,
+        400.0,
+        300.0,
+        200.0
+      ],
+      "clip": true,
+      "geometry": {
+        "type": "Artboard",
+        "width": 300.0,
+        "height": 200.0
+      },
+      "chart": {
+        "kind": "Column",
+        "variant": "Grouped",
+        "columns": [
+          {
+            "id": 0,
+            "name": "title",
+            "numeric": false
+          },
+          {
+            "id": 1,
+            "name": "count",
+            "numeric": true
+          }
+        ],
+        "rows": 2,
+        "mapping": {
+          "category": 0,
+          "series": [
+            1
+          ]
+        },
+        "series": [
+          {
+            "column": 1,
+            "name": "count",
+            "visible": true
+          }
+        ],
+        "linked": false,
+        "data": "rows.csv",
+        "data_id": "60d:7"
+      },
+      "display": {
+        "Flex": {
+          "direction": "Column",
+          "row_gap": 12.0,
+          "column_gap": 12.0,
+          "padding": [
+            16.0,
+            16.0,
+            16.0,
+            16.0
+          ]
+        }
+      }
+    },
+    {
+      "id": "60d:2",
+      "kind": "artboard",
+      "name": "Row",
+      "page": "60d:1",
+      "parent": "60d:1",
+      "children": [
+        "60d:3"
+      ],
+      "world_bounds": [
+        0.0,
+        0.0,
+        200.0,
+        40.0
+      ],
+      "clip": true,
+      "geometry": {
+        "type": "Artboard",
+        "width": 200.0,
+        "height": 40.0
+      },
+      "component": {
+        "role": "main"
+      }
+    },
+    {
+      "id": "60d:3",
+      "kind": "text",
+      "name": "Text 1",
+      "page": "60d:1",
+      "parent": "60d:2",
+      "artboard": "60d:2",
+      "world_bounds": [
+        0.0,
+        0.0,
+        44.0781,
+        19.3594
+      ],
+      "geometry": {
+        "type": "Text",
+        "content": "Name",
+        "font_family": "Inter",
+        "font_size": 16.0,
+        "weight": 400,
+        "line_height": "auto",
+        "sizing": {
+          "type": "Auto"
+        }
+      }
+    },
+    {
+      "id": "60d:5",
+      "kind": "artboard",
+      "name": "Row",
+      "page": "60d:1",
+      "parent": "60d:8",
+      "children": [
+        "60d:6"
+      ],
+      "artboard": "60d:8",
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        400.0,
+        0.0
+      ],
+      "world_bounds": [
+        400.0,
+        0.0,
+        200.0,
+        40.0
+      ],
+      "clip": true,
+      "geometry": {
+        "type": "Artboard",
+        "width": 200.0,
+        "height": 40.0
+      },
+      "component": {
+        "role": "instance",
+        "main": "60d:2",
+        "source": "60d:2",
+        "properties": [
+          {
+            "name": "Title",
+            "kind": "text",
+            "value": "A",
+            "overridden": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "60d:6",
+      "kind": "text",
+      "name": "Text 1",
+      "page": "60d:1",
+      "parent": "60d:5",
+      "artboard": "60d:5",
+      "world_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        400.0,
+        0.0
+      ],
+      "world_bounds": [
+        400.0,
+        0.0,
+        10.9766,
+        19.3594
+      ],
+      "geometry": {
+        "type": "Text",
+        "content": "A",
+        "font_family": "Inter",
+        "font_size": 16.0,
+        "weight": 400,
+        "line_height": "auto",
+        "sizing": {
+          "type": "Auto"
+        }
+      },
+      "component": {
+        "role": "copy",
+        "source": "60d:3",
+        "overrides": [
+          "text"
+        ]
+      }
+    },
+    {
+      "id": "60d:8",
+      "kind": "artboard",
+      "name": "Row list",
+      "page": "60d:1",
+      "parent": "60d:1",
+      "children": [
+        "60d:5",
+        "11ec423e9bee757e:1"
+      ],
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        400.0,
+        0.0
+      ],
+      "world_bounds": [
+        400.0,
+        0.0,
+        200.0,
+        88.0
+      ],
+      "clip": true,
+      "geometry": {
+        "type": "Artboard",
+        "width": 200.0,
+        "height": 88.0
+      },
+      "list": {
+        "data": "rows.csv",
+        "table_id": "60d:7",
+        "template": "60d:5",
+        "rows": 2,
+        "table_rows": 2,
+        "fill": [
+          {
+            "property": "Title",
+            "column": "title"
+          }
+        ]
+      },
+      "display": {
+        "Flex": {
+          "direction": "Column",
+          "align_items": "Start",
+          "row_gap": 8.0
+        }
+      },
+      "item": {
+        "width": "FitContent",
+        "height": "FitContent"
+      },
+      "specified": {
+        "geometry": {
+          "type": "Artboard",
+          "width": 200.0,
+          "height": 40.0
+        }
+      }
+    },
+    {
+      "id": "60d:9",
+      "kind": "artboard",
+      "name": "Home",
+      "page": "60d:1",
+      "parent": "60d:1",
+      "local_transform": [
+        1.0,
+        0.0,
+        0.0,
+        1.0,
+        0.0,
+        400.0
+      ],
+      "world_bounds": [
+        0.0,
+        400.0,
+        400.0,
+        800.0
+      ],
+      "clip": true,
+      "geometry": {
+        "type": "Artboard",
+        "width": 400.0,
+        "height": 800.0
+      },
+      "reactions": [
+        {
+          "actions": [
+            {
+              "Navigate": {
+                "to": "60d:10"
+              },
+              "id": "60d:13"
+            }
+          ],
+          "id": "60d:12",
+          "trigger": "Click"
+        }
+      ],
+      "play": {
+        "scroll": "Vertical"
+      }
+    }
+  ],
+  "play_export": {
+    "opens": {
+      "flow": "60d:11",
+      "page": "60d:1"
+    },
+    "player_bar": false
+  },
+  "warnings": []
+}

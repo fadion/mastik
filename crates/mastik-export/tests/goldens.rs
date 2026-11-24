@@ -1,4 +1,5 @@
-//! Golden files (§11): one fixture document, its SVG and its JSON snapshot,
+//! Golden files (§11): one fixture document of every kind, its SVG and its JSON
+//! snapshot, plus the charts' pages and a prototype-and-data document's snapshot,
 //! compared byte for byte against files checked into `tests/goldens/`.
 //!
 //! Other export tests assert on substrings and measurements, which catch a wrong
@@ -1379,6 +1380,214 @@ fn json_snapshot_matches_its_golden() {
     let json = serde_json::to_vec_pretty(&snap).expect("serialize snapshot");
     check_golden(
         "every-kind.json",
+        &String::from_utf8(json).expect("snapshot is UTF-8"),
+    );
+}
+
+/// The prototype and data fields of the snapshot, byte for byte: a page's flows
+/// and play, a layer's reactions and play, the export's play settings, a list
+/// over a data set with its copies, and a chart reading the same set.
+#[test]
+fn prototype_and_data_snapshot_matches_its_golden() {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    use mastik_core::list::{self, DataSet, Source};
+    use mastik_core::prototype::{
+        Action, Flow, FlowRef, LayerPlay, PagePlay, PlayExport, Reaction, ScrollAxis, Transition,
+        Trigger,
+    };
+    use mastik_core::verbs::{self, Ctx};
+    use mastik_core::{Keyed, NodeId};
+    let mut ids = IdSource::new(0x60D);
+    let mut doc = Document::new(ids.mint());
+    let page = doc.first_page();
+    let run = |doc: &mut Document, ids: &mut IdSource, name: &str, args: serde_json::Value| {
+        let res = Resolved::rebuild(doc);
+        let mut done = verbs::call(
+            &mut Ctx {
+                doc,
+                res: &res,
+                ids,
+                images: None,
+                contrast: None,
+            },
+            name,
+            &args,
+        )
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+        mastik_core::propagate::owed(doc, &mut done.tx, ids);
+        doc.apply(&done.tx).unwrap();
+        done.created
+    };
+    let frame = |w: f64, h: f64| {
+        serde_json::to_value(NodeKind::Artboard {
+            size: Size::new(w, h),
+            corner_radii: RoundedRectRadii::default(),
+            corner_smoothing: 0.0,
+        })
+        .unwrap()
+    };
+    let main = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        serde_json::json!({ "parent": page.to_wire(), "kind": frame(200.0, 40.0), "name": "Row" }),
+    )[0];
+    let text = run(
+        &mut doc,
+        &mut ids,
+        "create_text",
+        serde_json::json!({ "parent": main.to_wire(), "text": "Name" }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "make_component",
+        serde_json::json!({ "nodes": [main.to_wire()] }),
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "define_property",
+        serde_json::json!({ "node": text.to_wire(), "kind": "text", "name": "Title" }),
+    );
+    let inst = run(
+        &mut doc,
+        &mut ids,
+        "create_instance",
+        serde_json::json!({ "main": main.to_wire(), "parent": page.to_wire(), "x": 400, "y": 0 }),
+    )[0];
+    let set_id = ids.mint_data_set();
+    let table = Table {
+        columns: vec![
+            Column {
+                id: ColumnId(0),
+                name: "title".into(),
+            },
+            Column {
+                id: ColumnId(1),
+                name: "count".into(),
+            },
+        ],
+        rows: vec![vec!["A".into(), "3".into()], vec!["B".into(), "5".into()]],
+    };
+    let set = DataSet {
+        id: set_id,
+        name: "rows.csv".into(),
+        table: table.clone(),
+        source: None,
+        pictures: Vec::new(),
+    };
+    let res = Resolved::rebuild(&doc);
+    let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).unwrap();
+    doc.apply(&tx).unwrap();
+    list::regenerate_outside_history(&mut doc, &[l]);
+
+    let (screen, chart) = (ids.mint(), ids.mint());
+    let mut reading = sample_chart(mastik_core::chart::ChartKind::Column);
+    reading.table = table;
+    reading.mapping.category = Some(ColumnId(0));
+    reading.mapping.series = vec![ColumnId(1)];
+    reading.data = Some(set_id);
+    let flow = ids.mint_item();
+    doc.apply(&Transaction(vec![
+        Operation::CreateNode {
+            id: screen,
+            parent: page,
+            index: 0,
+            kind: NodeKind::Artboard {
+                size: Size::new(400.0, 800.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((0.0, 400.0))),
+            name: Some("Home".into()),
+        },
+        Operation::CreateNode {
+            id: chart,
+            parent: page,
+            index: 0,
+            kind: NodeKind::Artboard {
+                size: Size::new(300.0, 200.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((600.0, 400.0))),
+            name: Some("Counts".into()),
+        },
+        Operation::SetChart {
+            id: chart,
+            chart: Some(Box::new(reading)),
+        },
+        Operation::SetReactions {
+            id: screen,
+            reactions: vec![Keyed::new(
+                ids.mint_item(),
+                Reaction {
+                    trigger: Trigger::Click,
+                    actions: vec![Keyed::new(
+                        ids.mint_item(),
+                        Action::Navigate {
+                            to: chart,
+                            transition: Transition::default(),
+                            keep_scroll: false,
+                        },
+                    )],
+                },
+            )],
+        },
+        Operation::SetPlay {
+            id: screen,
+            play: LayerPlay {
+                scroll: ScrollAxis::Vertical,
+                ..LayerPlay::default()
+            },
+        },
+        Operation::SetFlows {
+            id: page,
+            flows: vec![Keyed::new(
+                flow,
+                Flow {
+                    name: "Browse".into(),
+                    start: screen,
+                    modes: Vec::new(),
+                    values: Vec::new(),
+                },
+            )],
+        },
+        Operation::SetPagePlay {
+            id: page,
+            play: PagePlay {
+                device: Some("iPhone 18 Pro".into()),
+                ..PagePlay::default()
+            },
+        },
+        Operation::SetPlayExport {
+            settings: PlayExport {
+                opens: Some(FlowRef { page, flow }),
+                player_bar: false,
+                ..PlayExport::default()
+            },
+        },
+    ]))
+    .expect("a flow, a reaction, play settings and a chart over the set");
+    let res = Resolved::settled(&mut doc);
+    let snap = snapshot(&doc, &res);
+    let node = |id: NodeId| {
+        snap.nodes
+            .iter()
+            .find(|n| n.id == id.to_wire())
+            .expect("in the snapshot")
+    };
+    // The fixture reached the state the golden is meant to hold.
+    assert!(snap.play_export.is_some(), "the export's play settings");
+    let list = node(l).list.as_ref().expect("the list");
+    assert_eq!(list.table_rows, Some(2), "the list's rows");
+    assert!(list.table_id.is_some(), "the list's table");
+    let c = node(chart).chart.as_ref().expect("the chart");
+    assert_eq!(c.data_id, list.table_id, "the chart reads the list's set");
+    let json = serde_json::to_vec_pretty(&snap).expect("serialize snapshot");
+    check_golden(
+        "prototype-and-data.json",
         &String::from_utf8(json).expect("snapshot is UTF-8"),
     );
 }
