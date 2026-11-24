@@ -336,14 +336,22 @@ impl Player {
     /// Play again from the start, on a fresh copy of the document as it now is.
     /// A recording in progress stops.
     pub fn restart(&mut self) {
+        self.restarted();
+    }
+
+    /// [`Player::restart`], answering whether it did: not when the start no
+    /// longer resolves, which a live edit prevents unless no frame is left.
+    pub(crate) fn restarted(&mut self) -> bool {
         let actor = self.ids.actor();
         let (size, touch) = (self.play_size, self.touch);
-        if let Ok(fresh) = Player::new(&self.base, self.start, actor) {
-            *self = fresh;
-            self.set_play_size(size);
-            // The pointer is the same hand after a restart.
-            self.touch = touch;
-        }
+        let Ok(fresh) = Player::new(&self.base, self.start, actor) else {
+            return false;
+        };
+        *self = fresh;
+        self.set_play_size(size);
+        // The pointer is the same hand after a restart.
+        self.touch = touch;
+        true
     }
 
     /// Lay each screen out at `size` from now on, in place of its own, through
@@ -1128,7 +1136,7 @@ impl Player {
 type Started = (NodeId, NodeId, Vec<ModeId>, Vec<(VarId, Cell)>);
 
 /// The page, the start frame and the starting cells of `start` in `doc`.
-fn resolve_start(doc: &Document, start: Start) -> Result<Started, StartError> {
+pub(crate) fn resolve_start(doc: &Document, start: Start) -> Result<Started, StartError> {
     let (frame, modes, cells) = match start {
         Start::Flow(r) => {
             let page = doc.page(r.page).ok_or(StartError::NoFlow)?;

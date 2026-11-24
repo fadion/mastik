@@ -1793,6 +1793,71 @@ fn a_deleted_start_screen_closes_overlays_and_moves_the_start() {
     assert!(crate::Replay::new(&fx.doc, take, PLAYER).is_ok(), "replays");
 }
 
+/// The start frame deleted while play is on another screen moves the start to
+/// the first frame, and a deleted flow moves it to the frame the flow began
+/// at, so *Restart* restarts and a take recorded then replays.
+///
+/// flip: `fall_back` not moving a start the edit took away → fails at
+/// "restarted from the first frame"; moving a flow's to the first frame → fails
+/// at "the flow's frame".
+#[test]
+fn a_deleted_start_frame_or_flow_moves_the_start() {
+    let (mut fx, a, b, _) = two_screens(Transition::INSTANT);
+    let c = fx.frame("C", 600.0, 200.0, 100.0);
+    let mut p = fx.play(a);
+    click(&mut p, 20.0, 20.0);
+    p.tick(2000.0);
+    assert_eq!(p.screen(), b, "fixture: navigated off the start");
+    let tx = Transaction(vec![Operation::DeleteNode { id: a }]);
+    fx.doc.apply(&tx).unwrap();
+    p.apply_edit(&tx).unwrap();
+    assert_eq!(p.screen(), b, "the screen stays");
+    p.tick(500.0);
+    p.restart();
+    assert_eq!(
+        (p.now(), p.screen()),
+        (0.0, b),
+        "restarted from the first frame"
+    );
+    p.tick(500.0);
+    p.record();
+    assert_eq!(p.now(), 0.0, "recording restarted");
+    p.tick(300.0);
+    let take = p.stop_recording().unwrap();
+    assert_eq!(take.length, 300.0);
+    assert!(crate::Replay::new(&fx.doc, take, PLAYER).is_ok(), "replays");
+
+    // A flow starting at C, deleted while its frame stands.
+    let flow = fx.ids.mint_item();
+    let page = fx.page;
+    let flows = vec![Keyed::new(
+        flow,
+        Flow {
+            name: "Flow".into(),
+            start: c,
+            modes: Vec::new(),
+            values: Vec::new(),
+        },
+    )];
+    fx.apply(vec![Operation::SetFlows { id: page, flows }]);
+    let start = Start::Flow(mastik_core::prototype::FlowRef { page, flow });
+    let mut p = Player::new(&fx.doc, start, PLAYER).unwrap();
+    let tx = Transaction(vec![Operation::SetFlows {
+        id: page,
+        flows: Vec::new(),
+    }]);
+    fx.doc.apply(&tx).unwrap();
+    p.apply_edit(&tx).unwrap();
+    assert_eq!(p.start(), Start::Frame(c), "the flow's frame");
+    p.tick(500.0);
+    p.restart();
+    assert_eq!(
+        (p.now(), p.screen()),
+        (0.0, c),
+        "restarted at the flow's frame"
+    );
+}
+
 /// An edit the copy takes cannot write over play's own choices: a page's modes
 /// edited keep the mode *Set mode* gave, and the screen resized keeps its
 /// play size.

@@ -21,6 +21,7 @@ impl Player {
     /// missed one. The player is unchanged then.
     pub fn apply_edit(&mut self, tx: &Transaction) -> Result<(), OpError> {
         let played = self.played_tables();
+        let began = self.start_frame();
         self.base.apply(tx)?;
         match self.doc.apply(tx) {
             Ok(out) => {
@@ -35,7 +36,7 @@ impl Player {
         self.carry_tables(played);
         self.prepare();
         self.reopen_rows();
-        self.fall_back();
+        self.fall_back(began);
         Ok(())
     }
 
@@ -47,12 +48,33 @@ impl Player {
     /// transactions).
     pub fn rebase(&mut self, doc: &mastik_core::Document) {
         let played = self.played_tables();
+        let began = self.start_frame();
         self.base = doc.clone();
         self.reclone();
         self.carry_tables(played);
         self.prepare();
         self.reopen_rows();
-        self.fall_back();
+        self.fall_back(began);
+    }
+
+    /// The frame play starts at in the document, `None` when the start no
+    /// longer resolves.
+    fn start_frame(&self) -> Option<NodeId> {
+        crate::player::resolve_start(&self.base, self.start)
+            .ok()
+            .map(|(_, frame, _, _)| frame)
+    }
+
+    /// The copy's first frame, in page order.
+    fn first_frame(&self) -> Option<NodeId> {
+        self.doc.page_ids().find_map(|p| {
+            self.doc
+                .get(p)?
+                .children()
+                .iter()
+                .copied()
+                .find(|c| self.is_frame(*c))
+        })
     }
 
     /// After an edit the copy took, what the edit wrote over play's own choices
@@ -108,9 +130,10 @@ impl Player {
         self.anims = Default::default();
     }
 
-    /// What an edit took away, fallen back from: the screen to the start, an
-    /// overlay closed, a variable's play value dropped.
-    fn fall_back(&mut self) {
+    /// What an edit took away, fallen back from: the start to the frame it began
+    /// at (`began`, before the edit) or the first frame, the screen to the start,
+    /// an overlay closed, a variable's play value dropped.
+    fn fall_back(&mut self, began: Option<NodeId>) {
         let vars = self.doc.variables();
         let before = self.values.len();
         self.values.retain(|v, _| vars.get(*v).is_some());
@@ -149,35 +172,22 @@ impl Player {
         if self.focus.is_some_and(|f| self.doc.get(f).is_none()) {
             self.set_focus(None);
         }
+        // A start the edit took away moves, so Restart and Record start from
+        // where the run now begins: a deleted flow to the frame it began at.
+        if self.start_frame().is_none()
+            && let Some(to) = began
+                .filter(|f| self.is_frame(*f))
+                .or_else(|| self.first_frame())
+        {
+            self.start = crate::Start::Frame(to);
+        }
         if !self.is_frame(self.screen) {
-            let start = match self.start {
-                crate::Start::Frame(f) => Some(f),
-                crate::Start::Flow(r) => self
-                    .doc
-                    .page(r.page)
-                    .and_then(|p| p.flows.iter().find(|f| f.id == r.flow))
-                    .map(|f| f.value.start),
-            };
-            let first = || {
-                self.doc.page_ids().find_map(|p| {
-                    self.doc
-                        .get(p)?
-                        .children()
-                        .iter()
-                        .copied()
-                        .find(|c| self.is_frame(*c))
-                })
-            };
-            let kept = start.filter(|f| self.is_frame(*f));
-            if let Some(to) = kept.or_else(first) {
+            let start = self.start_frame().filter(|f| self.is_frame(*f));
+            if let Some(to) = start.or_else(|| self.first_frame()) {
                 // Overlays were opened over the screen that is gone; close
                 // them as a navigation would, before their timers go.
                 while let Some(o) = self.overlays.pop() {
                     self.on_close(o.frame);
-                }
-                // Restart and Record start from where the run now begins.
-                if kept.is_none() {
-                    self.start = crate::Start::Frame(to);
                 }
                 self.timers.clear();
                 self.anims = Default::default();

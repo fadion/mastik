@@ -24,9 +24,12 @@ pub(crate) struct Recording {
 impl Player {
     /// Start recording a take. Play restarts first, so the take begins where a
     /// replay does. The restart keeps the play size and the hand, so the take
-    /// opens with both, for its replay to start laid out and handed alike.
+    /// opens with both, for its replay to start laid out and handed alike. Nothing
+    /// is recorded when play cannot restart, since the take could not replay.
     pub fn record(&mut self) {
-        self.restart();
+        if !self.restarted() {
+            return;
+        }
         let now = self.now;
         self.recording = Some(Recording {
             inputs: vec![

@@ -387,6 +387,9 @@ edit, how far a layer was dragged, its settle and its pending drops are kept onl
 still follows the drag.
 Then what the edit removed falls back, one notice each: a deleted screen to the start frame (else
 the first frame of the document), a deleted overlay closes, a deleted variable's play value goes.
+A start the edit took away moves first, without a notice, so *Restart* and *Record* begin where the
+run now can: a deleted flow's to the frame it began at, a deleted start frame's to the first frame
+of the document. `record()` records nothing when play cannot restart.
 A variable whose starting value was edited keeps its play value.
 A table play wrote, by a row action or a script, is taken before the edit (`played_tables`) and afterwards
 (`carry_tables`, through a re-clone or `rebase` too) gets its played rows back while its document
