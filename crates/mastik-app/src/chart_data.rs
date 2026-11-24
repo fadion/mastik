@@ -1464,19 +1464,7 @@ fn grid(
         });
     }
     if played {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = ui::LIST_ROW_GAP;
-            ui.label(theme::icon_text(
-                icon::PLAY,
-                ui::SMALL_PT,
-                theme::text::dim(),
-            ));
-            ui.label(
-                egui::RichText::new(PLAYED_LINE)
-                    .size(ui::SMALL_PT)
-                    .color(theme::text::dim()),
-            );
-        });
+        ui::note_line(ui, icon::PLAY, theme::text::dim(), PLAYED_LINE, None);
     } else if linked {
         ui.label(
             egui::RichText::new(linked_line(chart))
