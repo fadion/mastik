@@ -1324,6 +1324,45 @@ fn sweep_on(theme: Theme) {
     let (mut app, at) = with_an_interaction(&ctx);
     let found = opened(&ctx, &mut app, move |_, a| a.proto.open = Some(at));
     check("prototype action popover", app, found);
+    // Prototype mode with nothing selected: the page's *Prototype* and *Flows*.
+    let mut app = with_auto_layout(&ctx);
+    app.session.prototype_mode = true;
+    app.session.selection.clear();
+    let found = inspector(&ctx, &mut app);
+    check("prototype mode, the page", app, found);
+    // The prototype export card, as an HTML file and as a video.
+    for (name, output) in [
+        (
+            "prototype export, HTML",
+            crate::prototype_export::Output::Html,
+        ),
+        (
+            "prototype export, video",
+            crate::prototype_export::Output::Video,
+        ),
+    ] {
+        let mut app = with_auto_layout(&ctx);
+        app.session.prototype_mode = true;
+        // The HTML file needs a flow to export.
+        let (page, frame) = (app.session.page, app.session.selection.ids()[0]);
+        let flow = app.session.ids.mint_item();
+        app.session
+            .try_commit(Transaction(vec![Operation::SetFlows {
+                id: page,
+                flows: vec![mastik_core::Keyed::new(
+                    flow,
+                    mastik_core::prototype::Flow {
+                        name: "Checkout".into(),
+                        start: frame,
+                        modes: Vec::new(),
+                        values: Vec::new(),
+                    },
+                )],
+            }]))
+            .expect("a flow");
+        let found = opened(&ctx, &mut app, move |_, a| a.open_export(output));
+        check(name, app, found);
+    }
     // Every section open, so each kind of row the card has is measured.
     let mut app = with_a_chart(&ctx);
     app.close_chart_data();
