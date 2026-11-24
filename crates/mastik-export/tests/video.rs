@@ -14,6 +14,17 @@ use mastik_play::{Input, Start, Take};
 const ACTOR: u64 = 0x91A7;
 
 fn frame(doc: &mut Document, ids: &mut IdSource, page: NodeId, x: f64, rgb: [u8; 3]) -> NodeId {
+    sized_frame(doc, ids, page, x, Size::new(40.0, 30.0), rgb)
+}
+
+fn sized_frame(
+    doc: &mut Document,
+    ids: &mut IdSource,
+    page: NodeId,
+    x: f64,
+    size: Size,
+    rgb: [u8; 3],
+) -> NodeId {
     let id = ids.mint();
     doc.apply(&Transaction(vec![
         Operation::CreateNode {
@@ -21,7 +32,7 @@ fn frame(doc: &mut Document, ids: &mut IdSource, page: NodeId, x: f64, rgb: [u8;
             parent: page,
             index: doc.get(page).map_or(0, |p| p.children().len()),
             kind: NodeKind::Artboard {
-                size: Size::new(40.0, 30.0),
+                size,
                 corner_radii: RoundedRectRadii::default(),
                 corner_smoothing: 0.0,
             },
@@ -43,11 +54,16 @@ fn frame(doc: &mut Document, ids: &mut IdSource, page: NodeId, x: f64, rgb: [u8;
 /// A red frame whose click goes to a blue one at once, and a take that clicks
 /// at 100 ms and ends at 200 ms.
 fn red_to_blue() -> (Document, Take) {
+    red_to_blue_of(Size::new(40.0, 30.0))
+}
+
+/// `red_to_blue` with the blue frame `blue` units in size.
+fn red_to_blue_of(blue: Size) -> (Document, Take) {
     let mut ids = IdSource::new(0x7E57);
     let page = ids.mint();
     let mut doc = Document::new(page);
     let a = frame(&mut doc, &mut ids, page, 0.0, [255, 0, 0]);
-    let b = frame(&mut doc, &mut ids, page, 100.0, [0, 0, 255]);
+    let b = sized_frame(&mut doc, &mut ids, page, 100.0, blue, [0, 0, 255]);
     doc.apply(&Transaction(vec![Operation::SetReactions {
         id: a,
         reactions: vec![Keyed::new(
@@ -177,6 +193,41 @@ fn a_take_becomes_an_mp4() {
     }
     assert!(is_red(&colours[0]), "red at the start: {colours:?}");
     assert!(is_blue(&colours[2]), "blue at the end: {colours:?}");
+}
+
+/// Every GIF frame's size and delay.
+fn gif_frames(gif: &[u8]) -> Vec<((u16, u16), u16)> {
+    let mut decoder = gif::DecodeOptions::new()
+        .read_info(gif)
+        .expect("it reads back");
+    let mut out = Vec::new();
+    while let Some(f) = decoder.read_next_frame().expect("a frame") {
+        out.push(((f.width, f.height), f.delay));
+    }
+    out
+}
+
+/// A take that moves to a screen too wide for its scale keeps the first
+/// screen's scale: every frame, bezel included, is the first one's size.
+///
+/// flip: `draw` taking each frame's scale from its own screen → fails at "one
+/// size".
+#[test]
+fn a_wider_screen_later_keeps_the_first_scale() {
+    let (doc, take) = red_to_blue_of(Size::new(2000.0, 30.0));
+    let options = Options {
+        scale: 3.0,
+        device: true,
+        ..options(Format::Gif)
+    };
+    let gif = video(&doc, &take, ACTOR, &options, &mut |_, _| true).expect("a gif");
+    let sizes: Vec<(u16, u16)> = gif_frames(&gif).iter().map(|(s, _)| *s).collect();
+    // 40 × 30 at 3, with a bezel of 14 at 3 on each side.
+    assert!(sizes.len() >= 2, "the take reaches the wide screen");
+    assert!(
+        sizes.iter().all(|s| *s == (204, 174)),
+        "one size: {sizes:?}"
+    );
 }
 
 /// Answering `false` from the progress stops the video.

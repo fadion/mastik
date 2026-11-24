@@ -1004,16 +1004,14 @@ fn video_body(
         });
         ui.allocate_ui_with_layout(egui::vec2(half, 0.0), column, |ui| {
             ui::labelled(ui, "Size", |ui| {
+                let picked = v.options();
                 let words = |k: u32| match screen {
                     Some(s) => {
-                        let (w, h) = mastik_export::video::framed_size(
-                            (
-                                (s.width * f64::from(k)).round() as u32,
-                                (s.height * f64::from(k)).round() as u32,
-                            ),
-                            f64::from(k),
-                            v.device,
-                        );
+                        let options = mastik_export::video::Options {
+                            scale: f64::from(k),
+                            ..picked
+                        };
+                        let (w, h) = mastik_export::video::frame_size(&options, s);
                         format!("{k}× · {w} × {h}")
                     }
                     None => format!("{k}×"),

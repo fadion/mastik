@@ -25,8 +25,9 @@ pub struct Options {
     pub format: Format,
     /// Frames a second, 1 to [`MAX_FPS`].
     pub fps: u32,
-    /// Pixels per screen unit, more than 0; the frame's side is capped at
-    /// [`MAX_SIDE`].
+    /// Pixels per screen unit, more than 0; lowered for the first screen so
+    /// its frame keeps to [`MAX_SIDE`] and, as an MP4, to H.264's largest
+    /// frame ([`frame_size`]), and kept for the whole video.
     pub scale: f64,
     /// A soft ring drawn where each click landed, widening and fading over
     /// [`CLICK_MS`].
@@ -156,9 +157,16 @@ fn in_device(screen: &[u8], size: (u32, u32), scale: f64) -> Vec<u8> {
 
 /// The most frames a second a video takes.
 pub const MAX_FPS: u32 = 60;
-/// The longest side of a video frame, in pixels: H.264's level 5.1 and a GIF
-/// viewer both stop well short of a canvas export's size.
+/// The longest side of a video frame, bezel included, in pixels: H.264's
+/// highest levels and a GIF viewer both stop well short of a canvas export's
+/// size.
 pub const MAX_SIDE: u32 = 4096;
+/// The most 16-pixel macroblocks an MP4 frame holds: H.264's frame size limit
+/// at levels 5.1 and 5.2 (4096 × 2304), the highest OpenH264 writes. A larger
+/// frame is still labelled 5.1, and a decoder that keeps to it refuses it.
+const MAX_MACROBLOCKS: u32 = 36_864;
+/// The most macroblocks a second H.264's level 5.2 decodes.
+const MAX_MACROBLOCK_RATE: u32 = 2_073_600;
 
 /// Why a video was not made.
 #[derive(Debug, thiserror::Error)]
@@ -206,7 +214,7 @@ pub fn video(
         Format::Gif => Sink::Gif(None),
         Format::Mp4 => Sink::Mp4(None),
     };
-    let mut size: Option<(u32, u32)> = None;
+    let mut first: Option<Fixed> = None;
     for i in 0..total {
         if i > 0 {
             // Each frame at its own time from the start, so rounding never
@@ -214,8 +222,8 @@ pub fn video(
             let at = i as f64 * step;
             replay.advance(at - replay.player().now());
         }
-        let (frame, out, screen) = draw(&replay, &mut renderer, &images, take, options, size)?;
-        size.get_or_insert(screen);
+        let (frame, out, fixed) = draw(&replay, &mut renderer, &images, take, options, first)?;
+        first.get_or_insert(fixed);
         sink.push(frame, out, i, options.fps)?;
         if !progress(i + 1, total) {
             return Err(VideoError::Cancelled);
@@ -252,50 +260,103 @@ pub fn screen_size(doc: &Document, take: &Take, actor: u64) -> Option<mastik_cor
     Some(replay.player().scene().size)
 }
 
-/// A drawn frame: opaque RGBA, its size, and the screen's size within it.
-type Drawn = (Vec<u8>, (u32, u32), (u32, u32));
+/// The screen's size in pixels within a frame, and the pixels a unit it is
+/// drawn at: the first frame's, which every frame after it keeps.
+#[derive(Clone, Copy)]
+struct Fixed {
+    screen: (u32, u32),
+    scale: f64,
+}
+
+/// A drawn frame: opaque RGBA, its size, and its [`Fixed`].
+type Drawn = (Vec<u8>, (u32, u32), Fixed);
 
 /// The frame `replay` shows now, drawn and dressed as `options` asks. Given
-/// `fixed`, the screen is drawn into a frame of that size, as every frame after
-/// the first is: a screen of another size goes in its top-left corner, cut off
-/// or padded white.
+/// `fixed`, the screen is drawn at its scale into a screen of its size, as
+/// every frame after the first is: a screen of another size goes in its
+/// top-left corner, cut off or padded white, so the frame's size, the bezel
+/// and the content's scale never change mid-video.
 fn draw(
     replay: &Replay,
     renderer: &mut VelloCpuRenderer,
     images: &ImageStore,
     take: &Take,
     options: &Options,
-    fixed: Option<(u32, u32)>,
+    fixed: Option<Fixed>,
 ) -> Result<Drawn, VideoError> {
     let p = replay.player();
     let scene = p.scene();
-    let scale = scale_for(options.scale, scene.size);
+    let scale = fixed.map_or_else(|| scale_for(options, scene.size), |f| f.scale);
+    // Never past what the backend draws: a far larger later screen is cut to
+    // the first one's size anyway.
+    let side = scene.size.width.max(scene.size.height);
+    let drawn_at = scale.min(f64::from(crate::png::MAX_RASTER_SIDE) / side);
     let (rgba, w, h) =
-        renderer.render_play_to_rgba(p.document(), p.resolved(), images, &scene, scale);
+        renderer.render_play_to_rgba(p.document(), p.resolved(), images, &scene, drawn_at);
     if w == 0 || h == 0 {
         return Err(VideoError::Empty);
     }
-    let screen = fixed.unwrap_or((w, h));
+    let screen = fixed.map_or((w, h), |f| f.screen);
+    let fixed = Fixed { screen, scale };
     let mut frame = fit(&rgba, (w, h), screen);
     if options.clicks {
-        draw_clicks(&mut frame, screen, take, p.now(), scale);
+        draw_clicks(&mut frame, screen, take, p.now(), drawn_at);
     }
     Ok(match options.device {
         true => (
             in_device(&frame, screen, scale),
             framed_size(screen, scale, true),
-            screen,
+            fixed,
         ),
-        false => (frame, screen, screen),
+        false => (frame, screen, fixed),
     })
 }
 
-/// `asked` lowered so a screen of `size` is at most [`MAX_SIDE`] pixels a side.
-fn scale_for(asked: f64, size: mastik_core::kurbo::Size) -> f64 {
-    let side = size.width.max(size.height);
-    match side * asked > f64::from(MAX_SIDE) {
-        true => f64::from(MAX_SIDE) / side,
-        false => asked,
+/// `options.scale` lowered so the frame of a screen of `size`, with its bezel
+/// when `options.device`, is at most [`MAX_SIDE`] pixels a side and, as an
+/// MP4, at most [`MAX_MACROBLOCKS`] and [`MAX_MACROBLOCK_RATE`] at its fps.
+fn scale_for(options: &Options, size: mastik_core::kurbo::Size) -> f64 {
+    let bezel = match options.device {
+        true => 2.0 * BEZEL,
+        false => 0.0,
+    };
+    let (w, h) = (size.width + bezel, size.height + bezel);
+    let mut scale = options.scale.min(f64::from(MAX_SIDE) / w.max(h));
+    let most = match options.format {
+        Format::Mp4 => MAX_MACROBLOCKS.min(MAX_MACROBLOCK_RATE / options.fps.max(1)),
+        Format::Gif => u32::MAX,
+    };
+    scale = scale.min(16.0 * (f64::from(most) / (w * h)).sqrt());
+    // The pixel sizes round, so the bound above can still be a pixel over.
+    let fits = |s: f64| {
+        let frame = framed_px(size, s, options.device);
+        let blocks = u64::from(frame.0.div_ceil(16)) * u64::from(frame.1.div_ceil(16));
+        frame.0.max(frame.1) <= MAX_SIDE && blocks <= u64::from(most)
+    };
+    for _ in 0..64 {
+        if fits(scale) {
+            break;
+        }
+        scale *= 0.998;
+    }
+    scale
+}
+
+/// The frame of a screen of `size` units at `scale`, in pixels, with its bezel
+/// when `device`: the screen's pixels rounded as the renderer rounds them.
+fn framed_px(size: mastik_core::kurbo::Size, scale: f64, device: bool) -> (u32, u32) {
+    let px = |v: f64| ((v * scale).round() as u32).max(1);
+    framed_size((px(size.width), px(size.height)), scale, device)
+}
+
+/// The size in pixels of a video's frames under `options` when its take starts
+/// on a screen of `size` units: the scale lowered as the caps ask, the bezel,
+/// and an MP4's cut to even sizes. What the export card shows.
+pub fn frame_size(options: &Options, size: mastik_core::kurbo::Size) -> (u32, u32) {
+    let (w, h) = framed_px(size, scale_for(options, size), options.device);
+    match options.format {
+        Format::Mp4 => (w & !1, h & !1),
+        Format::Gif => (w, h),
     }
 }
 
@@ -502,6 +563,54 @@ mod tests {
     fn gif_delays_add_up() {
         let sum: u32 = (0..3).map(|i| u32::from(gif_delay(i, 30))).sum();
         assert_eq!(sum, 10);
+    }
+
+    /// An MP4 of a desktop, a tablet or a square screen at 3×, with or without
+    /// the device frame, keeps to H.264's largest frame and its rate at 60 fps;
+    /// a GIF keeps only to the side.
+    ///
+    /// flip: `scale_for` capping only the screen's side → fails at "the
+    /// macroblocks".
+    #[test]
+    fn an_mp4_frame_keeps_to_the_level() {
+        use mastik_core::kurbo::Size;
+        for (w, h) in [(1440.0, 900.0), (1024.0, 1366.0), (1080.0, 1080.0)] {
+            for device in [false, true] {
+                for fps in [30, 60] {
+                    let options = Options {
+                        format: Format::Mp4,
+                        fps,
+                        scale: 3.0,
+                        clicks: false,
+                        device,
+                    };
+                    let s = scale_for(&options, Size::new(w, h));
+                    let b = bezel_px(s, device);
+                    let px = |v: f64| (v * s).round() as u32;
+                    let frame = (px(w) + 2 * b, px(h) + 2 * b);
+                    let blocks = frame.0.div_ceil(16) * frame.1.div_ceil(16);
+                    assert!(
+                        blocks <= MAX_MACROBLOCKS && blocks * fps <= MAX_MACROBLOCK_RATE,
+                        "the macroblocks of {frame:?} at {fps}"
+                    );
+                    assert!(frame.0.max(frame.1) <= MAX_SIDE, "the side, bezel and all");
+                    assert!(
+                        blocks > MAX_MACROBLOCKS.min(MAX_MACROBLOCK_RATE / fps) * 9 / 10,
+                        "no smaller than it needs to be: {frame:?}"
+                    );
+                }
+            }
+            let gif = Options {
+                format: Format::Gif,
+                fps: 30,
+                scale: 3.0,
+                clicks: false,
+                device: false,
+            };
+            let side = w.max(h) * scale_for(&gif, Size::new(w, h));
+            let want = (w.max(h) * 3.0).min(4096.0);
+            assert!((side - want).abs() < 0.5, "a GIF keeps to the side: {side}");
+        }
     }
 
     /// The device frame puts the screen inside a dark bezel: white outside the
