@@ -232,8 +232,30 @@ pub(crate) fn downscale(doc: &mut Document, list: &[Downscale]) {
         }
         let scale = f64::from(entry.width) / f64::from(e.width.max(1));
         ops.extend(mastik_core::edit::repoint_image(doc, id, &new, scale));
-        ops.push(Operation::RemoveImage { id: id.clone() });
-        let _ = doc.apply(&Transaction(ops));
+        // A table's rows draw their pictures when a list refills in play.
+        for set in doc.data_sets() {
+            if set.pictures.iter().any(|(_, p)| p == id) {
+                let mut next = set.clone();
+                for (_, p) in &mut next.pictures {
+                    if p == id {
+                        *p = new.clone();
+                    }
+                }
+                ops.push(Operation::SetDataSet {
+                    id: set.id,
+                    set: Some(Box::new(next)),
+                });
+            }
+        }
+        if doc.apply(&Transaction(ops)).is_err() {
+            continue;
+        }
+        // Gone only once nothing names it: a cell may name it by its id.
+        if mastik_core::io::unused_images(doc).contains(id) {
+            let _ = doc.apply(&Transaction(vec![Operation::RemoveImage {
+                id: id.clone(),
+            }]));
+        }
     }
 }
 
@@ -1187,8 +1209,10 @@ mod tests {
     }
 
     /// A picture downscaled for the export is replaced in the copy by one of the
-    /// size asked, and the layer showing it shows the new one.
-    /// flip: `downscale` not repointing the layers → fails at "the original is shown by nothing".
+    /// size asked, and the layer showing it, and the table naming it, name the
+    /// new one.
+    /// flip: `downscale` not repointing the layers → fails at "the original is shown by nothing";
+    /// not repointing the tables → fails at "the original goes" (kept, as still named).
     #[test]
     fn a_downscaled_picture_replaces_the_original_in_the_copy() {
         let mut ids = mastik_core::IdSource::new(0x31);
@@ -1200,6 +1224,7 @@ mod tests {
             .expect("png");
         let old = crate::app::content_hash(&bytes);
         let rect = ids.mint();
+        let table = ids.mint_data_set();
         doc.apply(&Transaction(vec![
             Operation::AddImage {
                 id: old.clone(),
@@ -1229,11 +1254,31 @@ mod tests {
                     visible: true,
                 }]),
             },
+            Operation::SetDataSet {
+                id: table,
+                set: Some(Box::new(mastik_core::list::DataSet {
+                    id: table,
+                    name: "People".into(),
+                    table: mastik_core::chart::Table {
+                        columns: vec![mastik_core::chart::Column {
+                            id: mastik_core::chart::ColumnId(0),
+                            name: "Photo".into(),
+                        }],
+                        rows: vec![vec!["a.png".into()]],
+                    },
+                    source: None,
+                    pictures: vec![("a.png".into(), old.clone())],
+                })),
+            },
         ]))
         .expect("fixture");
         downscale(&mut doc, &[(old.clone(), (80, 40))]);
         let shown = layer_showing(&doc, &old);
         assert_eq!(shown, None, "the original is shown by nothing");
+        assert!(!doc.has_image(&old), "the original goes");
+        let set = doc.data_set(table).expect("the table");
+        let row = set.picture(&doc, "a.png").expect("the row's picture");
+        assert!(doc.has_image(&row), "the table's row draws a picture held");
         let new = doc
             .images()
             .map(|(id, _)| id.clone())

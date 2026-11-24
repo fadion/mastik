@@ -276,6 +276,101 @@ fn the_pruned_document_keeps_the_reached_pages_and_loads() {
     assert_eq!(loaded.page_ids().collect::<Vec<_>>(), pages, "round-trips");
 }
 
+/// The file is handed to other people: a table nothing kept reads goes, a
+/// read one stays with the pictures its rows name though no layer shows them,
+/// and no linked file's path or meta but the name stays.
+/// flip: `trim` skipping `for_sharing` → fails at "the unread table goes";
+/// `images_shown` not counting data sets → fails at "its picture stays".
+#[test]
+fn the_pruned_document_keeps_only_what_the_page_reads() {
+    use mastik_core::chart::{Column, ColumnId, DataLink, Table};
+    use mastik_core::list::DataSet;
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let mut ids = IdSource::new(0x7A);
+    let (read, unread, tap) = (ids.mint_data_set(), ids.mint_data_set(), ids.mint());
+    let flows = &f.doc.page(f.flows_page).expect("the page").flows;
+    let home = flows
+        .iter()
+        .find(|k| k.id == f.main.flow)
+        .expect("Main")
+        .start;
+    let photo = ImageId("row-photo".into());
+    let link = |path: &str| DataLink {
+        path: path.into(),
+        size: 0,
+        modified: 0,
+        header: None,
+    };
+    let set = |id, name: &str, cell: &str, path: &str| DataSet {
+        id,
+        name: name.into(),
+        table: Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "Photo".into(),
+            }],
+            rows: vec![vec![cell.into()]],
+        },
+        source: Some(link(path)),
+        pictures: Vec::new(),
+    };
+    let mut kept = set(read, "Read", "ada.png", r"C:\Users\someone\read.csv");
+    kept.pictures.push(("ada.png".into(), photo.clone()));
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::AddImage {
+                id: photo.clone(),
+                entry: ImageEntry {
+                    source: ImageSource::Embedded(vec![0u8; 8].into()),
+                    format: ImageFormat::Png,
+                    width: 1,
+                    height: 1,
+                },
+            },
+            Operation::SetDataSet {
+                id: read,
+                set: Some(Box::new(kept)),
+            },
+            Operation::SetDataSet {
+                id: unread,
+                set: Some(Box::new(set(
+                    unread,
+                    "Unread",
+                    "secret-cell",
+                    r"C:\Users\someone\unread.csv",
+                ))),
+            },
+            frame(tap, home, "Tap"),
+            Operation::SetReactions {
+                id: tap,
+                reactions: click(
+                    &mut ids,
+                    Action::AddRow {
+                        table: read,
+                        at: Default::default(),
+                        cells: Vec::new(),
+                    },
+                ),
+            },
+        ]))
+        .expect("fixture applies");
+    let mut meta = f.doc.meta().clone();
+    meta.name = Some("Onboarding".into());
+    meta.project = Some("acme-project".into());
+    f.doc.set_meta(meta);
+    let pruned = prune(&f.doc).expect("pruned");
+    assert!(pruned.data_set(unread).is_none(), "the unread table goes");
+    let set = pruned.data_set(read).expect("the read table stays");
+    assert_eq!(set.source, None, "no path");
+    assert!(pruned.has_image(&photo), "its picture stays");
+    assert_eq!(pruned.meta().name.as_deref(), Some("Onboarding"));
+    let saved = String::from_utf8(io::save(&pruned).expect("saves")).unwrap();
+    for gone in ["secret-cell", "someone", "acme-project"] {
+        assert!(!saved.contains(gone), "{gone} is not in the file");
+    }
+}
+
 /// With no flow named, every flow goes in, and with it the page only the second
 /// flow's overlay reaches.
 ///

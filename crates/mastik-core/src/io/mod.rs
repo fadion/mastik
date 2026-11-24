@@ -101,6 +101,38 @@ pub fn unused_images(doc: &Document) -> Vec<crate::ImageId> {
     out
 }
 
+/// The data sets nothing else in `doc` names: no list, chart, reaction or
+/// expression holds the set's id. A script finds tables by name, so a document
+/// holding a script answers none. Like [`unused_images`] it reads every string
+/// in the saved form, so it errs toward keeping a set.
+pub fn unread_data_sets(doc: &Document) -> Vec<crate::list::DataSetId> {
+    if doc.data_sets().is_empty() || !doc.scripts().is_empty() {
+        return Vec::new();
+    }
+    let mut dto = schema::DocumentDto::from_document_with(doc, false);
+    dto.published = None;
+    dto.data = Vec::new();
+    let Ok(value) = serde_json::to_value(&dto) else {
+        return Vec::new();
+    };
+    let mut named = std::collections::HashSet::new();
+    strings_in(&value, &mut named);
+    // An expression writes a table inside its text, as `{1:77:rows}`.
+    let names = |s: &str, wire: &str| {
+        s == wire
+            || s.match_indices(&format!("{wire}:"))
+                .any(|(i, _)| !s[..i].ends_with(|c: char| c.is_ascii_digit()))
+    };
+    doc.data_sets()
+        .iter()
+        .map(|s| s.id)
+        .filter(|id| {
+            let wire = id.0.to_wire();
+            !named.iter().any(|s| names(s, &wire))
+        })
+        .collect()
+}
+
 fn strings_in<'v>(v: &'v serde_json::Value, out: &mut std::collections::HashSet<&'v str>) {
     match v {
         serde_json::Value::String(s) => {

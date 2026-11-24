@@ -324,7 +324,56 @@ fn trim(
         ..Keep::all(&out)
     };
     take(&mut out, &keep).map_err(|e| PackError::Prune(e.to_string()))?;
+    for_sharing(&mut out).map_err(|e| PackError::Prune(e.to_string()))?;
     Ok(out)
+}
+
+/// What a file handed to other people need not carry, taken from `doc`: the
+/// tables nothing kept reads (with the pictures only they named), every linked
+/// file's path on this machine, and the document's meta but its name.
+fn for_sharing(doc: &mut Document) -> Result<(), mastik_core::OpError> {
+    let unread = mastik_core::io::unread_data_sets(doc);
+    let mut ops: Vec<Operation> = doc
+        .data_sets()
+        .iter()
+        .filter_map(|s| match unread.contains(&s.id) {
+            true => Some(Operation::SetDataSet {
+                id: s.id,
+                set: None,
+            }),
+            false => s.source.is_some().then(|| Operation::SetDataSet {
+                id: s.id,
+                set: Some(Box::new(mastik_core::list::DataSet {
+                    source: None,
+                    ..s.clone()
+                })),
+            }),
+        })
+        .collect();
+    let ids: Vec<NodeId> = doc.node_ids().collect();
+    for id in ids {
+        if let Some(chart) = (doc.get(id).and_then(|n| n.chart())).filter(|c| c.source.is_some()) {
+            ops.push(Operation::SetChart {
+                id,
+                chart: Some(Box::new(mastik_core::chart::Chart {
+                    source: None,
+                    ..chart.clone()
+                })),
+            });
+        }
+    }
+    doc.apply(&Transaction(ops))?;
+    let gone: Vec<Operation> = mastik_core::io::unused_images(doc)
+        .into_iter()
+        .map(|id| Operation::RemoveImage { id })
+        .collect();
+    doc.apply(&Transaction(gone))?;
+    doc.set_tokens_link(None);
+    doc.set_meta(mastik_core::meta::DocumentMeta {
+        name: doc.meta().name.clone(),
+        ..Default::default()
+    });
+    Ok(())
 }
 
 /// One font file as the page registers it.

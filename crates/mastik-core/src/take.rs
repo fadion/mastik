@@ -270,10 +270,20 @@ fn unmade_components(doc: &Document) -> Vec<Operation> {
     ops
 }
 
-/// Every picture a layer (the vault's included) or a style shows.
+/// Every picture a layer (the vault's included), a style or a data set shows:
+/// a table's rows draw theirs whenever a list refills, in play too.
 fn images_shown(doc: &Document) -> FxHashSet<ImageId> {
     let nodes: Vec<crate::Node> = doc.node_map().values().cloned().collect();
     let mut out: FxHashSet<ImageId> = crate::build::image_ids_in(&nodes).into_iter().collect();
+    for set in doc.data_sets() {
+        out.extend(set.pictures.iter().map(|(_, id)| id.clone()));
+        let named = set.table.rows.iter().flatten();
+        out.extend(
+            named
+                .map(|c| ImageId(c.trim().to_string()))
+                .filter(|id| doc.has_image(id)),
+        );
+    }
     for style in doc.styles().iter() {
         let brushes: Vec<&crate::variable::BrushSource> = match &style.value {
             crate::style::StyleValue::Fills(f) => f.iter().map(|f| &f.brush).collect(),

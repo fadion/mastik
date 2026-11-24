@@ -111,7 +111,16 @@ the DevTools protocol):
 - **Everything document-wide stays**: styles, variables, scripts, the vault's vendored mains.
   They are small, and a variable or style is reached through bindings the trim would have to
   re-derive.
-- **Pictures** go with the pages that showed them.
+- **Tables stay only when something kept names them** (`io::unread_data_sets`: a list, a
+  chart, a reaction or an expression holding the table's id). A document holding a script keeps
+  every table, since Luau finds tables by name. The file is handed to other people, and a table
+  can hold 10,000 rows of someone's data.
+- **Nothing of this machine stays**: the kept tables' and charts' links lose their paths, the
+  tokens link goes, and the meta keeps the document's name alone (`for_sharing`). The page
+  reads no file.
+- **Pictures** go with the pages that showed them, unless a kept table's rows name them: a list
+  refilled in play draws its rows' pictures. *Downscale to 2×* repoints the tables too, and
+  removes the original only once nothing names it.
 - Each kept page keeps only its chosen flows, and `PlayExport` names the chosen flows and the
   one the file opens on, so the page needs nothing else to start.
 
