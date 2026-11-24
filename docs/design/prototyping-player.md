@@ -85,8 +85,10 @@ otherwise the player returns over the canvas).
   - **The page** is the HTML export's (`Parts::mirror`, `prune_mirror`): the flow playing, or
     its frame, with no bar or device frame, and no device unless the export's *On a phone* keeps
     the page's, so *Responsive* lays out at the phone's size and follows its turn. An edit is sent once the document has sat still for 0.25 s as a new
-    version the phone plays where it is (`Player::rebase`); one needing fonts the page lacks
-    sends `reload`, and the reloaded page keeps the phone's id (`sessionStorage`), so it is
+    version the phone plays where it is (`Player::rebase`). One needing fonts the page lacks,
+    or the first *Run script* in a document shared without one (the player is looked up again
+    once, for the scripts player where it is built), packs a new page and sends `reload`; the
+    page is packed for nothing else. The reloaded page keeps the phone's id (`sessionStorage`), so it is
     still one phone. The phone toasts *Updated from Mastik*, and when sharing stops dims its last
     frame under *Mastik stopped sharing*.
   - **The firewall.** The first share on Windows raises the system's prompt for the app, which

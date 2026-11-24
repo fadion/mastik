@@ -517,6 +517,9 @@ const QR_GROUND: egui::Color32 = egui::Color32::WHITE;
 /// The light margin round the code, in modules, that the QR standard asks for.
 const QR_QUIET: usize = 2;
 
+/// The browser player's files: its wasm and its glue script.
+type Files = (Vec<u8>, String);
+
 /// *Play on a phone* as the player holds it: the share, or why there is
 /// none, and what it last sent the phones.
 pub(crate) struct Sharing {
@@ -524,6 +527,15 @@ pub(crate) struct Sharing {
     /// The browser player's files, kept to write each new page.
     wasm: Vec<u8>,
     glue: String,
+    /// Where the player's files are found for a document: `player_build`, or
+    /// a test's stand-in.
+    lookup: fn(&Document) -> Result<Files, String>,
+    /// The files were looked up for a document that runs scripts, so they are
+    /// the scripts player wherever one is built.
+    scripts: bool,
+    /// The player changed since the phones' page was packed, so the next
+    /// version goes as a new page.
+    stale_page: bool,
     opening: Opening,
     /// The fonts the page carries, as a count and their bytes, to tell an edit
     /// that needs the page loaded again from one the page can play.
@@ -626,6 +638,9 @@ impl Sharing {
             share: Err(String::new()),
             wasm: Vec::new(),
             glue: String::new(),
+            lookup: crate::player_build,
+            scripts: false,
+            stale_page: false,
             opening,
             fonts: (0, 0),
             version: 1,
@@ -638,7 +653,7 @@ impl Sharing {
 
     /// The share, or why there is none.
     fn begin(&mut self, ctx: &egui::Context, doc: &Document) -> Result<Share, String> {
-        let files = crate::player_build(doc).map_err(|_| {
+        let files = (self.lookup)(doc).map_err(|_| {
             "The browser player isn't built, so there is nothing to serve".to_string()
         })?;
         self.begin_with(ctx, doc, files, local_ip())
@@ -685,6 +700,8 @@ impl Sharing {
             (w, dark)
         });
         (self.wasm, self.glue, self.fonts) = (wasm, glue, fonts);
+        self.scripts = !crate::player::scripts_played(doc).is_empty();
+        self.stale_page = false;
         self.started = Some(Instant::now());
         Ok(share)
     }
@@ -713,9 +730,10 @@ impl Sharing {
 
     /// Send the phones `doc` once it has sat still for [`SETTLE`]: as a new
     /// version they play where they are, or as a new page when it needs fonts
-    /// the page lacks. Asks for a repaint while one is owed.
+    /// the page lacks or a script the page's player cannot run. Asks for a
+    /// repaint while one is owed.
     pub(crate) fn send(&mut self, ctx: &egui::Context, doc: &Document, now: f64) {
-        let (Some(at), Ok(share)) = (self.owed, &self.share) else {
+        let (Some(at), true) = (self.owed, self.share.is_ok()) else {
             return;
         };
         if now - at < SETTLE {
@@ -723,25 +741,36 @@ impl Sharing {
             return;
         }
         self.owed = None;
+        if !self.scripts && !crate::player::scripts_played(doc).is_empty() {
+            // Looked up once: a scripts player that isn't built falls back to
+            // the plain one, which is no reason for a new page.
+            self.scripts = true;
+            if let Ok((wasm, glue)) = (self.lookup)(doc)
+                && (wasm != self.wasm || glue != self.glue)
+            {
+                (self.wasm, self.glue, self.stale_page) = (wasm, glue, true);
+            }
+        }
         let version = self.version + 1;
         // An edit the trim refuses (the flow playing deleted) leaves the phones
         // where they are.
-        let known = self.fonts;
+        let (known, stale) = (self.fonts, self.stale_page);
         let Ok(Built {
             fonts,
             page,
             doc: bytes,
         }) = build(doc, &self.wasm, &self.glue, self.opening, version, |f| {
-            f != known
+            stale || f != known
         })
         else {
             return;
         };
+        let Ok(share) = &self.share else { return };
         self.version = version;
         match page {
             None => share.publish(bytes, version),
             Some(page) => {
-                self.fonts = fonts;
+                (self.fonts, self.stale_page) = (fonts, false);
                 share.reload(page, bytes, version);
             }
         }
@@ -1215,6 +1244,103 @@ mod tests {
             + 4;
         let sent = mastik_core::io::load(&out[at..]).expect("the document loads");
         assert!(sent.get(other).is_some(), "carries the edit");
+    }
+
+    /// A *Run script* added while sharing a document without one looks the
+    /// player up again, once, and sends the phones a new page with the scripts
+    /// player; the next edit is played in place.
+    /// flip: `Sharing::send` not looking the player up when a script arrives →
+    /// fails at "a new page".
+    #[test]
+    fn a_script_added_while_sharing_reloads_the_scripts_player() {
+        use mastik_core::kurbo::{Affine, RoundedRectRadii, Size};
+        use mastik_core::prototype::{Action, Reaction, Trigger};
+        use mastik_core::{IdSource, Keyed, NodeKind, Operation, Script, Transaction};
+        use std::sync::atomic::AtomicUsize;
+        static LOOKED_UP: AtomicUsize = AtomicUsize::new(0);
+        let mut ids = IdSource::new(0x93);
+        let page = ids.mint();
+        let mut doc = Document::new(page);
+        let frame = ids.mint();
+        doc.apply(&Transaction(vec![Operation::CreateNode {
+            id: frame,
+            parent: page,
+            index: 0,
+            kind: NodeKind::Artboard {
+                size: Size::new(100.0, 80.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::IDENTITY),
+            name: Some("Home".into()),
+        }]))
+        .expect("a frame");
+        let ctx = egui::Context::default();
+        let mut s = Sharing::start_with(
+            &ctx,
+            &doc,
+            Opening::Frame(frame),
+            (b"\0asm".to_vec(), "let plain;".into()),
+            Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+        );
+        s.lookup = |_| {
+            LOOKED_UP.fetch_add(1, Ordering::Relaxed);
+            Ok((b"\0asm scripts".to_vec(), "let scripts;".into()))
+        };
+        let share = s.share.as_ref().expect("sharing on loopback");
+        let host = share.url.trim_start_matches("http://").split('/').next();
+        let mut events = TcpStream::connect(host.expect("host")).expect("connect");
+        let t = token_of(share);
+        events
+            .write_all(format!("GET /{t}/events?id=p HTTP/1.1\r\n\r\n").as_bytes())
+            .unwrap();
+        events
+            .set_read_timeout(Some(Duration::from_millis(800)))
+            .unwrap();
+        let mut reader = BufReader::new(events);
+        let mut next_event = || loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).ok()?;
+            if let Some(d) = line.trim_end().strip_prefix("data: ") {
+                return Some(d.to_string());
+            }
+        };
+        assert_eq!(next_event().as_deref(), Some("1"), "fixture: version 1");
+        let script = ids.mint_script();
+        let reactions = vec![Keyed::new(
+            ids.mint_item(),
+            Reaction {
+                trigger: Trigger::Click,
+                actions: vec![Keyed::new(ids.mint_item(), Action::RunScript { script })],
+            },
+        )];
+        doc.apply(&Transaction(vec![
+            Operation::AddScript {
+                script: Script {
+                    id: script,
+                    name: "Shake".into(),
+                    source: "print(1)".into(),
+                },
+                index: 0,
+            },
+            Operation::SetReactions {
+                id: frame,
+                reactions,
+            },
+        ]))
+        .expect("a script run on click");
+        assert!(
+            !crate::player::scripts_played(&doc).is_empty(),
+            "fixture: the script is run"
+        );
+        s.changed(10.0);
+        s.send(&ctx, &doc, 10.0 + SETTLE);
+        assert_eq!(next_event().as_deref(), Some("reload"), "a new page");
+        assert_eq!(s.glue, "let scripts;", "the scripts player");
+        s.changed(20.0);
+        s.send(&ctx, &doc, 20.0 + SETTLE);
+        assert_eq!(next_event().as_deref(), Some("3"), "then played in place");
+        assert_eq!(LOOKED_UP.load(Ordering::Relaxed), 1, "looked up once");
     }
 
     /// A request longer than the limit, or with a body over it, is refused.
