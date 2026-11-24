@@ -116,8 +116,9 @@ out both ends.
   the press is held and has not become a drag; it spends the press, so no click follows. A drag
   cancels it. Held clicks and long presses are timed through `tick` as *After* timers are, and
   `is_moving` stays true while one waits.
-- **Hit testing is by box**, not ink: a layer with a box (a frame, a shape) by its box, any other
-  by its bounds, each moved by the scrolling frames above it and by how far it and the layers
+- **Hit testing is by box**, not ink: a layer with a box (a frame, a shape) by its box, turned
+  with it (`Player::hits`, so a click in the corner of the square around a diamond misses), any
+  other by its bounds, each moved by the scrolling frames above it and by how far it and the layers
   above it were dragged (`child_offset`), then taken back through a scroll effect's move, turn
   and scale (`walk`, from the box's centre as drawn). A group is hit only through its
   children. A clipping or scrolling frame cuts off what is outside it. A click on the box that

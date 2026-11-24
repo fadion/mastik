@@ -265,7 +265,8 @@ impl Player {
             }
             _ => w,
         };
-        let inside = rect.is_some_and(|r| r.contains(w));
+        // A turned layer is hit in its box as drawn, not in the box around it.
+        let inside = rect.is_some() && self.hits(id, w - shift) == Some(true);
         let clips = n.clip() || self.scrolls(id) != ScrollAxis::None;
         if clips && matches!(n.kind(), NodeKind::Artboard { .. }) && !inside {
             return false;

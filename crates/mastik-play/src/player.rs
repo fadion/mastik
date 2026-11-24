@@ -986,6 +986,23 @@ impl Player {
         }
     }
 
+    /// Whether world point `w` lies in `id` as drawn: in its box, turned with
+    /// it, for a layer with a box; in its bounds otherwise. `None` when the
+    /// layer has neither.
+    pub(crate) fn hits(&self, id: NodeId, w: Point) -> Option<bool> {
+        let kind = self.res.used_kind(&self.doc, id)?;
+        match kind.box_size() {
+            Some(size) => {
+                let t = self.res.world_transform(id)?;
+                if t.determinant().abs() < 1e-9 {
+                    return Some(false);
+                }
+                Some(Rect::from_origin_size(Point::ZERO, size).contains(t.inverse() * w))
+            }
+            None => Some(self.res.world_bounds(id)?.contains(w)),
+        }
+    }
+
     /// Where overlay `o` is drawn in screen space.
     pub(crate) fn overlay_at(&self, o: &Overlay) -> Point {
         use prototype::OverlayPosition as P;

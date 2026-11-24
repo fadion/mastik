@@ -570,6 +570,41 @@ fn a_closed_frames_timer_does_not_fire() {
     assert_eq!(p.screen(), c);
 }
 
+/// A turned layer is hit in its box as drawn: a click in the corner of the
+/// square around a diamond misses it, and one at its middle hits.
+///
+/// flip: `Player::walk` testing the layer's bounding box (`Player::rect`) →
+/// fails at "the corner misses".
+#[test]
+fn a_turned_layer_is_hit_in_its_box() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 400.0, 400.0);
+    let b = fx.frame("B", 500.0, 200.0, 100.0);
+    let diamond = fx.rect(a, "Diamond", 0.0, 0.0, 100.0, 100.0);
+    let centre = Point::new(200.0, 200.0);
+    fx.apply(vec![Operation::SetTransform {
+        id: diamond,
+        transform: Affine::translate(centre.to_vec2())
+            * Affine::rotate(std::f64::consts::FRAC_PI_4)
+            * Affine::translate((-50.0, -50.0)),
+    }]);
+    fx.on(
+        diamond,
+        Trigger::Click,
+        vec![Action::Navigate {
+            to: b,
+            transition: Transition::INSTANT,
+            keep_scroll: false,
+        }],
+    );
+    let mut p = fx.play(a);
+    // The square around the diamond reaches 70.7 from its centre.
+    click(&mut p, 200.0 - 65.0, 200.0 - 65.0);
+    assert_eq!(p.screen(), a, "the corner misses");
+    click(&mut p, 200.0, 200.0);
+    assert_eq!(p.screen(), b, "the middle hits");
+}
+
 /// Two screens each navigating to the other *After 0* still let time move, one
 /// turn a frame, and *Back*'s history keeps at most `MAX_HISTORY` visits.
 ///
