@@ -1246,31 +1246,31 @@ pub enum ReactionError {
     BadTiming,
     #[error("an overlay's position and backdrop are finite numbers")]
     BadOverlay,
-    #[error("two actions in one reaction share the id {0:?}")]
+    #[error("two actions on one layer share the id {0:?}")]
     DuplicateAction(ItemId),
     #[error("a scroll trigger's point is a finite number")]
     BadScrollPoint,
 }
 
 /// Checks a layer's reactions as the door takes them: a script only under a
-/// person's act, usable timings, and unique action ids in each reaction,
-/// branches included. Targets are
-/// never checked — they may dangle.
+/// person's act, usable timings, and action ids unique across the layer's
+/// reactions, branches included. Targets are never checked — they may dangle.
 pub fn check(reactions: &[Keyed<Reaction>]) -> Result<(), ReactionError> {
+    let mut seen = FxHashSet::default();
     for r in reactions {
         if let Trigger::ScrollPast { at, .. } = r.trigger
             && !at.is_finite()
         {
             return Err(ReactionError::BadScrollPoint);
         }
-        check_list(&r.trigger, &r.actions, &mut FxHashSet::default())?;
+        check_list(&r.trigger, &r.actions, &mut seen)?;
     }
     Ok(())
 }
 
-/// [`check`] over one list, `seen` holding every action id met so far in the
-/// reaction, branches included: the Prototype tab finds an action by id
-/// anywhere in its reaction's tree.
+/// [`check`] over one list, `seen` holding every action id met so far on the
+/// layer, branches included: the Prototype tab finds an action by id anywhere
+/// in the layer's reactions (the overlay shade's row among them).
 fn check_list(
     trigger: &Trigger,
     list: &[Keyed<Action>],

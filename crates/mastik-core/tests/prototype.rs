@@ -140,8 +140,9 @@ fn a_script_under_a_timer_is_refused_by_the_door() {
 /// its case, nested under a branch where it can be.
 ///
 /// flip: `check_list` not recursing into a branch → fails at "a script in a
-/// branch"; one id set per list instead of per reaction → fails at "an id
-/// repeated in a branch"; `LayerPlay::is_usable` not checking point ids → fails
+/// branch"; one id set per list instead of per layer → fails at "an id
+/// repeated in a branch"; one per reaction → fails at "an id two reactions
+/// share"; `LayerPlay::is_usable` not checking point ids → fails
 /// at "a repeated snap point".
 #[test]
 fn the_door_refuses_each_unusable_reaction_and_play() {
@@ -246,6 +247,16 @@ fn the_door_refuses_each_unusable_reaction_and_play() {
             Some(ReactionError::DuplicateAction(_))
         ),
         "an id repeated in a branch"
+    );
+    let first = on(&mut ids, Trigger::Click, vec![Action::Back]);
+    let mut second = on(&mut ids, Trigger::HoverEnter, vec![Action::Back]);
+    second.value.actions[0].id = first.value.actions[0].id;
+    assert!(
+        matches!(
+            refused(&mut doc, vec![first, second]),
+            Some(ReactionError::DuplicateAction(_))
+        ),
+        "an id two reactions share"
     );
     assert!(
         doc.get(a).unwrap().reactions().is_empty(),

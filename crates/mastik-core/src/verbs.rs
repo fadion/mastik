@@ -6128,6 +6128,10 @@ pub static VERBS: &[Verb] = &[
                     crate::prototype::check(std::slice::from_ref(r))
                         .map_err(|e| a.invalid("reactions", format!("at `reactions[{i}]`: {e}")))?;
                 }
+                // Each reaction passed alone: what is left is an action id two
+                // reactions share.
+                crate::prototype::check(&reactions)
+                    .map_err(|e| a.invalid("reactions", e.to_string()))?;
                 ops.push(Operation::SetReactions { id, reactions });
             }
             Ok(Done::ops(ops))
@@ -7690,6 +7694,7 @@ fn tree_reactions(
         crate::prototype::check(std::slice::from_ref(r))
             .map_err(|e| a.invalid("tree", format!("at `reactions[{i}]`: {e}")))?;
     }
+    crate::prototype::check(&read).map_err(|e| a.invalid("tree", e.to_string()))?;
     Ok(crate::prototype::map_layers(&read, &mut |t| {
         minted.get(&t).copied().unwrap_or(t)
     }))
