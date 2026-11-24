@@ -9751,8 +9751,7 @@ impl MastikApp {
     /// it sits and paints last.
     fn canvas_tags(&self) -> Vec<NodeId> {
         let mut ids = self.tagged();
-        // A list frame wears its tab while selected, and always while its table
-        // is empty, wherever it sits on the page.
+        // A list frame wears its tab while selected, wherever it sits on the page.
         let doc = &self.session.doc;
         for l in mastik_core::list::lists(doc) {
             if !ids.contains(&l) && doc.page_of(l) == Some(self.session.page) && self.list_tabbed(l)
@@ -9768,9 +9767,9 @@ impl MastikApp {
     }
 
     /// Whether list `l` wears its tab off the page's top level: while selected,
-    /// or while its table is empty.
+    /// as every content badge does. The List card says when its table is empty.
     fn list_tabbed(&self, l: NodeId) -> bool {
-        self.session.selection.contains(l) || crate::list_data::list_is_empty(&self.session.doc, l)
+        self.session.selection.contains(l)
     }
 
     /// Where a frame's name tag sits, and its text: above the top-left corner and

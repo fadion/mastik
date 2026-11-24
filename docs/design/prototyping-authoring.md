@@ -56,7 +56,7 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 - **One block per reaction**: the trigger's dropdown, `+` (add an action) and `⋯` (*Duplicate*
   in `COPY_SIMPLE`, the glyph the app's own Duplicate wears, a rule, then *Remove*, a danger row
   in `TRASH`, as its *Remove interaction* step is named), then its actions top to bottom; a
-  `ui::card_rule` parts one block from the next. The card's own `+` adds *On click* with no
+  second `ui::CARD_ROW_GAP` parts one block from the next, as between two strokes. The card's own `+` adds *On click* with no
   actions, which the block's head `+` then fills. With no interactions the card says *Drag a
   dot on the layer's edge onto a frame, or add an interaction with +*. The
   add and `⋯` menus are as wide as their longest row (`ui::menu_width`).
@@ -224,20 +224,20 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   it is never refused here) is kept as typed, ringed, with the reason on the
   warning glyph inside the field's right end (`ui::refusable_field`, as an address and a flow's
   starting value are refused) and the range `ExprError::at` names underlined
-  (`ui::field_underline`), and nothing is written until it reads. Its hint ends *or @ for a
-  name* (*or @ for a variable* where only variables are read, as in a list's filter): while the
-  focused field ends in a `{` still open (outside quotes) and a name being typed, closed only by
-  its `}`, or else in `@` and a name being typed (`at_rows`, `name_opener`: closed by a brace or
-  an operator, and by whitespace unless a table's name may still go on past it, since *Table 1*
-  holds one), a list opens under it of the variables whose names hold that text, then under *Tables* the
+  (`ui::field_underline`), and nothing is written until it reads. Its hint ends *{ picks a
+  name* (*{ picks a variable* where only variables are read, as in a list's filter), and an empty
+  field's tooltip is the hint, which a narrow field cuts short. The brace is the one way to name
+  something, typed or picked; `@` opens nothing. While the focused field ends in a `{` still open
+  (outside quotes) and a name being typed, closed only by its `}` (`at_rows`, `name_opener`), a
+  list opens under it of the variables whose names hold that text, then under *Tables* the
   tables with their row counts (`row`, the row acted on, first inside a row action), at most
   `AT_LIST_MAX` (12). After `<table>.` it lists *rows*, *opened*, *first*, *last*, a typed row
   number and its number columns, noted *# · sum min max avg* (a text column has no totals, and
   `{Table.Column}` alone reads nothing); after a row, every column; after a number column, its
   totals. The arrows move its light; Enter or Tab, or a click, replaces the
-  opener and what follows with `{name}`, the caret after it, or, for a step that names nothing
-  whole yet (a table, a row, a column before its total), with the same opener and that step and a
-  dot, so the next step's list opens (`picked`).
+  brace and what follows with `{name}`, the caret after it, or, for a step that names nothing
+  whole yet (a table, a row, a column before its total), with the brace left open on that step and
+  a dot, so the next step's list opens (`picked`).
   A press on the list keeps the field's focus and its draft.
 - **Transitions** (`transition_fields`, also the page's *Default transition*): the kind; for *Move in*,
   *Move out*, *Push* and *Slide* (`TransitionKind::is_directional`) and *Smart animate*, a
@@ -331,7 +331,7 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   drawn.*); it is quiet when nothing differs.
 - ***Flows***: one row per flow, its name (a `ui::Draft`, committed on leaving the field) and its
   start among the page's frames, a `ui::field_button` `×` to remove (as every removal in the
-  tab is), each flow after the first under a `ui::card_rule`. The first row, the flow Play opens
+  tab is), each flow after the first a second `ui::CARD_ROW_GAP` below the one above. The first row, the flow Play opens
   with no frame selected, wears `accent_400` on its name field's leading edge: the field's own
   rounded outline, `FIRST_FLOW_BAR` (3) thick, kept to its left corners so it wraps them, tipped
   *Play opens this flow when no frame is selected*. With none, the card says *A flow is where the exported prototype starts; add one with

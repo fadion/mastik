@@ -1026,7 +1026,7 @@ pub(crate) fn expr_stored(
         .map_err(|(why, at)| (ui::upper_first(&why), at))
 }
 
-/// One row of the list `@` or `{` opens in an expression field.
+/// One row of the list an open `{` shows under an expression field.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct AtRow {
     /// The eyebrow it sits under.
@@ -1042,9 +1042,9 @@ pub(crate) struct AtRow {
 }
 
 /// Where `text` ends naming something for the list under its field: the byte
-/// offset of a `{` still open at its end (outside quotes, as `Expr` reads
-/// them), else of its last `@`; and whether it is the brace.
-pub(crate) fn name_opener(text: &str) -> Option<(usize, bool)> {
+/// offset of a `{` still open at its end, outside quotes, as `Expr` reads them.
+/// The brace is the one way to name a variable or a table, typed or picked.
+pub(crate) fn name_opener(text: &str) -> Option<usize> {
     let mut quote = None;
     let mut i = 0;
     while let Some(c) = text[i..].chars().next() {
@@ -1062,41 +1062,26 @@ pub(crate) fn name_opener(text: &str) -> Option<(usize, bool)> {
             }
             None if c == '{' => match text[next..].find('}') {
                 Some(k) => next + k + 1,
-                None => return Some((i, true)),
+                None => return Some(i),
             },
             None => next,
         };
     }
-    text.rfind('@').map(|at| (at, false))
+    None
 }
 
-/// What an expression's `text` may be naming after an open `{` or its last
-/// `@` ([`name_opener`]): the variables whose names hold what follows it, then
+/// What an expression's `text` may be naming after an open `{`
+/// ([`name_opener`]): the variables whose names hold what follows it, then
 /// (where `reads` takes tables) the tables; after `<table>.`, what the table
 /// holds — its row count, its rows, its columns; after a row, its columns;
-/// after a column, its totals. None when neither is open.
+/// after a column, its totals. None when no brace is open.
 pub(crate) fn at_rows(doc: &Document, text: &str, reads: Reads) -> Vec<AtRow> {
     use mastik_core::prototype::expr::{Agg, ROW};
-    let Some((at, brace)) = name_opener(text) else {
+    let Some(at) = name_opener(text) else {
         return Vec::new();
     };
     // Inside a brace only `}` ends the name, so it may hold spaces and symbols.
-    let query = match brace {
-        true => text[at + 1..].trim_start(),
-        false => &text[at + 1..],
-    };
-    if !brace && query.contains(|c: char| "{}()+-*/<>=!&|,\"".contains(c)) {
-        return Vec::new();
-    }
-    // After `@` a space ends the name, unless a table's name goes on past it.
-    let spaced = |name: &str| query.starts_with(name) || name.starts_with(query);
-    let tables = matches!(reads, Reads::Tables(_));
-    if !brace
-        && query.contains(char::is_whitespace)
-        && !(tables && doc.data_sets().iter().any(|t| spaced(&t.name)))
-    {
-        return Vec::new();
-    }
+    let query = text[at + 1..].trim_start();
     let row = |group, label: &str, note: String, insert: String, done| AtRow {
         group,
         label: label.to_owned(),
@@ -1246,17 +1231,15 @@ pub(crate) fn at_rows(doc: &Document, text: &str, reads: Reads) -> Vec<AtRow> {
     out
 }
 
-/// `text` once `row` is picked from its list: the opener and what follows it
-/// become `{name}`, or, for a step that names nothing whole yet (a table, a
-/// row, a column before its total), the same opener and that step, so the next
-/// step's list opens.
+/// `text` once `row` is picked from its list: the open brace and what follows
+/// it become `{name}`, or, for a step that names nothing whole yet (a table, a
+/// row, a column before its total), the brace left open on that step, so the
+/// next step's list opens.
 fn picked(text: &str, row: &AtRow) -> String {
-    let (at, brace) = name_opener(text).unwrap_or((text.len(), false));
-    let head = &text[..at];
-    match (row.done, brace) {
-        (true, _) => format!("{head}{{{}}}", row.insert),
-        (false, true) => format!("{head}{{{}", row.insert),
-        (false, false) => format!("{head}@{}", row.insert),
+    let head = &text[..name_opener(text).unwrap_or(text.len())];
+    match row.done {
+        true => format!("{head}{{{}}}", row.insert),
+        false => format!("{head}{{{}", row.insert),
     }
 }
 
@@ -3865,9 +3848,10 @@ impl MastikApp {
                     .as_ref()
                     .map(|s| mastik_core::reset::item_states(s, &reactions));
                 for (i, r) in reactions.iter().enumerate() {
-                    // A rule between one interaction's actions and the next one's trigger.
+                    // A second gap between one interaction's actions and the next
+                    // one's trigger, as between two strokes.
                     if i > 0 {
-                        ui::card_rule(ui);
+                        ui.add_space(ui::CARD_ROW_GAP);
                     }
                     let state = states.as_ref().map(|s| s[i]);
                     let top = ui.cursor().top();
@@ -5380,7 +5364,7 @@ impl MastikApp {
                 }
                 ui::selection_note(
                     ui,
-                    "Numbers take + - * /; text joins with +; and, or, not and comparisons test; type @ for a variable",
+                    "Numbers take + - * /; text joins with +; and, or, not and comparisons test; type { for a variable",
                 );
             }
             Action::OpenUrl { url } => {
@@ -6208,8 +6192,8 @@ impl MastikApp {
     }
 
     /// A number field over the saved model: held while engaged, then committed
-    /// once through the valve.
-    fn proto_valve(
+    /// once through the valve. The List card's number fields use it too.
+    pub(crate) fn proto_valve(
         &mut self,
         rid: egui::Id,
         v: f64,
@@ -6296,15 +6280,14 @@ impl MastikApp {
         let live = ui::Draft::live(&mut self.proto.draft, &ctx, key);
         let refused = live.as_ref().and_then(|d| d.refused.clone());
         let mut text = live.map_or(shown.clone(), |d| d.text.clone());
-        // `@` or an open `{` asks for a variable or a table: while the field
-        // holds one being named, its keys move through the list under it rather
-        // than commit.
+        // An open `{` asks for a variable or a table: while the field holds one
+        // being named, its keys move through the list under it rather than commit.
         let at_id = ui.id().with(("expr-at", key));
         let (pick_key, pressed_in) = self.at_list_keys(ui, at_id, &text, reads);
         let hint = match (literal, reads) {
-            (true, _) => "A value, or @ for a variable",
-            (false, Reads::Vars) => "An expression, such as {count} + 1, or @ for a variable",
-            (false, Reads::Tables(_)) => "An expression, such as {count} + 1, or @ for a name",
+            (true, _) => "A value, or { to pick a variable",
+            (false, Reads::Vars) => "An expression, such as {count} + 1; { picks a variable",
+            (false, Reads::Tables(_)) => "An expression, such as {count} + 1; { picks a name",
         };
         let (resp, text_left) = ui::refusable_field_at(
             ui,
@@ -6313,6 +6296,11 @@ impl MastikApp {
             hint,
             refused.as_deref(),
         );
+        // A narrow field cuts its hint short, so an empty field's tooltip is the hint.
+        let resp = match text.is_empty() {
+            true => resp.on_hover_text(hint),
+            false => resp,
+        };
         if refused.is_some()
             && let Some((k, at)) = &self.proto.expr_fault
             && *k == key
@@ -6361,7 +6349,7 @@ impl MastikApp {
     }
 
     /// Before an expression field draws: while its `text` names a variable after
-    /// `@` or `{` and the field held focus last pass, take the arrows, Enter and Tab
+    /// an open `{` and the field held focus last pass, take the arrows, Enter and Tab
     /// for the list. Answers the variable Enter or Tab picked, and whether the
     /// pointer pressed on the list this pass.
     fn at_list_keys(
@@ -6405,7 +6393,7 @@ impl MastikApp {
         (enter.then(|| names[hi].clone()), pressed_in)
     }
 
-    /// The list `@` or `{` opens under the expression field `resp`, its highlighted
+    /// The list an open `{` shows under the expression field `resp`, its highlighted
     /// row lit, each group under its eyebrow; answers the row clicked, or
     /// `picked` by Enter or Tab.
     fn at_list(
@@ -7321,9 +7309,10 @@ impl MastikApp {
                 );
             }
             for (n, f) in flows.iter().enumerate() {
-                // A rule between one flow's starting values and the next flow.
+                // A second gap between one flow's starting values and the next
+                // flow, as between two strokes.
                 if n > 0 {
-                    ui::card_rule(ui);
+                    ui.add_space(ui::CARD_ROW_GAP);
                 }
                 let row = ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = COL;
@@ -8818,8 +8807,8 @@ mod tests {
         assert_eq!((instance, to), (rest, hover));
     }
 
-    /// `@` in an expression lists the variables whose names hold what follows
-    /// it, and nothing once the name is closed or no `@` is open.
+    /// `{` in an expression lists the variables whose names hold what follows
+    /// it, and nothing once the name is closed; `@` opens nothing.
     /// flip: `at_rows` ignoring the query → fails at "filtered".
     #[test]
     fn an_at_lists_the_variables_it_may_name() {
@@ -8859,14 +8848,14 @@ mod tests {
                 .map(|r| r.label)
                 .collect()
         };
-        assert_eq!(names("1 + @"), vec!["cartCount", "signedIn"]);
-        assert_eq!(names("1 + @cart"), vec!["cartCount"], "filtered");
-        assert!(names("@cart + 1").is_empty(), "closed by a space");
-        assert!(names("{cartCount} + 1").is_empty(), "no @");
+        assert_eq!(names("1 + {"), vec!["cartCount", "signedIn"]);
+        assert_eq!(names("1 + {cart"), vec!["cartCount"], "filtered");
+        assert!(names("{cartCount} + 1").is_empty(), "closed by its brace");
+        assert!(names("1 + @cart").is_empty(), "`@` is no opener");
     }
 
-    /// An open `{` lists what `@` would, narrowing as the name is typed, spaces
-    /// and all; `}` or a quote around it closes the list; a pick keeps the brace.
+    /// An open `{` lists variables and tables, narrowing as the name is typed,
+    /// spaces and all; `}` or a quote around it closes the list; a pick keeps the brace.
     /// flip: `name_opener` skipping the brace scan → fails at "opens on a brace".
     #[test]
     fn a_brace_lists_what_it_may_name() {
@@ -8942,17 +8931,15 @@ mod tests {
         };
         assert_eq!(pick("1 + {ca", "cart count"), "1 + {cart count}");
         assert_eq!(pick("1 + {Ca", "Cart items"), "1 + {Cart items.");
-        assert_eq!(pick("1 + @ca", "cart count"), "1 + {cart count}", "@ still");
-        assert_eq!(pick("@Ca", "Cart items"), "@Cart items.");
     }
 
-    /// `@` lists the tables after the variables; a table's dot lists its count,
+    /// `{` lists the tables after the variables; a table's dot lists its count,
     /// its rows and its number columns, a column's dot its totals, and a pick of
     /// the last step writes the whole read, which stores by ids.
     /// flip: `at_rows` leaving out the tables → fails at "tables after";
     /// listing text columns at the table's step → fails at "no totals to open".
     #[test]
-    fn an_at_lists_tables_and_then_what_they_hold() {
+    fn a_brace_lists_tables_and_then_what_they_hold() {
         use mastik_core::chart::{Column, ColumnId, Table};
         use mastik_core::list::DataSet;
         let ctx = egui::Context::default();
@@ -8989,40 +8976,40 @@ mod tests {
         let rows = |t: &str| at_rows(doc, t, Reads::Tables(None));
         let labels = |t: &str| -> Vec<String> { rows(t).into_iter().map(|r| r.label).collect() };
         assert_eq!(
-            labels("@"),
+            labels("{"),
             vec!["Cart items"],
             "tables after the variables"
         );
         assert_eq!(
-            rows("@Cart i")[0].insert,
+            rows("{Cart i")[0].insert,
             "Cart items.",
             "a space inside a table's name"
         );
         assert!(
-            at_rows(doc, "@", Reads::Vars).is_empty(),
+            at_rows(doc, "{", Reads::Vars).is_empty(),
             "a list filter reads no table"
         );
         assert_eq!(
-            labels("@Cart items."),
+            labels("{Cart items."),
             vec!["rows", "opened", "first", "last", "Line"],
             "a text column has no totals to open"
         );
-        assert!(labels("@Cart items.Name.").is_empty(), "nor after its dot");
-        let line = rows("@Cart items.Li").pop().unwrap();
+        assert!(labels("{Cart items.Name.").is_empty(), "nor after its dot");
+        let line = rows("{Cart items.Li").pop().unwrap();
         assert_eq!(
             (line.insert.as_str(), line.done),
             ("Cart items.Line.", false)
         );
         assert_eq!(
-            labels("@Cart items.Line."),
+            labels("{Cart items.Line."),
             vec!["sum", "min", "max", "avg"]
         );
-        let cell = rows("@Cart items.first.Na").pop().unwrap();
+        let cell = rows("{Cart items.first.Na").pop().unwrap();
         assert_eq!(
             (cell.insert.as_str(), cell.done),
             ("Cart items.first.Name", true)
         );
-        let typed = format!("{{{}}} + 1", rows("@Cart items.Line.s")[0].insert);
+        let typed = format!("{{{}}} + 1", rows("{Cart items.Line.s")[0].insert);
         let e = expr_stored(doc, &typed, Some(VarKind::Number), Reads::Tables(None)).unwrap();
         assert_eq!(expr_shown(doc, &e), "{Cart items.Line.sum} + 1");
         assert!(
@@ -9030,8 +9017,8 @@ mod tests {
             "row outside a row action"
         );
         assert!(expr_stored(doc, "{row.Name}", None, Reads::Tables(Some(id))).is_ok());
-        assert!(labels("@row.").is_empty() && !rows("@").iter().any(|r| r.label == "row"));
-        let in_row = at_rows(doc, "@", Reads::Tables(Some(id)));
+        assert!(labels("{row.").is_empty() && !rows("{").iter().any(|r| r.label == "row"));
+        let in_row = at_rows(doc, "{", Reads::Tables(Some(id)));
         assert_eq!(
             in_row[0].label, "row",
             "the acted-on row inside a row action"

@@ -300,9 +300,10 @@ step.
   cut). A data set the document lacks
   reads *Missing data* with *Its table is not in this document: pick one*
   (`panels::list::MISSING_TABLE`, the Chart card's too).
-- **Rows** (a `ui::fold_rule` section) — `ui::segmented` *All* / *First* / *Row* / *Opened row*
+- **Rows** (a `ui::fold_rule` section) — `ui::segmented` *All* / *First* / *Row* / *Opened*
   (*Row*'s tooltip *One row of the table, the same in play*). *First* starts at 3 and shows a
-  *Rows* count field (1 to 200) half the column wide, as the cards' number fields. *Row* starts
+  full-width *Rows* count field (1 to 200), held while scrubbed or typed and committed once
+  (`proto_valve`, since a list's description has no preview). *Row* starts
   at 1 and shows a full-width `ui::fitted_combo` of the table's rows as *N · first cell*, its face
   *Row 3 · Linen shirt*, up to `list_data::ROWS_LISTED` (200) listed and then a menu note
   *Showing 200 of N rows: pick in the data window*; the words are `list_data::row_words`, which
@@ -310,22 +311,23 @@ step.
   window opened from a *Row* list sets its row. The row is held by position, so a table edit in
   the data window that deletes rows and leaves another record on it is said under the dropdown
   (`ui::note_line`, the `INFO` glyph in `text::dim`): *Row 3 was Linen shirt before rows were
-  deleted above it*, until the card shows another layer or a row is picked. *Opened row* says *Shows the row opened in play, row 1 here*
+  deleted above it*, until the card shows another layer or a row is picked. *Opened* says *Shows the row opened in play, row 1 here*
   (`ui::selection_note`). Undo step *List rows*.
 - **Filter** (`MastikApp::card_fold_noted`, its head carrying the test count) — *All* / *Any*
   (`ui::segmented`, half width, shown with two tests or more); each test a column combo and a
   test-word combo side by side, half width each, then the value field, the Prototype card's
-  expression field with its `@` list (`expr_field` with `ExprWant::LiteralOr`, hint *A value, or
-  @ for a variable*; none for the two emptiness tests), and an `icon::X` `ui::field_button`
-  *Remove this test*. A test reading a gone column carries *This test reads a column the table no
+  expression field with its `{` list (`expr_field` with `ExprWant::LiteralOr`, hint *A value, or
+  { to pick a variable*; none for the two emptiness tests), and an `icon::X` `ui::field_button`
+  *Remove this test*; a second `ui::CARD_ROW_GAP` parts one test from the next, as between two
+  strokes. A test reading a gone column carries *This test reads a column the table no
   longer has, so it passes every row*. *Add test* (`ui::action_button`, `icon::PLUS`) adds *is*
   on the first column, offered under `MAX_TESTS`; then *6 of 24 rows pass here*
   (`ui::selection_note`). Undo step *List filter*.
 - **Sort** (its head noting the first sort column's name, `ui::fold_rule_noted`) — `ui::labelled`
   *Sort by* and *Then by* rows, each a column combo with *None*, which removes that key and any
   after it, and a two-cell `ui::segmented` direction, `icon::SORT_ASCENDING` /
-  `SORT_DESCENDING` (*Low to high, A to Z* / *High to low, Z to A*). *Then by* shows once *Sort
-  by* is set. Undo step *List sort*.
+  `SORT_DESCENDING` (*Low to high, A to Z* / *High to low, Z to A*), shown disabled while its
+  column is *None*. *Then by* shows once *Sort by* is set. Undo step *List sort*.
 - **Under a one-row mode** Filter and Sort keep what they hold, say *One row shows: filter and
   sort apply to All and First* (`ui::selection_note`) and are disabled (`ui::disable_unless`).
 - **Fill · ‹component›** (a fold) — one labelled `ui::fitted_combo` per text, boolean and image
@@ -513,8 +515,8 @@ MCP's Phase 3 (`mcp.md`), each acting as its door in the app.
   rounded top corners, without the set's resting outline, the `TABLE` glyph, the frame's name and
   the rows it draws from `list_data::list_count` (*· 24 rows*, *200 of 1240 rows*, *6 of 24 rows*
   under a filter, *row 3*, *Opened row*, or *No rows*, *0 of 24 rows* when no row passes, and
-  *Missing data* in the warning ink). It shows while the list is selected, and
-  always while its table is empty, wherever the frame sits on the page.
+  *Missing data* in the warning ink). It shows while the list is selected, wherever the frame sits on the page, as
+  every content badge does; the List card says when the table is empty.
 - **The layers tree lists the template and not the copies.** A list frame's row shows
   `list_count`'s words as its badge, in place of the frame size.
 

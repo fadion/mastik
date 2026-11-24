@@ -18,7 +18,7 @@ const ROWS: [(&str, &str); 4] = [
     ("First", "The first rows only"),
     ("Row", "One row of the table, the same in play"),
     (
-        "Opened row",
+        "Opened",
         "The row opened in play by a tap on a list over the same data",
     ),
 ];
@@ -322,27 +322,35 @@ impl MastikApp {
         }
         match now.rows {
             Rows::First(n) => {
-                let mut v = f64::from(n);
-                // A half column, as the cards' number fields take.
-                let half = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
+                // A list's description has no preview, so the field holds what is
+                // scrubbed or typed until the valve commits it.
+                let rid = ui.id().with(("list-first", id));
+                let mut v = self
+                    .proto
+                    .scrub
+                    .filter(|(i, _)| *i == rid)
+                    .map_or(f64::from(n), |(_, x)| x);
                 let resp = ui::value_field(
                     ui,
-                    egui::vec2(half, ui::CONTROL_H),
+                    egui::vec2(ui.available_width(), ui::CONTROL_H),
                     Prefix::Label("Rows"),
                     &mut v,
                     Scrub::whole(0.25).range(1.0..=list::MAX_DRAWN as f64),
                     |d| d.custom_formatter(ui::number(0)),
                 )
                 .on_hover_text("How many rows the list draws");
-                let n = v.round().clamp(1.0, list::MAX_DRAWN as f64) as u32;
-                let tx = Transaction(vec![Operation::SetList {
-                    id,
-                    list: Some(Box::new(List {
-                        rows: Rows::First(n),
-                        ..now.clone()
-                    })),
-                }]);
-                self.named_valve("List rows", icon::TABLE, &resp, tx);
+                let next = v.round().clamp(1.0, list::MAX_DRAWN as f64) as u32;
+                let tx = match next != n {
+                    true => Transaction(vec![Operation::SetList {
+                        id,
+                        list: Some(Box::new(List {
+                            rows: Rows::First(next),
+                            ..now.clone()
+                        })),
+                    }]),
+                    false => Transaction::default(),
+                };
+                self.proto_valve(rid, v, &resp, "List rows", icon::TABLE, tx);
             }
             Rows::Row(n) => self.list_row_pick(ui, id, now, n),
             Rows::Opened => {
@@ -500,6 +508,11 @@ impl MastikApp {
                 }
             }
             for (i, t) in now.filter.tests.iter().enumerate() {
+                // A test is two rows: a second gap sets one test apart from the
+                // next, as between two strokes.
+                if i > 0 {
+                    ui.add_space(ui::CARD_ROW_GAP);
+                }
                 let numeric = set.table.is_numeric(t.column);
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
@@ -661,22 +674,25 @@ impl MastikApp {
                             }
                             next = Some(l);
                         }
-                        let Some(k) = key else { return };
-                        let at = usize::from(k.descending);
-                        let pick = ui::segmented_tipped(
-                            ui,
-                            dir_w,
-                            ui::SEGMENT_CELL_H,
-                            2,
-                            at,
-                            |_| true,
-                            |d| ["Low to high, A to Z", "High to low, Z to A"][d],
-                            |p, d, r, on| {
-                                let g = [icon::SORT_ASCENDING, icon::SORT_DESCENDING][d];
-                                ui::segment_glyph(p, r, g, on);
-                            },
-                        );
-                        if let Some(d) = pick.filter(|d| *d != at) {
+                        // Without a column the direction shows disabled, not as a gap.
+                        let at = key.map_or(0, |k| usize::from(k.descending));
+                        let pick = ui::disable_unless(ui, key.is_some(), |ui| {
+                            ui::segmented_tipped(
+                                ui,
+                                dir_w,
+                                ui::SEGMENT_CELL_H,
+                                2,
+                                at,
+                                |_| true,
+                                |d| ["Low to high, A to Z", "High to low, Z to A"][d],
+                                |p, d, r, on| {
+                                    let g = [icon::SORT_ASCENDING, icon::SORT_DESCENDING][d];
+                                    ui::segment_glyph(p, r, g, on);
+                                },
+                            )
+                        })
+                        .inner;
+                        if let Some(d) = pick.filter(|d| *d != at && key.is_some()) {
                             let mut l = now.clone();
                             l.sort[i].descending = d == 1;
                             next = Some(l);
@@ -1377,6 +1393,71 @@ mod tests {
         assert!(at(&out, "zz(").is_empty(), "not moved");
     }
 
+    /// A number typed into *First*'s *Rows* field lands as one step, though the
+    /// typed value reaches the field a frame after the valve's commit frame.
+    /// flip: `list_rows_rows` ignoring the held value → fails at "landed" (`First(3)`).
+    #[test]
+    fn a_typed_first_count_lands() {
+        use mastik_core::list::Rows;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, inst) = with_row(&ctx);
+        let (l, _) = listed(&mut app, inst, &["A", "B", "C", "D", "E", "F", "G"]);
+        let mut next = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        next.rows = Rows::First(3);
+        app.list_commit(l, "List rows", next);
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                ui.set_max_width(280.0);
+                let now = app.session.doc.get(l).unwrap().list().unwrap().clone();
+                app.list_rows_rows(ui, l, &now);
+            })
+        };
+        let mut out = frame(&mut app, vec![]);
+        for _ in 0..3 {
+            out = frame(&mut app, vec![]);
+        }
+        let field = out
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == "3" => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+            .expect("fixture: the field shows 3");
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let depth = app.session.history.undo_depth();
+        frame(&mut app, vec![egui::Event::PointerMoved(field)]);
+        frame(&mut app, vec![press(field, true)]);
+        frame(&mut app, vec![press(field, false)]);
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![egui::Event::Text("6".into())]);
+        let away = egui::pos2(5.0, 780.0);
+        frame(&mut app, vec![press(away, true)]);
+        frame(&mut app, vec![press(away, false)]);
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        let rows = app.session.doc.get(l).unwrap().list().unwrap().rows;
+        assert_eq!(rows, Rows::First(6), "landed");
+        assert_eq!(app.session.history.undo_depth() - depth, 1, "one step");
+    }
+
     /// The layers tree offers no drop that takes a list's template out of its
     /// list, while a reorder inside the list stays legal.
     /// flip: `drop_is_legal` guarding only the destination → fails at "stays in
@@ -1451,7 +1532,6 @@ mod tests {
             }
         ])));
         assert_eq!(count(&app), "No rows");
-        assert!(crate::list_data::list_is_empty(&app.session.doc, l));
     }
 
     /// Deleting a row above a *Row* list's row records what the row was for the

@@ -137,14 +137,6 @@ pub(crate) fn table_combo(
     pick
 }
 
-/// Whether list `id` reads a data set with no rows.
-pub(crate) fn list_is_empty(doc: &mastik_core::Document, id: NodeId) -> bool {
-    doc.get(id)
-        .and_then(|n| n.list())
-        .and_then(|l| doc.data_set(l.data))
-        .is_some_and(|d| d.table.rows.is_empty())
-}
-
 /// The rows a row dropdown lists, as many as a list draws.
 pub(crate) const ROWS_LISTED: usize = list::MAX_DRAWN;
 
