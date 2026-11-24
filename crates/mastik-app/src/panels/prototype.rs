@@ -6366,7 +6366,11 @@ impl MastikApp {
         let Some((names, list, field)) = shown else {
             return (None, false);
         };
-        if names.is_empty() || !ui.ctx().memory(|m| m.has_focus(field)) {
+        // An `Escape` the list took closes it in `at_list`; no key is the list's.
+        if names.is_empty()
+            || !ui.ctx().memory(|m| m.has_focus(field))
+            || ui::popup_escaped(ui.ctx())
+        {
             return (None, false);
         }
         let pressed_in = ui.input(|i| {
@@ -6395,7 +6399,8 @@ impl MastikApp {
 
     /// The list an open `{` shows under the expression field `resp`, its highlighted
     /// row lit, each group under its eyebrow; answers the row clicked, or
-    /// `picked` by Enter or Tab.
+    /// `picked` by Enter or Tab. `Escape` closes the list alone, the field keeping
+    /// its focus and text, until the text changes.
     fn at_list(
         &self,
         ui: &egui::Ui,
@@ -6405,12 +6410,41 @@ impl MastikApp {
         picked: Option<AtRow>,
         reads: Reads,
     ) -> Option<AtRow> {
+        let ctx = ui.ctx();
         let names = at_rows(&self.session.doc, text, reads);
-        if names.is_empty() || !resp.has_focus() {
-            ui.ctx()
-                .data_mut(|d| d.remove::<(egui::Rect, egui::Id)>(at_id));
+        let dismissed_id = at_id.with("dismissed");
+        let was_shown = ctx
+            .data(|d| d.get_temp::<(egui::Rect, egui::Id)>(at_id))
+            .is_some();
+        if was_shown && ui::popup_escaped(ctx) {
+            ctx.data_mut(|d| d.insert_temp(dismissed_id, text.to_string()));
+        }
+        let dismissed = ctx
+            .data(|d| d.get_temp::<String>(dismissed_id))
+            .is_some_and(|t| t == text && resp.has_focus());
+        if !dismissed {
+            ctx.data_mut(|d| d.remove::<String>(dismissed_id));
+        }
+        if names.is_empty() || !resp.has_focus() || dismissed {
+            ctx.data_mut(|d| d.remove::<(egui::Rect, egui::Id)>(at_id));
             return picked;
         }
+        // While the list shows, `Escape` and `Tab` are its: egui neither drops the
+        // field's focus on the one nor moves it on the other, and the surface's
+        // ring leaves `Tab` with the field.
+        ui::keep_escape(ctx);
+        ui::keep_tab(ctx, resp.id);
+        ctx.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                resp.id,
+                egui::EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                },
+            );
+        });
         let hi: usize = ui.ctx().data(|d| d.get_temp(at_id.with("hi"))).unwrap_or(0);
         let mut clicked = None;
         let shown = egui::Popup::new(at_id, ui.ctx().clone(), resp.rect, ui.layer_id())
@@ -9689,6 +9723,198 @@ mod tests {
         );
         frame(&mut f.app, vec![]);
         assert_eq!(ms(&f.app), 2000, "Enter commits");
+    }
+
+    /// A *Conditional*'s first branch open in its popover, and a number variable
+    /// *cartCount* to name.
+    fn branch_field(ctx: &egui::Context) -> F {
+        use mastik_core::variable::{Cell, CollectionId, Mode, Variable};
+        crate::theme::install(ctx);
+        let mut f = fixture(ctx);
+        let mode = f.app.session.ids.mint_mode();
+        let var = f.app.session.ids.mint_var();
+        assert!(f.app.session.commit(Transaction(vec![
+            Operation::AddMode {
+                collection: CollectionId::FIRST,
+                mode: Mode {
+                    id: mode,
+                    name: "Default".into(),
+                },
+                index: 0,
+                cells: vec![],
+            },
+            Operation::AddVariable {
+                var: Variable {
+                    id: var,
+                    name: "cartCount".into(),
+                    kind: VarKind::Number,
+                    cells: [(mode, Cell::Number(0.0))].into(),
+                    scope: None,
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+        ])));
+        let open = one_action(
+            &mut f,
+            Action::Conditional {
+                branches: vec![Branch {
+                    when: Expr("1 == 1".into()),
+                    actions: Vec::new(),
+                }],
+                otherwise: Vec::new(),
+            },
+        );
+        f.app.session.selection.set_one(f.add);
+        f.app.proto.open = Some(open);
+        f
+    }
+
+    /// One frame over the inspector as the app's frame body runs it: the keyboard
+    /// focus and the popup's `Escape` claim first.
+    fn app_frame(
+        ctx: &egui::Context,
+        app: &mut MastikApp,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1400.0, 2400.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| {
+            let _focus = ui::KeyboardFocus::begin(ui.ctx(), false);
+            ui::claim_popup_escape(ui.ctx());
+            ui.set_max_width(280.0);
+            app.inspector_ui(ui)
+        })
+    }
+
+    /// Clicks the branch field and types `1 + @cart` over its text, leaving the
+    /// list of names open under it.
+    fn type_a_name(ctx: &egui::Context, app: &mut MastikApp) {
+        let text_at = |out: &egui::FullOutput, text: &str| {
+            out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == text => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+        };
+        let mut out = app_frame(ctx, app, vec![]);
+        for _ in 0..3 {
+            out = app_frame(ctx, app, vec![]);
+        }
+        let at = text_at(&out, "1 == 1").expect("fixture: the branch field reads 1 == 1");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        app_frame(ctx, app, vec![egui::Event::PointerMoved(at), press(true)]);
+        app_frame(ctx, app, vec![press(false)]);
+        app_frame(
+            ctx,
+            app,
+            vec![
+                key_event(egui::Key::A, egui::Modifiers::COMMAND),
+                egui::Event::Text("1 + @cart".into()),
+            ],
+        );
+        let out = app_frame(ctx, app, vec![]);
+        assert!(
+            names_listed(&out),
+            "fixture: the list of names is open under the field"
+        );
+    }
+
+    /// Whether the open list draws *cartCount* as a row.
+    fn names_listed(out: &egui::FullOutput) -> bool {
+        out.shapes.iter().any(|s| match &s.shape {
+            egui::Shape::Text(t) => t.galley.job.text == "cartCount",
+            _ => false,
+        })
+    }
+
+    fn key_event(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    /// `Escape` with the list of names open closes the list alone: the action's
+    /// popover stays, and the field keeps its focus and its text. The next press
+    /// closes the popover as before.
+    /// flip: `at_list` not calling `ui::keep_escape` → fails at "the popover stays".
+    #[test]
+    fn escape_closes_the_name_list_not_its_popover() {
+        let ctx = egui::Context::default();
+        let mut f = branch_field(&ctx);
+        type_a_name(&ctx, &mut f.app);
+        app_frame(
+            &ctx,
+            &mut f.app,
+            vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        let out = app_frame(&ctx, &mut f.app, vec![]);
+        assert!(f.app.proto.open.is_some(), "the popover stays");
+        assert!(!names_listed(&out), "the list is closed");
+        assert_eq!(
+            f.app.proto.draft.as_ref().map(|d| d.text.as_str()),
+            Some("1 + @cart"),
+            "the typed text stays"
+        );
+        assert!(
+            ctx.memory(|m| m.focused()).is_some(),
+            "the field keeps the focus"
+        );
+        let out = app_frame(&ctx, &mut f.app, vec![]);
+        assert!(
+            !names_listed(&out),
+            "and stays closed while the text is unchanged"
+        );
+
+        app_frame(
+            &ctx,
+            &mut f.app,
+            vec![key_event(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        app_frame(&ctx, &mut f.app, vec![]);
+        assert!(
+            f.app.proto.open.is_none(),
+            "the next press closes the popover"
+        );
+    }
+
+    /// `Tab` with the list of names open takes its highlighted name, as `Enter` does,
+    /// rather than moving the focus to the next field.
+    /// flip: `at_list` not calling `ui::keep_tab` → fails at "Tab takes the name".
+    #[test]
+    fn tab_takes_the_highlighted_name() {
+        let ctx = egui::Context::default();
+        let mut f = branch_field(&ctx);
+        type_a_name(&ctx, &mut f.app);
+        app_frame(
+            &ctx,
+            &mut f.app,
+            vec![key_event(egui::Key::Tab, egui::Modifiers::NONE)],
+        );
+        app_frame(&ctx, &mut f.app, vec![]);
+        assert_eq!(
+            f.app.proto.draft.as_ref().map(|d| d.text.as_str()),
+            Some("1 + {cartCount}"),
+            "Tab takes the name"
+        );
+        assert!(f.app.proto.open.is_some(), "the popover stays");
     }
 
     /// Swapping *Set variable*'s variable for another of its kind re-seeds a

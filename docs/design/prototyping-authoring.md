@@ -238,7 +238,9 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   brace and what follows with `{name}`, the caret after it, or, for a step that names nothing
   whole yet (a table, a row, a column before its total), with the brace left open on that step and
   a dot, so the next step's list opens (`picked`).
-  A press on the list keeps the field's focus and its draft.
+  A press on the list keeps the field's focus and its draft. `Escape` closes the list alone,
+  the field keeping its focus and text, and the list stays shut until the text changes; the
+  action's popover goes on the next press.
 - **Transitions** (`transition_fields`, also the page's *Default transition*): the kind; for *Move in*,
   *Move out*, *Push* and *Slide* (`TransitionKind::is_directional`) and *Smart animate*, a
   direction segment of *None* and the four sides. *None* is live for *Smart animate* alone, whose
