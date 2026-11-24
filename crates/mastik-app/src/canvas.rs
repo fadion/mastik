@@ -9651,17 +9651,21 @@ impl MastikApp {
             && doc.get(id).is_some_and(|n| !n.children().is_empty())
     }
 
-    /// A selected frame whose box `world` falls in: dragging from inside it moves
-    /// it, over its layers as over its empty parts, rather than grabbing a layer
-    /// or starting a marquee.
+    /// A selected frame whose own box `world` falls in: dragging from inside it
+    /// moves it, over its layers as over its empty parts, rather than grabbing a
+    /// layer or starting a marquee. Not over a layer of another painted above
+    /// it, which the pointer rings and the press grabs, nor in the corners a
+    /// rotated frame's world bounds hold beyond its box.
     fn selected_frame_at(&self, world: Point) -> Option<NodeId> {
+        let (doc, res) = (&self.session.doc, &self.session.resolved);
+        let leaf = self.pick_leaf(world);
         self.session.selection.ids().iter().copied().find(|id| {
             self.is_occupied_frame(*id)
-                && self
-                    .session
-                    .resolved
-                    .world_bounds(*id)
-                    .is_some_and(|b| b.contains(world))
+                && leaf.is_none_or(|l| mastik_core::query::is_within(doc, l, *id))
+                && res
+                    .world_transform(*id)
+                    .zip(mastik_core::query::local_box(doc, res, *id))
+                    .is_some_and(|(at, b)| b.contains(at.inverse() * world))
         })
     }
 
@@ -24763,6 +24767,48 @@ mod frame_edge_tests {
             app.session.selection.ids(),
             [board],
             "the frame stays the selection"
+        );
+    }
+
+    /// A drag pressed on a loose layer painted above a selected page frame grabs
+    /// that layer, as the pointer's ring promised, not the frame.
+    /// flip: `selected_frame_at` ignoring the leaf under the press → fails at
+    /// "the layer above is grabbed".
+    #[test]
+    fn a_drag_over_a_layer_above_a_selected_frame_grabs_the_layer() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, board, _) = fixture(&ctx);
+        let page = app.session.page;
+        let above = app.session.ids.mint();
+        let top = app.session.doc.get(page).unwrap().children().len();
+        assert!(app.session.commit(Transaction(vec![Operation::CreateNode {
+            id: above,
+            parent: page,
+            index: top,
+            kind: NodeKind::Rect {
+                size: Size::new(20.0, 20.0),
+                corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((85.0, 85.0))),
+            name: Some("Badge".into()),
+        }])));
+        assert_eq!(
+            app.pick_leaf(Point::new(95.0, 95.0)),
+            Some(above),
+            "fixture: the press lands on the loose layer"
+        );
+        app.session.selection.set_one(board);
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let screen = app.to_screen(Point::new(95.0, 95.0), rect, 1.0);
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            app.begin_select_drag(ui, screen, rect, 1.0, &None, false);
+        });
+        assert_eq!(
+            app.session.selection.ids(),
+            [above],
+            "the layer above is grabbed"
         );
     }
 
