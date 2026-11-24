@@ -1147,6 +1147,47 @@ mod tests {
         }
     }
 
+    /// An *Update* whose read lands after *Unlink* writes nothing: the set stays
+    /// unlinked with its table, and the landing adds no step.
+    /// flip: `replace_data_set_table` not checking the set's link → fails at
+    /// "stays unlinked".
+    #[test]
+    fn an_update_landing_after_unlink_writes_nothing() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let (_, set) = listed(&mut app, inst, &["A", "B"]);
+        let dir = std::env::temp_dir().join(format!("mastik-unlinked-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("people.csv");
+        std::fs::write(&path, "title\nC\nD\nE\n").unwrap();
+        app.start_chart_read(
+            "people.csv",
+            crate::chart_import::Source::File(path.clone()),
+            mastik_core::chart::table_io::Format::Csv,
+            vec![Some(true)],
+            crate::chart_import::Then::DataSet {
+                set,
+                path: path.to_string_lossy().into_owned(),
+                relink: true,
+            },
+        );
+        app.settle_chart_read();
+        let rows = |app: &MastikApp| app.session.doc.data_set(set).unwrap().table.rows.len();
+        assert_eq!(rows(&app), 3, "the fixture links the file");
+
+        std::fs::write(&path, "title\nF\nG\nH\nI\n").unwrap();
+        app.update_data_set(set);
+        app.unlink_data_set(set);
+        let depth = app.session.history.undo_depth();
+        app.settle_chart_read();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let d = app.session.doc.data_set(set).unwrap();
+        assert!(d.source.is_none(), "stays unlinked");
+        assert_eq!(rows(&app), 3, "its table kept");
+        assert_eq!(app.session.history.undo_depth(), depth, "no step");
+    }
+
     /// `list_count` says how many rows a list draws, and *No rows* over an
     /// empty table.
     #[test]

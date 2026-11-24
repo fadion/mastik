@@ -994,6 +994,11 @@ impl MastikApp {
         let Some(now) = self.session.doc.data_set(set).cloned() else {
             return;
         };
+        // An *Update* landing after *Unlink*, or a relink elsewhere, would undo
+        // it and overwrite the edits made since.
+        if !relink && now.source.as_ref().map(|l| l.path.as_str()) != Some(path) {
+            return;
+        }
         let header = now.source.as_ref().and_then(|s| s.header);
         // A set never linked (*New table*) is linked by the window's *Import…*.
         let first_link = relink && now.source.is_none();
