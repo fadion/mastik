@@ -222,19 +222,19 @@ fn figma_trigger(t: &Value) -> Option<Trigger> {
     })
 }
 
-/// A browser key code as the player names its key; `None` for one it does
-/// not name.
+/// A browser key code as the player names its key, as egui names it (`"Left"`,
+/// `"Space"`); `None` for one it does not name.
 fn key_name(code: u64) -> Option<String> {
     Some(match code {
         8 => "Backspace".into(),
         9 => "Tab".into(),
         13 => "Enter".into(),
         27 => "Escape".into(),
-        32 => " ".into(),
-        37 => "ArrowLeft".into(),
-        38 => "ArrowUp".into(),
-        39 => "ArrowRight".into(),
-        40 => "ArrowDown".into(),
+        32 => "Space".into(),
+        37 => "Left".into(),
+        38 => "Up".into(),
+        39 => "Right".into(),
+        40 => "Down".into(),
         48..=57 | 65..=90 => char::from_u32(code as u32)?.to_string(),
         _ => return None,
     })
@@ -274,11 +274,15 @@ fn figma_transition(t: Option<&Value>) -> Option<Transition> {
         "SLIDE_IN" => TransitionKind::Slide,
         _ => return None,
     };
+    // Figma's dissolve and smart animate carry no side: none, so a smart
+    // animate fades its unpaired layers as Figma does.
     let direction = match str_of(t, "direction") {
         "RIGHT" => Direction::Right,
         "TOP" => Direction::Up,
         "BOTTOM" => Direction::Down,
-        _ => Direction::Left,
+        "LEFT" => Direction::Left,
+        _ if kind.is_directional() => Direction::Left,
+        _ => Direction::None,
     };
     let ms = num(t, "duration") * 1000.0;
     let timing = match figma_curve(t.get("easing")) {

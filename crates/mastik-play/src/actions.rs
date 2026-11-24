@@ -5,8 +5,8 @@ use crate::anim::{ScreenAnim, ScrollAnim, Smart};
 use crate::player::{MAX_DEPTH, Notice, Overlay, Player, Request, Visit};
 use mastik_core::kurbo::{Point, Vec2};
 use mastik_core::prototype::{
-    self, Action, Direction, ModeScope, OverlaySettings, Pin, ScrollAxis, Snap, SnapAlign,
-    Transition, TransitionKind, Trigger, VarChange,
+    self, Action, ModeScope, OverlaySettings, Pin, ScrollAxis, Snap, SnapAlign, Transition,
+    TransitionKind, Trigger, VarChange,
 };
 
 /// A drag on a snapping frame let go within this many milliseconds is thrown…
@@ -944,20 +944,13 @@ fn bool_value(values: &[String], on: bool) -> Option<String> {
 /// `t` played backwards: a move in becomes a move out from the other side, a
 /// push or slide comes from the other side.
 pub(crate) fn reversed(t: Transition) -> Transition {
-    let flip = |d: Direction| match d {
-        Direction::Left => Direction::Right,
-        Direction::Right => Direction::Left,
-        Direction::Up => Direction::Down,
-        Direction::Down => Direction::Up,
-        Direction::None => Direction::None,
-    };
     let kind = match t.kind {
         TransitionKind::MoveIn => TransitionKind::MoveOut,
         TransitionKind::MoveOut => TransitionKind::MoveIn,
         k => k,
     };
     let direction = if t.kind.is_directional() {
-        flip(t.direction)
+        crate::anim::opposite(t.direction)
     } else {
         t.direction
     };

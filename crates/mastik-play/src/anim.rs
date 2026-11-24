@@ -798,13 +798,14 @@ fn toward(d: Direction) -> Vec2 {
     }
 }
 
-fn opposite(d: Direction) -> Direction {
+/// The side across from `d` for a move, push or slide, which reads no side as
+/// the left ([`toward`]), so its opposite is the right.
+pub(crate) fn opposite(d: Direction) -> Direction {
     match d {
-        Direction::Left => Direction::Right,
+        Direction::Left | Direction::None => Direction::Right,
         Direction::Right => Direction::Left,
         Direction::Up => Direction::Down,
         Direction::Down => Direction::Up,
-        Direction::None => Direction::None,
     }
 }
 

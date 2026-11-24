@@ -257,6 +257,33 @@ fn a_push_moves_both_frames() {
     );
 }
 
+/// A push with no side moves to the left as one toward the left does, and
+/// *Back* comes from the other side for both.
+///
+/// flip: `opposite` answering no side for no side → fails at "back from the
+/// left".
+#[test]
+fn back_after_a_push_with_no_side_comes_from_the_other_side() {
+    for side in [Direction::Left, Direction::None] {
+        let mut push = linear(TransitionKind::Push, 100);
+        push.direction = side;
+        let (mut fx, a, b, _) = two_screens(push);
+        fx.on(b, Trigger::Click, vec![Action::Back]);
+        let mut p = fx.play(a);
+        click(&mut p, 20.0, 20.0);
+        p.tick(25.0);
+        assert_eq!(p.scene().layers[1].at, Point::new(150.0, 0.0), "{side:?}");
+        p.tick(100.0);
+        click(&mut p, 150.0, 80.0);
+        p.tick(25.0);
+        assert_eq!(
+            p.scene().layers[1].at,
+            Point::new(-150.0, 0.0),
+            "back from the left ({side:?})"
+        );
+    }
+}
+
 /// A navigation to a frame that is not there is skipped, and said once.
 ///
 /// flip: `Player::notice_once` pushing every time → fails at "said once".

@@ -120,7 +120,8 @@ pub enum Trigger {
     },
     /// A key, plain or Shift-ed; Ctrl and Alt chords belong to the editor.
     Key {
-        /// The key's name as the player reads it (`"A"`, `"Enter"`, `"ArrowLeft"`).
+        /// The key's name as the player reads it, egui's (`"A"`, `"Enter"`,
+        /// `"Left"`, `"Space"`).
         key: String,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         shift: bool,

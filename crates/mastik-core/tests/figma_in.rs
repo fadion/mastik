@@ -989,15 +989,19 @@ fn an_arrow_cap_marks_both_ends() {
 }
 
 /// A node's interactions come in as reactions: a click navigating by smart
-/// animate with its duration and easing, a link to a frame not brought in and a
-/// trigger with no counterpart counted; the canvas's starting point is a flow.
+/// animate with its duration and easing and no side, as Figma's carries none, a
+/// Shift-arrow key named as the players name it, a link to a frame not brought
+/// in and a trigger with no counterpart counted; the canvas's starting point is
+/// a flow.
 ///
-/// flip: `figma_curve` not reading `EASE_IN_AND_OUT` → fails at the timing.
+/// flip: `figma_curve` not reading `EASE_IN_AND_OUT` → fails at the timing;
+/// `figma_transition` giving every kind the left side → fails at "no side";
+/// `key_name` naming 39 `ArrowRight` → fails at "the player's name".
 #[test]
 fn interactions_come_in_as_reactions_and_starting_points_as_flows() {
-    use mastik_core::prototype::{Action, Easing, Timing, TransitionKind, Trigger};
+    use mastik_core::prototype::{Action, Direction, Easing, Timing, TransitionKind, Trigger};
     let go = json!({ "type": "NODE", "destinationId": "2:1", "navigation": "NAVIGATE",
-        "transition": { "type": "SMART_ANIMATE", "direction": "LEFT", "duration": 0.3,
+        "transition": { "type": "SMART_ANIMATE", "duration": 0.3,
                         "easing": { "type": "EASE_IN_AND_OUT" } } });
     let button = node(
         "1:2",
@@ -1009,6 +1013,8 @@ fn interactions_come_in_as_reactions_and_starting_points_as_flows() {
             { "trigger": { "type": "ON_HOVER" }, "actions": [
                 { "type": "NODE", "destinationId": "9:9", "navigation": "OVERLAY" }
             ] },
+            { "trigger": { "type": "ON_KEY_DOWN", "keyCodes": [16, 39] },
+              "actions": [{ "type": "BACK" }] },
         ] }),
     );
     let home = node(
@@ -1030,8 +1036,16 @@ fn interactions_come_in_as_reactions_and_starting_points_as_flows() {
     let r = import(f);
     let doc = &r.doc;
     let reactions = doc.get(one(doc, "1:2")).unwrap().reactions();
-    assert_eq!(reactions.len(), 1, "the hover's one link went nowhere");
+    assert_eq!(reactions.len(), 2, "the hover's one link went nowhere");
     assert_eq!(reactions[0].value.trigger, Trigger::Click);
+    assert_eq!(
+        reactions[1].value.trigger,
+        Trigger::Key {
+            key: "Right".into(),
+            shift: true
+        },
+        "the player's name"
+    );
     let actions: Vec<&Action> = reactions[0]
         .value
         .actions
@@ -1042,6 +1056,7 @@ fn interactions_come_in_as_reactions_and_starting_points_as_flows() {
         [Action::Navigate { to, transition, .. }, Action::Back] => {
             assert_eq!(*to, one(doc, "2:1"), "goes to Cart");
             assert_eq!(transition.kind, TransitionKind::SmartAnimate);
+            assert_eq!(transition.direction, Direction::None, "no side");
             assert_eq!(
                 transition.timing,
                 Timing::Ease {

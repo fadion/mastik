@@ -37,8 +37,8 @@ pub enum Input {
         at: Point,
         delta: Vec2,
     },
-    /// A key by name (`"A"`, `"Enter"`, `"ArrowLeft"`, `"Backspace"`), plain or
-    /// Shift-ed. Chords with Ctrl or Alt are the editor's and never come here.
+    /// A key by egui's name (`"A"`, `"Enter"`, `"Left"`, `"Space"`,
+    /// `"Backspace"`), plain or Shift-ed. Chords with Ctrl or Alt are the editor's and never come here.
     Key {
         key: String,
         shift: bool,

@@ -7523,7 +7523,7 @@ fn tree_ops(
         });
     }
     if let Some(written) = &tree.reactions {
-        let reactions = tree_reactions(ctx, a, parent, written, minted)?;
+        let reactions = tree_reactions(ctx, a, written, minted)?;
         late.push(Operation::SetReactions { id, reactions });
     }
     for (i, child) in tree.children.iter().enumerate() {
@@ -7533,17 +7533,17 @@ fn tree_ops(
 }
 
 /// A tree layer's `reactions`, read as `set_reactions` reads them (a transition
-/// left out is the page's of `parent`) and checked as the door checks them, each
-/// target the tree holds remapped to its new layer.
+/// left out is the default of the page the tree goes into) and checked as the
+/// door checks them, each target the tree holds remapped to its new layer.
 fn tree_reactions(
     ctx: &mut Ctx<'_>,
     a: &Args<'_>,
-    parent: NodeId,
     written: &Value,
     minted: &Minted,
 ) -> Result<Vec<Keyed<crate::prototype::Reaction>>, VerbError> {
     let refused = |why: String| a.invalid("tree", format!("at `reactions`: {why}"));
-    let base = page_transition(ctx.doc, parent);
+    // Every layer below the root has a parent the document does not hold yet.
+    let base = page_transition(ctx.doc, a.node("parent")?);
     let mut v = written.clone();
     loosen_model("[Reaction]", "", &mut v).map_err(refused)?;
     let ids = &mut *ctx.ids;
@@ -8088,16 +8088,13 @@ fn own_reactions(doc: &Document, id: NodeId) -> Option<&[Keyed<crate::prototype:
 /// Each layer of the tree `v` given its `reactions` and `play` in the short forms
 /// `set_reactions` and `set_play` take, taking the layers' ids from `layers`
 /// pre-order. Written after the tree's own short forms, which do not reach them.
+/// Each transition is written whole: the tree may be inserted on a page whose
+/// default transition is not this one's.
 fn put_prototype(doc: &Document, v: &mut Value, layers: &mut impl Iterator<Item = NodeId>) {
     let Some(id) = layers.next() else { return };
     let Value::Object(map) = v else { return };
     if let Some(reactions) = own_reactions(doc, id) {
-        let base = doc
-            .page_of(id)
-            .and_then(|p| doc.page(p))
-            .map(|p| p.play.transition)
-            .unwrap_or_default();
-        map.insert("reactions".into(), reactions_value(reactions, &base));
+        map.insert("reactions".into(), reactions_json(reactions, None));
     }
     if let Some(n) = doc.get(id) {
         let source = n.link().and_then(|s| doc.get(s));
@@ -8247,16 +8244,30 @@ pub fn guides_value(doc: &Document, owner: NodeId) -> Vec<Value> {
 
 /// A layer's reactions as `set_reactions` takes them, each with its id: a
 /// transition's fields left out where they are `base`'s, the page's default that
-/// `set_reactions` fills back in, and colours as hex.
+/// `set_reactions` fills back in, and colours as hex. A smart animate whose kind
+/// is written keeps its side unless it has none, since one named without a side
+/// takes none (`transition_in`).
 pub fn reactions_value(
     reactions: &[Keyed<crate::prototype::Reaction>],
     base: &crate::prototype::Transition,
+) -> Value {
+    reactions_json(reactions, Some(base))
+}
+
+/// [`reactions_value`], each transition written whole when `base` is `None`.
+fn reactions_json(
+    reactions: &[Keyed<crate::prototype::Reaction>],
+    base: Option<&crate::prototype::Transition>,
 ) -> Value {
     fn tighten(v: &mut Value, base: &Map<String, Value>) {
         match v {
             Value::Object(map) => {
                 if let Some(Value::Object(t)) = map.get_mut("transition") {
-                    t.retain(|k, field| base.get(k) != Some(field));
+                    // A smart animate written by kind keeps a side it has.
+                    let sided = t.get("kind").and_then(Value::as_str) == Some("SmartAnimate")
+                        && base.get("kind") != t.get("kind")
+                        && t.get("direction").and_then(Value::as_str) != Some("None");
+                    t.retain(|k, field| (sided && k == "direction") || base.get(k) != Some(field));
                     if t.is_empty() {
                         map.remove("transition");
                     }
@@ -8268,7 +8279,7 @@ pub fn reactions_value(
         }
     }
     let mut v = serde_json::to_value(reactions).unwrap_or_default();
-    if let Value::Object(base) = serde_json::to_value(base).unwrap_or_default() {
+    if let Some(Value::Object(base)) = base.map(|b| serde_json::to_value(b).unwrap_or_default()) {
         tighten(&mut v, &base);
     }
     loose::tighten("", &mut v);
@@ -8445,8 +8456,9 @@ fn actions_in(
 
 /// A transition as written, completed from `base`: left out it is `base`, a word
 /// is its kind, and an object's missing fields are `base`'s — except that a smart
-/// animate named without a direction takes none, so its new layers fade, as the
-/// prototype mode picks it.
+/// animate named by its kind without a direction takes none, so its new layers
+/// fade, as the prototype mode picks it. An object naming no kind keeps the
+/// base's side too.
 fn transition_in(given: Option<Value>, base: &Value) -> Value {
     let smart_without_side = |t: &mut Map<String, Value>, named: bool| {
         let smart = t
@@ -8466,7 +8478,7 @@ fn transition_in(given: Option<Value>, base: &Value) -> Value {
             Value::Object(t)
         }
         (Some(Value::Object(fields)), Value::Object(b)) => {
-            let named = fields.contains_key("direction");
+            let named = fields.contains_key("direction") || !fields.contains_key("kind");
             let mut t = b.clone();
             t.extend(fields);
             smart_without_side(&mut t, named);

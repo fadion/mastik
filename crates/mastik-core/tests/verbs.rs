@@ -7679,3 +7679,113 @@ fn get_tree_and_insert_subtree_carry_reactions() {
     );
     let _ = instance;
 }
+
+/// A link's transition reads back as it is: a smart animate's side survives
+/// `reactions_value` and `set_reactions` on a page whose default shares it,
+/// and a tree read on one page and inserted on another whose default differs
+/// keeps every transition, a child's included; a child's link written without
+/// one takes the destination page's.
+///
+/// flip: `reactions_value` dropping a smart animate's side equal to the base's →
+/// fails at "the side survives"; `put_prototype` tightening against the page →
+/// fails at "kept on another page"; `tree_reactions` reading the base from the
+/// child's own parent → fails at "the destination page's default".
+#[test]
+fn transitions_read_back_as_they_are() {
+    use mastik_core::prototype::{Action, Direction, PagePlay, Transition, TransitionKind};
+    let (mut doc, mut ids, page) = blank();
+    let make = |doc: &mut Document, ids: &mut IdSource, parent: NodeId, kind: Value| {
+        run(
+            doc,
+            ids,
+            "create_node",
+            json!({ "parent": parent.to_wire(), "kind": kind }),
+        )[0]
+    };
+    let f = make(&mut doc, &mut ids, page, frame(300.0, 300.0));
+    let b = make(&mut doc, &mut ids, page, frame(100.0, 100.0));
+    let button = make(&mut doc, &mut ids, f, rect(20.0, 20.0));
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [button.to_wire()], "reactions": [
+            { "trigger": "Click", "actions": [
+                { "Navigate": { "to": b.to_wire(),
+                    "transition": { "kind": "SmartAnimate", "direction": "Left" } } },
+                { "OpenOverlay": { "overlay": b.to_wire() } },
+            ] }
+        ] }),
+    );
+    let held = doc.get(button).unwrap().reactions().to_vec();
+    let transitions = |doc: &Document, id: NodeId| -> Vec<Transition> {
+        doc.get(id).unwrap().reactions()[0]
+            .actions
+            .iter()
+            .filter_map(|k| match k.value {
+                Action::Navigate { transition, .. } | Action::OpenOverlay { transition, .. } => {
+                    Some(transition)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let start = transitions(&doc, button);
+    assert_eq!(start[0].direction, Direction::Left, "fixture: a side");
+    assert_eq!(start[1], Transition::default(), "fixture: the page's");
+
+    let read = verbs::reactions_value(&held, &Transition::default());
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [button.to_wire()], "reactions": read }),
+    );
+    assert_eq!(
+        transitions(&doc, button),
+        start,
+        "the side survives: {read}"
+    );
+
+    let other = run(&mut doc, &mut ids, "add_page", json!({ "name": "Other" }))[0];
+    doc.apply(&Transaction(vec![Operation::SetPagePlay {
+        id: other,
+        play: PagePlay {
+            transition: Transition {
+                kind: TransitionKind::Push,
+                direction: Direction::Right,
+                ..Transition::default()
+            },
+            ..PagePlay::default()
+        },
+    }]))
+    .unwrap();
+    let tree = verbs::tree(&doc, f).expect("a tree");
+    let copy = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": other.to_wire(), "tree": tree }),
+    )[0];
+    let child = doc.get(copy).unwrap().children()[0];
+    assert_eq!(transitions(&doc, child), start, "kept on another page");
+
+    // A child's link written without a transition takes the page it goes into.
+    let written = json!({ "kind": frame(100.0, 100.0), "children": [
+        { "kind": rect(20.0, 20.0), "reactions": [
+            { "trigger": "Click", "actions": [{ "Navigate": { "to": b.to_wire() } }] }
+        ] }
+    ] });
+    let made = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": other.to_wire(), "tree": written }),
+    )[0];
+    let child = doc.get(made).unwrap().children()[0];
+    assert_eq!(
+        transitions(&doc, child)[0].kind,
+        TransitionKind::Push,
+        "the destination page's default"
+    );
+}
