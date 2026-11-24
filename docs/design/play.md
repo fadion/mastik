@@ -64,7 +64,7 @@ pointer events back into it.
 | Call | What it does |
 | --- | --- |
 | `Player::new(doc, Start::Flow(r) \| Start::Frame(f), actor)` | Start; `StartError` when the flow or frame is not there |
-| `input(Input) -> bool` | Pointer move, down, up, leave; wheel; a key; text; a state-card value or mode; `Touch(bool)`, whether the pointer is a finger. Answers whether the prototype used it, so an unused Escape goes back to the editor |
+| `input(Input) -> bool` | Pointer move, down, up, leave; wheel; a key; text; a state-card value or mode; `Touch(bool)`, whether the pointer is a finger; `PlaySize`, as `set_play_size`. Answers whether the prototype used it, so an unused Escape goes back to the editor |
 | `tick(ms)` | Advance time: timers, held clicks and long presses fire at their own times, motions move on |
 | `scene() -> Scene` | What to draw now |
 | `hotspots()` | The rectangles of the layers that take a person's act in the frame that takes input, for the hints |
@@ -384,8 +384,11 @@ its played rows dropped rather than replayed onto the new table.
 ## Takes
 
 `record()` restarts play and records each input with the time it arrived; `stop_recording()`
-answers the `Take` (start, inputs, length). `Replay::new(doc, take, actor)` plays it on a fresh
-copy; `advance(ms)` gives each input due in that span at its own time, so a replay stepped frame
+answers the `Take` (start, inputs, length). The take opens with the play size and the hand the
+restart kept (`Input::PlaySize`, `Input::Touch`), and `set_play_size` records each change of
+size as `PlaySize`, so a replay lays each screen out and hovers as the run did.
+`Replay::new(doc, take, actor)` plays it on a fresh copy, giving that opening size and hand at
+once so its first frame is laid out as the run's; `advance(ms)` gives each input due in that span at its own time, so a replay stepped frame
 by frame for a video reaches exactly the state the run had at each time.
 
 **Video** (`mastik_export::video::video(doc, take, actor, options, progress)`) replays a take on

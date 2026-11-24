@@ -4,7 +4,7 @@
 use crate::actions::Undo;
 use crate::player::{Notice, Player};
 use crate::scene::Hotspot;
-use mastik_core::kurbo::{Point, Vec2};
+use mastik_core::kurbo::{Point, Size, Vec2};
 use mastik_core::prototype::{self, Going, Pin, ScrollAxis, Side, Trigger};
 use mastik_core::variable::{ModeId, Value, VarId};
 use mastik_core::variant::{self, Interaction};
@@ -66,6 +66,10 @@ pub enum Input {
     /// hovers nothing: the hover triggers and hover states keep still, as on a
     /// phone, where a tap would otherwise fire *On hover* first.
     Touch(bool),
+    /// The screen is laid out at this size from here on, as
+    /// [`Player::set_play_size`] lays it out: what a take records of that call,
+    /// so its replay lays each screen out as the run did.
+    PlaySize(Option<Size>),
 }
 
 /// A press in progress.
@@ -122,7 +126,10 @@ impl Player {
     /// Take one input. Answers whether the prototype used it, so a shell can
     /// hand an unused Escape back to the editor. A take being recorded records it.
     pub fn input(&mut self, input: Input) -> bool {
-        if let Some(r) = &mut self.recording {
+        // `set_play_size` records a play size, and only when it changes.
+        if let Some(r) = &mut self.recording
+            && !matches!(input, Input::PlaySize(_))
+        {
             r.inputs.push((self.now, input.clone()));
         }
         let used = match input {
@@ -160,6 +167,7 @@ impl Player {
                 }
                 false
             }
+            Input::PlaySize(size) => self.set_play_size(size),
         };
         self.check_scrolls();
         used

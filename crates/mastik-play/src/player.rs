@@ -351,13 +351,17 @@ impl Player {
     /// its frame's layout and width queries (a page's device, or the room
     /// under *Responsive*);
     /// `None` puts it back as drawn. The copy alone changes, never the
-    /// document. Answers whether anything changed.
+    /// document. Answers whether anything changed; a take being recorded
+    /// records a change as [`Input::PlaySize`](crate::Input::PlaySize).
     pub fn set_play_size(&mut self, size: Option<Size>) -> bool {
         let size = size.filter(|s| {
             s.width.is_finite() && s.height.is_finite() && s.width >= 1.0 && s.height >= 1.0
         });
         if size == self.play_size {
             return false;
+        }
+        if let Some(r) = &mut self.recording {
+            r.inputs.push((self.now, crate::Input::PlaySize(size)));
         }
         self.play_size = size;
         self.fit_screen(self.screen);

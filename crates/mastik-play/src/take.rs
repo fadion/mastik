@@ -23,10 +23,17 @@ pub(crate) struct Recording {
 
 impl Player {
     /// Start recording a take. Play restarts first, so the take begins where a
-    /// replay does.
+    /// replay does. The restart keeps the play size and the hand, so the take
+    /// opens with both, for its replay to start laid out and handed alike.
     pub fn record(&mut self) {
         self.restart();
-        self.recording = Some(Recording::default());
+        let now = self.now;
+        self.recording = Some(Recording {
+            inputs: vec![
+                (now, Input::PlaySize(self.play_size)),
+                (now, Input::Touch(self.touch)),
+            ],
+        });
     }
 
     /// Whether a take is being recorded.
@@ -54,13 +61,20 @@ pub struct Replay {
 }
 
 impl Replay {
-    /// Begin replaying `take` on a copy of `doc`, minting ids from `actor`.
+    /// Begin replaying `take` on a copy of `doc`, minting ids from `actor`. The
+    /// play size and hand the take opens with are given at once, so the first
+    /// frame is laid out as the run's was.
     pub fn new(doc: &Document, take: Take, actor: u64) -> Result<Replay, StartError> {
-        Ok(Replay {
-            player: Player::new(doc, take.start, actor)?,
-            take,
-            next: 0,
-        })
+        let mut player = Player::new(doc, take.start, actor)?;
+        let mut next = 0;
+        while let Some((at, input)) = take.inputs.get(next)
+            && *at <= 0.0
+            && matches!(input, Input::PlaySize(_) | Input::Touch(_))
+        {
+            player.input(input.clone());
+            next += 1;
+        }
+        Ok(Replay { player, take, next })
     }
 
     /// Move the replay on by `ms`: each input due in that time is given at its

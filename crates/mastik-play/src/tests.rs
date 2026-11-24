@@ -1475,6 +1475,79 @@ fn a_take_replays_to_the_same_state() {
     assert_eq!(r.scene(), p.scene(), "the same scene");
 }
 
+/// A take opens with the play size and hand it was recorded with, and records
+/// a change of size: the replay lays the screen out as the run did, so a tap
+/// that lands only at the play size lands again, and a finger hovers nothing.
+///
+/// flip: `Player::record` opening the take with no `PlaySize` → fails at "laid
+/// out as recorded"; with no `Touch` → fails at "the replay's finger".
+#[test]
+fn a_take_replays_at_its_play_size_and_hand() {
+    use mastik_core::container::{Display, LayoutItem};
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let bar = fx.rect(a, "Bar", 0.0, 0.0, 50.0, 20.0);
+    fx.apply(vec![
+        Operation::SetDisplay {
+            id: a,
+            display: Some(Display::Flex(Default::default())),
+        },
+        Operation::SetLayoutItem {
+            id: bar,
+            item: LayoutItem {
+                grow: 1.0,
+                ..Default::default()
+            },
+        },
+    ]);
+    let n = fx.var("n", VarKind::Number, Cell::Number(0.0));
+    fx.on(bar, Trigger::Click, vec![add(n, 1.0)]);
+    fx.on(bar, Trigger::HoverEnter, vec![add(n, 100.0)]);
+    fx.on(
+        a,
+        Trigger::Key {
+            key: "Enter".into(),
+            shift: false,
+        },
+        vec![add(n, 10.0)],
+    );
+    let mut p = fx.play(a);
+    p.set_play_size(Some(Size::new(400.0, 100.0)));
+    p.input(Input::Touch(true));
+    p.record();
+    p.tick(20.0);
+    click(&mut p, 300.0, 10.0);
+    p.tick(400.0);
+    p.set_play_size(Some(Size::new(500.0, 100.0)));
+    p.input(Input::Key {
+        key: "Enter".into(),
+        shift: false,
+    });
+    p.tick(30.0);
+    assert_eq!(
+        number(&p, n),
+        11.0,
+        "fixture: the tap and key landed, no hover"
+    );
+    let take = p.stop_recording().unwrap();
+
+    let mut replay = crate::Replay::new(&fx.doc, take, PLAYER).unwrap();
+    assert_eq!(
+        replay.player().scene().size,
+        Size::new(400.0, 100.0),
+        "laid out as recorded from the first frame"
+    );
+    replay.finish();
+    let r = replay.player();
+    assert_eq!(r.play_size(), p.play_size(), "the change of size replayed");
+    assert_eq!(
+        number(r, n),
+        11.0,
+        "the replay's finger taps and hovers nothing"
+    );
+    assert_eq!(r.scene(), p.scene());
+}
+
 // ── Gestures ────────────────────────────────────────────────────────────────
 
 /// A frame 200 by 100 holding a card (10,10 50×30), and a number variable.
