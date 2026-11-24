@@ -350,11 +350,22 @@ impl Player {
                 };
                 let dragged = !press.swipe && self.fire(&press.chain, &|t| *t == Trigger::Drag);
                 if !press.swipe && !dragged && press.follower.is_none() {
+                    // The nearest frame scrolling the way the drag goes, so a
+                    // vertical drag on a carousel scrolls the page under it.
+                    let along = match side {
+                        Side::Left | Side::Right => ScrollAxis::Horizontal,
+                        Side::Up | Side::Down => ScrollAxis::Vertical,
+                    };
+                    let scrolls = |f: &NodeId| self.scrolls(*f);
                     press.scroller = press
                         .chain
                         .iter()
                         .copied()
-                        .find(|f| self.scrolls(*f) != ScrollAxis::None);
+                        .find(|f| matches!(scrolls(f), ScrollAxis::Both) || scrolls(f) == along)
+                        .or_else(|| {
+                            let mut chain = press.chain.iter().copied();
+                            chain.find(|f| scrolls(f) != ScrollAxis::None)
+                        });
                     if let Some(f) = press.scroller {
                         press.scroll_start = self.scroll_offset(f);
                     }

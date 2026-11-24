@@ -138,9 +138,10 @@ out both ends.
 - A **drag** is a press that moves more than four units. A swipe reaction anywhere in the pressed
   chain toward the side the move is going (its longer axis) takes it whole. Otherwise the deepest
   layer in the chain that follows the drag moves with it (*A layer that follows the drag*) and a
-  drag reaction on the chain fires as well; the nearest scrolling frame in the chain scrolls with
-  it only when neither took it. So a card can take left and right while its list scrolls up and
-  down.
+  drag reaction on the chain fires as well; the nearest scrolling frame in the chain that scrolls
+  the way the drag goes (its longer axis at the slop), else the nearest scrolling frame, scrolls
+  with it only when neither took it. So a card can take left and right while its list scrolls up
+  and down, and a vertical drag on a horizontal carousel scrolls the page beneath it.
 - **A swipe** holds the drag: nothing fires and nothing scrolls while it moves. On release, the
   side is read again from the whole move, and the deepest layer with a swipe toward it fires if
   the move went at least 30 units that way, more along than across, and was released within

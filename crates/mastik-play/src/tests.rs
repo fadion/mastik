@@ -888,6 +888,49 @@ fn a_frame_scrolls_its_content_by_pin() {
     assert_eq!(p.scroll_offset(a), Vec2::new(0.0, 150.0), "dragged");
 }
 
+/// A drag scrolls the nearest frame scrolling its way: up and down over a
+/// sideways carousel inside a page scrolls the page, sideways the carousel.
+///
+/// flip: `pointer_move` taking the nearest scrolling frame whatever its axis →
+/// fails at "the page scrolls".
+#[test]
+fn a_drag_scrolls_the_frame_that_scrolls_its_way() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    fx.rect(a, "Long", 0.0, 0.0, 200.0, 300.0);
+    let carousel = fx.node(a, "Carousel", frame_kind(200.0, 60.0), (0.0, 20.0));
+    fx.rect(carousel, "Cards", 0.0, 0.0, 600.0, 60.0);
+    for (id, scroll) in [
+        (a, ScrollAxis::Vertical),
+        (carousel, ScrollAxis::Horizontal),
+    ] {
+        fx.play_settings(
+            id,
+            LayerPlay {
+                scroll,
+                ..LayerPlay::default()
+            },
+        );
+    }
+    let mut p = fx.play(a);
+    let drag = |p: &mut Player, from: (f64, f64), to: (f64, f64)| {
+        p.input(Input::PointerMove(Point::new(from.0, from.1)));
+        p.input(Input::PointerDown(Point::new(from.0, from.1)));
+        p.input(Input::PointerMove(Point::new(to.0, to.1)));
+        p.input(Input::PointerUp(Point::new(to.0, to.1)));
+    };
+    drag(&mut p, (100.0, 70.0), (100.0, 40.0));
+    assert_eq!(p.scroll_offset(a), Vec2::new(0.0, 30.0), "the page scrolls");
+    assert_eq!(p.scroll_offset(carousel), Vec2::ZERO);
+    // The carousel now sits at -10..50 on screen.
+    drag(&mut p, (150.0, 20.0), (110.0, 20.0));
+    assert_eq!(
+        p.scroll_offset(carousel),
+        Vec2::new(40.0, 0.0),
+        "the carousel"
+    );
+}
+
 // ── Motion ──────────────────────────────────────────────────────────────────
 
 /// Smart animate pairs layers by name: the paired one moves and resizes between
