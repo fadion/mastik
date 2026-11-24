@@ -306,16 +306,34 @@ pub(crate) fn read_pictures_in(
             if !crate::tokens_import::local_path(&path) {
                 continue;
             }
-            let fits = std::fs::metadata(&path)
-                .is_ok_and(|m| m.is_file() && m.len() <= crate::tokens_import::MAX_READ);
-            let Some(bytes) = fits.then(|| std::fs::read(&path).ok()).flatten() else {
+            let Some(size) = std::fs::metadata(&path)
+                .ok()
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+            else {
+                forget_refusal(&path);
+                continue;
+            };
+            let shown = crate::app::image_name(&path);
+            let max = crate::tokens_import::MAX_READ;
+            if size > max {
+                let why = format!("“{shown}” is larger than {} MB", max / (1024 * 1024));
+                refuse(&path, why);
+                continue;
+            }
+            let Ok(bytes) = std::fs::read(&path) else {
+                forget_refusal(&path);
                 continue;
             };
             let ext = crate::app::file_extension(&path);
-            let name = Some(crate::app::image_name(&path));
-            let Ok((image, _)) = crate::app::read_picture(bytes, ext, name) else {
-                continue;
+            let image = match crate::app::read_picture(bytes, ext, Some(shown.clone())) {
+                Ok((image, _)) => image,
+                Err(e) => {
+                    refuse(&path, e.message(&shown));
+                    continue;
+                }
             };
+            forget_refusal(&path);
             let added = ops
                 .iter()
                 .any(|op| matches!(op, Operation::AddImage { id, .. } if *id == image.id));
@@ -329,6 +347,50 @@ pub(crate) fn read_pictures_in(
         }
     }
     (ops, pairs)
+}
+
+/// Pictures found beside a data file but refused when read, by path, with
+/// what the read said. [`read_pictures_in`] keeps it, so a note on a cell no
+/// picture fills says the file was not read, and why, instead of sending the
+/// person looking for a file that is there.
+static REFUSED: std::sync::LazyLock<std::sync::Mutex<rustc_hash::FxHashMap<PathBuf, String>>> =
+    std::sync::LazyLock::new(Default::default);
+
+fn refuse(path: &Path, why: String) {
+    if let Ok(mut r) = REFUSED.lock() {
+        r.insert(path.to_path_buf(), why);
+    }
+}
+
+fn forget_refusal(path: &Path) {
+    if let Ok(mut r) = REFUSED.lock() {
+        r.remove(path);
+    }
+}
+
+/// Why the picture `cell` names beside data set `set`'s linked file was
+/// refused, when the last read found it and could not take it.
+pub(crate) fn refused_picture(set: &DataSet, cell: &str) -> Option<String> {
+    let dir = Path::new(&set.source.as_ref()?.path).parent()?;
+    let path = dir.join(cell.trim().replace('\\', "/"));
+    REFUSED.lock().ok()?.get(&path).cloned()
+}
+
+/// `cells` no picture fills, split into those not found and those found but
+/// refused, the latter with their reasons.
+pub(crate) fn split_refused<'a>(
+    set: Option<&DataSet>,
+    cells: impl IntoIterator<Item = &'a str>,
+) -> (Vec<&'a str>, Vec<String>) {
+    let mut missing = Vec::new();
+    let mut refused = Vec::new();
+    for c in cells {
+        match set.and_then(|s| refused_picture(s, c)) {
+            Some(why) => refused.push(why),
+            None => missing.push(c),
+        }
+    }
+    (missing, refused)
 }
 
 /// The link a data set read from `path` keeps, from the read's stat.

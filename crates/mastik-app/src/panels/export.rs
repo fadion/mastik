@@ -2860,6 +2860,7 @@ impl MastikApp {
             name,
             cancelled: _,
             missing_pictures,
+            refused_pictures,
             overflowing_rows,
         } = d;
         // A report landing on another tab says which document it was for.
@@ -2904,6 +2905,10 @@ impl MastikApp {
         let head = match missing_pictures {
             0 => head,
             n => format!("{head} \u{b7} {} not found", ui::count(n, "picture")),
+        };
+        let head = match refused_pictures {
+            0 => head,
+            n => format!("{head} \u{b7} {} not read", ui::count(n, "picture")),
         };
         let head = match overflowing_rows {
             0 => head,
@@ -3807,6 +3812,9 @@ pub(crate) struct Delivered {
     /// The cells of *One file per row* files naming no picture the table or
     /// the document holds, whose layers kept their own.
     missing_pictures: usize,
+    /// Those of them whose file was found beside the table but refused
+    /// (`list_data::refused_picture`): not read, rather than not found.
+    refused_pictures: usize,
     /// The *One file per row* rows whose text is cut or runs outside its
     /// fixed box ([`mastik_core::list::RowFilled::overflowing`]).
     overflowing_rows: usize,
@@ -3827,6 +3835,7 @@ impl Delivered {
             name: None,
             cancelled: false,
             missing_pictures: 0,
+            refused_pictures: 0,
             overflowing_rows: 0,
         }
     }
@@ -4002,9 +4011,21 @@ fn deliver(
             None => skipped += 1,
         }
     }
+    let refused = missing
+        .iter()
+        .filter(|(d, row, col)| {
+            doc.data_set(*d).is_some_and(|set| {
+                set.table
+                    .index_of(*col)
+                    .and_then(|i| set.table.rows.get(*row)?.get(i))
+                    .is_some_and(|cell| crate::list_data::refused_picture(set, cell).is_some())
+            })
+        })
+        .count();
     let mut out = Delivered {
         skipped,
-        missing_pictures: missing.len(),
+        missing_pictures: missing.len() - refused,
+        refused_pictures: refused,
         overflowing_rows: overflowing.len(),
         ..Delivered::empty(Default::default())
     };

@@ -711,6 +711,9 @@ impl MastikApp {
             .unwrap_or_default();
         let unmatched = list::unmatched_variants(doc, id);
         let no_picture = list::unmatched_pictures(doc, id);
+        let picture_set = (!no_picture.is_empty())
+            .then(|| doc.data_set(now.data).cloned())
+            .flatten();
         let data_file = doc
             .data_set(now.data)
             .and_then(|d| d.source.as_ref())
@@ -758,15 +761,28 @@ impl MastikApp {
             if matches!(target, Target::Prop(_))
                 && let Some((_, cells)) = no_picture.iter().find(|(p, _)| *p == name)
             {
-                let tip = match &data_file {
-                    Some(f) => format!("{}: looked for next to {f}", cells.join(", ")),
-                    None => cells.join(", "),
-                };
-                let said = format!(
-                    "{} not found",
-                    ui::count_as(cells.len(), "picture", "pictures")
+                let (missing, refused) = crate::list_data::split_refused(
+                    picture_set.as_ref(),
+                    cells.iter().map(String::as_str),
                 );
-                ui::note_line_tip(ui, icon::WARNING, color::warn(), &said, &tip);
+                if !missing.is_empty() {
+                    let tip = match &data_file {
+                        Some(f) => format!("{}: looked for next to {f}", missing.join(", ")),
+                        None => missing.join(", "),
+                    };
+                    let said = format!(
+                        "{} not found",
+                        ui::count_as(missing.len(), "picture", "pictures")
+                    );
+                    ui::note_line_tip(ui, icon::WARNING, color::warn(), &said, &tip);
+                }
+                if !refused.is_empty() {
+                    let said = format!(
+                        "{} not read",
+                        ui::count_as(refused.len(), "picture", "pictures")
+                    );
+                    ui::note_line_tip(ui, icon::WARNING, color::warn(), &said, &refused.join("\n"));
+                }
             }
             if let Some(col) = pick.filter(|c| *c != now_col) {
                 let mut fill: Vec<list::Fill> = now
@@ -1742,6 +1758,58 @@ mod tests {
         let cells: Vec<&str> = pairs.iter().map(|(c, _)| c.as_str()).collect();
         assert_eq!(cells, ["img/a.png"], "not climbed out");
         assert_eq!(ops.len(), 1, "added once");
+    }
+
+    /// A picture beside the data file that is there but refused (an SVG) is
+    /// split from one not found, with the read's reason; once it reads, the
+    /// reason goes.
+    /// flip: `read_pictures_in` not calling `refuse` on a refused read → fails
+    /// at "not found".
+    #[test]
+    fn a_refused_picture_is_not_read_rather_than_not_found() {
+        let ctx = egui::Context::default();
+        let (app, _) = with_row(&ctx);
+        let dir = std::env::temp_dir().join(format!("mastik-refused-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("logo.svg"), "<svg/>").unwrap();
+        let table = Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "photo".into(),
+            }],
+            rows: vec![vec!["logo.svg".into()], vec!["nobody.png".into()]],
+        };
+        let set = DataSet {
+            id: mastik_core::IdSource::new(0x5E).mint_data_set(),
+            name: "people.csv".into(),
+            table: table.clone(),
+            source: Some(mastik_core::chart::DataLink {
+                path: dir.join("people.csv").to_string_lossy().into_owned(),
+                size: 0,
+                modified: 0,
+                header: Some(true),
+            }),
+            pictures: Vec::new(),
+        };
+        let (_, pairs) =
+            crate::list_data::read_pictures(&app.session.doc, Some(&dir), &table, &[ColumnId(0)]);
+        assert!(pairs.is_empty(), "fixture: nothing reads");
+        let (missing, refused) =
+            crate::list_data::split_refused(Some(&set), ["logo.svg", "nobody.png"]);
+        assert_eq!(missing, ["nobody.png"], "not found");
+        assert_eq!(refused.len(), 1, "not read");
+        assert!(refused[0].contains("logo.svg"), "{refused:?}");
+
+        let png = crate::app::rgba_to_png(&[200; 16], (2, 2)).unwrap();
+        std::fs::write(dir.join("logo.svg"), &png).unwrap();
+        let _ =
+            crate::list_data::read_pictures(&app.session.doc, Some(&dir), &table, &[ColumnId(0)]);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            crate::list_data::refused_picture(&set, "logo.svg"),
+            None,
+            "it reads now"
+        );
     }
 
     /// *Make a list from data* over a linked table already in the document reads

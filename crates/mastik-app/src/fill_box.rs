@@ -929,12 +929,32 @@ fn table_rows_row(ui: &mut egui::Ui, doc: &Document, b: &mut FillBox) {
         ui::note_line(ui, icon::WARNING, color::warn(), &said, None);
     }
     if b.plan.missing_pictures > 0 {
-        let said = format!(
-            "{} not found",
-            ui::count(b.plan.missing_pictures, "picture")
-        );
-        ui::note_line(ui, icon::WARNING, color::warn(), &said, None);
+        let refused = refused_cells(&b.plan, doc);
+        let missing = b.plan.missing_pictures.saturating_sub(refused.len());
+        if missing > 0 {
+            let said = format!("{} not found", ui::count(missing, "picture"));
+            ui::note_line(ui, icon::WARNING, color::warn(), &said, None);
+        }
+        if !refused.is_empty() {
+            let said = format!("{} not read", ui::count(refused.len(), "picture"));
+            ui::note_line_tip(ui, icon::WARNING, color::warn(), &said, &refused.join("\n"));
+        }
     }
+}
+
+/// Why each shape `plan` reads a picture for was refused, when its file was
+/// found beside the table but not read (`list_data::refused_picture`).
+fn refused_cells(plan: &Plan, doc: &Document) -> Vec<String> {
+    plan.rows
+        .iter()
+        .filter(|r| r.shape && !matches!(r.value, Value::Picture(_)))
+        .filter_map(|r| {
+            let ((d, c), row) = (r.column?, r.table_row?);
+            let set = doc.data_set(d)?;
+            let cell = set.table.rows.get(row)?.get(set.table.index_of(c)?)?;
+            crate::list_data::refused_picture(set, cell)
+        })
+        .collect()
 }
 
 fn records_row(ui: &mut egui::Ui, doc: &Document, b: &mut FillBox) {

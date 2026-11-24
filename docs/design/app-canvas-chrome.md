@@ -1011,7 +1011,8 @@ ImageSink>)` is the edit.
   *Rows*, under *Content* while any row reads a table: a *From row* `value_field` at half width
   and an *In order* / *Shuffled* `ui::segmented_tipped` (*Each record takes the next row*, *Rows
   dealt by the draw*); under it a `ui::note_line` warning for what the table could not give, *2
-  cards left as is: People has 12 rows* and *2 pictures not found*. *Records*, a `switch_row_noted`
+  cards left as is: People has 12 rows* and *2 pictures not found* (and *1 picture not read*
+  for a file found but refused, its reason the tooltip). *Records*, a `switch_row_noted`
   *Keep each {noun}'s values together* noted *3 rows*. *Emails*, a switch *Use example.com
   addresses*. *Avatars*, a `switch_row_noted` labelled with the shape count; each shape's style is
   picked on its preview row. Locale and Content stand 10pt apart; the three switch rows 2pt, Clean
