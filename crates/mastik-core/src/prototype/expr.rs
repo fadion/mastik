@@ -1086,6 +1086,9 @@ fn bin_kind(op: &str, l: VarKind, r: VarKind) -> Result<VarKind, String> {
             )),
         },
         "==" | "!=" if l == r => Ok(Boolean),
+        // A table column may mix numbers and words (sizes 8, 10 and M): a
+        // number and a text are equal when the text reads as that number.
+        "==" | "!=" if matches!((l, r), (Number, String) | (String, Number)) => Ok(Boolean),
         "==" | "!=" => Err(format!(
             "{} cannot be compared with {}",
             kind_word(l),
@@ -1252,6 +1255,10 @@ fn binary_op(op: &str, a: Value, b: Value, at: &Range<usize>) -> Result<Value, E
             ">" => x > y,
             _ => x >= y,
         }),
+        (op, Value::Number(x), Value::String(s)) | (op, Value::String(s), Value::Number(x)) => {
+            let same = parse_number(&s) == Some(x);
+            Value::Boolean(if op == "==" { same } else { !same })
+        }
         ("==", a, b) => Value::Boolean(a == b),
         (_, a, b) => Value::Boolean(a != b),
     })
@@ -1279,6 +1286,32 @@ mod tests {
             _ => None,
         };
         Expr(src.into()).eval(&read)
+    }
+
+    /// `==` and `!=` take a number and a text, as a column mixing sizes 8 and M
+    /// gives: equal when the text reads as the number. Ordering them, and a
+    /// colour or a truth against text, are still refused.
+    /// flip: `bin_kind` refusing a number against text → fails at "a word".
+    #[test]
+    fn a_number_and_a_text_compare_for_equality() {
+        let n = wire(1);
+        let b = |src: &str| run(src).map(|v| v == Value::Boolean(true));
+        assert_eq!(b(&format!("{n} == 'M'")), Ok(false), "a word");
+        assert_eq!(b(&format!("{n} != 'M'")), Ok(true));
+        assert_eq!(b(&format!("'4' == {n}")), Ok(true), "the same number");
+        assert_eq!(b(&format!("{n} == '4.0'")), Ok(true), "however it is spelt");
+        assert_eq!(b(&format!("{n} != '4'")), Ok(false));
+        assert!(
+            run(&format!("{n} < 'M'")).is_err(),
+            "ordering stays refused"
+        );
+        assert!(run(&format!("{} == 'red'", wire(4))).is_err(), "a colour");
+        assert!(run(&format!("{} == 'yes'", wire(3))).is_err(), "a truth");
+        assert_eq!(
+            Expr(format!("{n} == 'M'")).kind(&|_| Ok(Some(VarKind::Number))),
+            Ok(Some(VarKind::Boolean)),
+            "its kind is known before play"
+        );
     }
 
     /// Operators bind tighter in the usual order: `*` over `+` over comparison

@@ -455,7 +455,9 @@ where…* test as source text, everything it names stored by id (`expr::Ref`,
   table read there does not evaluate and passes.
 - **Operators**, loosest first: `or`; `and`; `not`; one comparison (`==` `!=` `<` `<=` `>` `>=`, not
   chained); `+` `-`; `*` `/` `%`; unary `-`; parentheses. `+` joins when either side is text, a number
-  written whole or with at most three decimals; `==` and `!=` need two of one kind; `<`-style
+  written whole or with at most three decimals; `==` and `!=` need two of one kind, save a number
+  and a text, which are equal when the text reads as that number (`parse_number`), so a column
+  mixing sizes `8` and `M` tests either way; `<`-style
   comparisons take two numbers or two texts; `and`/`or`/`not` take booleans and short-circuit.
   Division by zero is an error.
 - **Depth**: parentheses, `not`s and unary `-`s nest at most 16 deep (`MAX_NEST`), and the tree
