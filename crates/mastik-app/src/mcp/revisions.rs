@@ -536,14 +536,17 @@ pub(super) fn stale(
         .flat_map(|s| s.others.iter().map(String::as_str))
         .collect();
     // A table is no layer: one the call writes is named by `get_table`'s word.
+    // A run's inverses carry a table it deleted as the `InsertDataSet` that puts
+    // it back, its name with it.
     for op in &tx.0 {
-        if let mastik_core::Operation::SetDataSet { id, .. } = op
+        if let Some(id) = op.data_set()
             && others.contains(id.0.to_wire().as_str())
         {
-            let name = s
-                .doc
-                .data_set(*id)
-                .map_or_else(|| id.0.to_wire(), |d| d.name.clone());
+            let name = match (s.doc.data_set(id), op) {
+                (Some(d), _) => d.name.clone(),
+                (None, mastik_core::Operation::InsertDataSet { set, .. }) => set.name.clone(),
+                (None, _) => id.0.to_wire(),
+            };
             return Err(format!(
                 "{name} changed since rev {base}. Read it again with get_table."
             ));
@@ -946,6 +949,48 @@ mod tests {
         );
         ok(&fresh);
         assert!(docs.session.doc.get(id).is_none(), "the script deletes");
+    }
+
+    /// `run_script` with a stale `base_rev` deleting a table another client
+    /// edited since is refused naming the table, and the table stays: the run's
+    /// inverse names it as the `InsertDataSet` that puts it back.
+    ///
+    /// flip: `Operation::data_set` without its `InsertDataSet` arm → fails at
+    /// "refused".
+    #[test]
+    fn a_stale_script_table_delete_is_refused() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        open(&mut engine, &mut docs, 2);
+        let args = json!({ "name": "People", "columns": ["Name"], "rows": [["Ana"]] });
+        ok(&call(&mut engine, &mut docs, 1, "add_table", args));
+        let read = call(
+            &mut engine,
+            &mut docs,
+            2,
+            "get_table",
+            json!({ "table": "People" }),
+        );
+        let base = ok(&read)["rev"].clone();
+        let edit = json!({ "table": "People",
+            "set": [{ "row": 1, "column": "Name", "value": "Eve" }] });
+        ok(&call(&mut engine, &mut docs, 1, "edit_table", edit));
+        let args = json!({ "source": "delete_table(\"People\")", "base_rev": base });
+        let late = call(&mut engine, &mut docs, 2, "run_script", args);
+        assert!(late.is_error, "refused: {:?}", late.content);
+        let Content::Text(why) = &late.content[0] else {
+            panic!("no text")
+        };
+        let said = format!("People changed since rev {base}. Read it again with get_table.");
+        assert!(why.contains(&said), "{why}");
+        let kept = docs.session.doc.data_sets();
+        assert!(kept.iter().any(|d| d.name == "People"), "the table stays");
+        let fresh = json!({ "source": "delete_table(\"People\")" });
+        ok(&call(&mut engine, &mut docs, 2, "run_script", fresh));
+        assert!(
+            docs.session.doc.data_sets().is_empty(),
+            "the script deletes"
+        );
     }
 
     /// Writes off one read keep passing its `base_rev` long after the last few

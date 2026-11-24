@@ -853,6 +853,18 @@ impl Operation {
         }
     }
 
+    /// The table (data set) this operation writes, adds, removes or puts back,
+    /// or `None` for one that names no table. A check of the tables a
+    /// transaction names reads this, so a new table operation is added here once
+    /// rather than at each check.
+    pub fn data_set(&self) -> Option<crate::list::DataSetId> {
+        match self {
+            Operation::SetDataSet { id, .. } => Some(*id),
+            Operation::InsertDataSet { set, .. } => Some(set.id),
+            _ => None,
+        }
+    }
+
     /// The same edit aimed at `to` — every operation [`Self::overwrites`] names a
     /// node for, with its payload untouched; `None` for the rest. How the
     /// propagation pass (`crate::propagate`) carries a main's edit to a copy, and
