@@ -1393,6 +1393,75 @@ fn sweep_on(theme: Theme) {
         a.open_list_data(id);
     });
     check("list data", app, found);
+    // The list import box over a file read for the instance, its Fill section.
+    // A boolean property on the component, so the box has a row to fill.
+    let mut app = with_an_overridden_instance(&ctx);
+    let instance = app.session.selection.single().expect("the instance");
+    let main = mastik_core::component::main_of(&app.session.doc, instance).expect("its main");
+    let dot = app.session.doc.get(main).unwrap().children()[0];
+    let shown = mastik_core::Keyed::new(
+        app.session.ids.mint_item(),
+        mastik_core::variant::Property {
+            name: "Shown".into(),
+            kind: mastik_core::variant::PropKind::Boolean,
+            bound: vec![dot],
+            filter: String::new(),
+            preferred: Vec::new(),
+        },
+    );
+    app.session
+        .try_commit(Transaction(vec![Operation::SetProperties {
+            id: main,
+            props: vec![shown],
+        }]))
+        .expect("the property");
+    // One folder per theme: the two sweeps run at once.
+    let scratch = std::env::temp_dir().join(format!(
+        "mastik-audit-list-{:?}-{}",
+        theme,
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&scratch).unwrap();
+    let csv = scratch.join("people.csv");
+    std::fs::write(&csv, "Name,Shown\nAda,true\nGrace,false\n").unwrap();
+    let found = opened(&ctx, &mut app, |_, a| {
+        a.start_chart_read(
+            "people.csv",
+            crate::chart_import::Source::File(csv.clone()),
+            mastik_core::chart::table_io::Format::Csv,
+            vec![Some(true)],
+            crate::chart_import::Then::List {
+                instance,
+                path: csv.clone(),
+                linkable: true,
+            },
+        );
+        a.settle_chart_read();
+        assert!(a.import_fill().is_some(), "fixture: the import box opened");
+    });
+    let _ = std::fs::remove_dir_all(&scratch);
+    check("list import box", app, found);
+    // A layer's export row as *One file per row* over the list's table, its
+    // settings open.
+    let mut app = with_a_list(&ctx);
+    let found = opened(&ctx, &mut app, |_, a| {
+        let id = a.session.selection.ids()[0];
+        let data = a.session.doc.get(id).and_then(|n| n.list()).unwrap().data;
+        let spec = mastik_core::ExportSpec {
+            per_row: Some(mastik_core::PerRow::new(data)),
+            ..mastik_core::ExportSpec::new(
+                mastik_core::ExportFormat::Png,
+                mastik_core::ExportScale::Times(1.0),
+            )
+        };
+        assert!(a.session.commit(Transaction(vec![Operation::SetExports {
+            id,
+            exports: mastik_core::keyed_by_position([spec]),
+        }])));
+        a.collapsed_panels.remove("Export");
+        a.export_row_open = Some(0);
+    });
+    check("per-row export settings", app, found);
 
     let mut app = with_a_rect(&ctx);
     let found = opened(&ctx, &mut app, |_, a| a.stroke_menu = Some(0));
