@@ -229,7 +229,9 @@ out both ends.
   `Player::commit`, so its lists and charts follow; nothing reaches the document, the save or
   undo. A linked table is edited in play like any other: refusing an edit to a linked table is
   the document's rule, not the played copy's. Each cell is worked out from the row as it was
-  before the edit, written as text and cut at the cell limit; a cell that does not evaluate skips
+  before the edit, written as text and cut at the cell limit. A cell that is one cell read alone
+  (`{Products.opened.Price}`, `{row.Qty}`) copies that cell as written, since read as a number
+  `12.50` or `007` would lose its spelling (`TableEnv::written`); a cell that does not evaluate skips
   the action with an `Expression` notice, and a column the table lacks is passed over. *This
   row* is `list::row_at` on the holder and must be a row of a list over the action's table, else
   `Missing`; *Opened row* is the row the data set has open, row 1 until one is opened; *First

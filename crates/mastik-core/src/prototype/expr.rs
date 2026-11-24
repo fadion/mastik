@@ -313,27 +313,7 @@ impl TableEnv<'_> {
         match *r {
             Ref::Var(_) => Err(Unread::Missing),
             Ref::Rows(t) => Ok(Value::Number(set(t)?.table.rows.len() as f64)),
-            Ref::Cell(t, which, c) => {
-                let d = set(t)?;
-                let i = at(d, c)?;
-                let n = d.table.rows.len();
-                let empty = || Unread::Why(format!("{} has no rows", d.name));
-                let row = match which {
-                    RowAt::First if n > 0 => 0,
-                    RowAt::Last if n > 0 => n - 1,
-                    RowAt::Opened if n > 0 => (self.opened)(t).min(n - 1),
-                    RowAt::Nth(k) if (k as usize) <= n => k as usize - 1,
-                    RowAt::Nth(k) => {
-                        return Err(Unread::Why(format!(
-                            "{} has {}, not {k}",
-                            d.name,
-                            rows_word(n)
-                        )));
-                    }
-                    _ => return Err(empty()),
-                };
-                Ok(cell_value(&d.table.rows[row][i]))
-            }
+            Ref::Cell(..) | Ref::Row(_) => Ok(cell_value(self.written(r)?.unwrap_or_default())),
             Ref::Total(t, c, agg) => {
                 let d = set(t)?;
                 at(d, c)?;
@@ -354,15 +334,50 @@ impl TableEnv<'_> {
                     Agg::Avg => nums.iter().sum::<f64>() / n,
                 }))
             }
+        }
+    }
+
+    /// The text of the cell read `r` names, as written; `None` when `r` reads
+    /// no one cell (a count, a total, a variable). A row action copying a cell
+    /// writes this, so `12.50` and `007` keep their spelling.
+    pub fn written(&self, r: &Ref) -> Result<Option<&str>, Unread> {
+        let set = |t: DataSetId| {
+            self.tables
+                .iter()
+                .find(|d| d.id == t)
+                .ok_or(Unread::Missing)
+        };
+        let at = |d: &DataSet, c: ColumnId| d.table.index_of(c).ok_or(Unread::Missing);
+        match *r {
+            Ref::Cell(t, which, c) => {
+                let d = set(t)?;
+                let i = at(d, c)?;
+                let n = d.table.rows.len();
+                let empty = || Unread::Why(format!("{} has no rows", d.name));
+                let row = match which {
+                    RowAt::First if n > 0 => 0,
+                    RowAt::Last if n > 0 => n - 1,
+                    RowAt::Opened if n > 0 => (self.opened)(t).min(n - 1),
+                    RowAt::Nth(k) if (k as usize) <= n => k as usize - 1,
+                    RowAt::Nth(k) => {
+                        return Err(Unread::Why(format!(
+                            "{} has {}, not {k}",
+                            d.name,
+                            rows_word(n)
+                        )));
+                    }
+                    _ => return Err(empty()),
+                };
+                Ok(Some(d.table.rows[row][i].as_str()))
+            }
             Ref::Row(c) => {
                 let Some((t, cells)) = self.row else {
                     return Err(Unread::Why("row is read only inside a row action".into()));
                 };
                 let i = at(set(t)?, c)?;
-                Ok(cells
-                    .get(i)
-                    .map_or(Value::String(String::new()), |s| cell_value(s)))
+                Ok(Some(cells.get(i).map_or("", String::as_str)))
             }
+            Ref::Var(_) | Ref::Rows(_) | Ref::Total(..) => Ok(None),
         }
     }
 }
@@ -508,6 +523,15 @@ impl Expr {
         read: &dyn Fn(&Ref) -> Result<Value, Unread>,
     ) -> Result<Value, ExprError> {
         eval(&parse(&self.0, &stored)?, read)
+    }
+
+    /// The one thing it names when it is nothing but that read (`{Products.opened.Price}`,
+    /// parentheses aside): what a row action copies as written.
+    pub fn bare_ref(&self) -> Option<Ref> {
+        match parse(&self.0, &stored).ok()?.ast {
+            Ast::Ref(r) => Some(r),
+            _ => None,
+        }
     }
 
     /// The source as the field shows it: each `{<id>}` that `name_of` names

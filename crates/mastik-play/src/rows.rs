@@ -33,16 +33,43 @@ impl Player {
         e: &Expr,
         row: Option<(DataSetId, &[String])>,
     ) -> Result<Value, ExprError> {
+        self.with_tables(row, |env| {
+            e.eval_with(&|r| match r {
+                Ref::Var(v) => self.doc.resolve_var(holder, *v).ok_or(Unread::Missing),
+                _ => env.read(r),
+            })
+        })
+    }
+
+    /// `f` on where a table read looks on the copy, with `row` the row a row
+    /// action is on.
+    fn with_tables<T>(
+        &self,
+        row: Option<(DataSetId, &[String])>,
+        f: impl FnOnce(&TableEnv) -> T,
+    ) -> T {
         let opened = |d: DataSetId| self.opened.get(&d).copied().unwrap_or(0);
-        let env = TableEnv {
+        f(&TableEnv {
             tables: self.doc.data_sets(),
             opened: &opened,
             row,
-        };
-        e.eval_with(&|r| match r {
-            Ref::Var(v) => self.doc.resolve_var(holder, *v).ok_or(Unread::Missing),
-            _ => env.read(r),
         })
+    }
+
+    /// What `e` writes into a cell, as [`Player::eval`] reads it: a bare cell
+    /// read copies the cell as written, since read as a number it would lose
+    /// its spelling (`12.50`, `007`); anything else is written as it shows.
+    fn cell_text(
+        &self,
+        holder: NodeId,
+        e: &Expr,
+        row: Option<(DataSetId, &[String])>,
+    ) -> Result<String, ExprError> {
+        let v = self.eval(holder, e, row)?;
+        let copied = e
+            .bare_ref()
+            .and_then(|r| self.with_tables(row, |env| env.written(&r).ok()?.map(str::to_owned)));
+        Ok(copied.unwrap_or_else(|| expr::format_value(&v)))
     }
 
     fn missing(&mut self, holder: NodeId, action: ItemId) {
@@ -87,13 +114,8 @@ impl Player {
                 continue;
             };
             let at = reads.map(|set| (set, row));
-            match self.eval(holder, &c.to, at) {
-                Ok(v) => {
-                    out[i] = expr::format_value(&v)
-                        .chars()
-                        .take(MAX_CELL_CHARS)
-                        .collect()
-                }
+            match self.cell_text(holder, &c.to, at) {
+                Ok(text) => out[i] = text.chars().take(MAX_CELL_CHARS).collect(),
                 Err(error) => {
                     self.expression(holder, action, error);
                     return None;

@@ -3830,6 +3830,73 @@ fn a_cart_adds_edits_and_totals_rows_in_play() {
     assert!(p.tables().is_empty());
 }
 
+/// A row action copying a cell writes it as written, a bare read in
+/// parentheses too, and *Edit row* writing a row's cell back leaves it be; a
+/// cell worked out from one is written as it shows.
+///
+/// flip: `Player::cell_text` writing every value through `format_value` →
+/// fails at "copied as written".
+#[test]
+fn a_copied_cell_keeps_its_spelling() {
+    use mastik_core::chart::ColumnId;
+    use mastik_core::prototype::expr::{Ref, RowAt};
+    use mastik_core::prototype::{CellWrite, RowEnd, WhichRow};
+    let (mut fx, a, item, cart) = cart(&[["12.50", "007"]]);
+    let first = |c| read(Ref::Cell(cart, RowAt::First, ColumnId(c)));
+    let add = fx.rect(a, "Add", 150.0, 350.0, 40.0, 40.0);
+    fx.on(
+        add,
+        Trigger::Click,
+        vec![Action::AddRow {
+            table: cart,
+            at: RowEnd::End,
+            cells: vec![
+                CellWrite {
+                    column: ColumnId(0),
+                    to: first(0),
+                },
+                CellWrite {
+                    column: ColumnId(1),
+                    to: Expr(format!("({})", first(1).0)),
+                },
+            ],
+        }],
+    );
+    fx.on(
+        item,
+        Trigger::Click,
+        vec![Action::EditRow {
+            table: cart,
+            row: WhichRow::This,
+            cells: vec![
+                CellWrite {
+                    column: ColumnId(0),
+                    to: read(Ref::Row(ColumnId(0))),
+                },
+                CellWrite {
+                    column: ColumnId(1),
+                    to: Expr(format!("{} + 0", read(Ref::Row(ColumnId(1))).0)),
+                },
+            ],
+        }],
+    );
+    let mut p = fx.play(a);
+    let rows = |p: &Player| p.document().data_set(cart).unwrap().table.rows.clone();
+    click(&mut p, 160.0, 360.0);
+    assert!(p.take_notices().is_empty());
+    assert_eq!(
+        rows(&p)[1],
+        vec!["12.50".to_string(), "007".into()],
+        "copied as written"
+    );
+    click(&mut p, 30.0, 20.0);
+    assert_eq!(
+        rows(&p)[0],
+        vec!["12.50".to_string(), "7".into()],
+        "written back as it was; worked out as it shows"
+    );
+}
+
 /// A row's reaction goes on after its first write makes the list again: a
 /// second *Edit row* on *This row* writes the same row, and a second reaction
 /// on the layer still runs.
