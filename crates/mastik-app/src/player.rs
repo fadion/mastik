@@ -450,8 +450,13 @@ impl Playing {
                 Request::OpenUrl(url) => ctx.open_url(egui::OpenUrl::new_tab(url)),
             }
         }
-        if self.player.is_moving() || self.player.is_recording() || !self.notices.is_empty() {
+        if self.player.is_animating() || self.player.is_recording() || !self.notices.is_empty() {
             ctx.request_repaint();
+        } else if let Some(due) = self.player.next_due() {
+            // A timer or a held gesture waiting: one pass when it falls due,
+            // not every frame until then.
+            let wait = ((due - self.player.now()) / 1000.0).max(0.0);
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(wait));
         }
     }
 
@@ -2777,6 +2782,51 @@ mod tests {
             p.player.screen(),
             b,
             "fixture: a click on the screen navigates"
+        );
+    }
+
+    /// A screen waiting on an *After* timer asks for one pass when it falls
+    /// due, not a pass every frame.
+    ///
+    /// flip: `Playing::tick` repainting while `is_moving` → fails at "a pass
+    /// when the timer is due".
+    #[test]
+    fn a_waiting_timer_repaints_when_due() {
+        let ctx = egui::Context::default();
+        let (mut app, [a, b, _]) = fixture(&ctx, false);
+        let mut ids = IdSource::new(0x7C);
+        let after = Reaction {
+            trigger: Trigger::After { ms: 3000 },
+            actions: vec![Keyed::new(
+                ids.mint_item(),
+                Action::Navigate {
+                    to: b,
+                    transition: Transition::default(),
+                    keep_scroll: false,
+                },
+            )],
+        };
+        assert!(
+            app.session
+                .commit(Transaction(vec![Operation::SetReactions {
+                    id: a,
+                    reactions: vec![Keyed::new(ids.mint_item(), after)],
+                }]))
+        );
+        app.session.selection.set_one(a);
+        app.play(&ctx, Place::Over, false);
+        let mut p = app.playing.take().expect("playing");
+        assert!(p.player.next_due().is_some(), "fixture: the timer waits");
+        let mut delay = std::time::Duration::ZERO;
+        for t in 0..3 {
+            let out = ctx.run_ui(Default::default(), |ui| p.tick(ui.ctx(), f64::from(t)));
+            delay = out.viewport_output[&egui::ViewportId::ROOT].repaint_delay;
+        }
+        // Two seconds of play gone by the third pass.
+        let left = delay.as_secs_f64();
+        assert!(
+            (0.9..=1.0).contains(&left),
+            "a pass when the timer is due: {left} s"
         );
     }
 

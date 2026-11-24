@@ -81,6 +81,7 @@ pointer events back into it.
 | `document()`, `resolved()` | The copy to draw, and its derived state |
 | `screen()`, `page()`, `overlays()`, `history()`, `scroll_offset(f)`, `moved(id)`, `focused()`, `now()` | Play state, read-only |
 | `is_moving()` | Whether anything changes without input; a shell may stop ticking while false |
+| `is_animating()`, `next_due()` | Whether a transition or the hints' flash changes the screen every frame now; else when, in play's clock, the next timer or held gesture is due, so a shell waiting on one draws once then, not every frame |
 | `has_scripts()` | Whether any *Run script* exists, for the scripts disclosure at start |
 | `restart()`, `record()`, `stop_recording() -> Take`, `Replay` | Restart; takes |
 

@@ -53,6 +53,10 @@ card opens. The export card lists only the takes of a player playing the documen
   coming up (the bar's Export, a disk clash, a chord's card) is drawn over the editor, so the
   player goes back over the canvas for it, its takes and sharing kept.
 
+Wherever it shows, the player asks for a pass every frame only while the screen animates (a
+transition, the hints' flash), a take records or a notice shows. A screen waiting on an *After*
+timer or a held click asks for one pass when it falls due (`Playing::tick`, `Player::next_due`).
+
 ## Keys
 
 While the player holds the keyboard, plain and Shift-ed keys and typed text go to the prototype

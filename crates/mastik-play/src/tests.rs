@@ -536,6 +536,36 @@ fn a_timer_fires_at_its_time() {
     assert_eq!(p.scene().layers[1].opacity, 0.5, "started at its due");
 }
 
+/// A screen waiting only on an *After* timer is moving but not animating, and
+/// says when the timer is due; a transition animates.
+///
+/// flip: `Player::is_animating` counting the timers → fails at "waiting, not
+/// animating".
+#[test]
+fn a_waiting_timer_is_due_not_animating() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let b = fx.frame("B", 300.0, 200.0, 100.0);
+    fx.on(
+        a,
+        Trigger::After { ms: 3000 },
+        vec![Action::Navigate {
+            to: b,
+            transition: linear(TransitionKind::Dissolve, 100),
+            keep_scroll: false,
+        }],
+    );
+    let mut p = fx.play(a);
+    assert!(p.is_moving(), "fixture: the timer is pending");
+    assert!(!p.is_animating(), "waiting, not animating");
+    assert_eq!(p.next_due(), Some(3000.0), "due at 3 s");
+    p.tick(1000.0);
+    assert_eq!(p.next_due(), Some(3000.0), "still due at 3 s of play");
+    p.tick(2050.0);
+    assert_eq!(p.screen(), b, "fixture: the timer fired");
+    assert!(p.is_animating(), "the dissolve animates");
+}
+
 /// Typing into an input text layer writes its variable, which the layer shows;
 /// Backspace removes the last grapheme.
 ///

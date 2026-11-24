@@ -459,6 +459,22 @@ impl Player {
             || self.gesture_due().is_some()
     }
 
+    /// Whether something changes every frame now: a transition or the hints'
+    /// flash. A shell draws continuously only while this is true.
+    pub fn is_animating(&self) -> bool {
+        !self.anims.is_empty() || self.flash.is_some()
+    }
+
+    /// When, in play's clock (`now()`), the next timer or held gesture is due:
+    /// between them a shell need not draw until then.
+    pub fn next_due(&self) -> Option<f64> {
+        let timer = self.timers.iter().map(|t| t.due).min_by(f64::total_cmp);
+        [timer, self.gesture_due()]
+            .into_iter()
+            .flatten()
+            .min_by(f64::total_cmp)
+    }
+
     /// Whether the document holds a *Run script* action anywhere, so the shell
     /// can show the scripts disclosure when play starts.
     pub fn has_scripts(&self) -> bool {
