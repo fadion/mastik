@@ -4881,8 +4881,13 @@ impl MastikApp {
         // Half a screen pt: finer than the loop's own sampling.
         let flatness = 0.5 / self.points_per_world();
         // A marquee picks frame contents, not the frames, plus loose layers; a
-        // page frame it holds whole is picked itself, in place of its contents.
-        let whole = self.frames_held_whole(area, lasso);
+        // plain band's page frame held whole is picked itself, in place of its
+        // contents. A Shift or Alt band acts on the contents, so it can still
+        // toggle or take off layers selected inside the frame.
+        let whole = match mode {
+            MarqueeMode::Replace => self.frames_held_whole(area, lasso),
+            MarqueeMode::Toggle | MarqueeMode::Subtract => Vec::new(),
+        };
         let mut picked = whole.clone();
         let (doc, res) = (&self.session.doc, &self.session.resolved);
         for child in self.marquee_candidates() {
@@ -24336,6 +24341,52 @@ mod marquee_selectability_tests {
         };
         assert_eq!(band(&mut app, 90.0), vec![a], "short of the corner");
         assert_eq!(band(&mut app, 110.0), vec![board], "the frame itself");
+    }
+
+    /// A lasso round a page frame's four corners takes the frame; an Alt band
+    /// holding the frame whole takes off the layers selected inside it, and a
+    /// Shift band toggles them, rather than acting on the frame.
+    /// flip: `apply_marquee` taking frames whole in every mode → fails at "Alt
+    /// takes the layer off".
+    #[test]
+    fn a_shift_or_alt_band_round_a_frame_acts_on_its_layers() {
+        let ctx = egui::Context::default();
+        let (mut app, board, a, _) = board_and_two(&ctx, true);
+        let ring = [
+            Point::new(-10.0, -10.0),
+            Point::new(110.0, -10.0),
+            Point::new(110.0, 110.0),
+            Point::new(-10.0, 110.0),
+        ];
+        app.apply_marquee(
+            ring[0],
+            ring[2],
+            MarqueeMode::Replace,
+            &Default::default(),
+            Some(&ring),
+        );
+        assert_eq!(app.session.selection.ids(), [board], "the lasso's frame");
+
+        let mut base = crate::session::Selection::default();
+        base.set(vec![a]);
+        let band = |app: &mut MastikApp, mode| {
+            app.apply_marquee(
+                Point::new(-10.0, -10.0),
+                Point::new(110.0, 110.0),
+                mode,
+                &base,
+                None,
+            );
+            app.session.selection.ids().to_vec()
+        };
+        assert!(
+            band(&mut app, MarqueeMode::Subtract).is_empty(),
+            "Alt takes the layer off"
+        );
+        assert!(
+            !band(&mut app, MarqueeMode::Toggle).contains(&board),
+            "Shift toggles the layers, not the frame"
+        );
     }
 
     /// A clipping frame's layer past its edge is neither hit nor marqueed

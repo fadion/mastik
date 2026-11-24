@@ -99,7 +99,8 @@ The canvas never selects a locked layer by a gesture that describes a **set**:
   holds a page frame's own box (the lasso, its four corners), the frame is picked in place of its
   contents, so several frames are marqueed and moved together. One the band only crosses still
   gives its contents. Locked, hidden and chart frames are left out; a chart is a candidate whole
-  already.
+  already. Only a plain band does this: a `Shift` or `Alt` band acts on the frame's contents,
+  so it toggles or takes off the layers selected inside it however far past the frame it runs.
 - **Clipped content is not there to take.** A layer under a frame that clips its content is
   taken by its bounds cut to the frame's box (`query::clip_box`), so a band over the part a frame
   hides takes nothing. A lasso is held to that box's reach only. A frame that does not clip
