@@ -348,9 +348,11 @@ or no scrolling frame above, means no effect (`effect_now`).
   in the next morphs — and which of its siblings with that key it is, so a pair's parents are
   paired too. Both ends are laid out
   when it starts and never again. A paired layer's transform (moved, turned the short way, scaled
-  and sheared, each interpolated), box size, opacity and corner radii (a polygon's or star's one)
+  and sheared, each interpolated; a mirror at one end only is a scale through zero, not half a
+  turn), box size, opacity (a side that hides the layer reads as 0, so one shown only at the end
+  fades in) and corner radii (a polygon's or star's one)
   interpolate; so do fills and strokes, brush by brush, when both ends have as many (and stroke
-  widths), and effects when both stacks are the same kinds in the same order (shadows' offset,
+  widths; colours mix premultiplied), and effects when both stacks are the same kinds in the same order (shadows' offset,
   blur, spread and colour; layer and background blur radii). Two gradients of one kind move
   their geometry, transform and opacity, their ramps sampled at every offset either has; a
   colour against a gradient reads as a flat ramp of its kind (`lerp_brush`). An image, two

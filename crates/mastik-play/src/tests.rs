@@ -1005,6 +1005,44 @@ fn smart_animate_pairs_layers_by_name() {
     assert!(p.scene().patches.is_empty(), "nothing left once done");
 }
 
+/// Smart animate fades in a paired layer the start hides and the end shows,
+/// as it fades in a new one.
+///
+/// flip: `Player::look` reading a hidden layer's own opacity → fails at "fades
+/// in".
+#[test]
+fn smart_animate_fades_in_a_layer_shown_at_the_end() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let b = fx.frame("B", 300.0, 200.0, 100.0);
+    let go = fx.rect(a, "Go", 0.0, 0.0, 20.0, 20.0);
+    let hidden = fx.rect(a, "Check", 100.0, 40.0, 20.0, 20.0);
+    fx.apply(vec![Operation::SetVisible {
+        id: hidden,
+        visible: false,
+    }]);
+    let check = fx.rect(b, "Check", 100.0, 40.0, 20.0, 20.0);
+    fx.on(
+        go,
+        Trigger::Click,
+        vec![Action::Navigate {
+            to: b,
+            transition: linear(TransitionKind::SmartAnimate, 100),
+            keep_scroll: false,
+        }],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 5.0, 5.0);
+    p.tick(50.0);
+    let s = p.scene();
+    let opacity = s
+        .patches
+        .iter()
+        .find(|x| x.node == check)
+        .and_then(|x| x.opacity);
+    assert_eq!(opacity, Some(0.5), "fades in");
+}
+
 /// Smart animate with no side fades its unpaired layers in and out in place.
 ///
 /// flip: `Smart::between_frames` sliding under `Direction::None` → fails at "fades in place".

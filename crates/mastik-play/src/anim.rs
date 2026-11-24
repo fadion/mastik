@@ -444,8 +444,14 @@ impl Player {
         let world = |x| self.res.world_transform(x).unwrap_or(Affine::IDENTITY);
         let rel = world(reference).inverse() * world(id);
         let (opacity, paint, effects) = match self.doc.get(id) {
+            // A side that hides the layer draws it clear, so one shown only at
+            // the end fades in as a new layer does.
             Some(n) => (
-                self.doc.drawn_opacity_of(n),
+                if self.doc.shown_node(n) {
+                    self.doc.drawn_opacity_of(n)
+                } else {
+                    0.0
+                },
                 self.doc.resolved_paint(id, n.paint()).into_owned(),
                 self.doc.resolved_effects(id, n.effects()).into_owned(),
             ),
@@ -1024,12 +1030,13 @@ fn ramp_at(stops: &[mastik_core::peniko::ColorStop], offset: f32) -> Color {
 
 fn lerp_color(a: Color, b: Color, t: f32) -> Color {
     let (x, y) = (a.components, b.components);
-    Color::new([
-        x[0] + (y[0] - x[0]) * t,
-        x[1] + (y[1] - x[1]) * t,
-        x[2] + (y[2] - x[2]) * t,
-        x[3] + (y[3] - x[3]) * t,
-    ])
+    let alpha = x[3] + (y[3] - x[3]) * t;
+    if alpha <= 0.0 {
+        return Color::new([x[0], x[1], x[2], 0.0]);
+    }
+    // Premultiplied, so a clear end lends its alpha and none of its colour.
+    let rgb = |i: usize| (x[i] * x[3] + (y[i] * y[3] - x[i] * x[3]) * t) / alpha;
+    Color::new([rgb(0), rgb(1), rgb(2), alpha])
 }
 
 /// `a` to `b` at `t`, moving, turning and scaling rather than blending the
@@ -1048,14 +1055,30 @@ pub(crate) fn lerp_affine(a: Affine, b: Affine, t: f64) -> Affine {
         let sy = -c * sin + d * cos;
         (angle, sx, sy, shear, e, f)
     };
+    let short = |turn: f64| {
+        if turn > std::f64::consts::PI {
+            turn - std::f64::consts::TAU
+        } else if turn < -std::f64::consts::PI {
+            turn + std::f64::consts::TAU
+        } else {
+            turn
+        }
+    };
     let (a0, sx0, sy0, k0, e0, f0) = parts(a);
-    let (a1, sx1, sy1, k1, e1, f1) = parts(b);
-    let mut turn = a1 - a0;
-    if turn > std::f64::consts::PI {
-        turn -= std::f64::consts::TAU;
-    } else if turn < -std::f64::consts::PI {
-        turn += std::f64::consts::TAU;
+    let (mut a1, mut sx1, mut sy1, mut k1, e1, f1) = parts(b);
+    let det = |m: Affine| {
+        let [a, b, c, d, ..] = m.as_coeffs();
+        a * d - b * c
+    };
+    // One end mirrored and the other not: the mirror is a negative scale on
+    // one axis, and `b` also reads as half a turn on with every part negated.
+    // The reading that turns less is a flip, not a spin.
+    if (det(a) < 0.0) != (det(b) < 0.0)
+        && short(a1 + std::f64::consts::PI - a0).abs() < short(a1 - a0).abs()
+    {
+        (a1, sx1, sy1, k1) = (a1 + std::f64::consts::PI, -sx1, -sy1, -k1);
     }
+    let turn = short(a1 - a0);
     let mix = |x: f64, y: f64| x + (y - x) * t;
     let (angle, sx, sy, k) = (a0 + turn * t, mix(sx0, sx1), mix(sy0, sy1), mix(k0, k1));
     let (cos, sin) = (angle.cos(), angle.sin());
@@ -1095,6 +1118,59 @@ mod tests {
             0.5,
         );
         assert_eq!(moved.translation(), Vec2::new(5.0, 2.0));
+    }
+
+    /// A horizontal flip narrows and widens mirrored, either way round, with
+    /// no turn on the way.
+    ///
+    /// flip: `lerp_affine` not choosing the mirrored reading → fails at "no
+    /// turn".
+    #[test]
+    fn an_affine_flips_rather_than_spins() {
+        let flipped = Affine::new([-1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        for (a, b) in [(Affine::IDENTITY, flipped), (flipped, Affine::IDENTITY)] {
+            for t in [0.25, 0.5, 0.75] {
+                let [m0, m1, m2, m3, ..] = lerp_affine(a, b, t).as_coeffs();
+                assert!(m1.abs() < 1e-9 && m2.abs() < 1e-9, "no turn at {t}");
+                assert!((m3 - 1.0).abs() < 1e-9, "the height kept at {t}");
+                let x = if a == Affine::IDENTITY {
+                    1.0 - 2.0 * t
+                } else {
+                    2.0 * t - 1.0
+                };
+                assert!((m0 - x).abs() < 1e-9, "the width at {t}");
+            }
+            for (x, y) in lerp_affine(a, b, 1.0).as_coeffs().iter().zip(b.as_coeffs()) {
+                assert!((x - y).abs() < 1e-9, "reaches the end");
+            }
+        }
+    }
+
+    /// A colour fading from transparent mixes premultiplied: half way to
+    /// white is half-clear white, not grey.
+    ///
+    /// flip: `lerp_color` mixing straight components → fails at "white, not
+    /// grey".
+    #[test]
+    fn a_colour_fades_in_premultiplied() {
+        let white = Color::new([1.0, 1.0, 1.0, 1.0]);
+        let mid = lerp_color(Color::TRANSPARENT, white, 0.5).components;
+        assert!((mid[3] - 0.5).abs() < 1e-6);
+        for c in &mid[..3] {
+            assert!((c - 1.0).abs() < 1e-6, "white, not grey");
+        }
+        let half_red = Color::new([1.0, 0.0, 0.0, 0.5]);
+        let blue = Color::new([0.0, 0.0, 1.0, 1.0]);
+        let mid = lerp_color(half_red, blue, 0.5).components;
+        // Premultiplied (0.5, 0, 0, 0.5) and (0, 0, 1, 1) half way, then divided.
+        let want = [0.25 / 0.75, 0.0, 0.5 / 0.75, 0.75];
+        for (c, w) in mid.iter().zip(want) {
+            assert!((c - w).abs() < 1e-6);
+        }
+        assert_eq!(
+            lerp_color(white, Color::TRANSPARENT, 1.0).components[3],
+            0.0
+        );
     }
 
     fn linear(end: f64, stops: &[(f32, Color)]) -> Brush {
