@@ -743,6 +743,9 @@ pub fn touched(doc: &Document, tx: &Transaction, dirty: &DirtySet) -> Vec<NodeId
             Operation::SetDataSet { id, .. } => {
                 sets.insert(*id);
             }
+            Operation::InsertDataSet { set, .. } => {
+                sets.insert(set.id);
+            }
             Operation::SetVariable { .. }
             | Operation::SetVariableCell { .. }
             | Operation::RemoveVariable { .. }
@@ -1429,6 +1432,7 @@ pub fn chart_follow_ops(doc: &Document, tx: &Transaction, dirty: &DirtySet) -> V
         match op {
             Operation::SetChart { id, chart: Some(_) } => charts.push(*id),
             Operation::SetDataSet { id, .. } => charts.extend(charts_over(doc, *id)),
+            Operation::InsertDataSet { set, .. } => charts.extend(charts_over(doc, set.id)),
             _ => {}
         }
     }
@@ -1460,6 +1464,7 @@ pub fn follow_ops(tx: &Transaction) -> Transaction {
                     op,
                     Operation::SetList { .. }
                         | Operation::SetDataSet { .. }
+                        | Operation::InsertDataSet { .. }
                         | Operation::SetChart { chart: Some(_), .. }
                         | Operation::SetVariable { .. }
                         | Operation::SetVariableCell { .. }

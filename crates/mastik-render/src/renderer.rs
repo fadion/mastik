@@ -1820,6 +1820,7 @@ impl RenderOverrides {
             | Operation::SetChartParts { .. }
             | Operation::SetList { .. }
             | Operation::SetDataSet { .. }
+            | Operation::InsertDataSet { .. }
             | Operation::SetHref { .. }
             | Operation::AddGuide { .. }
             | Operation::RemoveGuide { .. }

@@ -33,7 +33,9 @@ template, the list's description, its data set or a variable its filter reads ch
 - **`pictures: Vec<(String, ImageId)>`** maps a cell's text to the picture the app read from it
   (*Picture columns*, below); core reads no files, so the map is filled where the file is read.
 - **`SetDataSet { id, set }`** adds, replaces or (with `None`) removes one whole data set, refused
-  when the set's id is not `id` or `DataSet::validate` refuses it (`OpError::BadList`).
+  when the set's id is not `id` or `DataSet::validate` refuses it (`OpError::BadList`). A
+  removal inverts to `InsertDataSet { set, index }`, which puts the set back at its place, so
+  undoing *Delete table* keeps the tables' order.
 
 ### The list (`list::List`)
 

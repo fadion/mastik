@@ -804,6 +804,38 @@ fn a_data_set_stays_until_deleted() {
     assert_eq!(doc.data_sets().len(), 1, "undo brings it back");
 }
 
+/// Undoing a data set's removal puts it back at its place, not at the end, and
+/// redo removes it again.
+/// flip: `SetDataSet`'s removal inverting to an add-at-the-end → fails at
+/// "back at its place".
+#[test]
+fn undoing_a_data_set_removal_restores_its_place() {
+    let (mut doc, mut ids, _) = blank();
+    let sets: Vec<DataSet> = (0..3).map(|_| data(&mut ids, &[("A", "1")])).collect();
+    let order: Vec<_> = sets.iter().map(|s| s.id).collect();
+    let add = sets
+        .into_iter()
+        .map(|s| Operation::SetDataSet {
+            id: s.id,
+            set: Some(Box::new(s)),
+        })
+        .collect();
+    let mut history = History::default();
+    commit(&mut history, &mut doc, &mut ids, Transaction(add));
+    let ids_now = |doc: &Document| doc.data_sets().iter().map(|d| d.id).collect::<Vec<_>>();
+    assert_eq!(ids_now(&doc), order);
+    let delete = Transaction(vec![Operation::SetDataSet {
+        id: order[0],
+        set: None,
+    }]);
+    commit(&mut history, &mut doc, &mut ids, delete);
+    assert_eq!(ids_now(&doc), order[1..]);
+    history.undo(&mut doc).unwrap();
+    assert_eq!(ids_now(&doc), order, "back at its place");
+    history.redo(&mut doc).unwrap();
+    assert_eq!(ids_now(&doc), order[1..], "redo removes it again");
+}
+
 /// A picture `n` (its bytes `[n]`) added to the document; answers its id.
 fn picture(doc: &mut Document, n: u8) -> mastik_core::ImageId {
     let id = mastik_core::ImageId(format!("sha256:{n:064x}"));

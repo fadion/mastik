@@ -186,6 +186,7 @@ fn mode(op: &Operation) -> Mode {
         // the document's.
         | Operation::SetList { .. }
         | Operation::SetDataSet { .. }
+        | Operation::InsertDataSet { .. }
         // A script is the document's, never a node's.
         | Operation::AddScript { .. }
         | Operation::RemoveScript { .. }

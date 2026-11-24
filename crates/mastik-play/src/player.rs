@@ -1178,9 +1178,12 @@ pub(crate) fn resolve_start(doc: &Document, start: Start) -> Result<Started, Sta
 pub(crate) fn tables_written(tx: &Transaction) -> Vec<mastik_core::list::DataSetId> {
     let mut out = Vec::new();
     for op in &tx.0 {
-        if let mastik_core::Operation::SetDataSet { id, set: Some(_) } = op
-            && !out.contains(id)
-        {
+        let id = match op {
+            mastik_core::Operation::SetDataSet { id, set: Some(_) } => id,
+            mastik_core::Operation::InsertDataSet { set, .. } => &set.id,
+            _ => continue,
+        };
+        if !out.contains(id) {
             out.push(*id);
         }
     }

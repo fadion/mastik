@@ -2349,7 +2349,10 @@ impl Document {
                 let at = self.data.iter().position(|d| d.id == *id);
                 let old = match (at, set) {
                     (Some(i), Some(s)) => Some(std::mem::replace(&mut self.data[i], (**s).clone())),
-                    (Some(i), None) => Some(self.data.remove(i)),
+                    (Some(index), None) => {
+                        let set = Box::new(self.data.remove(index));
+                        return Ok(Operation::InsertDataSet { set, index });
+                    }
                     (None, Some(s)) => {
                         self.data.push((**s).clone());
                         None
@@ -2359,6 +2362,20 @@ impl Document {
                 Ok(Operation::SetDataSet {
                     id: *id,
                     set: old.map(Box::new),
+                })
+            }
+            Operation::InsertDataSet { set, index } => {
+                if self.data.iter().any(|d| d.id == set.id) {
+                    return Err(OpError::BadList(crate::list::ListRule::BadTable));
+                }
+                if *index > self.data.len() {
+                    return Err(OpError::IndexOutOfRange);
+                }
+                set.validate().map_err(OpError::BadList)?;
+                self.data.insert(*index, (**set).clone());
+                Ok(Operation::SetDataSet {
+                    id: set.id,
+                    set: None,
                 })
             }
             Operation::SetHref { id, href } => {

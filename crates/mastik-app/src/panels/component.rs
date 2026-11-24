@@ -1324,6 +1324,7 @@ fn card_of(op: &Operation) -> Option<&'static str> {
         // Nor does a list, and a data set is the document's.
         | O::SetList { .. }
         | O::SetDataSet { .. }
+        | O::InsertDataSet { .. }
         // A script is the document's, never a layer's.
         | O::AddScript { .. }
         | O::RemoveScript { .. }

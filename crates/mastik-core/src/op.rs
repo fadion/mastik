@@ -346,10 +346,18 @@ pub enum Operation {
         list: Option<Box<crate::list::List>>,
     },
     /// One of the document's data sets (`crate::list`): `Some` adds it at the
-    /// end or replaces the one of its id, `None` removes it.
+    /// end or replaces the one of its id, `None` removes it, inverting to
+    /// [`Self::InsertDataSet`].
     SetDataSet {
         id: crate::list::DataSetId,
         set: Option<Box<crate::list::DataSet>>,
+    },
+    /// Put a data set back into the document's list at `index`: the inverse of
+    /// a removal, so undoing *Delete table* restores the tables' order.
+    /// Refused when a set of its id is there or `index` is past the end.
+    InsertDataSet {
+        set: Box<crate::list::DataSet>,
+        index: usize,
     },
     /// The HTML element a code export writes a layer as (`crate::element`),
     /// never drawn; `None` is Automatic. Refused for an element the layer's
@@ -840,6 +848,7 @@ impl Operation {
             | Operation::SetScriptSource { .. }
             // The data sets are document-level too: these name a data set.
             | Operation::SetDataSet { .. }
+            | Operation::InsertDataSet { .. }
             | Operation::SetPlayExport { .. } => None,
         }
     }
@@ -1052,6 +1061,7 @@ impl Operation {
             // copies do, written beside them by the regeneration.
             | Operation::SetList { .. }
             | Operation::SetDataSet { .. }
+            | Operation::InsertDataSet { .. }
             | Operation::SetHref { .. }
             | Operation::SetFillStyle { .. }
             | Operation::SetStrokeStyle { .. }
@@ -1187,7 +1197,8 @@ impl Operation {
             | Operation::AddStyle { .. }
             | Operation::RemoveStyle { .. }
             | Operation::AddScript { .. }
-            | Operation::RemoveScript { .. } => false,
+            | Operation::RemoveScript { .. }
+            | Operation::InsertDataSet { .. } => false,
             Operation::SetScriptName { id, name } => {
                 doc.script(*id).is_some_and(|s| s.name == *name)
             }
