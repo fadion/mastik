@@ -278,10 +278,11 @@ mode: `Parts::mirror` packs `prune_mirror`'s trim (the flow the app plays, or it
 `start`'s frame argument, with no bar or device frame, no device unless *On a phone* keeps the
 page's, and no inspect data), and
 `Parts::mirror_html` sets `window.MASTIK_MIRROR` (`frame`, `version`) before the boot script, at
-gzip's fast level. A file never carries it. In mirror mode the page listens on `events`,
-fetches each newer version from `doc` and plays it where it is (`Player::rebase`), loads again
-on `reload`, reports `screen_name` to `status` as it changes, and on `stop` or a stream lost for
-3 s dims the stage under *Mastik stopped sharing*. All three paths are relative to the page.
+gzip's fast level. A file never carries it. In mirror mode the page listens on
+`events?id=…&page=<version>`, fetches each newer version from `doc` and plays it where it is
+(`Player::rebase`), loads again on `reload`, reports `screen_name` to `status` as it changes,
+and on `stop`, a dead token or ten failed reconnects in front dims the stage under *Mastik
+stopped sharing*. All three paths are relative to the page.
 
 ## Where the CLI finds the player
 

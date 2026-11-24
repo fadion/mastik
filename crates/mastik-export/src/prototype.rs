@@ -1252,7 +1252,10 @@ const BOOT: &str = r##"(async () => {
       };
       report();
       const reporting = setInterval(report, 500);
-      const events = new EventSource("events?id=" + encodeURIComponent(id));
+      // `page` names the version this page was written for, so a phone that
+      // slept through a reload is told to load again when it reconnects.
+      const events = new EventSource(
+        "events?id=" + encodeURIComponent(id) + "&page=" + mirrored.version);
       // A blip or a sleep only drops the stream, and EventSource reconnects by
       // itself; the share has stopped on CLOSED (a dead token), on "stop", or
       // when reconnects keep failing while the page is in front.

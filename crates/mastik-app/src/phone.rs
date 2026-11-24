@@ -49,6 +49,9 @@ struct Shared {
     token: String,
     /// The page as it was written, for the version it carries.
     page: Arc<Vec<u8>>,
+    /// The version `page` was written for: a phone whose page is older missed
+    /// a reload while its stream was down, and is told to load again.
+    page_version: u64,
     /// The document's current version, saved, and its number.
     doc: Arc<Vec<u8>>,
     version: u64,
@@ -156,6 +159,7 @@ impl Share {
         let shared = Arc::new(Mutex::new(Shared {
             token,
             page: Arc::new(page),
+            page_version: version,
             doc: Arc::new(doc),
             version,
             phones: Vec::new(),
@@ -200,6 +204,7 @@ impl Share {
     pub(crate) fn reload(&self, page: Vec<u8>, doc: Vec<u8>, version: u64) {
         let mut s = lock(&self.shared);
         s.page = Arc::new(page);
+        s.page_version = version;
         s.doc = Arc::new(doc);
         s.version = version;
         s.send("reload");
@@ -355,7 +360,8 @@ fn answer(mut stream: TcpStream, shared: &Mutex<Shared>, wake: &(dyn Fn() + Send
             if id.is_empty() || id.len() > 64 {
                 reply(&mut stream, "400 Bad Request", "text/plain", b"")
             } else {
-                listen(stream, shared, &id, &req.agent);
+                let page = query_value(&req.query, "page").and_then(|v| v.parse().ok());
+                listen(stream, shared, &id, page, &req.agent);
                 wake();
                 Ok(())
             }
@@ -373,16 +379,20 @@ fn answer(mut stream: TcpStream, shared: &Mutex<Shared>, wake: &(dyn Fn() + Send
     };
 }
 
-/// Open `id`'s stream of versions on `stream`, starting with the current one.
-/// `retry:` shortens the browser's reconnect wait (3–5 s by default) after a
-/// phone sleeps or its Wi-Fi blips.
-fn listen(mut stream: TcpStream, shared: &Mutex<Shared>, id: &str, agent: &str) {
+/// Open `id`'s stream of versions on `stream`, starting with the current one,
+/// or with `reload` when the phone's `page` is older than the one served (it
+/// slept through a reload). `retry:` shortens the browser's reconnect wait
+/// (3–5 s by default) after a phone sleeps or its Wi-Fi blips.
+fn listen(mut stream: TcpStream, shared: &Mutex<Shared>, id: &str, page: Option<u64>, agent: &str) {
     let mut s = lock(shared);
+    let first = match page {
+        Some(page) if page < s.page_version => "reload".to_string(),
+        _ => s.version.to_string(),
+    };
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
          Cache-Control: no-store\r\nConnection: keep-alive\r\n\r\n\
-         retry: {RETRY_MS}\n\ndata: {}\n\n",
-        s.version
+         retry: {RETRY_MS}\n\ndata: {first}\n\n"
     );
     if stream.write_all(head.as_bytes()).is_err() {
         return;
@@ -1376,6 +1386,38 @@ mod tests {
         assert_eq!(next_event(), "2", "hears the new version");
         drop(share);
         assert_eq!(next_event(), "stop", "hears the stop");
+    }
+
+    /// A phone whose page is older than the one served (it slept through a
+    /// reload) hears `reload` first when it reconnects; one on the current page
+    /// hears the version.
+    /// flip: `listen` ignoring `page` → fails at "a missed reload".
+    #[test]
+    fn a_phone_that_missed_a_reload_hears_it_on_reconnect() {
+        let share = share();
+        let t = token_of(&share);
+        share.reload(b"PAGE2".to_vec(), b"DOC2".to_vec(), 2);
+        let host = share.url.trim_start_matches("http://").split('/').next();
+        let host = host.expect("host").to_string();
+        let first = |page: u64| {
+            let mut events = TcpStream::connect(&host).expect("connect");
+            events
+                .write_all(format!("GET /{t}/events?id=p1&page={page} HTTP/1.1\r\n\r\n").as_bytes())
+                .unwrap();
+            events
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut reader = BufReader::new(events);
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("a line");
+                if let Some(d) = line.trim_end().strip_prefix("data: ") {
+                    return d.to_string();
+                }
+            }
+        };
+        assert_eq!(first(1), "reload", "a missed reload");
+        assert_eq!(first(2), "2", "the current page hears the version");
     }
 
     /// A phone that sat on one screen longer than `FORGET` and then closes its

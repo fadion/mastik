@@ -119,7 +119,9 @@ keeps every key, Escape included (`Playing::take_keys` asks `text_edit_focused` 
     still one phone. The phone toasts *Updated from Mastik*, and when sharing stops dims its last
     frame under *Mastik stopped sharing*. A dropped stream (a sleep, a Wi-Fi blip) reconnects by
     itself; the page ends only on `stop`, on a dead token, or after ten failed reconnects while
-    it is in front.
+    it is in front. The stream's request names the version the page was written for, and a
+    page older than the one served hears `reload` first, so a phone that slept through a reload
+    does not play the new document in its old page.
   - **The firewall.** The first share on Windows raises the system's prompt for the app, which
     the card's help line names on Windows (*allow it so the phone can reach this computer*),
     every share, so the card keeps one size. A declined prompt cannot be seen from the app: a
