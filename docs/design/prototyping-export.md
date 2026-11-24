@@ -244,9 +244,17 @@ flows picked, every flow when none is) a page of its frames as they sit on
 the canvas, drawn by the PDF export's path, with an arrow from each layer that moves the screen
 and a numbered badge for each reaction at its layer's corner (one that would cover an earlier
 badge, a layer's second reaction or a layer at its frame's corner, steps right past it), then
-pages writing those reactions out in words, for review and sign-off. A flow with no frame on its page, its start gone or on another
-page, gets its words pages alone; it never costs the other flows their pages. The file fails
-only when there is no flow or the converter refuses a page, and the app and the CLI say which.
+pages writing those reactions out in words, for review and sign-off. A flow with no frame on its
+page, its start gone or on another page, gets its words pages alone; it never costs the other
+flows their pages. The file fails only when there is no flow or the converter refuses a page,
+and the app and the CLI say which.
+
+The map's own words (the title, the frame labels, the words pages) are set in Inter, and a run
+of characters Inter lacks names the first face that has them among the faces the document's text
+drew in and the faces the export thread's engine holds, which include the script fallbacks the
+app loaded (`Faces`): usvg's glyph fallback never leaves a run's family. A character no face has
+is drawn as a missing glyph and named in the export's `approximated`, which the app counts as
+*drawn differently* and the CLI prints.
 
 ## The mirrored page
 

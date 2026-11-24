@@ -239,7 +239,9 @@ fn a_flow_reaches_its_frames_and_writes_each_interaction() {
 fn the_flow_map_is_a_pdf_of_a_map_and_its_words() {
     let (doc, ..) = shop();
     let res = Resolved::rebuild(&doc);
-    let pdf = flow_map(&doc, &res).expect("a flow map");
+    let export = flow_map(&doc, &res).expect("a flow map");
+    assert!(export.approximated.is_empty(), "{:?}", export.approximated);
+    let pdf = export.pdf;
     assert!(mastik_export::pdf_in::looks_like_pdf(&pdf));
     let read = mastik_export::pdf_in::import(pdf).expect("it reads back");
     assert_eq!(read.pages.len(), 2, "two pages");
@@ -293,7 +295,9 @@ fn a_flow_with_nothing_on_its_page_keeps_the_others() {
     .expect("the flows");
     assert_eq!(plans(&doc).len(), 3);
     let res = Resolved::rebuild(&doc);
-    let pdf = flow_map(&doc, &res).expect("one dangling flow loses the map");
+    let pdf = flow_map(&doc, &res)
+        .expect("one dangling flow loses the map")
+        .pdf;
     let read = mastik_export::pdf_in::import(pdf).expect("it reads back");
     let upright: Vec<bool> = read
         .pages
@@ -304,6 +308,52 @@ fn a_flow_with_nothing_on_its_page_keeps_the_others() {
         upright,
         vec![false, true, true, true],
         "Checkout's map and words, then a words page each"
+    );
+}
+
+/// A character Inter lacks in a name the map writes is set in a face that has
+/// it, here one this thread's engine holds; with no such face the export says
+/// which characters it could not draw.
+///
+/// flip: `Faces::face_of` looking past Inter at no other face → fails at "the
+/// held face draws it".
+#[test]
+fn a_name_inter_lacks_is_set_in_a_face_that_has_it() {
+    const CART: char = '\u{1F6D2}';
+    let emoji = include_bytes!("../../mastik-app/assets/fonts/NotoEmoji.ttf");
+    assert!(
+        mastik_core::text::face_covers(emoji, 0, CART),
+        "the fixture's face has the character"
+    );
+    let (mut doc, [home, ..], _) = shop();
+    doc.apply(&Transaction(vec![Operation::SetName {
+        id: home,
+        name: format!("Home {CART}"),
+    }]))
+    .expect("the rename");
+    let res = Resolved::rebuild(&doc);
+    let without = flow_map(&doc, &res).expect("a flow map");
+    assert!(
+        without.approximated.iter().any(|n| n.contains(CART)),
+        "a missing character is said: {:?}",
+        without.approximated
+    );
+    mastik_core::text::register_fonts(emoji.to_vec());
+    let with = flow_map(&doc, &res).expect("a flow map");
+    assert!(
+        with.approximated.is_empty(),
+        "the held face draws it: {:?}",
+        with.approximated
+    );
+    let words = |pdf: Vec<u8>| {
+        mastik_export::pdf_in::import(pdf).expect("it reads").pages[1]
+            .svg
+            .clone()
+    };
+    assert_ne!(
+        words(without.pdf),
+        words(with.pdf),
+        "the words page draws the character in the face that has it"
     );
 }
 

@@ -99,14 +99,14 @@ pub fn plans_of(doc: &Document, only: &[FlowRef]) -> Vec<FlowPlan> {
     out
 }
 
-/// The flow map of `doc` as one PDF, or `None` when it has no flow or the
-/// converter refuses a page.
-pub fn flow_map(doc: &Document, res: &Resolved) -> Option<Vec<u8>> {
+/// The flow map of `doc` as one PDF, with what it could not draw exactly, or
+/// `None` when it has no flow or the converter refuses a page.
+pub fn flow_map(doc: &Document, res: &Resolved) -> Option<crate::pdf::Export> {
     flow_map_of(doc, res, &[])
 }
 
 /// [`flow_map`] of the flows `only` names; every flow when it names none.
-pub fn flow_map_of(doc: &Document, res: &Resolved, only: &[FlowRef]) -> Option<Vec<u8>> {
+pub fn flow_map_of(doc: &Document, res: &Resolved, only: &[FlowRef]) -> Option<crate::pdf::Export> {
     let plans = plans_of(doc, only);
     if plans.is_empty() {
         return None;
@@ -115,6 +115,8 @@ pub fn flow_map_of(doc: &Document, res: &Resolved, only: &[FlowRef]) -> Option<V
         .iter()
         .map(|b| FontData::new(Blob::from(b.to_vec()), 0))
         .collect();
+    let mut faces = Faces::new(inter[0].clone(), res);
+    let mut approximated: Vec<String> = Vec::new();
     let mut document = krilla::Document::new();
     let mut outline = krilla::outline::Outline::new();
     let mut index = 0;
@@ -124,17 +126,25 @@ pub fn flow_map_of(doc: &Document, res: &Resolved, only: &[FlowRef]) -> Option<V
         // A flow with nothing on its page, its start gone or every frame on
         // another, has only its words: flows may dangle, and play skips them.
         if let Some(extent) = crate::extent(res, &here) {
-            svgs.push((map_svg(doc, res, plan, &here, extent)?, plan.frames.clone()));
+            let map = map_svg(doc, res, plan, &here, extent, &mut faces)?;
+            svgs.push((map, plan.frames.clone()));
         }
-        for words in words_pages(doc, plan) {
+        for words in words_pages(doc, plan, &mut faces) {
             svgs.push((words, Vec::new()));
         }
         for (i, (svg, frames)) in svgs.iter().enumerate() {
             let shown = crate::pdf::shown_nodes(doc, frames);
             let mut fonts = crate::pdf::fonts_used(res, &shown);
             fonts.extend(inter.iter().cloned());
+            fonts.extend(faces.used());
             let missed = std::sync::Mutex::new(Vec::new());
             let tree = crate::pdf::page_tree(svg, fonts, &missed)?;
+            for (family, drawn_in) in missed.into_inner().unwrap_or_default() {
+                let note = format!("{family}, which is not available, drawn in {drawn_in}");
+                if !approximated.contains(&note) {
+                    approximated.push(note);
+                }
+            }
             let size = krilla::geom::Size::from_wh(tree.size().width(), tree.size().height())?;
             let mut page = document.start_page_with(krilla::page::PageSettings::new(size));
             let mut surface = page.surface();
@@ -161,7 +171,132 @@ pub fn flow_map_of(doc: &Document, res: &Resolved, only: &[FlowRef]) -> Option<V
         }
     }
     document.set_outline(outline);
-    document.finish().ok()
+    if let Some(note) = faces.missing_note() {
+        approximated.push(note);
+    }
+    let pdf = document.finish().ok()?;
+    Some(crate::pdf::Export { pdf, approximated })
+}
+
+/// The faces the map's own words are set in: Inter, and for a character it
+/// lacks the first face that has it of those the document's text drew in and
+/// this thread's engine holds, the script fallbacks the app loaded among them.
+/// usvg's own glyph fallback stays within a run's family, so a run Inter lacks
+/// names the face that has it, as the PDF export's runs do.
+struct Faces {
+    inter: FontData,
+    others: Vec<FontData>,
+    /// Each character's face among `others`, `None` for Inter or for none.
+    picked: std::collections::HashMap<char, Option<usize>>,
+    used: std::collections::BTreeSet<usize>,
+    /// The characters no face has, in the order met.
+    missing: Vec<char>,
+}
+
+impl Faces {
+    fn new(inter: FontData, res: &Resolved) -> Self {
+        let mut seen = std::collections::HashSet::new();
+        let others = res
+            .text_fonts()
+            .into_iter()
+            .chain(mastik_core::text::registered_font_data())
+            .filter(|f| !mastik_core::text::is_bundled(f) && seen.insert((f.data.id(), f.index)))
+            .collect();
+        Self {
+            inter,
+            others,
+            picked: Default::default(),
+            used: Default::default(),
+            missing: Vec::new(),
+        }
+    }
+
+    fn covers(font: &FontData, c: char) -> bool {
+        mastik_core::text::face_covers(font.data.data(), font.index, c)
+    }
+
+    /// The face among `others` that draws `c`; `None` for Inter, and for a
+    /// character no face has, which is noted.
+    fn face_of(&mut self, c: char) -> Option<usize> {
+        if let Some(i) = self.picked.get(&c) {
+            return *i;
+        }
+        let i = match Self::covers(&self.inter, c) {
+            true => None,
+            false => {
+                let i = self.others.iter().position(|f| Self::covers(f, c));
+                match i {
+                    Some(i) => {
+                        self.used.insert(i);
+                    }
+                    None => self.missing.push(c),
+                }
+                i
+            }
+        };
+        self.picked.insert(c, i);
+        i
+    }
+
+    /// `text` as SVG text content, escaped, each run Inter lacks in a
+    /// `<tspan>` naming the face that has it. A space stays in the run it is
+    /// in; every other character Inter has goes back to Inter.
+    fn markup(&mut self, text: &str) -> String {
+        let mut out = String::new();
+        let mut run = String::new();
+        let mut face: Option<usize> = None;
+        let flush =
+            |out: &mut String, run: &mut String, face: Option<usize>, others: &[FontData]| {
+                if run.is_empty() {
+                    return;
+                }
+                match face {
+                    None => out.push_str(&escape(run)),
+                    Some(i) => {
+                        let alias = crate::svg::face_alias((others[i].data.id(), others[i].index));
+                        let _ = write!(
+                            out,
+                            "<tspan font-family=\"{alias}\">{}</tspan>",
+                            escape(run)
+                        );
+                    }
+                }
+                run.clear();
+            };
+        for c in text.chars() {
+            let want = match c.is_whitespace() || c.is_control() {
+                true => face,
+                false => self.face_of(c),
+            };
+            if want != face {
+                flush(&mut out, &mut run, face, &self.others);
+                face = want;
+            }
+            run.push(c);
+        }
+        flush(&mut out, &mut run, face, &self.others);
+        out
+    }
+
+    /// The faces the words drew in besides Inter.
+    fn used(&self) -> impl Iterator<Item = FontData> + '_ {
+        self.used.iter().map(|i| self.others[*i].clone())
+    }
+
+    /// The export's note for the characters no face had, if any.
+    fn missing_note(&self) -> Option<String> {
+        const SHOWN: usize = 12;
+        if self.missing.is_empty() {
+            return None;
+        }
+        let mut list: String = self.missing.iter().take(SHOWN).collect();
+        if self.missing.len() > SHOWN {
+            list.push('…');
+        }
+        Some(format!(
+            "the characters {list} in the map's words, which no font here has, drawn as missing glyphs"
+        ))
+    }
 }
 
 /// The frames a flow starting at `start` reaches, in the order met: every frame
@@ -548,13 +683,14 @@ fn on_its_page(doc: &Document, plan: &FlowPlan) -> Vec<NodeId> {
 
 /// The map page of `plan` as SVG: `here`, its frames on its page, as the PDF
 /// export draws them, framed on their `extent` with a margin and a title band,
-/// with the connectors and badges over them.
+/// with the connectors and badges over them, its words set in `faces`.
 fn map_svg(
     doc: &Document,
     res: &Resolved,
     plan: &FlowPlan,
     here: &[NodeId],
     extent: Rect,
+    faces: &mut Faces,
 ) -> Option<String> {
     let side = extent.width().max(extent.height());
     let margin = (side * 0.04).max(40.0);
@@ -589,7 +725,7 @@ fn map_svg(
         view.x0 + margin,
         view.y0 + margin * 1.1,
         margin * 0.5,
-        escape(&plan.name)
+        faces.markup(&plan.name)
     );
     let rect = |id: NodeId| layer_rect(res, doc, id);
     // Each frame outlined and named above, as the canvas names it.
@@ -608,7 +744,7 @@ fn map_svg(
             r.x0,
             r.y0 - unit * 6.0,
             unit * 12.0,
-            escape(name)
+            faces.markup(name)
         );
     }
     for &frame in here {
@@ -684,8 +820,9 @@ fn nearest(r: Rect, p: Point) -> Point {
 }
 
 /// The words pages of `plan` as SVG, each an A4 page of lines: the frames in
-/// order, each with its numbered reactions, wrapped to the page.
-fn words_pages(doc: &Document, plan: &FlowPlan) -> Vec<String> {
+/// order, each with its numbered reactions, wrapped to the page, set in
+/// `faces`.
+fn words_pages(doc: &Document, plan: &FlowPlan, faces: &mut Faces) -> Vec<String> {
     let mut lines: Vec<(bool, String)> = vec![(true, plan.name.clone())];
     if plan.frames.is_empty() {
         lines.push((false, "Its start frame is missing.".into()));
@@ -731,7 +868,7 @@ fn words_pages(doc: &Document, plan: &FlowPlan) -> Vec<String> {
                     "<text x=\"{MARGIN}\" y=\"{}\" font-family=\"Inter\" font-size=\"{TEXT_PT}\" \
                      font-weight=\"{weight}\" fill=\"#111111\" xml:space=\"preserve\">{}</text>",
                     MARGIN + LINE_PT * (i as f64 + 1.0),
-                    escape(text)
+                    faces.markup(text)
                 );
             }
             svg.push_str("</svg>");
@@ -870,7 +1007,9 @@ mod tests {
         );
         let here = [frame];
         let extent = crate::extent(&res, &here).expect("an extent");
-        let svg = map_svg(&doc, &res, &plan, &here, extent).expect("a map");
+        let inter = mastik_core::text::bundled_inter()[0].to_vec();
+        let mut faces = Faces::new(FontData::new(Blob::from(inter), 0), &res);
+        let svg = map_svg(&doc, &res, &plan, &here, extent, &mut faces).expect("a map");
         let at = badges(&svg);
         assert_eq!(at.len(), 3, "a badge a reaction: {at:?}");
         for (i, a) in at.iter().enumerate() {

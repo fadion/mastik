@@ -3304,16 +3304,24 @@ impl MastikApp {
                 return Delivered::cancelled();
             }
             let written = match made {
-                Some(bytes) => std::fs::write(&path, bytes).map_err(|e| e.to_string()),
+                Some(export) => std::fs::write(&path, export.pdf)
+                    .map(|()| export.approximated.len())
+                    .map_err(|e| e.to_string()),
                 None if mastik_export::flow_map::plans_of(&doc, &flows).is_empty() => {
                     Err("the document has no flows".to_string())
                 }
                 None => Err("the flow map could not be made".to_string()),
             };
+            // Counted, not listed: a note can quote a name, which private mode masks.
+            let head = match written {
+                Ok(k) if k > 0 => Some(format!("Exported the flow map — {k} drawn differently")),
+                _ => None,
+            };
             Delivered {
                 asker,
                 written: usize::from(written.is_ok()),
                 failed: written.err(),
+                head,
                 name: path.file_name().map(|n| n.to_string_lossy().into_owned()),
                 ..Delivered::empty(path.parent().map(Into::into).unwrap_or_default())
             }

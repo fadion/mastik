@@ -1664,12 +1664,16 @@ fn run_export(e: &OneOff) -> Result<(), String> {
         }
         ExportFormat::Prototype => prototype_html(&doc, file)?.into_bytes(),
         ExportFormat::FlowMap => {
-            mastik_export::flow_map::flow_map(&doc, &res).ok_or_else(|| {
+            let export = mastik_export::flow_map::flow_map(&doc, &res).ok_or_else(|| {
                 match mastik_export::flow_map::plans(&doc).is_empty() {
                     true => format!("{file}: no page has a flow to map"),
                     false => format!("cannot convert {file} to a flow map"),
                 }
-            })?
+            })?;
+            if !export.approximated.is_empty() {
+                eprintln!("drawn differently: {}", export.approximated.join(", "));
+            }
+            export.pdf
         }
     };
 
