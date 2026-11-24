@@ -390,7 +390,7 @@ impl Smart {
             if let Some(n) = p.doc.get(*id) {
                 match self.slid(p, *id, t - 1.0) {
                     Some(at) => out.get(*id).transform = Some(at),
-                    None => out.get(*id).opacity = Some(n.opacity() * fade),
+                    None => out.get(*id).opacity = Some(p.doc.drawn_opacity_of(n) * fade),
                 }
             }
         }
@@ -408,7 +408,7 @@ impl Smart {
             if let Some(n) = p.doc.get(*id) {
                 match self.slid(p, *id, t) {
                     Some(at) => out.get(*id).transform = Some(at),
-                    None => out.get(*id).opacity = Some(n.opacity() * (1.0 - fade)),
+                    None => out.get(*id).opacity = Some(p.doc.drawn_opacity_of(n) * (1.0 - fade)),
                 }
             }
         }
@@ -439,13 +439,13 @@ impl Player {
             .unwrap_or(instance)
     }
 
-    /// `id`'s look, measured from `reference`.
+    /// `id`'s look, measured from `reference`; a bound opacity as drawn.
     pub(crate) fn look(&self, reference: NodeId, id: NodeId) -> Look {
         let world = |x| self.res.world_transform(x).unwrap_or(Affine::IDENTITY);
         let rel = world(reference).inverse() * world(id);
         let (opacity, paint, effects) = match self.doc.get(id) {
             Some(n) => (
-                n.opacity(),
+                self.doc.drawn_opacity_of(n),
                 self.doc.resolved_paint(id, n.paint()).into_owned(),
                 self.doc.resolved_effects(id, n.effects()).into_owned(),
             ),

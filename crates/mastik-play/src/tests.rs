@@ -984,6 +984,44 @@ fn smart_animate_with_no_side_fades() {
     assert_eq!(n.transform, None, "not moved");
 }
 
+/// A fading layer whose opacity is bound fades from what it is drawn at, its
+/// variable's percentage, not the literal 0 its binding leaves.
+///
+/// flip: `Smart::patch_in` fading by `Node::opacity` → fails at "from 60%".
+#[test]
+fn a_bound_opacity_fades_from_what_it_draws() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let b = fx.frame("B", 300.0, 200.0, 100.0);
+    let go = fx.rect(a, "Go", 0.0, 0.0, 20.0, 20.0);
+    let badge = fx.rect(b, "Badge", 0.0, 60.0, 20.0, 20.0);
+    let muted = fx.var("muted", VarKind::Number, Cell::Number(60.0));
+    let bind = mastik_core::build::bind_opacity_ops(&fx.doc, badge, muted);
+    fx.apply(bind);
+    let mut fade = linear(TransitionKind::SmartAnimate, 100);
+    fade.direction = Direction::None;
+    fx.on(
+        go,
+        Trigger::Click,
+        vec![Action::Navigate {
+            to: b,
+            transition: fade,
+            keep_scroll: false,
+        }],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 5.0, 5.0);
+    p.tick(50.0);
+    let s = p.scene();
+    let o = s
+        .patches
+        .iter()
+        .find(|x| x.node == badge)
+        .and_then(|x| x.opacity);
+    let o = o.expect("patched");
+    assert!((o - 0.3).abs() < 1e-6, "from 60%: {o}");
+}
+
 /// Smart animate pairs an instance of one variant with an instance of another
 /// variant of the same set: the toggle moves between its places rather than
 /// one leaving and the other arriving.
