@@ -9618,11 +9618,14 @@ impl MastikApp {
         .iter()
         .copied()
         .find(|id| {
-            // A chart picks whole, its parts never: the frame is the leaf.
+            // A chart picks whole, its parts never: the frame is the leaf. A
+            // list frame is what `hit_test` answers for a copy, so a list
+            // standing on the page is kept too.
             !self.is_occupied_frame(*id)
                 || group_fence(doc, *id).is_some()
                 || mastik_core::component::instance_root(doc, *id).is_some()
                 || crate::app::is_chart(doc, *id)
+                || doc.get(*id).is_some_and(|n| n.list().is_some())
         })
     }
 

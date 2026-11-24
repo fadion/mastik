@@ -1344,16 +1344,25 @@ mod tests {
         assert_eq!(app.list_row_moved, None, "the note goes with a new pick");
     }
 
-    /// A double-click on a copy selects the template, wherever it lands.
-    /// flip: `double_click_pick` skipping `copy_template_at` → fails at "the template".
+    /// A copy of a list standing on the page picks as its list, and a
+    /// double-click on it selects the template, wherever it lands.
+    /// flip: `double_click_pick` skipping `copy_template_at` → fails at "the
+    /// template"; `pick_leaf` skipping the list as an occupied page frame →
+    /// fails at "picks as its list".
     #[test]
     fn a_double_click_on_a_copy_selects_the_template() {
         let ctx = egui::Context::default();
         let (mut app, inst) = with_row(&ctx);
         let (l, _) = listed(&mut app, inst, &["A", "B", "C"]);
+        assert!(
+            mastik_core::query::is_page_frame(&app.session.doc, l),
+            "fixture: the list stands on the page"
+        );
         let copy = app.session.doc.get(l).unwrap().list().unwrap().copies[1];
         let at = app.session.resolved.world_bounds(copy).unwrap().center();
-        app.double_click_pick(Some(l), at);
+        let leaf = app.pick_leaf(at);
+        assert_eq!(leaf, Some(l), "picks as its list");
+        app.double_click_pick(leaf, at);
         assert_eq!(app.session.selection.single(), Some(inst), "the template");
     }
 
