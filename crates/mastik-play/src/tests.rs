@@ -540,6 +540,58 @@ fn leaving_a_hover_that_navigated_comes_back() {
     assert!(p.history().is_empty());
 }
 
+/// *Set variable* to a value of another kind is skipped with a notice; one that
+/// does not change what the variable reads fires no *variable changes*; a
+/// condition that is not true or false gives a notice and falls to otherwise.
+///
+/// flip: `same_kind` dropped → fails at "the wrong kind is said"; `set_play`
+/// not comparing before and after → fails at "a no-op fires nothing".
+#[test]
+fn set_variable_and_conditional_skip_what_they_cannot_use() {
+    let (mut fx, a, card, n) = one_card();
+    let fired = fx.var("fired", VarKind::Number, Cell::Number(0.0));
+    let other = fx.var("other", VarKind::Number, Cell::Number(0.0));
+    fx.on(
+        a,
+        Trigger::VariableChanges { var: n },
+        vec![add(fired, 1.0)],
+    );
+    let set = |to: &str| Action::SetVariable {
+        var: n,
+        change: VarChange::Set {
+            to: Expr(to.into()),
+        },
+    };
+    let branch = fx.ids.mint_item();
+    let otherwise = fx.ids.mint_item();
+    fx.on(
+        card,
+        Trigger::Click,
+        vec![
+            set("\"a word\""),
+            set("0"),
+            Action::Conditional {
+                branches: vec![Branch {
+                    when: Expr("1 + 1".into()),
+                    actions: vec![Keyed::new(branch, add(other, 10.0))],
+                }],
+                otherwise: vec![Keyed::new(otherwise, add(other, 1.0))],
+            },
+        ],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 20.0, 20.0);
+    assert_eq!(number(&p, n), 0.0, "unchanged");
+    let said = p
+        .take_notices()
+        .into_iter()
+        .filter(|x| matches!(x, Notice::Expression { .. }))
+        .count();
+    assert_eq!(said, 2, "the wrong kind is said, and the condition");
+    assert_eq!(number(&p, fired), 0.0, "a no-op fires nothing");
+    assert_eq!(number(&p, other), 1.0, "otherwise ran");
+}
+
 /// A key trigger fires on its key, Shift-ed or not as written.
 ///
 /// flip: `Player::key` ignoring `shift` → fails at "the Shift-ed key is not
@@ -2910,6 +2962,62 @@ fn a_long_press_fires_while_held_and_takes_the_click() {
     p.input(Input::PointerUp(at));
     p.tick(1000.0);
     assert_eq!(number(&p, n), 11.0, "a short press is a click");
+}
+
+/// The deepest layer with a click takes it and the frame beneath does not; a
+/// held click runs at once when the next click lands on another layer; a drag
+/// cancels a long press.
+///
+/// flip: `fire` running every holder in the chain → fails at "the deepest
+/// only"; `click` dropping the held tap → fails at "the held click ran"; a
+/// drag not clearing the press's long presses → fails at "no long press after
+/// a drag".
+#[test]
+fn a_click_goes_to_the_deepest_and_a_held_one_is_not_lost() {
+    let (mut fx, a, card, n) = one_card();
+    let other = fx.rect(a, "Other", 100.0, 10.0, 50.0, 30.0);
+    fx.on(card, Trigger::Click, vec![add(n, 1.0)]);
+    fx.on(a, Trigger::Click, vec![add(n, 100.0)]);
+    let mut p = fx.play(a);
+    click(&mut p, 20.0, 20.0);
+    assert_eq!(number(&p, n), 1.0, "the deepest only");
+
+    fx.on(card, Trigger::DoubleClick, vec![add(n, 10.0)]);
+    fx.on(other, Trigger::Click, vec![add(n, 1000.0)]);
+    let mut p = fx.play(a);
+    click(&mut p, 20.0, 20.0);
+    p.tick(100.0);
+    click(&mut p, 110.0, 20.0);
+    assert_eq!(number(&p, n), 1001.0, "the held click ran");
+
+    let (mut fx, a, card, n) = one_card();
+    fx.on(card, Trigger::LongPress { ms: 500 }, vec![add(n, 10.0)]);
+    let mut p = fx.play(a);
+    let at = Point::new(20.0, 20.0);
+    p.input(Input::PointerMove(at));
+    p.input(Input::PointerDown(at));
+    p.input(Input::PointerMove(Point::new(40.0, 20.0)));
+    p.tick(600.0);
+    assert_eq!(number(&p, n), 0.0, "no long press after a drag");
+}
+
+/// Two *variable changes* reactions that set each other's variable stop at the
+/// depth limit with one `Loop` notice, and play goes on.
+///
+/// flip: `run_reaction` without its `MAX_DEPTH` guard → the stack overflows.
+#[test]
+fn reactions_setting_each_other_off_stop_with_one_notice() {
+    let (mut fx, a, card, n) = one_card();
+    let m = fx.var("m", VarKind::Number, Cell::Number(0.0));
+    fx.on(a, Trigger::VariableChanges { var: n }, vec![add(m, 1.0)]);
+    fx.on(a, Trigger::VariableChanges { var: m }, vec![add(n, 1.0)]);
+    fx.on(card, Trigger::Click, vec![add(n, 1.0)]);
+    let mut p = fx.play(a);
+    click(&mut p, 20.0, 20.0);
+    assert_eq!(p.take_notices(), vec![Notice::Loop], "said once");
+    assert!(number(&p, n) > 1.0, "it ran until the limit");
+    click(&mut p, 20.0, 20.0);
+    assert!(number(&p, n) > 2.0, "play goes on");
 }
 
 /// A quick drag left fires *On swipe left* and not the right; a slow one is no
