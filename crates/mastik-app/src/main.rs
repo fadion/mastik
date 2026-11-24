@@ -1034,9 +1034,14 @@ fn parse_export(args: &[String]) -> Result<Command, String> {
         return Err(format!("--quality applies only to --jpeg\n{USAGE}"));
     }
     if page.is_some() && format.whole_document() {
+        let what = match format {
+            ExportFormat::Prototype => "writes the pages its flows reach",
+            ExportFormat::FlowMap => "draws the flows, wherever their frames are",
+            _ => "writes every page",
+        };
         return Err(format!(
-            "--{} writes every page, so it takes no --page\n{USAGE}",
-            format.extension()
+            "{} {what}, so it takes no --page\n{USAGE}",
+            format.flag()
         ));
     }
     // A document format writes every layer, and a frames PDF a page per frame.
@@ -2792,15 +2797,20 @@ mod tests {
         }
     }
 
-    /// A format that writes every page refuses `--page`, naming itself.
+    /// A format that writes every page refuses `--page`, naming itself; the
+    /// prototype and the flow map say what they write instead.
+    /// flip: the refusal naming `extension()` → fails at `--prototype`.
     #[test]
     fn a_whole_document_format_takes_no_page() {
-        for flag in ["--json", "--penpot", "--sketch"] {
+        for (flag, what) in [
+            ("--json", "writes every page"),
+            ("--penpot", "writes every page"),
+            ("--sketch", "writes every page"),
+            ("--prototype", "writes the pages its flows reach"),
+            ("--flow-map", "draws the flows"),
+        ] {
             let err = export(&["a.mastik", flag, "--page", "2"]).unwrap_err();
-            assert!(
-                err.starts_with(&format!("{flag} writes every page")),
-                "{err}"
-            );
+            assert!(err.starts_with(&format!("{flag} {what}")), "{err}");
         }
     }
 
