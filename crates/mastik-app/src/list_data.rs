@@ -253,6 +253,60 @@ pub(crate) fn read_set_pictures(
     (next.pictures.len() > set.pictures.len()).then_some((images, next))
 }
 
+impl MastikApp {
+    /// Put list `id` as `next` over data set `set` as one step `label`: the
+    /// pictures `columns` name beside its linked file read and mapped first
+    /// ([`read_set_pictures`]), the set written when `adding` it or when the
+    /// read grew its map, then the list. Every door that points a list at a
+    /// table, or a property at an image column, commits through it. Whether
+    /// the step landed.
+    pub(crate) fn commit_list_onto(
+        &mut self,
+        id: NodeId,
+        set: &DataSet,
+        next: List,
+        columns: &[mastik_core::chart::ColumnId],
+        adding: bool,
+        label: &'static str,
+    ) -> bool {
+        let read = read_set_pictures(&self.session.doc, set, columns);
+        let (mut ops, set) = match read {
+            Some((ops, set)) => (ops, set),
+            None if adding => (Vec::new(), set.clone()),
+            None => {
+                self.list_commit(id, label, next);
+                return true;
+            }
+        };
+        ops.push(Operation::SetDataSet {
+            id: set.id,
+            set: Some(Box::new(set)),
+        });
+        ops.push(Operation::SetList {
+            id,
+            list: Some(Box::new(next)),
+        });
+        self.session.name_step(label, icon::TABLE);
+        self.commit_edit(Transaction(ops))
+    }
+
+    /// List `id` moved onto data set `d`, already in the document: each
+    /// property keeps its column where the table has one of that name, and the
+    /// pictures its image properties name are read in the same step.
+    pub(crate) fn list_onto_set(&mut self, id: NodeId, d: DataSetId) {
+        let doc = &self.session.doc;
+        let (Some(set), Some(now)) = (
+            doc.data_set(d).cloned(),
+            doc.get(id).and_then(|n| n.list()).cloned(),
+        ) else {
+            return;
+        };
+        let next = self.list_on(id, &now, &set);
+        let columns = picture_columns(&self.session.doc, id, &next.fill);
+        self.commit_list_onto(id, &set, next, &columns, false, "List data");
+    }
+}
+
 /// [`read_pictures`] over the first `rows` rows: every row for an export,
 /// which draws a file per row.
 pub(crate) fn read_pictures_in(
@@ -731,35 +785,14 @@ impl MastikApp {
 
     /// List `id` moved onto the new data set `set`, added in the same step: each
     /// property keeps its column where the new table has one of that name.
-    fn move_list_to_new_set(&mut self, id: NodeId, set: DataSet) {
+    pub(crate) fn move_list_to_new_set(&mut self, id: NodeId, set: DataSet) {
         let Some(now) = self.session.doc.get(id).and_then(|n| n.list()).cloned() else {
             return;
         };
         let next = self.list_on(id, &now, &set);
         let name = set.name.clone();
-        let doc = &self.session.doc;
-        let columns = picture_columns(doc, id, &next.fill);
-        let (images, set) = match read_set_pictures(doc, &set, &columns) {
-            Some(read) => read,
-            None => (Vec::new(), set),
-        };
-        let tx = Transaction(
-            images
-                .into_iter()
-                .chain([
-                    Operation::SetDataSet {
-                        id: set.id,
-                        set: Some(Box::new(set)),
-                    },
-                    Operation::SetList {
-                        id,
-                        list: Some(Box::new(next)),
-                    },
-                ])
-                .collect(),
-        );
-        self.session.name_step("List data", icon::TABLE);
-        if self.commit_edit(tx) {
+        let columns = picture_columns(&self.session.doc, id, &next.fill);
+        if self.commit_list_onto(id, &set, next, &columns, true, "List data") {
             self.session.info(format!("The list reads {name}"));
         }
     }

@@ -137,37 +137,12 @@ impl MastikApp {
             .unwrap_or_default();
         let mut columns = crate::list_data::picture_columns(doc, id, &next.fill);
         columns.retain(|c| !before.contains(c));
-        let dir = set
-            .as_ref()
-            .and_then(|s| s.source.as_ref())
-            .map(|l| std::path::PathBuf::from(&l.path));
-        let read =
-            match (&set, &dir) {
-                (Some(s), Some(file)) if !columns.is_empty() => Some(
-                    crate::list_data::read_pictures(doc, file.parent(), &s.table, &columns),
-                ),
-                _ => None,
-            };
-        let Some((images, pairs)) = read.filter(|(_, p)| !p.is_empty()) else {
-            return self.list_commit(id, "List fill", next);
-        };
-        let Some(mut set) = set else { return };
-        for (cell, picture) in pairs {
-            if !set.pictures.iter().any(|(c, _)| *c == cell) {
-                set.pictures.push((cell, picture));
+        match set {
+            Some(set) => {
+                self.commit_list_onto(id, &set, next, &columns, false, "List fill");
             }
+            None => self.list_commit(id, "List fill", next),
         }
-        let mut ops = images;
-        ops.push(Operation::SetDataSet {
-            id: set.id,
-            set: Some(Box::new(set)),
-        });
-        ops.push(Operation::SetList {
-            id,
-            list: Some(Box::new(next)),
-        });
-        self.session.name_step("List fill", icon::TABLE);
-        self.commit_edit(Transaction(ops));
     }
 
     /// The data set's dropdown, its summary, its file and its limits.
@@ -189,28 +164,7 @@ impl MastikApp {
             &TableRows::default(),
         );
         match pick {
-            Some(TablePick::Set(d)) => {
-                if let Some(set) = self.session.doc.data_set(d).cloned() {
-                    let next = self.list_on(id, now, &set);
-                    let doc = &self.session.doc;
-                    let columns = crate::list_data::picture_columns(doc, id, &next.fill);
-                    match crate::list_data::read_set_pictures(doc, &set, &columns) {
-                        Some((mut ops, set)) => {
-                            ops.push(Operation::SetDataSet {
-                                id: set.id,
-                                set: Some(Box::new(set)),
-                            });
-                            ops.push(Operation::SetList {
-                                id,
-                                list: Some(Box::new(next)),
-                            });
-                            self.session.name_step("List data", icon::TABLE);
-                            self.commit_edit(Transaction(ops));
-                        }
-                        None => self.list_commit(id, "List data", next),
-                    }
-                }
-            }
+            Some(TablePick::Set(d)) => self.list_onto_set(id, d),
             Some(TablePick::File) => self.list_data_dialog(id),
             _ => {}
         }
@@ -2208,6 +2162,90 @@ mod tests {
         assert_eq!(made.data, data, "the list reads the table");
         let set = doc.data_set(data).unwrap();
         assert!(set.picture(doc, "ada.png").is_some(), "read beside");
+    }
+
+    /// The table dropdown and *From a file…* move a list onto a linked table
+    /// and read the pictures its image column names beside the file, in one
+    /// *List data* step each.
+    /// flip: `commit_list_onto` skipping `read_set_pictures` → fails at
+    /// "dropdown: maps ada.png".
+    #[test]
+    fn moving_a_list_onto_a_linked_table_reads_its_pictures() {
+        use mastik_core::chart::DataLink;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let inst = with_photo(&mut app);
+        let dir = std::env::temp_dir().join(format!("mastik-move-list-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = crate::app::rgba_to_png(&[10; 16], (2, 2)).unwrap();
+        std::fs::write(dir.join("ada.png"), &png).unwrap();
+        let photo_table = |rows: Vec<Vec<String>>| Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "Photo".into(),
+            }],
+            rows,
+        };
+        let linked = |app: &mut MastikApp, name: &str| DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: name.into(),
+            table: photo_table(vec![vec!["ada.png".into()]]),
+            source: Some(DataLink {
+                path: dir.join("people.csv").to_string_lossy().into_owned(),
+                size: 0,
+                modified: 0,
+                header: None,
+            }),
+            pictures: Vec::new(),
+        };
+        let blank = DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "Blank".into(),
+            table: photo_table(vec![vec![String::new()]]),
+            source: None,
+            pictures: Vec::new(),
+        };
+        let first = blank.id;
+        let other = linked(&mut app, "People");
+        let other_id = other.id;
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::SetDataSet {
+                id: first,
+                set: Some(Box::new(blank)),
+            },
+            mastik_core::Operation::SetDataSet {
+                id: other_id,
+                set: Some(Box::new(other)),
+            },
+        ])));
+        app.make_list_over(inst, first);
+        let l = app.session.selection.single().expect("the list");
+
+        let depth = app.session.history.undo_depth();
+        app.list_onto_set(l, other_id);
+        let doc = &app.session.doc;
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
+        assert_eq!(
+            doc.get(l).and_then(|n| n.list()).map(|x| x.data),
+            Some(other_id)
+        );
+        let set = doc.data_set(other_id).unwrap();
+        assert!(
+            set.picture(doc, "ada.png").is_some(),
+            "dropdown: maps ada.png"
+        );
+
+        let fresh = linked(&mut app, "People 2");
+        let fresh_id = fresh.id;
+        app.move_list_to_new_set(l, fresh);
+        let _ = std::fs::remove_dir_all(&dir);
+        let doc = &app.session.doc;
+        let set = doc.data_set(fresh_id).expect("added");
+        assert!(
+            set.picture(doc, "ada.png").is_some(),
+            "from a file: maps ada.png"
+        );
     }
 
     /// *List fill* pointing the template's image property at a column of a
