@@ -5568,7 +5568,7 @@ impl MastikApp {
                 }
                 ui::selection_note(
                     ui,
-                    "Numbers take + − × ÷; text joins with +; and, or, not and comparisons test; type @ for a variable",
+                    "Numbers take + - * /; text joins with +; and, or, not and comparisons test; type @ for a variable",
                 );
             }
             Action::OpenUrl { url } => {
@@ -5864,7 +5864,11 @@ impl MastikApp {
                 });
             }
             if columns.is_empty() {
-                ui::selection_note(ui, "The table has no columns");
+                let said = match self.session.doc.data_set(table) {
+                    None => "The table is missing",
+                    Some(_) => "The table has no columns",
+                };
+                ui::selection_note(ui, said);
             }
             return next;
         }
@@ -9992,6 +9996,53 @@ mod tests {
         };
         assert_eq!(branches.len(), 2, "fixture: the first branch removed");
         assert!(at(&out, "zz(").is_empty(), "not moved");
+    }
+
+    /// An *Add row* whose table is gone says the table is missing, not that it
+    /// has no columns.
+    /// flip: `row_action_fields` saying "no columns" whatever the table → fails
+    /// at "says it is missing".
+    #[test]
+    fn a_row_action_on_a_missing_table_says_so() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        let gone = f.app.session.ids.mint_data_set();
+        let open = one_action(
+            &mut f,
+            Action::AddRow {
+                table: gone,
+                at: Default::default(),
+                cells: Vec::new(),
+            },
+        );
+        f.app.session.selection.set_one(f.add);
+        f.app.proto.open = Some(open);
+        let mut out = None;
+        for _ in 0..4 {
+            out = Some(ctx.run_ui(Default::default(), |ui| {
+                ui.set_max_width(280.0);
+                f.app.inspector_ui(ui)
+            }));
+        }
+        let drawn: Vec<String> = out
+            .expect("drawn")
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::Shape::Text(t) => Some(t.galley.job.text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            drawn.iter().any(|t| t == "Missing table"),
+            "fixture: the popover shows the action: {drawn:?}"
+        );
+        assert!(
+            drawn.iter().any(|t| t == "The table is missing")
+                && !drawn.iter().any(|t| t == "The table has no columns"),
+            "says it is missing: {drawn:?}"
+        );
     }
 
     /// An overlay's dashed connector costs what is on screen: a few hundred
