@@ -1179,7 +1179,7 @@ impl crate::app::MastikApp {
     }
 
     /// The top-level frame selected on the canvas's page, if any.
-    fn selected_frame(&self) -> Option<NodeId> {
+    pub(crate) fn selected_frame(&self) -> Option<NodeId> {
         let doc = &self.session.doc;
         let page = self.session.page;
         self.session.selection.ids().iter().copied().find(|id| {

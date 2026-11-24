@@ -1547,8 +1547,10 @@ runs (`pages` names each frame's page, index for index).
 
 - **Doors.** `Action::Present`: `Ctrl+Alt+Enter` in normal mode, `menu::Item::Present` (*Present mode*,
   `PLAY`, `Group::View`) in the palette and the cheatsheet's File section, and the last row of the View
-  menu's modes. The palette row dims *"No frames to present"* on the same test `start_presenting` makes
-  (`presentable`: the current page's visible top-level frames with bounds).
+  menu's modes. The palette row dims *"No frames to present"* only when the door would do
+  nothing: no flow on any page (`player::has_flows`, which plays instead) and none of the frames
+  `start_presenting` would show (`presentable`: the current page's visible top-level frames with
+  bounds). *Play prototype* dims *"No frames to play"* when `player::start_for` finds no start.
 - **Starting** (`start_presenting`). The frames are every page's that is not a draft, in page
   order — and the current page's even when it is a draft, since presenting from it asked for it.
   Each page gives its visible top-level frames with world bounds (`presentable_on`) in

@@ -831,14 +831,19 @@ impl MastikApp {
         ] {
             push(&mut out, Cmd::verb(item, None));
         }
-        let no_frames = self.presentable().is_empty();
+        // As `dispatch` decides: either plays another page's flow from a page
+        // with no frames.
+        let doc = &self.session.doc;
+        let no_present = !crate::player::has_flows(doc) && self.presentable().is_empty();
+        let no_play =
+            crate::player::start_for(doc, self.session.page, self.selected_frame()).is_none();
         push(
             &mut out,
-            Cmd::verb(Item::Present, no_frames.then_some("No frames to present")),
+            Cmd::verb(Item::Present, no_present.then_some("No frames to present")),
         );
         push(
             &mut out,
-            Cmd::verb(Item::Play, no_frames.then_some("No frames to play")),
+            Cmd::verb(Item::Play, no_play.then_some("No frames to play")),
         );
         let mut contrast = Cmd::verb(Item::CheckContrast, None);
         if self.contrast.is_some() {
@@ -2581,6 +2586,75 @@ pub(crate) mod tests {
             publish.why.as_deref(),
             Some("Make this document a kit first")
         );
+    }
+
+    /// *Present mode* and *Play prototype* stay live on a page with no frames while
+    /// another page has a flow, which both would play; with none anywhere, both dim.
+    /// flip: `palette_commands` dimming on `presentable()` alone → fails at "live".
+    #[test]
+    fn present_and_play_are_live_while_another_page_has_a_flow() {
+        use mastik_core::item::{ItemId, Keyed};
+        use mastik_core::kurbo::Size;
+        use mastik_core::prototype::{Flow, PagePlay};
+        use mastik_core::{NodeKind, Operation, Transaction};
+        let ctx = egui::Context::default();
+        let mut app = MastikApp::headless(&ctx);
+        let root = app.session.ids.mint();
+        app.session
+            .adopt_document(mastik_core::Document::new(root), None);
+        let live = |app: &mut MastikApp| {
+            app.toggle_palette(&ctx);
+            let pal = app.palette.take().expect("open");
+            let cmds = app.palette_commands(&pal);
+            [Item::Present, Item::Play].map(|item| {
+                cmds.iter()
+                    .find(|c| c.item == item)
+                    .expect("the row")
+                    .enabled
+            })
+        };
+        assert_eq!(live(&mut app), [false, false], "fixture: nothing to play");
+        let [page, frame] = [(); 2].map(|_| app.session.ids.mint());
+        let flow = ItemId(app.session.ids.mint());
+        assert!(app.session.commit(Transaction(vec![
+            Operation::AddPage {
+                id: page,
+                index: 1,
+                name: "Screens".into(),
+                ground: None,
+                draft: false,
+                modes: Vec::new(),
+                flows: Vec::new(),
+                play: PagePlay::default(),
+            },
+            Operation::CreateNode {
+                id: frame,
+                parent: page,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: Size::new(400.0, 800.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: Some("Home".into()),
+            },
+            Operation::SetFlows {
+                id: page,
+                flows: vec![Keyed::new(
+                    flow,
+                    Flow {
+                        name: "Onboarding".into(),
+                        start: frame,
+                        modes: Vec::new(),
+                        values: Vec::new(),
+                    },
+                )],
+            },
+        ])));
+        assert_ne!(app.session.page, page, "fixture: on the empty page");
+        assert!(app.presentable().is_empty(), "fixture: no frames here");
+        assert_eq!(live(&mut app), [true, true], "live");
     }
 
     /// The Document menu's rows and the quarter turns are commands: *Make this a kit*
