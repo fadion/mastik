@@ -536,14 +536,17 @@ fn targets(docs: &mut impl Documents, path: &Path, args: &Value) -> Result<(), S
 }
 
 /// Refuses a placement whose `parent` or `fill` is in a kit's vendored
-/// component, as every write tool refuses an edit there.
+/// component or in a list's copy, as every write tool refuses an edit there.
 fn refuse_vault(s: &crate::session::EditorSession, args: &Value) -> Result<(), String> {
     let fill = super::nodes(args, "fill")?.unwrap_or_default();
-    let ids: Vec<String> = fill
+    let ids: Vec<_> = fill
         .into_iter()
         .chain(super::node(args, "parent")?)
-        .map(|id| id.to_wire())
         .collect();
+    for id in &ids {
+        mastik_core::list::refuse_copy(&s.doc, *id)?;
+    }
+    let ids: Vec<String> = ids.iter().map(|id| id.to_wire()).collect();
     super::writes::refuse_kit_vault(s, &json!({ "nodes": ids }))
 }
 

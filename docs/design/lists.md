@@ -215,7 +215,10 @@ list's description as it drops a misplaced one.
   panel does not list it. A verb naming a layer of a copy as its `node`, `nodes` or `parent` is
   refused, pointing at the template (`verbs::refuse_list_copies`), so an agent's or a script's
   edit is not landed and then lost; a verb that only reads its layer (`add_style`,
-  `duplicate_as_component`, `push_to_main`) may name one. The snapshot marks each copy's layers
+  `duplicate_as_component`, `push_to_main`) may name one. The MCP doors that commit outside
+  `verbs::call` (`set`'s `rotation`, `place_asset`'s `parent` and `fill`) ask the same
+  `list::refuse_copy`. The prototype pickers (*Scroll to*'s layer, the scroll frames) offer no
+  copy's layer, whose id the next regeneration replaces. The snapshot marks each copy's layers
   with `list_copy` (`export.md`, *Snapshot*). `Document::apply` holds no such rule: the
   regeneration itself, and a main's edit propagated into the copies, write them.
 

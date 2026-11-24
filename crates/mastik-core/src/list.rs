@@ -653,6 +653,23 @@ pub fn copy_owner(doc: &Document, id: NodeId) -> Option<NodeId> {
     None
 }
 
+/// Refuse, in words, a write landing on `id` when it is in a list's copy: the
+/// copies are made again from the template whenever the list regenerates, so
+/// the edit would land and then be lost without a word. Every door an agent
+/// writes through asks this, not `verbs::call` alone.
+pub fn refuse_copy(doc: &Document, id: NodeId) -> Result<(), String> {
+    let Some(list) = copy_owner(doc, id) else {
+        return Ok(());
+    };
+    let template = template(doc, list).map_or_else(String::new, |t| format!(" `{}`", t.to_wire()));
+    Err(format!(
+        "`{}` is in a row list `{}` makes from its template{template}, and is made again \
+         whenever the list regenerates: edit the template, or the list's data",
+        id.to_wire(),
+        list.to_wire()
+    ))
+}
+
 /// Every list frame in the document, in id order.
 pub fn lists(doc: &Document) -> Vec<NodeId> {
     let mut out: Vec<NodeId> = doc

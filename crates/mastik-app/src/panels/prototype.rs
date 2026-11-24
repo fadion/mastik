@@ -444,7 +444,7 @@ fn scrolling_frames(doc: &Document, id: NodeId) -> Vec<NodeId> {
         at = doc.get(x).and_then(|n| n.parent());
     }
     if let Some(screen) = screen_of(doc, id) {
-        for x in mastik_core::subtree_nodes(doc, &[screen]) {
+        for x in pickable_under(doc, screen) {
             if scrolls(x) && !out.contains(&x) {
                 out.push(x);
             }
@@ -1443,6 +1443,16 @@ fn descendants(doc: &Document, root: NodeId) -> Vec<NodeId> {
         }
     }
     out
+}
+
+/// [`descendants`] a picker offers as a target: a list's copies left out,
+/// since every regeneration remakes them under new ids and a picked copy would
+/// turn into *Missing layer*; the template's layers stay.
+fn pickable_under(doc: &Document, root: NodeId) -> Vec<NodeId> {
+    descendants(doc, root)
+        .into_iter()
+        .filter(|x| mastik_core::list::copy_owner(doc, *x).is_none())
+        .collect()
 }
 
 /// The instance *Change to* switches from a layer: the instance it is or is in,
@@ -5096,7 +5106,7 @@ impl MastikApp {
             }
             Action::ScrollTo { layer, transition } => {
                 let options: Vec<NodeId> = screen_of(doc, id)
-                    .map(|s| descendants(doc, s))
+                    .map(|s| pickable_under(doc, s))
                     .unwrap_or_default();
                 if let Some(t) = layer_combo(ui, doc, ("scroll", k.id), None, *layer, &options, w) {
                     out = Some((
@@ -8039,6 +8049,41 @@ mod tests {
 
     fn keyed(n: u32, a: Action) -> Keyed<Action> {
         Keyed::new(item(n), a)
+    }
+
+    /// A picker's targets on a screen holding a list keep the template and
+    /// leave out its copies, whose ids every regeneration replaces.
+    /// flip: `pickable_under` without its `copy_owner` filter → fails at "no
+    /// copy".
+    #[test]
+    fn a_picker_offers_no_list_copy() {
+        use mastik_core::chart::{Column, ColumnId, Table};
+        use mastik_core::list::{self, DataSet, Source};
+        let ctx = egui::Context::default();
+        let f = fixture(&ctx);
+        let mut doc = f.app.session.doc.clone();
+        let mut ids = IdSource::new(0xB1);
+        let data = DataSet {
+            id: ids.mint_data_set(),
+            name: "Rows".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "A".into(),
+                }],
+                rows: vec![vec!["1".into()], vec!["2".into()]],
+            },
+            source: None,
+            pictures: Vec::new(),
+        };
+        let res = mastik_core::Resolved::rebuild(&doc);
+        let (tx, l) = list::make(&doc, &res, &mut ids, f.inst, Source::New(data)).unwrap();
+        doc.apply(&tx).expect("the list");
+        list::regenerate_outside_history(&mut doc, &[l]);
+        let copy = doc.get(l).unwrap().list().unwrap().copies[0];
+        let options = pickable_under(&doc, f.home);
+        assert!(options.contains(&f.inst), "the template stays");
+        assert!(!options.contains(&copy), "no copy");
     }
 
     /// A conditional holding one action in its branch and one in its *else*.

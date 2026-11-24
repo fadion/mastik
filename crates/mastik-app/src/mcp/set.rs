@@ -220,6 +220,7 @@ pub(super) fn set(
                 let Some(tx) = turned else {
                     continue;
                 };
+                mastik_core::list::refuse_copy(&s.doc, *id)?;
                 refuse_kit_vault(s, &json!({ "node": id.to_wire() }))?;
                 if let Some(base) = base {
                     stale(conn, s, base, &tx)?;
@@ -526,6 +527,42 @@ mod tests {
         };
         let (a, b) = (world * mastik_core::kurbo::Point::ZERO, world * *end);
         assert!((b.y - a.y).abs() < 1e-6 && b.x > a.x, "flat: {a:?} → {b:?}");
+    }
+
+    /// `set`'s `rotation`, committed outside `verbs::call`, refuses a list's
+    /// copy as every verb does, naming the template.
+    /// flip: the rotation arm without `list::refuse_copy` → fails at "refused".
+    #[test]
+    fn set_rotation_refuses_a_list_copy() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let page = docs.session.doc.first_page().to_wire();
+        let row = rect(&mut engine, &mut docs, 1, "Row");
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "make_component",
+            json!({ "nodes": [row] }),
+        );
+        let made = &ok(&out)["created"];
+        let main = made[0].as_str().map_or(row, str::to_owned);
+        let args = json!({ "main": main, "parent": page, "x": 300, "y": 0 });
+        let out = call(&mut engine, &mut docs, 1, "create_instance", args);
+        let inst = ok(&out)["created"][0].as_str().unwrap().to_owned();
+        let args = json!({ "name": "People", "columns": ["Name"], "rows": [["Ana"], ["Ben"]] });
+        ok(&call(&mut engine, &mut docs, 1, "add_table", args));
+        let args = json!({ "node": inst, "table": "People" });
+        let out = call(&mut engine, &mut docs, 1, "make_list", args);
+        let list = NodeId::from_wire(ok(&out)["created"][0].as_str().unwrap()).unwrap();
+        let copy = docs.session.doc.get(list).unwrap().list().unwrap().copies[0];
+        let set = json!({ "nodes": [copy.to_wire()], "props": { "rotation": 15 } });
+        let out = call(&mut engine, &mut docs, 1, "set", set);
+        assert!(out.is_error, "refused");
+        let mastik_mcp::wire::Content::Text(why) = &out.content[0] else {
+            panic!("no text")
+        };
+        assert!(why.contains(&inst), "names the template: {why}");
     }
 
     /// `set`'s `at`, and `set_transform` by name or through `call`, on a layer

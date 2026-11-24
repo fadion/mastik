@@ -1574,20 +1574,7 @@ fn refuse_list_copies(
             _ => continue,
         };
         for id in ids {
-            let Some(list) = crate::list::copy_owner(doc, id) else {
-                continue;
-            };
-            let template = crate::list::template(doc, list)
-                .map_or_else(String::new, |t| format!(" `{}`", t.to_wire()));
-            return Err(args.invalid(
-                p.name,
-                format!(
-                    "`{}` is in a row list `{}` makes from its template{template}, and is made \
-                     again whenever the list regenerates: edit the template, or the list's data",
-                    id.to_wire(),
-                    list.to_wire()
-                ),
-            ));
+            crate::list::refuse_copy(doc, id).map_err(|why| args.invalid(p.name, why))?;
         }
     }
     Ok(())
