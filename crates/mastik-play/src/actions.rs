@@ -940,7 +940,7 @@ fn same_kind(
     use crate::player::kind_of;
     let word = |k| match k {
         mastik_core::variable::VarKind::Number => "a number",
-        mastik_core::variable::VarKind::String => "text",
+        mastik_core::variable::VarKind::String => "a string",
         mastik_core::variable::VarKind::Boolean => "true or false",
         mastik_core::variable::VarKind::Color => "a colour",
     };

@@ -129,25 +129,22 @@ fn count(n: usize, one: &str) -> String {
 
 /// The document's variables `word` matches, each with its kind and collection
 /// (*number · Theme*): after `play.vars.`, and for a verb's variable argument.
+/// A name two variables share names neither, so it is not offered.
 fn variable_names(doc: &Document, word: &str) -> Vec<Row> {
-    use mastik_core::variable::VarKind;
     let t = doc.variables();
     rank(
         Section::Choices,
         word,
-        t.iter().map(|v| {
-            let kind = match v.kind {
-                VarKind::Number => "number",
-                VarKind::String => "text",
-                VarKind::Boolean => "boolean",
-                VarKind::Color => "colour",
-            };
-            let detail = match t.collection_of(v.id) {
-                Some(c) => format!("{kind} \u{b7} {}", c.name),
-                None => kind.to_owned(),
-            };
-            (v.name.as_str(), detail)
-        }),
+        t.iter()
+            .filter(|v| t.ids_named(&v.name).len() == 1)
+            .map(|v| {
+                let kind = v.kind.word();
+                let detail = match t.collection_of(v.id) {
+                    Some(c) => format!("{kind} \u{b7} {}", c.name),
+                    None => kind.to_owned(),
+                };
+                (v.name.as_str(), detail)
+            }),
     )
 }
 
@@ -179,15 +176,22 @@ fn id_names(doc: &Document, what: &str, word: &str) -> Option<Vec<Row>> {
                 .iter()
                 .map(|s| (s.name.as_str(), count(s.source.lines().count(), "line"))),
         ),
-        "mode" => rank(
-            Section::Choices,
-            word,
-            t.collections().iter().flat_map(|c| {
-                c.modes
+        // A name two collections share picks no mode, so it is not offered.
+        "mode" => {
+            let modes = || {
+                t.collections()
                     .iter()
-                    .map(|m| (m.name.as_str(), format!("mode \u{b7} {}", c.name)))
-            }),
-        ),
+                    .flat_map(|c| c.modes.iter().map(move |m| (c, m)))
+            };
+            let once = |name: &str| modes().filter(|(_, m)| m.name == name).count() == 1;
+            rank(
+                Section::Choices,
+                word,
+                modes()
+                    .filter(|(_, m)| once(&m.name))
+                    .map(|(c, m)| (m.name.as_str(), format!("mode \u{b7} {}", c.name))),
+            )
+        }
         "collection" => rank(
             Section::Choices,
             word,

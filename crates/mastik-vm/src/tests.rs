@@ -2370,9 +2370,11 @@ fn table_names_complete_after_tables_and_for_a_table_argument() {
 }
 
 /// A verb's variable and script arguments complete with their names and a
-/// note each, and the name completion writes runs on the one it names.
+/// note each, and the name completion writes runs on the one it names; a name
+/// two variables share is not offered.
 /// flip: `verb_argument` not offering `id_names` → fails at "a variable
-/// argument".
+/// argument"; `variable_names` offering a shared name → fails at "a shared
+/// name".
 #[test]
 fn id_arguments_complete_by_name_and_run_on_what_they_name() {
     let mut h = TestHost::new();
@@ -2404,12 +2406,24 @@ fn id_arguments_complete_by_name_and_run_on_what_they_name() {
     );
     let err = run_line(&mut h, &e, "remove_script Nothing").unwrap_err();
     assert!(err.message.contains("script"), "{}", err.message);
+
+    // A name two variables share picks neither, so it is not offered.
+    h.make("add_collection", json!({ "name": "Other" }));
+    let other = h.doc.variables().collections()[1].id;
+    h.make("add_variable", json!({ "kind": "number", "name": "Twin" }));
+    h.make(
+        "add_variable",
+        json!({ "kind": "number", "name": "Twin", "collection": other }),
+    );
+    let c = complete(&h.doc, h.page, &labels, "rename_variable Tw", 18);
+    assert!(c.rows.is_empty(), "a shared name: {:?}", c.rows);
 }
 
 /// A layer's reactions and play settings and its page's flows read in the
-/// shapes their verbs take, so a script copies them from one layer to others.
+/// shapes their verbs take and write back through them; a flows write over
+/// layers on two pages is refused.
 /// flip: `props::read` answering nil for `reactions` → fails at "copied to
-/// both".
+/// both"; `write_model` without its one-page check → fails at "two pages".
 #[test]
 fn prototype_properties_read_as_their_verbs_take_them() {
     let mut h = TestHost::new();
@@ -2453,12 +2467,26 @@ fn prototype_properties_read_as_their_verbs_take_them() {
     assert_eq!(out.copied.as_deref(), Some("Main"), "the page's flows");
     let out = run_script(&mut h, &e, "return #Two.reactions[1].actions").unwrap();
     assert_eq!(out.copied.as_deref(), Some("1"));
+
+    h.make("add_page", json!({}));
+    let page = h.doc.pages().last().unwrap().id;
+    let there = h.rect(page, "There", 0.0, 0.0, 10.0, 10.0);
+    let spread = [two, there];
+    let e = env(&spread, &labels);
+    let err = run_script(&mut h, &e, "sel.flows = nil").unwrap_err();
+    assert!(
+        err.message.contains("2 pages"),
+        "two pages: {}",
+        err.message
+    );
 }
 
 /// `play` is bound only where the host has play state: elsewhere it raises at
-/// its line. Its members and, after `play.vars.`, the variables complete.
+/// its line, unless a layer has the name. Its members and, after `play.vars.`,
+/// the variables complete.
 /// flip: the run binding `play` without asking `Host::play` → fails at "raises
-/// outside play".
+/// outside play"; raising without looking for a layer → fails at "the layer
+/// called play".
 #[test]
 fn play_is_there_only_in_play_and_completes() {
     let mut h = TestHost::new();
@@ -2477,6 +2505,15 @@ fn play_is_there_only_in_play_and_completes() {
     assert_eq!(first(c).as_deref(), Some("vars"));
     let c = complete_script(&h.doc, h.page, "print(play.vars.Co", 18);
     assert_eq!(first(c).as_deref(), Some("Count"));
+
+    // Outside play, a layer called `play` is found by its name.
+    let frame = h.frame("play", 50.0, 50.0);
+    let out = run_script(&mut h, &e, "return play.id").unwrap();
+    assert_eq!(
+        out.copied.as_deref(),
+        Some(frame.to_wire().as_str()),
+        "the layer called play"
+    );
 }
 
 /// A run that fails part-way writes no table, and a write names what is wrong.

@@ -100,8 +100,9 @@ The environment's `__index` (`run::resolve`) answers an unknown name in this ord
    without `random` and `randomseed`, `table` without the deprecated `foreach`, `foreachi` and
    `getn`, `param` (a script's inputs, §10), `tables` (the document's tables, `lists.md`
    *Verbs*; answered before `run::resolve`, ahead of every name here), `play` (likewise, and only
-   in a script a playing prototype runs, `play.md` *Run script*; anywhere else it raises at its
-   line, `Host::play` being `None`), and the allowlist `string`, `ipairs`,
+   in a script a playing prototype runs, `play.md` *Run script*; anywhere else, `Host::play`
+   being `None`, it is a layer's name when one has it and raises at its line when none does),
+   and the allowlist `string`, `ipairs`,
    `pairs`, `select`, `tonumber`, `tostring`, `type`, `assert`, `error`. A name off the allowlist
    (`os`, `debug`, `require`, `load`, `pcall`, `setmetatable`…) is an unknown name.
 6. **A layer name** on the current page, matched exactly. Two or more raise, naming the count and
@@ -148,7 +149,7 @@ decision 2):
 | `gap`, `padding`, `direction` | as laid out, a bound one at its variable's value: the layout's gap (no one value when its rows and columns differ), its padding (one number when the sides agree, else `{ top, right, bottom, left }`) and a flex layout's direction; nil without a layout | `set_display`, the rest of the layout kept; refused where nothing is laid out, and `direction` on a grid |
 | `layout_item` | how the layer sizes and places itself in its parent's layout, as its table (`{}` for the defaults): as authored, a bound limit at its variable's value, never the width a frame with width queries is laid at (`Document::bound_item`) | `set_layout_item` |
 | `reactions`, `play` | the layer's prototype reactions and settings, in the shapes MCP reads them (`verbs::reactions_value`, a transition left out where it is the page's default; `verbs::play_value`); a write sets the list as given, ids and targets as they are, so copying one layer's reactions onto others is the verb `copy_reactions(others, a)`, *Paste interactions* | `set_reactions` / `set_play`; nil clears |
-| `flows` | the flows of the page the layer is on (`verbs::play_value`); a page's own layer reads its own | `set_flows` on each page the layers are on; nil clears |
+| `flows` | the flows of the page the layer is on (`verbs::play_value`); a page's own layer reads its own | `set_flows` on the page the layers are on, refused over layers on two pages, since a flow starts on its own page's frame; nil clears |
 | `id`, `kind`, `parent`, `children`, `prev`, `next` | read-only | — |
 
 **Read and write round-trip**: a read gives what is drawn in the model's own terms — a bound

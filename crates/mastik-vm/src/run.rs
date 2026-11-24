@@ -1141,13 +1141,23 @@ pub(crate) fn run(
                         return Ok(Value::Table(tables.clone()));
                     }
                     if name == "play" {
-                        if st.borrow_mut().host.play().is_none() {
-                            return Err(raise_at(
-                                lua,
-                                "`play` is there only in a script a playing prototype runs",
-                                Some("play"),
-                                None,
-                            ));
+                        let playing = st.borrow_mut().host.play().is_some();
+                        // Outside play the name is a layer's, if one has it.
+                        if !playing {
+                            let found =
+                                resolve(lua, st, env, &name, &call_verb, &print, &percent, &params);
+                            let Ok((v, keep)) = found else {
+                                return Err(raise_at(
+                                    lua,
+                                    "`play` is there only in a script a playing prototype runs",
+                                    Some("play"),
+                                    None,
+                                ));
+                            };
+                            if keep {
+                                cache.raw_set(name.as_str(), v.clone())?;
+                            }
+                            return Ok(v);
                         }
                         cache.raw_set("play", play.clone())?;
                         return Ok(Value::Table(play.clone()));
@@ -2127,7 +2137,8 @@ fn write_model(
                 }
                 _ => return Err(wrong()),
             };
-            // Each page the layers are on, once.
+            // Each page the layers are on, once. A flow starts on a frame of its
+            // own page, so one list is never written to two.
             let mut pages: Vec<NodeId> = Vec::new();
             for id in ids {
                 if let Some(p) = st.host.doc().page_of(*id)
@@ -2135,6 +2146,12 @@ fn write_model(
                 {
                     pages.push(p);
                 }
+            }
+            if pages.len() > 1 {
+                return Err(fail(format!(
+                    "the layers are on {} pages, and a page's flows start on its own frames; set each page's from a layer on it",
+                    pages.len()
+                )));
             }
             for page in pages {
                 st.apply(

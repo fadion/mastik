@@ -50,7 +50,7 @@ fn var_json(lua: &Lua, v: &Value) -> mlua::Result<serde_json::Value> {
             return Err(raise(
                 lua,
                 format!(
-                    "A variable holds a number, text, true or false, or a colour like \"#ff7a1a\", not {}",
+                    "A variable holds a number, a string, true or false, or a colour like \"#ff7a1a\", not {}",
                     super::type_name(other)
                 ),
             ));

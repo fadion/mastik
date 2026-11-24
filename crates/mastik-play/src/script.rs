@@ -133,7 +133,7 @@ mod host {
     fn value_of(kind: VarKind, name: &str, v: &serde_json::Value) -> Result<Value, String> {
         let wanted = match kind {
             VarKind::Number => "a number",
-            VarKind::String => "text",
+            VarKind::String => "a string",
             VarKind::Boolean => "true or false",
             VarKind::Color => "a colour like \"#ff7a1a\"",
         };
@@ -169,6 +169,10 @@ mod host {
                 .variables()
                 .kind_of(id)
                 .ok_or_else(|| format!("No variable “{name}”"))?;
+            // *Set variable* skips a variable that reads nothing at its layer.
+            if self.doc.resolve_var(self.reader(), id).is_none() {
+                return Err(format!("{name} reads no value here"));
+            }
             let value = value_of(kind, name, &value)?;
             if !self.written.iter().any(|w| w.var == id) {
                 self.written.push(Written {
