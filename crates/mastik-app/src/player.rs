@@ -1877,6 +1877,15 @@ impl crate::app::MastikApp {
         play_name(p).shown().into_owned()
     }
 
+    /// Makes the played document's tab the active one, when another is in front.
+    fn bring_played_forward(&mut self) {
+        if let Some(tab) = self.playing.as_ref().and_then(|p| p.tab)
+            && self.tabs.active != Some(tab)
+        {
+            self.activate_tab(tab);
+        }
+    }
+
     fn player_act(&mut self, ctx: &egui::Context, act: BarAct) {
         match act {
             BarAct::Flow(r) => self.replay_from(Start::Flow(r)),
@@ -1884,15 +1893,15 @@ impl crate::app::MastikApp {
             BarAct::Close => self.stop_playing(ctx),
             BarAct::Detach => self.place_player(ctx, Place::Detached),
             BarAct::Attach => self.place_player(ctx, Place::Over),
-            BarAct::Fullscreen => self.place_player(ctx, Place::Fullscreen),
+            BarAct::Fullscreen => {
+                // Fullscreen passes undo, redo and save to the front session:
+                // bring the played document forward so they act on what shows.
+                self.bring_played_forward();
+                self.place_player(ctx, Place::Fullscreen);
+            }
             BarAct::Export => {
-                // The card exports the document in front: bring the played one
-                // forward first.
-                if let Some(tab) = self.playing.as_ref().and_then(|p| p.tab)
-                    && self.tabs.active != Some(tab)
-                {
-                    self.activate_tab(tab);
-                }
+                // The card exports the document in front.
+                self.bring_played_forward();
                 let takes = !self.front_takes().is_empty();
                 self.open_export(match takes {
                     true => crate::prototype_export::Output::Video,
@@ -2453,29 +2462,7 @@ mod tests {
         app.session.selection.set_one(a);
         app.play(&ctx, Place::Over, false);
         whole_frame(&ctx, &mut app, Vec::new());
-        // A second document in a tab of its own, one frame on its page.
-        let mut ids = IdSource::new(0x5A);
-        let other_page = ids.mint();
-        let other_frame = ids.mint();
-        let mut other = Document::new(other_page);
-        other
-            .apply(&Transaction(vec![Operation::CreateNode {
-                id: other_frame,
-                parent: other_page,
-                index: 0,
-                kind: NodeKind::Artboard {
-                    size: Size::new(50.0, 50.0),
-                    corner_radii: RoundedRectRadii::default(),
-                    corner_smoothing: 0.0,
-                },
-                transform: None,
-                name: Some("Other".into()),
-            }]))
-            .expect("the other document applies");
-        let front = app.tab_for_adopting(None);
-        app.session.adopt_document(other, None);
-        app.session.selection.set_one(other_frame);
-        whole_frame(&ctx, &mut app, Vec::new());
+        let (front, other_frame) = open_another_document(&ctx, &mut app);
         assert_ne!(front, played, "fixture: another tab in front");
         let p = app.playing.as_ref().expect("fixture: still playing");
         assert_eq!(p.player.screen(), a, "fixture: playing from A");
@@ -2501,6 +2488,56 @@ mod tests {
         assert!(
             !app.session.history.keeps_journal(),
             "the played document's journal is off"
+        );
+    }
+
+    /// Opens a second document, one frame on its page, in a tab of its own in
+    /// front; answers that tab and the frame.
+    fn open_another_document(ctx: &egui::Context, app: &mut MastikApp) -> (TabId, NodeId) {
+        let mut ids = IdSource::new(0x5A);
+        let other_page = ids.mint();
+        let other_frame = ids.mint();
+        let mut other = Document::new(other_page);
+        other
+            .apply(&Transaction(vec![Operation::CreateNode {
+                id: other_frame,
+                parent: other_page,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: Size::new(50.0, 50.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: Some("Other".into()),
+            }]))
+            .expect("the other document applies");
+        let front = app.tab_for_adopting(None);
+        app.session.adopt_document(other, None);
+        app.session.selection.set_one(other_frame);
+        whole_frame(ctx, app, Vec::new());
+        (front, other_frame)
+    }
+
+    /// *Fullscreen* from behind another tab brings the played document forward,
+    /// so the undo, redo and save fullscreen passes act on what it shows.
+    /// flip: `player_act`'s Fullscreen arm without `bring_played_forward` →
+    /// fails at "the played tab is in front".
+    #[test]
+    fn fullscreen_brings_the_played_tab_forward() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = fixture(&ctx, true);
+        let played = app.tabs.active.expect("fixture: a tab in front");
+        app.play(&ctx, Place::Over, false);
+        whole_frame(&ctx, &mut app, Vec::new());
+        let (front, _) = open_another_document(&ctx, &mut app);
+        assert_ne!(app.tabs.active, Some(played), "fixture: {front:?} in front");
+        app.player_act(&ctx, BarAct::Fullscreen);
+        assert_eq!(app.tabs.active, Some(played), "the played tab is in front");
+        assert_eq!(
+            app.playing.as_ref().map(|p| p.place),
+            Some(Place::Fullscreen),
+            "fullscreen"
         );
     }
 
