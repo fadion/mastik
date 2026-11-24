@@ -9,7 +9,7 @@ use std::cell::RefCell;
 
 use mastik_core::chart::Table as Cells;
 use mastik_core::list::DataSetId;
-use mlua::{Lua, Table, Value};
+use mlua::{IntoLua, Lua, Table, Value};
 use serde_json::json;
 
 use super::{State, raise, writable};
@@ -211,7 +211,7 @@ pub(super) fn install<'s>(
             let id = id_of(lua, &t)?;
             match key {
                 Value::Integer(i) => with_cells(lua, state, id, |w, name| {
-                    let at = row_at(lua, w, name, i)?;
+                    let at = row_at(lua, w, name, crate::wide(i))?;
                     let row = lua.create_table()?;
                     for (c, cell) in w.cells.columns.iter().zip(&w.cells.rows[at]) {
                         row.raw_set(c.name.as_str(), cell.as_str())?;
@@ -219,9 +219,7 @@ pub(super) fn install<'s>(
                     Ok(Value::Table(row))
                 }),
                 Value::String(s) => match s.to_str()?.as_ref() {
-                    "rows" => with_cells(lua, state, id, |w, _| {
-                        Ok(Value::Integer(w.cells.rows.len() as i64))
-                    }),
+                    "rows" => with_cells(lua, state, id, |w, _| w.cells.rows.len().into_lua(lua)),
                     "name" => with_cells(lua, state, id, |_, name| {
                         Ok(Value::String(lua.create_string(name)?))
                     }),

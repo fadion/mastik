@@ -214,6 +214,16 @@ pub(crate) fn format_number(n: f64) -> String {
     if s == "-0" { "0".into() } else { s.to_owned() }
 }
 
+/// A Luau integer as 64 bits: mlua's `Integer` is 32 bits on wasm32, where the
+/// exported page runs scripts, and 64 on the desktop.
+#[allow(
+    clippy::useless_conversion,
+    reason = "the conversion is a no-op only where `Integer` is i64"
+)]
+pub(crate) fn wide(i: mlua::Integer) -> i64 {
+    i64::from(i)
+}
+
 /// A collection as the bar names it: "Card", "Card and 2 more", "no layers".
 pub(crate) fn describe(doc: &Document, ids: &[NodeId]) -> String {
     let name = |id: NodeId| {

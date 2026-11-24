@@ -5,6 +5,8 @@
 
 use mlua::{Lua, MetaMethod, MultiValue, UserData, UserDataMethods, Value};
 
+use crate::wide;
+
 /// One generator, `random(seed)` in a script.
 pub(crate) struct Rng {
     state: [u64; 4],
@@ -71,16 +73,6 @@ impl Rng {
             }
         }
     }
-}
-
-/// A Luau integer as 64 bits: mlua's `Integer` is 32 bits on wasm32, where the
-/// exported page runs scripts, and 64 on the desktop.
-#[allow(
-    clippy::useless_conversion,
-    reason = "the conversion is a no-op only where `Integer` is i64"
-)]
-fn wide(i: mlua::Integer) -> i64 {
-    i64::from(i)
 }
 
 /// The seed `v` as 64 bits: a whole number as itself, so `random(1)` and
