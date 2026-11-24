@@ -751,6 +751,23 @@ pub(crate) fn filled_layer(
     None
 }
 
+/// Why `op` cannot be committed: it hides, shows, retypes or refills a layer
+/// [`filled_layer`] guards, which the next regeneration would write back. The
+/// doors that build their edit as a transaction (*Hide*, *Fill with content*)
+/// ask this of each operation.
+pub(crate) fn filled_op(
+    doc: &mastik_core::Document,
+    op: &mastik_core::Operation,
+) -> Option<String> {
+    use mastik_core::Operation as Op;
+    match op {
+        Op::SetVisible { id, .. } => filled_layer(doc, *id, PropKind::Boolean),
+        Op::SetText { id, .. } => filled_layer(doc, *id, PropKind::Text),
+        Op::SetFills { id, .. } => filled_layer(doc, *id, PropKind::Image),
+        _ => None,
+    }
+}
+
 /// A row's label in the label column, **right-aligned against its control**
 /// (§15 D996, `component::label_mark_in`) — every label in the column ending the
 /// same distance from the field it names, whatever its length.

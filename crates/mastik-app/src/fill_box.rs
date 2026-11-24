@@ -381,7 +381,7 @@ impl MastikApp {
     /// and its commit when the session ended would write over the value filled;
     /// plan again on what that leaves, and write it. The box stays open when
     /// nothing is left to fill.
-    fn run_fill_content(&mut self, mut b: FillBox) {
+    pub(crate) fn run_fill_content(&mut self, mut b: FillBox) {
         self.finish_text_first();
         let rev = self.session.revision();
         b.replan(
@@ -420,6 +420,15 @@ impl MastikApp {
         );
         self.adopt_decoded(pictures);
         tx.0.splice(0..0, b.beside_ops(&self.session.doc));
+        // A layer of a list's template a filled column drives is left as it
+        // is: the regeneration would write its cell back in the same step.
+        let mut filled = Vec::new();
+        tx.0.retain(|op| {
+            let why = crate::panels::variants::filled_op(&self.session.doc, op);
+            let keep = why.is_none();
+            filled.extend(why);
+            keep
+        });
         // Counted from the edit: an avatar the sink could not draw is left out.
         let changed =
             tx.0.iter()
@@ -431,6 +440,13 @@ impl MastikApp {
                     )
                 })
                 .count();
+        let skipped = filled.len();
+        if changed == 0
+            && let Some(why) = filled.into_iter().next()
+        {
+            self.session.info(why);
+            return;
+        }
         self.session
             .name_step("Fill with content", icon::FILL_CONTENT);
         if self.session.commit(tx) {
@@ -446,6 +462,9 @@ impl MastikApp {
             }
             if b.plan.locked > 0 {
                 said.push_str(&format!(" · skipped {} locked", b.plan.locked));
+            }
+            if skipped > 0 {
+                said.push_str(&format!(" · skipped {skipped} a list fills"));
             }
             said.push_str(" · Ctrl+Z to undo");
             self.session.info(said);

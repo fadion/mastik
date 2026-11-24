@@ -1312,6 +1312,25 @@ fn paint_tree_guides(painter: &egui::Painter, rows: &[TreeRow], gap: f32, ppp: f
 }
 
 impl MastikApp {
+    /// A row's eye clicked on layer `id`, shown now as `visible`: hide or show
+    /// it as one step, or refuse with the column's words when a filled column
+    /// drives its visibility.
+    pub(crate) fn layer_eye(&mut self, id: NodeId, visible: bool) {
+        let op = Operation::SetVisible {
+            id,
+            visible: !visible,
+        };
+        if let Some(why) = super::variants::filled_op(&self.session.doc, &op) {
+            self.session.info(why);
+            return;
+        }
+        match visible {
+            true => self.session.name_step("Hide", icon::EYE_SLASH),
+            false => self.session.name_step("Show", icon::EYE),
+        }
+        self.session.commit(Transaction(vec![op]));
+    }
+
     pub(crate) fn layers_tree(&mut self, ui: &mut egui::Ui) {
         // Re-derive the drop target each frame so releasing off the tree drops
         // nothing. The container it named is kept one frame in `lit` for the walk's
@@ -2325,25 +2344,7 @@ impl MastikApp {
                         self.collapsed.remove(&id);
                     }
                 }
-                Some(RowHit::Eye)
-                    if let Some(why) = super::variants::filled_layer(
-                        &self.session.doc,
-                        id,
-                        mastik_core::variant::PropKind::Boolean,
-                    ) =>
-                {
-                    self.session.info(why);
-                }
-                Some(RowHit::Eye) => {
-                    match visible {
-                        true => self.session.name_step("Hide", icon::EYE_SLASH),
-                        false => self.session.name_step("Show", icon::EYE),
-                    }
-                    self.session.commit(Transaction(vec![Operation::SetVisible {
-                        id,
-                        visible: !visible,
-                    }]));
-                }
+                Some(RowHit::Eye) => self.layer_eye(id, visible),
                 Some(RowHit::Lock) => {
                     match locked {
                         true => self.session.name_step("Unlock", icon::LOCK_SIMPLE_OPEN),

@@ -3144,6 +3144,14 @@ impl MastikApp {
         if ops.is_empty() {
             return;
         }
+        // A layer a filled column shows or hides refuses, as its eye does.
+        if let Some(why) = ops
+            .iter()
+            .find_map(|op| crate::panels::variants::filled_op(&self.session.doc, op))
+        {
+            self.session.info(why);
+            return;
+        }
         self.session.commit(Transaction(ops));
         self.session.info(if visible { "Shown" } else { "Hidden" });
     }

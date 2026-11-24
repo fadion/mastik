@@ -1787,6 +1787,112 @@ mod tests {
         assert_eq!(app.session.history.undo_depth(), depth, "no step");
     }
 
+    /// A list over `with_row`'s row whose `on_sale` column fills a boolean
+    /// property bound to the template's text; answers the template's text.
+    fn listed_with_a_shown_column(ctx: &egui::Context) -> (MastikApp, NodeId) {
+        let (mut app, inst) = with_row(ctx);
+        let main = mastik_core::component::main_of(&app.session.doc, inst).unwrap();
+        let text = app.session.doc.get(main).unwrap().children()[0];
+        verb(
+            &mut app,
+            "define_property",
+            json!({ "node": text.to_wire(), "kind": "boolean", "name": "on_sale" }),
+        );
+        let set = DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "rows.csv".into(),
+            table: Table {
+                columns: vec![
+                    Column {
+                        id: ColumnId(0),
+                        name: "title".into(),
+                    },
+                    Column {
+                        id: ColumnId(1),
+                        name: "on_sale".into(),
+                    },
+                ],
+                rows: vec![
+                    vec!["Linen".into(), "true".into()],
+                    vec!["Wool".into(), "false".into()],
+                ],
+            },
+            source: None,
+            pictures: Vec::new(),
+        };
+        let (tx, _) = list::make(
+            &app.session.doc,
+            &app.session.resolved,
+            &mut app.session.ids,
+            inst,
+            Source::New(set),
+        )
+        .unwrap();
+        assert!(app.commit_edit(tx));
+        let label = app.session.doc.get(inst).unwrap().children()[0];
+        (app, label)
+    }
+
+    /// *Hide* (the chord and both context menus) and the layers eye refuse a
+    /// template layer a filled column shows or hides, with the column's words
+    /// and no step.
+    /// flip: `toggle_hidden` not asking `filled_op` → fails at "Hide: no
+    /// step"; `layer_eye` not asking it → fails at "eye: no step".
+    #[test]
+    fn hide_and_the_eye_refuse_a_layer_a_column_shows() {
+        let ctx = egui::Context::default();
+        let (mut app, label) = listed_with_a_shown_column(&ctx);
+        assert!(
+            crate::panels::variants::filled_layer(
+                &app.session.doc,
+                label,
+                mastik_core::variant::PropKind::Boolean
+            )
+            .is_some(),
+            "fixture: a column fills its visibility"
+        );
+        let depth = app.session.history.undo_depth();
+        app.session.selection.set_one(label);
+        app.dispatch(&ctx, crate::input::Action::ToggleHidden);
+        assert_eq!(app.session.history.undo_depth(), depth, "Hide: no step");
+        assert!(
+            app.session.status().text.contains("on_sale"),
+            "said: {}",
+            app.session.status().text
+        );
+        app.layer_eye(label, true);
+        assert_eq!(app.session.history.undo_depth(), depth, "eye: no step");
+    }
+
+    /// *Fill with content* over a template's text a filled column drives leaves
+    /// it as the row has it and records no step, naming the column. The cells
+    /// are emails so the box plans a write (it keeps a text it cannot read).
+    /// flip: `commit_fill_content` not dropping `filled_op`'s operations →
+    /// fails at "no step".
+    #[test]
+    fn fill_with_content_leaves_a_filled_text() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let _ = listed(&mut app, inst, &["ada@example.com", "alan@example.com"]);
+        let label = app.session.doc.get(inst).unwrap().children()[0];
+        let depth = app.session.history.undo_depth();
+        app.session.selection.set_one(label);
+        app.open_fill_content();
+        let b = app.fill_content.take().expect("the box");
+        app.run_fill_content(b);
+        assert_eq!(app.session.history.undo_depth(), depth, "no step");
+        let Some(NodeKind::Text { content, .. }) = app.session.doc.get(label).map(|n| n.kind())
+        else {
+            panic!("a text");
+        };
+        assert_eq!(content, "ada@example.com", "the row's cell");
+        assert!(
+            app.session.status().text.contains("Filled from title"),
+            "said: {}",
+            app.session.status().text
+        );
+    }
+
     /// *Reset all* on a list's template takes back its other overrides and
     /// leaves each filled property at its row's cell, since the list is made
     /// again in the reset's step; so it stays offered there.
