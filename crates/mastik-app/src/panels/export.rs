@@ -3368,26 +3368,30 @@ impl MastikApp {
             .map_or_else(|| "video".into(), |n| n.to_string_lossy().into_owned());
         self.spawn_export(label, move |cancel| {
             mastik_core::text::register_font_data(&resolved.text_fonts());
-            // Written as it is made into a file beside the chosen one, which
-            // replaces it only once whole: a long take is never held in memory,
-            // and a cancel or a failure leaves the chosen path as it was.
-            let mut part = path.clone().into_os_string();
-            part.push(".part");
-            let part = std::path::PathBuf::from(part);
-            let made = std::fs::File::create(&part)
-                .map_err(|e| e.to_string())
-                .and_then(|file| {
-                    mastik_export::video::video_to(
-                        &doc,
-                        &take,
-                        crate::session::random_actor(),
-                        &options,
-                        std::io::BufWriter::new(file),
-                        &mut |_, _| !cancel.cancelled(),
-                    )
-                    .map_err(|e| e.to_string())
-                })
-                .and_then(|mut out| std::io::Write::flush(&mut out).map_err(|e| e.to_string()));
+            // Written as it is made into a fresh temp file beside the chosen one,
+            // which replaces it only once whole: a long take is never held in
+            // memory, a cancel or a failure leaves the chosen path as it was, and
+            // no file the person did not choose is opened.
+            let (part, file) = match crate::atomic::create_temp_for(&path) {
+                Ok(made) => made,
+                Err(e) => {
+                    return Delivered {
+                        asker,
+                        failed: Some(e.to_string()),
+                        ..Delivered::empty(path.parent().map(Into::into).unwrap_or_default())
+                    };
+                }
+            };
+            let made = mastik_export::video::video_to(
+                &doc,
+                &take,
+                crate::session::random_actor(),
+                &options,
+                std::io::BufWriter::new(file),
+                &mut |_, _| !cancel.cancelled(),
+            )
+            .map_err(|e| e.to_string())
+            .and_then(|mut out| std::io::Write::flush(&mut out).map_err(|e| e.to_string()));
             if !cancel.begin_write() {
                 let _ = std::fs::remove_file(&part);
                 return Delivered::cancelled();
@@ -7058,8 +7062,10 @@ mod code_export_tests {
     }
 
     /// A take's video is written whole to the chosen path, replacing what was
-    /// there, through a file beside it that does not stay behind.
-    /// flip: `export_take_to` not renaming the part file → fails at "the GIF".
+    /// there, through a file beside it that does not stay behind, and a file
+    /// beside it the person did not choose keeps its bytes.
+    /// flip: `export_take_to` not renaming the part file → fails at "the GIF";
+    /// writing through `<path>.part` again → fails at "the unchosen file".
     #[test]
     fn a_take_is_written_through_a_part_file() {
         let ctx = egui::Context::default();
@@ -7086,6 +7092,8 @@ mod code_export_tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("take.gif");
         std::fs::write(&path, b"old").unwrap();
+        let unchosen = dir.join("take.gif.part");
+        std::fs::write(&unchosen, b"mine").unwrap();
         let take = mastik_play::Take {
             start: mastik_play::Start::Frame(frame),
             inputs: Vec::new(),
@@ -7102,8 +7110,13 @@ mod code_export_tests {
         app.settle_exports();
         let written = std::fs::read(&path).expect("the file");
         assert!(written.starts_with(b"GIF89a"), "the GIF");
+        assert_eq!(
+            std::fs::read(&unchosen).ok().as_deref(),
+            Some(&b"mine"[..]),
+            "the unchosen file"
+        );
         let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
-        assert_eq!(left.len(), 1, "no part file stays: {left:?}");
+        assert_eq!(left.len(), 2, "no part file stays: {left:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

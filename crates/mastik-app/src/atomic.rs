@@ -179,6 +179,19 @@ fn temp_for(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// A fresh temp file beside `path`, named as [`temp_for`] names one and opened
+/// with `create_new`, for a writer that streams its output and renames it into
+/// place itself: no existing file is ever truncated, and two writers of one
+/// path never share a temp.
+pub(crate) fn create_temp_for(path: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+    let temp = temp_for(path);
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    Ok((temp, file))
+}
+
 /// The temp file the earlier scheme used for `path` — the target's name with
 /// `.writing` and nothing between.
 ///
