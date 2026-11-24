@@ -1015,6 +1015,43 @@ pub fn menu_width<'a>(
     menu_rows_width(ctx, &rows, glyph).ceil()
 }
 
+/// [`menu_width`] for rows that carry a note ([`MenuRow::note`]): each label
+/// with its note beside it, a note counted no wider than the widest label,
+/// since [`menu_row`] cuts a long one (a layer's name) at half the row.
+pub fn menu_noted_width<'a>(
+    ctx: &egui::Context,
+    rows: impl IntoIterator<Item = (&'a str, &'a str)>,
+    glyph: bool,
+) -> f32 {
+    let rows: Vec<(f32, &str)> = rows
+        .into_iter()
+        .map(|(label, note)| (text_width(ctx, label, SMALL_PT), note))
+        .collect();
+    let cap = rows.iter().map(|(w, _)| *w).fold(0.0, f32::max);
+    let widest = rows
+        .iter()
+        .map(|(w, note)| match note.is_empty() {
+            true => *w,
+            false => w + text_width(ctx, note, CAPTION_PT).min(cap) + MENU_ACCEL_GAP,
+        })
+        .fold(0.0, f32::max);
+    let label_x = if glyph { MENU_LABEL_X } else { MENU_ROW_INSET };
+    (label_x + widest + MENU_ROW_INSET).ceil()
+}
+
+/// `text`'s width on one line at `pt`, in the chrome's proportional face.
+fn text_width(ctx: &egui::Context, text: &str, pt: f32) -> f32 {
+    ctx.fonts_mut(|f| {
+        f.layout_no_wrap(
+            text.to_owned(),
+            egui::FontId::proportional(pt),
+            egui::Color32::WHITE,
+        )
+        .size()
+        .x
+    })
+}
+
 /// The air between a menu row's label and its accelerator; small so every fixed
 /// label stays whole (`a_long_reset_label_is_cut_inside_the_row_and_fixed_labels_are_whole`).
 const MENU_ACCEL_GAP: f32 = 2.0;
@@ -1686,20 +1723,13 @@ pub fn menu_check_accel_width(
 /// column when `glyph` (else the row's inset), the label, the accelerator after
 /// its gap, the inset at the end. The one measure every menu width is built on.
 fn menu_rows_width(ctx: &egui::Context, rows: &[(&str, Option<&str>)], glyph: bool) -> f32 {
-    let measure = |text: String, pt: f32| {
-        ctx.fonts_mut(|f| {
-            f.layout_no_wrap(text, egui::FontId::proportional(pt), egui::Color32::WHITE)
-                .size()
-                .x
-        })
-    };
     let widest = rows
         .iter()
         .map(|(label, accel)| {
             let chord = accel.map_or(0.0, |a| {
-                measure(crate::input::keys(a).into_owned(), CAPTION_PT) + MENU_ACCEL_GAP
+                text_width(ctx, &crate::input::keys(a), CAPTION_PT) + MENU_ACCEL_GAP
             });
-            measure((*label).to_string(), SMALL_PT) + chord
+            text_width(ctx, label, SMALL_PT) + chord
         })
         .fold(0.0, f32::max);
     // `menu_row`'s label column (or a bare row's inset), then its right inset.

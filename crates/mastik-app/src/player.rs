@@ -380,8 +380,13 @@ impl Playing {
         }
         let age = now - self.stirred_at;
         let shown = ((BAR_HOLD + BAR_FADE - age) / BAR_FADE).clamp(0.0, 1.0) as f32;
-        if shown > 0.0 {
+        // Only the fade needs frames of its own: while the bar is held, any
+        // change to that comes with an input event, which wakes a frame anyway.
+        if age >= BAR_HOLD && shown > 0.0 {
             ui.ctx().request_repaint();
+        } else if age < BAR_HOLD && !held {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_secs_f64(BAR_HOLD - age));
         }
         shown
     }
@@ -714,12 +719,13 @@ fn flow_menu(ui: &mut egui::Ui, menu: &FlowMenu) -> Option<BarAct> {
         .gap(ui::MENU_GAP)
         .show(|ui| {
             ui::popup_rows(ui);
-            let labels = menu
+            let note = menu.frame.as_ref().map_or("", |(_, n)| n.as_str());
+            let rows = menu
                 .flows
                 .iter()
-                .map(|(_, n, _)| n.as_str())
-                .chain([FROM_SELECTED]);
-            ui.set_width(ui::menu_width(ui.ctx(), labels, true) + 48.0);
+                .map(|(_, n, start)| (n.as_str(), start.as_str()))
+                .chain([(FROM_SELECTED, note)]);
+            ui.set_width(ui::menu_noted_width(ui.ctx(), rows, true));
             ui::menu_eyebrow(ui, &format!("Flows on {}", menu.page));
             if menu.flows.is_empty() {
                 ui::menu_note(ui, "No flows on this page");
@@ -732,7 +738,6 @@ fn flow_menu(ui: &mut egui::Ui, menu: &FlowMenu) -> Option<BarAct> {
                 }
             }
             ui::menu_sep(ui);
-            let note = menu.frame.as_ref().map_or("", |(_, n)| n.as_str());
             let row = ui::MenuRow::new("", FROM_SELECTED)
                 .note(note)
                 .checked(false)
@@ -1456,6 +1461,11 @@ impl crate::app::MastikApp {
                 Ok(fresh) => {
                     p.player = fresh;
                     p.touch = false;
+                    // The fresh player's scene can equal the old one, so the
+                    // stored picture of the old document is dropped, as Restart
+                    // drops it.
+                    p.drawn = None;
+                    p.draft = None;
                 }
                 Err(_) => {
                     self.stop_playing(ctx);
@@ -2842,6 +2852,105 @@ mod tests {
             (0.9..=1.0).contains(&left),
             "a pass when the timer is due: {left} s"
         );
+    }
+
+    /// The floating bar held by an open card asks for no pass of its own, and
+    /// once let go asks for one when its fade begins, then a pass a frame while
+    /// it fades.
+    ///
+    /// flip: `Playing::bar_shown` repainting whenever the bar shows → fails at
+    /// "no pass while held".
+    #[test]
+    fn a_held_bar_asks_for_no_pass() {
+        let ctx = egui::Context::default();
+        let (mut app, [a, _, _]) = fixture(&ctx, false);
+        app.session.selection.set_one(a);
+        app.play(&ctx, Place::Over, false);
+        let mut p = app.playing.take().expect("playing");
+        let bar = egui::Rect::from_min_size(egui::pos2(0.0, 700.0), egui::vec2(400.0, 40.0));
+        let pass = |p: &mut Playing, now: f64| {
+            let out = ctx.run_ui(Default::default(), |ui| {
+                p.bar_shown(ui, bar, now);
+            });
+            out.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+        };
+        p.card = true;
+        // A fresh context asks for its first passes itself.
+        for _ in 0..4 {
+            let _ = ctx.run_ui(Default::default(), |_| {});
+        }
+        for t in 0..3 {
+            assert_eq!(
+                pass(&mut p, f64::from(t)),
+                std::time::Duration::MAX,
+                "no pass while held"
+            );
+        }
+        p.card = false;
+        let wait = pass(&mut p, 2.5).as_secs_f64();
+        // Last held at 2, so the fade begins at 4.
+        assert!(
+            (1.4..=1.5).contains(&wait),
+            "a pass as the fade begins: {wait} s"
+        );
+        assert_eq!(pass(&mut p, 4.1), std::time::Duration::ZERO, "fading");
+    }
+
+    /// The flow menu is wide enough for *From the selected frame* to stay whole
+    /// beside a frame's name as its note, as `menu_row` divides the row.
+    ///
+    /// flip: `menu_noted_width` measuring labels only → fails at "the label
+    /// whole".
+    #[test]
+    fn the_flow_menu_fits_its_notes() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let note = "Order confirmation";
+        let rows = [("Checkout", "Cart"), (FROM_SELECTED, note)];
+        let w = ui::menu_noted_width(&ctx, rows, true);
+        let text = |s: &str, pt: f32| {
+            ctx.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    s.into(),
+                    egui::FontId::proportional(pt),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+            })
+        };
+        // `menu_row`: the note up to half of what is past the glyph column, the
+        // label in what is left.
+        let inner = w - ui::MENU_LABEL_X - 8.0;
+        let note_w = text(note, ui::CAPTION_PT).min(inner / 2.0) + 2.0;
+        assert!(
+            text(FROM_SELECTED, ui::SMALL_PT) <= inner - note_w + 0.5,
+            "the label whole"
+        );
+    }
+
+    /// A document read in again restarts play and drops the stored picture, so
+    /// the next pass draws the new document though the scene reads the same.
+    ///
+    /// flip: `follow_document`'s reload not clearing `drawn` → fails at "the
+    /// picture dropped".
+    #[test]
+    fn a_reloaded_document_is_drawn_again() {
+        let ctx = egui::Context::default();
+        let (mut app, [a, _, _]) = fixture(&ctx, false);
+        app.session.selection.set_one(a);
+        app.play(&ctx, Place::Over, false);
+        let scene = app.playing.as_ref().expect("playing").player.scene();
+        app.playing.as_mut().expect("playing").drawn = Some((scene, (10, 10)));
+        app.session.history.keep_journal(false);
+        app.follow_document(&ctx);
+        let p = app.playing.as_ref().expect("still playing");
+        assert!(
+            app.session.history.keeps_journal(),
+            "fixture: read in again"
+        );
+        assert!(p.drawn.is_none(), "the picture dropped");
     }
 
     /// The detached window keeps the size it opened at while the screen's size
