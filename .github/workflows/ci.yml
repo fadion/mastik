@@ -57,11 +57,15 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       # **Per package as well, because `--workspace` and `-p` compile different
       # code**: feature unification changes a dependency's layout, so a lint can
-      # print under one spelling and not the other (CLAUDE.md, *Clippy*).
+      # print under one spelling and not the other (AGENTS.md, *Build / test*).
+      # The list is `crates/`, so a new crate joins by construction; one the root
+      # `Cargo.toml` excludes (`mastik-web`, its own workspace) `-p` cannot name.
       - name: Clippy per package (warnings = errors)
         run: |
           set -euo pipefail
-          for p in mastik-core mastik-render mastik-export mastik-mcp mastik-ai mastik-vm mastik-app; do
+          for d in crates/*/; do
+            p=$(basename "$d")
+            grep -q "^exclude = .*\"crates/$p\"" Cargo.toml && continue
             cargo clippy -p "$p" --all-targets -- -D warnings
           done
       # The gate that checks the record against the code: each crate root denies
@@ -77,6 +81,43 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check licenses bans sources
+
+  # ── The browser player ──────────────────────────────────────────────────
+  # `crates/mastik-web` is its own workspace on its own nightly, so no step
+  # above compiles it; without this job a change to a crate it calls breaks it
+  # unseen until the Release workflow's `player` job, after the tag is pushed.
+  # Both players are checked: the plain one and, through wasi-sdk's clang, the
+  # one that runs scripts (whose Luau integers are 32 bits on wasm32).
+  player:
+    name: Check the browser player
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install the player's toolchain
+        working-directory: crates/mastik-web
+        run: |
+          set -euo pipefail
+          channel="$(grep -m1 '^channel' rust-toolchain.toml | cut -d'"' -f2)"
+          rustup toolchain install "$channel" --profile minimal \
+            --component rust-src --target wasm32-unknown-unknown
+      # The wasi-sdk `release.yml` pins, by version and digest, read from there
+      # so the two never disagree.
+      - name: Install wasi-sdk
+        run: |
+          set -euo pipefail
+          release=.github/workflows/release.yml
+          url="$(grep -o 'https://github.com/WebAssembly/wasi-sdk/releases/download/[^ ]*\.tar\.gz' "$release" | head -1)"
+          sum="$(grep -o '[0-9a-f]\{64\}  \$RUNNER_TEMP/wasi-sdk\.tar\.gz' "$release" | head -1 | cut -d' ' -f1)"
+          if [ -z "$url" ] || [ -z "$sum" ]; then
+            echo "::error::No wasi-sdk URL and digest found in $release"
+            exit 1
+          fi
+          curl -fsSL -o "$RUNNER_TEMP/wasi-sdk.tar.gz" "$url"
+          echo "$sum  $RUNNER_TEMP/wasi-sdk.tar.gz" | sha256sum -c -
+          tar xzf "$RUNNER_TEMP/wasi-sdk.tar.gz" -C "$RUNNER_TEMP"
+          echo "WASI_SDK=$RUNNER_TEMP/$(basename "$url" .tar.gz)" >> "$GITHUB_ENV"
+      - name: Check both players
+        run: bash crates/mastik-web/build.sh --check
 
   test:
     name: Build & test (${{ matrix.os }})

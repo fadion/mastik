@@ -73,7 +73,8 @@ jobs:
       - name: Install wasm-bindgen-cli
         run: cargo install --locked wasm-bindgen-cli --version 0.2.108
       # The clang and wasip1 sysroot that build Luau's C++ into the scripts
-      # player, pinned by version and digest.
+      # player, pinned by version and digest. `ci.yml`'s `player` job reads the URL
+      # and digest from this step, so keep each on one line.
       - name: Install wasi-sdk
         run: |
           set -euo pipefail

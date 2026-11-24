@@ -24,7 +24,9 @@ renderer, so the page draws what the editor draws.
   `rust-toolchain.toml` (the nightly), `.cargo/config.toml` (target, flags, `build-std`, a
   target dir under `target/web`) and `Cargo.lock`. Cargo reads those only when run in that
   folder, so the nightly never reaches the app's build, and `cargo test --workspace` neither
-  builds nor checks it. `build.sh` there builds it.
+  builds nor checks it. `build.sh` there builds it, and `build.sh --check` checks that both
+  players compile; CI's `player` job runs that on every push, so a change to a crate the page
+  calls fails before a tag rather than in the Release workflow.
 - **wasm-bindgen is held at 0.2.108** (with `js-sys`/`web-sys` 0.3.85 and
   `wasm-bindgen-futures` 0.4.58, which move with it). From 0.2.126 a closure handed to
   JavaScript must be `UnwindSafe` under `panic=unwind`, and wgpu 29's WebGPU backend passes ones
