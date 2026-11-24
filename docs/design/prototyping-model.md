@@ -107,6 +107,8 @@ page's flows and play settings, so the inverse of a removal brings them back.
   overlay position or backdrop on an overlay action (`OverlaySettings::is_usable`;
   `ReactionError::BadOverlay`).
 - A non-finite scroll trigger point (`ReactionError::BadScrollPoint`).
+- Not the door but the `set_page_play` verb: a device name `presets::device_size` does not know,
+  listing the offered ones. The door keeps such a name, which then plays the screen as drawn.
 - A `LayerPlay` whose follow settle timing is not usable or whose snap point or scroll-effect
   number is not finite (`LayerPlay::is_usable`; `OpError::BadPlay`). Here the loader drops the
   node's follow and scroll effect instead of refusing the file.

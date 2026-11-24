@@ -627,6 +627,23 @@ fn refused_why(doc: &Document, ids: &mut IdSource, name: &str, args: Value) -> S
     }
 }
 
+/// `set_page_play` refuses a device no preset has, naming the ones offered; a
+/// retired device a file may name is still taken.
+/// flip: `set_page_play` without its device check → `refused_why` panics.
+#[test]
+fn set_page_play_refuses_an_unknown_device() {
+    let (mut doc, mut ids, page) = blank();
+    let args = json!({ "page": page.to_wire(), "play": { "device": "iPhone 15" } });
+    let why = refused_why(&doc, &mut ids, "set_page_play", args);
+    assert!(why.contains("no device is called `iPhone 15`"), "{why}");
+    assert!(
+        why.contains("iPhone 18 Pro"),
+        "names the offered ones: {why}"
+    );
+    let args = json!({ "page": page.to_wire(), "play": { "device": "iPhone 16" } });
+    run(&mut doc, &mut ids, "set_page_play", args);
+}
+
 /// A model argument is refused naming where it went wrong, and a field the model
 /// has no place for is refused rather than dropped.
 ///

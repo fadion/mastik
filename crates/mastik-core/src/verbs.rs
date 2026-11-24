@@ -5007,6 +5007,19 @@ pub static VERBS: &[Verb] = &[
             if !play.transition.timing.is_usable() {
                 return Err(a.invalid("play", UNUSABLE_TIMING));
             }
+            // The door keeps a name no preset has (a file may name one); a
+            // verb refuses it, since the screen would play as drawn unsaid.
+            if let Some(d) = play.device.as_deref()
+                && crate::presets::device_size(d).is_none()
+            {
+                let names: Vec<&str> = crate::presets::FRAME_PRESETS
+                    .iter()
+                    .filter(|(g, _)| crate::presets::DEVICE_GROUPS.contains(g))
+                    .flat_map(|(_, entries)| entries.iter().map(|(n, ..)| *n))
+                    .collect();
+                let why = format!("no device is called `{d}`: one of {}", names.join(", "));
+                return Err(a.invalid("play", why));
+            }
             Ok(Done::ops(vec![Operation::SetPagePlay { id: page, play }]))
         },
     },
