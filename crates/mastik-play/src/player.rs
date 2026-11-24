@@ -312,9 +312,8 @@ impl Player {
         p.prepare();
         // A flow's starting modes are set as *Set mode* sets them everywhere.
         for mode in modes {
-            for id in p.everywhere(mode) {
-                p.set_mode_on(id, mode);
-            }
+            let at = p.everywhere(mode);
+            p.set_mode_on(&at, mode);
         }
         for (var, cell) in cells {
             let value = match cell {

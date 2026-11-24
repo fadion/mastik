@@ -1738,12 +1738,18 @@ fn a_clean_live_edit_keeps_set_modes_and_the_play_size() {
     assert_eq!(size(&p), Some(played), "the play size holds");
 }
 
-/// A *Dark* mode added beside the first collection's light one, and a number
-/// variable reading 1 in light and 2 in dark. Answers light, dark and the
-/// variable.
+/// A *Dark* mode added beside the first collection's light one, each variable
+/// there reading in it as in light, and a number variable reading 1 in light
+/// and 2 in dark. Answers light, dark and the variable.
 fn dark_mode(fx: &mut Fx) -> (ModeId, ModeId, VarId) {
     let light = fx.mode;
     let dark = fx.ids.mint_mode();
+    let cells = fx
+        .doc
+        .variables()
+        .iter()
+        .filter_map(|v| Some((v.id, v.cells.get(&light)?.clone())))
+        .collect();
     fx.apply(vec![Operation::AddMode {
         collection: CollectionId::FIRST,
         mode: Mode {
@@ -1751,7 +1757,7 @@ fn dark_mode(fx: &mut Fx) -> (ModeId, ModeId, VarId) {
             name: "Dark".into(),
         },
         index: 1,
-        cells: vec![],
+        cells,
     }]);
     let n = fx.ids.mint_var();
     fx.apply(vec![Operation::AddVariable {
@@ -3124,6 +3130,72 @@ fn a_filter_reading_a_variable_narrows_the_list_in_play() {
         2,
         "the file untouched"
     );
+}
+
+/// *Set mode* on every page gives them their modes in one commit and makes a
+/// filtered list again once, not once per page.
+///
+/// flip: `Player::set_mode_on` putting each node's modes apart → fails at "made
+/// again once".
+#[test]
+fn set_mode_everywhere_remakes_a_filtered_list_once() {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    use mastik_core::list::{DataSet, List, Source, Test, TestOp};
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 200.0);
+    let kind = fx.var("kind", VarKind::String, Cell::String(String::new()));
+    let (_, dark, _) = dark_mode(&mut fx);
+    for (i, name) in ["Two", "Three"].into_iter().enumerate() {
+        let id = fx.ids.mint();
+        fx.apply(vec![Operation::AddPage {
+            id,
+            index: i + 1,
+            name: name.into(),
+            ground: None,
+            draft: false,
+            modes: Vec::new(),
+            flows: Vec::new(),
+            play: Default::default(),
+        }]);
+    }
+    let main = fx.frame("Row", 600.0, 180.0, 30.0);
+    fx.apply(vec![Operation::SetComponent {
+        id: main,
+        component: true,
+    }]);
+    let item = row_instance(&mut fx, main, a);
+    let set = DataSet {
+        id: fx.ids.mint_data_set(),
+        name: "products".into(),
+        table: Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "kind".into(),
+            }],
+            rows: vec![vec!["".into()], vec!["".into()], vec!["".into()]],
+        },
+        source: None,
+        pictures: Vec::new(),
+    };
+    let l = listed(&mut fx, item, Source::New(set));
+    let mut filtered: List = fx.doc.get(l).unwrap().list().unwrap().clone();
+    filtered.filter.tests.push(Test {
+        column: ColumnId(0),
+        op: TestOp::Is,
+        value: Expr(format!("{{{}}}", kind.0.to_wire())),
+    });
+    fx.apply(vec![Operation::SetList {
+        id: l,
+        list: Some(Box::new(filtered)),
+    }]);
+    let mut p = fx.play(a);
+    let copies = p.document().get(l).unwrap().list().unwrap().copies.len();
+    assert_eq!(copies, 2, "fixture: three rows pass");
+    let before = p.ids.mint().seq;
+    p.input(Input::SetMode(dark));
+    let minted = p.ids.mint().seq - before - 1;
+    assert_eq!(p.modes()[0].current, dark, "fixture: set");
+    assert_eq!(minted, copies as u64, "made again once");
 }
 
 /// A list over an empty table hides its template in play while the document

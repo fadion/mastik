@@ -71,9 +71,7 @@ impl Player {
             .map(|(id, set)| (*id, set.clone()))
             .collect();
         undone.sort();
-        for (id, set) in undone {
-            self.put_modes(id, set);
-        }
+        self.put_modes(undone);
         self.fit_screen(self.screen);
     }
 
@@ -98,12 +96,9 @@ impl Player {
             }
         }
         let mut modes: Vec<_> = self.modes.drain().collect();
+        modes.retain(|(id, _)| self.doc.get(*id).is_some());
         modes.sort();
-        for (id, set) in modes {
-            if self.doc.get(id).is_some() {
-                self.put_modes(id, set);
-            }
-        }
+        self.put_modes(modes);
         self.fit_screen(self.screen);
         // A settle the re-clone cuts short ends where it was going, and drops.
         for a in std::mem::take(&mut self.anims.moves) {

@@ -526,7 +526,8 @@ MCP's Phase 3 (`mcp.md`), each acting as its door in the app.
   whose filter reads it (`Player::regenerate_list`, the step `open_data_row` shares), then hides
   or shows templates as below: a search field or a chip narrows the list. A mode set on the copy
   (`put_modes`: *Set mode*, the state card, a flow's start) regenerates every list whose filter
-  reads any variable. An *Opened row* list keeps its row.
+  reads any variable, once for all the pages or frames one act sets, which go in one commit. An
+  *Opened row* list keeps its row.
 - **Row actions edit the played copy's tables** (*Add row*, *Edit row*, *Delete row*;
   `play.md`, *Actions*), as a *Run script* can: every list and chart over the table follows on
   the copy (`Player::follow_tables`), and nothing reaches the document, the save or undo. A linked

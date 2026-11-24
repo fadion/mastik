@@ -149,11 +149,8 @@ impl Player {
                 true
             }
             Input::SetMode(mode) => {
-                let mut used = false;
-                for id in self.everywhere(mode) {
-                    used |= self.set_mode_on(id, mode).is_some();
-                }
-                used
+                let at = self.everywhere(mode);
+                !self.set_mode_on(&at, mode).is_empty()
             }
             Input::OpenRow { data, row } => {
                 self.open_data_row(data, row);

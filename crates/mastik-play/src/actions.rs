@@ -335,10 +335,8 @@ impl Player {
                     ModeScope::Everywhere => self.everywhere(*mode),
                     ModeScope::Screen => vec![self.screen],
                 };
-                for id in at {
-                    if let Some(was) = self.set_mode_on(id, *mode) {
-                        undo.push(Undo::Modes(id, was));
-                    }
+                for (id, was) in self.set_mode_on(&at, *mode) {
+                    undo.push(Undo::Modes(id, was));
                 }
             }
             Action::OpenUrl { url } => {
@@ -390,7 +388,7 @@ impl Player {
                         self.back();
                     }
                 }
-                Undo::Modes(id, was) => self.put_modes(id, was),
+                Undo::Modes(id, was) => self.put_modes(vec![(id, was)]),
             }
         }
     }
@@ -428,38 +426,70 @@ impl Player {
             .collect()
     }
 
-    /// Set `mode` on node `id` of the copy (a page's root or a frame) in place
-    /// of any mode of its collection there. Answers the modes it held before,
-    /// `None` when nothing changed.
-    pub(crate) fn set_mode_on(&mut self, id: NodeId, mode: ModeId) -> Option<Vec<ModeId>> {
-        let was = self.doc.get(id)?.modes().to_vec();
+    /// Set `mode` on each node of `at` on the copy (a page's root or a frame)
+    /// in place of any mode of its collection there, in one commit. Answers
+    /// each node that changed with the modes it held before.
+    pub(crate) fn set_mode_on(
+        &mut self,
+        at: &[NodeId],
+        mode: ModeId,
+    ) -> Vec<(NodeId, Vec<ModeId>)> {
         let t = self.doc.variables();
-        let mut modes: Vec<ModeId> = was
-            .iter()
-            .copied()
-            .filter(|m| !mastik_core::variable::same_collection(t, *m, mode))
-            .collect();
-        modes.push(mode);
-        modes.sort();
-        if modes == was {
-            return None;
+        let mut put = Vec::new();
+        let mut was_all = Vec::new();
+        for &id in at {
+            let Some(n) = self.doc.get(id) else { continue };
+            let was = n.modes().to_vec();
+            let mut modes: Vec<ModeId> = was
+                .iter()
+                .copied()
+                .filter(|m| !mastik_core::variable::same_collection(t, *m, mode))
+                .collect();
+            modes.push(mode);
+            modes.sort();
+            if modes != was {
+                put.push((id, modes));
+                was_all.push((id, was));
+            }
         }
-        self.put_modes(id, modes);
-        Some(was)
+        self.put_modes(put);
+        was_all
     }
 
-    /// Give node `id` of the copy exactly `modes`, remembered so a live edit's
-    /// fresh copy gets them again.
-    pub(crate) fn put_modes(&mut self, id: NodeId, modes: Vec<ModeId>) {
-        let tx = Transaction(vec![Operation::SetModes {
-            id,
-            modes: modes.clone(),
-        }]);
-        if self.commit(tx).is_ok() {
-            self.modes.insert(id, modes);
-            // A filter's variable may read another value in the new mode.
-            self.refilter(None);
+    /// Give each node of the copy exactly its modes, remembered so a live
+    /// edit's fresh copy gets them again: one commit and one refilter for all,
+    /// since each refilter makes again every list a filter reads.
+    pub(crate) fn put_modes(&mut self, all: Vec<(NodeId, Vec<ModeId>)>) {
+        if all.is_empty() {
+            return;
         }
+        let ops = all
+            .iter()
+            .map(|(id, modes)| Operation::SetModes {
+                id: *id,
+                modes: modes.clone(),
+            })
+            .collect();
+        let taken: Vec<_> = match self.commit(Transaction(ops)) {
+            Ok(_) => all,
+            // One the copy refuses leaves the rest to go one by one.
+            Err(_) => all
+                .into_iter()
+                .filter(|(id, modes)| {
+                    let op = Operation::SetModes {
+                        id: *id,
+                        modes: modes.clone(),
+                    };
+                    self.commit(Transaction(vec![op])).is_ok()
+                })
+                .collect(),
+        };
+        if taken.is_empty() {
+            return;
+        }
+        self.modes.extend(taken);
+        // A filter's variable may read another value in the new mode.
+        self.refilter(None);
     }
 
     // ── Moves ────────────────────────────────────────────────────────────────
