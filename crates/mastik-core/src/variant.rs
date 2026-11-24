@@ -1202,8 +1202,9 @@ fn fresh(name: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// Rename `set`'s property `prop`, and the list fills naming it
-/// ([`crate::list::variant_prop_ops`]). `None` for an empty name or one taken.
+/// Rename `set`'s property `prop`, and the list fills and per-row export picks
+/// naming it ([`crate::list::variant_prop_ops`]). `None` for an empty name or
+/// one taken.
 pub fn rename_property(
     doc: &Document,
     set: NodeId,
@@ -1312,7 +1313,7 @@ pub fn next_property_name(set: &VariantSet) -> String {
 }
 
 /// Remove property `prop` from the set and from every variant, and the list
-/// fills naming it. Refused for the last one: a set with no properties has no
+/// fills and per-row export picks naming it. Refused for the last one: a set with no properties has no
 /// way to tell its variants apart.
 pub fn delete_property(doc: &Document, set: NodeId, prop: usize) -> Option<Transaction> {
     let mut next = doc.get(set)?.set.clone()?;

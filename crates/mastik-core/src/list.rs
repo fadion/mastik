@@ -682,10 +682,11 @@ pub fn lists(doc: &Document) -> Vec<NodeId> {
     out
 }
 
-/// The `SetList` ops that follow variant set `set`'s property `old` being
-/// renamed to `new`, or deleted when `new` is `None`: a variant fill names its
-/// property, so each list whose template is an instance of the set has its
-/// fill on `old` renamed or dropped.
+/// The `SetList` and `SetExports` ops that follow variant set `set`'s property
+/// `old` being renamed to `new`, or deleted when `new` is `None`: a variant fill
+/// names its property, so each list whose template is an instance of the set
+/// has its fill on `old` renamed or dropped, and so does each per-row export's
+/// *Fill* pick on an instance of the set.
 pub fn variant_prop_ops(
     doc: &Document,
     set: NodeId,
@@ -716,6 +717,35 @@ pub fn variant_prop_ops(
             id,
             list: Some(Box::new(next)),
         });
+    }
+    let on_old = |p: &RowPick| matches!(&p.slot, RowSlot::Fill(Target::Variant(n)) if n == old);
+    for id in doc.node_ids() {
+        let Some(node) = doc.get(id) else { continue };
+        let picks_old = |e: &crate::Keyed<crate::export::ExportSpec>| {
+            e.value
+                .per_row
+                .as_ref()
+                .is_some_and(|r| r.fill.iter().any(on_old))
+        };
+        if !node.exports().iter().any(picks_old) {
+            continue;
+        }
+        let in_set = crate::component::main_of(doc, id)
+            .and_then(|m| crate::variant::set_of(doc, m))
+            == Some(set);
+        if !in_set {
+            continue;
+        }
+        let mut exports = node.exports().to_vec();
+        for row in exports.iter_mut().filter_map(|e| e.value.per_row.as_mut()) {
+            match new {
+                Some(new) => row.fill.iter_mut().filter(|p| on_old(p)).for_each(|p| {
+                    p.slot = RowSlot::Fill(Target::Variant(new.to_owned()));
+                }),
+                None => row.fill.retain(|p| !on_old(p)),
+            }
+        }
+        ops.push(Operation::SetExports { id, exports });
     }
     ops
 }

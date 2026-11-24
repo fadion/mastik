@@ -668,6 +668,65 @@ fn renaming_a_variant_property_keeps_the_list_filling_it() {
     );
 }
 
+/// Renaming a variant property renames a per-row export's *Fill* pick on it,
+/// so the picked column still fills the property; deleting the property drops
+/// the pick.
+/// flip: `variant_prop_ops` without its `SetExports` pass → fails at "the pick
+/// follows".
+#[test]
+fn renaming_a_variant_property_keeps_a_per_row_pick_on_it() {
+    use mastik_core::export::{ExportSpec, PerRow};
+    let (mut doc, mut ids, _) = blank();
+    let mut h = History::default();
+    let (mains, set, l) = variant_list(&mut doc, &mut ids, &mut h);
+    let table = doc.get(l).unwrap().list().unwrap().data;
+    let old = doc.get(set).unwrap().set().unwrap().props[0].name.clone();
+    let page = doc.first_page();
+    let args = json!({ "main": mains[0].to_wire(), "parent": page.to_wire(), "x": 0, "y": 400 });
+    let frame = run(&mut doc, &mut ids, "create_instance", args)[0];
+    let pick = |name: &str| list::RowPick {
+        slot: list::RowSlot::Fill(list::Target::Variant(name.into())),
+        column: Some(ColumnId(0)),
+    };
+    let mut per_row = PerRow::new(table);
+    per_row.fill = vec![pick(&old)];
+    let spec = ExportSpec {
+        per_row: Some(per_row),
+        ..ExportSpec::new(Default::default(), Default::default())
+    };
+    let exports = mastik_core::keyed_by_position([spec]);
+    let tx = Transaction(vec![Operation::SetExports { id: frame, exports }]);
+    commit(&mut h, &mut doc, &mut ids, tx);
+    let picks = |doc: &Document| {
+        doc.get(frame).unwrap().exports()[0]
+            .value
+            .per_row
+            .as_ref()
+            .unwrap()
+            .fill
+            .clone()
+    };
+
+    let args = json!({ "node": set.to_wire(), "property": old, "name": "State" });
+    edit(&mut h, &mut doc, &mut ids, "rename_variant_property", args);
+    assert_eq!(picks(&doc), vec![pick("State")], "the pick follows");
+    let rows = &doc.data_set(table).unwrap().table;
+    let targets = list::row_targets_with(&doc, frame, rows, &picks(&doc));
+    assert!(
+        targets.contains(&list::RowTarget::Fill(list::Fill {
+            target: list::Target::Variant("State".into()),
+            column: ColumnId(0),
+        })),
+        "the picked column fills it: {targets:?}"
+    );
+
+    let args = json!({ "node": set.to_wire(), "name": "Size" });
+    edit(&mut h, &mut doc, &mut ids, "add_variant_property", args);
+    let args = json!({ "node": set.to_wire(), "property": "State" });
+    edit(&mut h, &mut doc, &mut ids, "delete_variant_property", args);
+    assert!(picks(&doc).is_empty(), "the pick goes with its property");
+}
+
 /// A variant added to the template's set switches the row whose cell names it
 /// in the same step, though no layer under the list changed.
 /// flip: `touched` without its `by_variant` arm → fails at "switches at once".

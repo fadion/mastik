@@ -56,7 +56,8 @@ template, the list's description, its data set or a variable its filter reads ch
 - **`fill: Vec<Fill { target, column }>`** — which column fills which property.
   `Target::Prop(ItemId)` names a text, boolean or image component property of the template's main;
   `Target::Variant(name)` a variant property of its set; renaming or deleting the property
-  renames or drops the fills naming it in the same step (`list::variant_prop_ops`). Columns are
+  renames or drops the fills naming it in the same step (`list::variant_prop_ops`), and a
+  per-row export's *Fill* pick on it on an instance of the set the same way. Columns are
   named by `ColumnId`.
 - **`copies`** — the copies the last regeneration made, in the order their rows are drawn; written only by
   `list::regenerate`.
