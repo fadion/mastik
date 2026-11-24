@@ -455,7 +455,8 @@ impl Playing {
         }
     }
 
-    /// Feed `ui`'s pointer over `rect` (the screen drawn at `scale`) to the
+    /// Feed `ui`'s pointer over `rect` (the screen drawn at `scale`, its foot
+    /// cut off under a floating bar; its top-left is the screen's) to the
     /// player. Answers whether the pointer is over it.
     fn drive_pointer(&mut self, ui: &egui::Ui, rect: egui::Rect, scale: f32) -> bool {
         let id = ui.id().with("player-screen");
@@ -1563,9 +1564,23 @@ impl crate::app::MastikApp {
         let ground =
             crate::ui::color_to_egui(crate::session::page_ground(p.player.document(), scene.page));
         ui.painter().rect_filled(screen_area, 0.0, ground);
+        let bar_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left(), rect.bottom() - bar_h),
+            egui::vec2(rect.width(), bar_h),
+        );
+        let shown = match floating {
+            true => p.bar_shown(ui, bar_rect, now),
+            false => 1.0,
+        };
+        // The pointer drives the screen short of a floating bar while it shows:
+        // egui reports a press on a bar button to the screen beneath it too.
+        let mut hit = screen.intersect(screen_area);
+        if floating && shown > 0.0 {
+            hit.max.y = hit.max.y.min(bar_rect.top()).max(hit.min.y);
+        }
         ui.scope_builder(egui::UiBuilder::new().max_rect(screen_area), |ui| {
             ui.set_clip_rect(screen_area.intersect(ui.clip_rect()));
-            p.drive_pointer(ui, screen.intersect(screen_area), scale);
+            p.drive_pointer(ui, hit, scale);
             p.paint_screen(ui, screen, scale, ground);
         });
         // One pulse round the screen when a live edit lands.
@@ -1636,14 +1651,6 @@ impl crate::app::MastikApp {
                 },
             );
         }
-        let bar_rect = egui::Rect::from_min_size(
-            egui::pos2(rect.left(), rect.bottom() - bar_h),
-            egui::vec2(rect.width(), bar_h),
-        );
-        let shown = match floating {
-            true => p.bar_shown(ui, bar_rect, now),
-            false => 1.0,
-        };
         let mut act = None;
         if shown > 0.0 {
             let readout = p.readout(ui.ctx(), now);
@@ -2707,6 +2714,70 @@ mod tests {
         assert_eq!(p.place, Place::Over, "back over the canvas");
         assert_eq!(p.takes.len(), 1, "the take kept");
         assert!(app.proto_export.is_some(), "the card is up");
+    }
+
+    /// Filling the window, a click on the floating bar's *Hotspots* is the
+    /// bar's alone: the screen under it, which navigates on a click, stays.
+    ///
+    /// flip: `player_body` driving the pointer over the whole screen → fails
+    /// at "the screen under the bar stayed".
+    #[test]
+    fn a_click_on_the_floating_bar_taps_nothing_beneath() {
+        let ctx = egui::Context::default();
+        let (mut app, [a, b, _]) = fixture(&ctx, false);
+        let page = app.session.page;
+        let play = mastik_core::prototype::PagePlay {
+            scaling: Scaling::Responsive,
+            ..Default::default()
+        };
+        let mut ids = IdSource::new(0x6B);
+        let tap = Reaction {
+            trigger: Trigger::Click,
+            actions: vec![Keyed::new(
+                ids.mint_item(),
+                Action::Navigate {
+                    to: b,
+                    transition: Transition::default(),
+                    keep_scroll: false,
+                },
+            )],
+        };
+        assert!(app.session.commit(Transaction(vec![
+            Operation::SetPagePlay { id: page, play },
+            Operation::SetReactions {
+                id: a,
+                reactions: vec![Keyed::new(ids.mint_item(), tap)],
+            },
+        ])));
+        app.session.selection.set_one(a);
+        app.play(&ctx, Place::Fullscreen, false);
+        for _ in 0..3 {
+            whole_frame(&ctx, &mut app, Vec::new());
+        }
+        // The bar wakes for a pointer near the bottom edge.
+        whole_frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(egui::pos2(660.0, 810.0))],
+        );
+        let out = frame_out(&ctx, &mut app, Vec::new());
+        let hotspots = text_at(&out, icon::HAND_POINTING).expect("fixture: the bar shows");
+        let p = app.playing.as_ref().expect("playing");
+        assert!(
+            p.player.play_size().is_some_and(|s| s.width > 1000.0),
+            "fixture: the screen fills the window"
+        );
+        click(&ctx, &mut app, hotspots);
+        let p = app.playing.as_ref().expect("still playing");
+        assert!(p.hints, "the bar's button acted");
+        assert_eq!(p.player.screen(), a, "the screen under the bar stayed");
+        click(&ctx, &mut app, egui::pos2(660.0, 300.0));
+        let p = app.playing.as_ref().expect("still playing");
+        assert_eq!(
+            p.player.screen(),
+            b,
+            "fixture: a click on the screen navigates"
+        );
     }
 
     /// Present mode plays the prototype fullscreen when the document has a flow,

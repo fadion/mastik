@@ -145,7 +145,9 @@ keeps every key, Escape included (`Playing::take_keys` asks `text_edit_focused` 
 - **Filling a screen** (fullscreen, or the detached window at its *Fullscreen*), the bar floats
   over the screen's foot and fades over `BAR_FADE` (0.3 s) once the pointer has been still for
   `BAR_HOLD` (2 s) (`bar_shown`). Moving or pressing wakes it; it stays while the pointer is
-  within `BAR_WAKE_EDGE` (80) of the bottom, or a menu or the side column is open.
+  within `BAR_WAKE_EDGE` (80) of the bottom, or a menu or the side column is open. While it
+  shows, the pointer drives the screen only above it, so a click on the bar never also taps the
+  prototype beneath.
 - **A live edit landing** pulses the screen's edge once: a 2pt accent ring fading over
   `PULSE_LEN` (0.6 s).
 - **The state card** fills the side column (`SIDE_W`, 260): its rows sit in a vertical scroll
