@@ -130,9 +130,28 @@ impl Spring {
         // The last moment, sampled at 240 Hz, it is still away from the target.
         let step = 1.0 / 240.0;
         let samples = (SPRING_CAP / step) as usize;
-        let last = (0..=samples)
-            .rev()
-            .find(|k| s.offset(*k as f64 * step).abs() >= SETTLED);
+        let away = |k: usize| s.offset(k as f64 * step).abs() >= SETTLED;
+        let last = if zeta >= 1.0 - 1e-9 {
+            // From rest a spring that does not overshoot only closes in, so
+            // the samples still away come first: halve to the last of them.
+            let (mut lo, mut hi) = (0, samples + 1);
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                if away(mid) { lo = mid + 1 } else { hi = mid }
+            }
+            lo.checked_sub(1)
+        } else {
+            // Past where the envelope `a·e^(−ζω₀t)` is under the threshold no
+            // sample is away, so the scan back starts there.
+            let wd = w0 * (1.0 - zeta * zeta).sqrt();
+            let a = (1.0 + (zeta * w0 / wd).powi(2)).sqrt();
+            let quiet = (a / SETTLED).ln() / (zeta * w0);
+            let from = match quiet.is_finite() && quiet >= 0.0 {
+                true => ((quiet / step).ceil() as usize + 1).min(samples),
+                false => samples,
+            };
+            (0..=from).rev().find(|k| away(*k))
+        };
         s.settle = last.map_or(0.0, |k| ((k + 1) as f64 * step).min(SPRING_CAP));
         s
     }
@@ -232,5 +251,36 @@ mod tests {
             ms: 0,
         };
         assert_eq!(progress(&none, 0.0), (1.0, true), "instant");
+    }
+
+    /// A spring's settle time is the last 240 Hz sample still away from its
+    /// target, the same as scanning every sample back from the cap, for loose,
+    /// bouncy, critical and heavy springs.
+    ///
+    /// flip: `Spring::new`'s envelope without its sine term's amplitude (`a`
+    /// at 1) → fails at the near-critical `1 100 18` spring's settle.
+    #[test]
+    fn a_springs_settle_is_found_without_scanning_every_sample() {
+        for (mass, stiffness, damping) in [
+            (1.0, 200.0, 8.0),
+            (1.0, 100.0, 2.0),
+            (1.0, 300.0, 1.0),
+            (1.0, 100.0, 18.0),
+            (1.0, 100.0, 19.5),
+            (1.0, 100.0, 19.9),
+            (2.0, 100.0, 28.284_271_247_461_9),
+            (1.0, 100.0, 20.0),
+            (1.0, 100.0, 40.0),
+            (1.0, 400.0, 0.0),
+        ] {
+            let s = Spring::new(mass, stiffness, damping);
+            let step = 1.0 / 240.0;
+            let samples = (SPRING_CAP / step) as usize;
+            let every = (0..=samples)
+                .rev()
+                .find(|k| s.offset(*k as f64 * step).abs() >= SETTLED)
+                .map_or(0.0, |k| ((k + 1) as f64 * step).min(SPRING_CAP));
+            assert_eq!(s.settle, every, "{mass} {stiffness} {damping}");
+        }
     }
 }
