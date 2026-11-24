@@ -628,7 +628,15 @@ fn frozen_tables<'a>(
     let nodes: Vec<&Node> = nodes.into_iter().collect();
     let t = doc.variables();
     let (vs, ss) = crate::tokens::reached(t, doc.styles(), nodes.iter().copied());
-    if vs.is_empty() && ss.is_empty() && nodes.iter().all(|n| n.modes.is_empty()) {
+    // The modes the nodes are set to and the modes their reactions set.
+    let modes: Vec<crate::variable::ModeId> = nodes
+        .iter()
+        .flat_map(|n| {
+            let set = crate::prototype::modes_set(&n.reactions);
+            n.modes.iter().copied().chain(set)
+        })
+        .collect();
+    if vs.is_empty() && ss.is_empty() && modes.is_empty() {
         return Default::default();
     }
     let vars: std::collections::BTreeMap<_, _> = vs
@@ -636,10 +644,9 @@ fn frozen_tables<'a>(
         .filter_map(|v| t.get(*v).map(|var| (*v, var.clone())))
         .collect();
     let mut kits = std::collections::BTreeMap::new();
-    let kit_modes = nodes
+    let kit_modes = modes
         .iter()
-        .flat_map(|n| n.modes.iter().copied())
-        .filter_map(|m| t.kit_mode_of(m).map(|(k, _)| k.to_string()));
+        .filter_map(|m| t.kit_mode_of(*m).map(|(k, _)| k.to_string()));
     for k in vars
         .values()
         .filter_map(|v| v.kit().map(str::to_string))
@@ -653,11 +660,10 @@ fn frozen_tables<'a>(
         }
     }
     // The kit's own modes whenever anything of its own is read or set — a
-    // variable of its own, or a frame set to one of its modes.
-    let own = vars.values().any(|v| v.origin.is_none())
-        || nodes
-            .iter()
-            .any(|n| n.modes.iter().any(|m| t.mode(*m).is_some()));
+    // variable of its own, or a frame set to one of its modes or a reaction
+    // setting one.
+    let own =
+        vars.values().any(|v| v.origin.is_none()) || modes.iter().any(|m| t.mode(*m).is_some());
     let variables = crate::variable::Variables {
         collections: if own {
             t.collections().to_vec()

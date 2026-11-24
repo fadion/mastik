@@ -3228,3 +3228,62 @@ fn vendored_reactions_name_the_consumers_variables_and_scripts() {
     );
     assert_eq!(d.scripts().len(), 1, "the script is not copied again");
 }
+
+/// A kit main whose only tie to the kit's modes is a *Set mode* reaction is
+/// vendored with the kit's modes, and the reaction names the consumer's copy of
+/// the mode, which play can find.
+///
+/// flip: `Plan::apply_reactions` not mapping modes → fails at "the consumer's
+/// kit mode"; `frozen_tables` not counting reaction modes → fails there too.
+#[test]
+fn a_vendored_set_mode_names_the_consumers_kit_mode() {
+    use mastik_core::Keyed;
+    use mastik_core::prototype::{Action, Reaction, Trigger};
+    let mut k = kit();
+    let mut lids = IdSource::new(0xAE);
+    let dark = lids.mint_mode();
+    let reactions = vec![Keyed::new(
+        lids.mint_item(),
+        Reaction {
+            trigger: Trigger::Click,
+            actions: vec![Keyed::new(
+                lids.mint_item(),
+                Action::SetMode {
+                    mode: dark,
+                    scope: Default::default(),
+                },
+            )],
+        },
+    )];
+    k.doc
+        .apply(&Transaction(vec![
+            Operation::AddMode {
+                collection: mastik_core::variable::CollectionId::FIRST,
+                mode: mastik_core::Mode {
+                    id: dark,
+                    name: "Dark".into(),
+                },
+                index: 0,
+                cells: vec![],
+            },
+            Operation::SetReactions {
+                id: k.card,
+                reactions,
+            },
+        ]))
+        .unwrap();
+    let version = kit::publish(&mut k.doc, None, 1).unwrap();
+    let (mut d, mut ids) = consumer();
+    let page = d.first_page();
+    let (tx, placed) =
+        kit::insert(&d, &mut ids, L_ID, version, published(&k), k.card, page).unwrap();
+    d.apply(&tx).unwrap();
+    let card = d.get(placed).unwrap().link().unwrap();
+    let Action::SetMode { mode, .. } = d.get(card).unwrap().reactions()[0].actions[0].value else {
+        panic!("not a set mode");
+    };
+    assert!(
+        d.variables().kit_mode_of(mode).is_some(),
+        "the consumer's kit mode"
+    );
+}

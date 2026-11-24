@@ -361,17 +361,18 @@ impl Plan {
         }
     }
 
-    /// `reactions` with the variables they read and set pointed at the
-    /// consumer's copies.
+    /// `reactions` with the variables they read and set, and the modes they
+    /// set, pointed at the consumer's copies.
     pub(crate) fn apply_reactions(
         &self,
         reactions: &[crate::Keyed<crate::prototype::Reaction>],
     ) -> Vec<crate::Keyed<crate::prototype::Reaction>> {
-        crate::prototype::map_refs(
+        let mapped = crate::prototype::map_refs(
             reactions,
             &mut |x| *self.vars.get(&x).unwrap_or(&x),
             &mut |s| s,
-        )
+        );
+        crate::prototype::map_modes(&mapped, &mut |m| *self.modes.get(&m).unwrap_or(&m))
     }
 
     /// A style's value with its paints pointed at the consumer's variables.
@@ -542,7 +543,8 @@ pub(crate) fn plan<'a>(
     let mut records: BTreeMap<String, KitModes> = BTreeMap::new();
     let mut changed_records: Vec<String> = Vec::new();
 
-    // The kits read: by the variables, and by any frame set to a kit's mode.
+    // The kits read: by the variables, and by any frame set to a kit's mode or
+    // reaction setting one.
     let mut kits: Vec<String> = Vec::new();
     for v in &want_vars {
         if let Some(o) = src.vars.get(*v).and_then(|v| src.var_origin(v))
@@ -552,7 +554,8 @@ pub(crate) fn plan<'a>(
         }
     }
     for n in &nodes {
-        for &m in &n.modes {
+        let set = crate::prototype::modes_set(&n.reactions);
+        for &m in n.modes.iter().chain(&set) {
             if let Some(k) = src.kit_of_mode(m)
                 && !kits.contains(&k)
             {

@@ -1388,6 +1388,68 @@ pub fn refs(reactions: &[Keyed<Reaction>]) -> (Vec<VarId>, Vec<ScriptId>) {
     (vars, scripts)
 }
 
+/// The modes `reactions` set (*Set mode*), nested actions' included.
+pub fn modes_set(reactions: &[Keyed<Reaction>]) -> Vec<ModeId> {
+    let mut out = Vec::new();
+    for k in reactions.iter().flat_map(|r| &r.value.actions) {
+        walk(&k.value, &mut |a| {
+            if let Action::SetMode { mode, .. } = a
+                && !out.contains(mode)
+            {
+                out.push(*mode);
+            }
+        });
+    }
+    out
+}
+
+/// `reactions` with each mode a *Set mode* sets passed through `mode`, nested
+/// actions' included.
+pub fn map_modes(
+    reactions: &[Keyed<Reaction>],
+    mode: &mut dyn FnMut(ModeId) -> ModeId,
+) -> Vec<Keyed<Reaction>> {
+    reactions
+        .iter()
+        .map(|r| {
+            r.map(|r| Reaction {
+                trigger: r.trigger.clone(),
+                actions: map_modes_in(&r.actions, mode),
+            })
+        })
+        .collect()
+}
+
+fn map_modes_in(
+    list: &[Keyed<Action>],
+    mode: &mut dyn FnMut(ModeId) -> ModeId,
+) -> Vec<Keyed<Action>> {
+    list.iter()
+        .map(|k| {
+            k.map(|a| match a {
+                Action::SetMode { mode: m, scope } => Action::SetMode {
+                    mode: mode(*m),
+                    scope: *scope,
+                },
+                Action::Conditional {
+                    branches,
+                    otherwise,
+                } => Action::Conditional {
+                    branches: branches
+                        .iter()
+                        .map(|b| Branch {
+                            when: b.when.clone(),
+                            actions: map_modes_in(&b.actions, mode),
+                        })
+                        .collect(),
+                    otherwise: map_modes_in(otherwise, mode),
+                },
+                other => other.clone(),
+            })
+        })
+        .collect()
+}
+
 /// `e` as its field shows it in `doc`: each variable and table read by name,
 /// `{row.…}` read against `row`, a name that is gone left as its id.
 pub fn expr_shown(doc: &Document, e: &Expr, row: Option<DataSetId>) -> String {
