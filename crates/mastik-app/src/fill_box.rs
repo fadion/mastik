@@ -32,9 +32,10 @@ const NAME_W: f32 = 168.0;
 /// A preview row's kind combo, at the toolbar scale.
 const KIND_W: f32 = 128.0;
 const KIND_H: f32 = ui::TOOLBAR_H;
-/// The open kind list: wide enough for a label and its sample, and never wider
-/// or taller once open, since an egui popup cannot grow back.
-const KIND_LIST_W: f32 = 280.0;
+/// The widest an open kind list grows to fit its labels and samples; a longer
+/// sample is cut.
+const KIND_LIST_MAX_W: f32 = 360.0;
+/// The tallest an open kind list grows before it scrolls.
 const KIND_LIST_H: f32 = 340.0;
 /// The die a hovered row shows at its value's end, and its glyph.
 const DIE: f32 = 20.0;
@@ -538,24 +539,26 @@ enum Act {
     Cancel,
 }
 
-/// A full-width dropdown in a label row, as batch rename's *Order* is.
+/// A full-width dropdown in a label row, as batch rename's *Order* is. `list`
+/// is handed the dropdown's width, the narrowest its list may be.
 fn combo_in_row(
     ui: &mut egui::Ui,
     id: &str,
     shown: &str,
     hint: &str,
-    list: impl FnOnce(&mut egui::Ui),
+    list: impl FnOnce(&mut egui::Ui, f32),
 ) {
     ui.spacing_mut().interact_size.y = ui::CONTROL_H;
     ui.spacing_mut().button_padding.y = 0.0;
-    egui::ComboBox::from_id_salt(id)
+    let w = ui.available_width();
+    egui::ComboBox::from_id_salt(ui::opening_salt(ui, id))
         .icon(ui::combo_chevron)
-        .width(ui.available_width())
+        .width(w)
         .height(KIND_LIST_H)
         .selected_text(shown)
         .show_ui(ui, |ui| {
             ui::menu_rows(ui);
-            list(ui);
+            list(ui, w);
         })
         .response
         .on_hover_text(hint);
@@ -569,7 +572,7 @@ fn locale_row(ui: &mut egui::Ui, b: &mut FillBox) {
             "fill-content-locale",
             shown,
             "Names, addresses, phone numbers, dates and prices follow it",
-            |ui| {
+            |ui, _| {
                 for l in fill::locales() {
                     let on = l.tag == b.opts.locale;
                     if ui::menu_row(ui, MenuRow::new("", &l.name).checked(on), ui::MENU_ROW_H)
@@ -656,24 +659,24 @@ fn read_beside(doc: &Document) -> (Vec<mastik_core::Operation>, Vec<Beside>) {
     (ops, beside)
 }
 
-/// A table column as a row's combo names it: *People ▸ Name*.
+/// A table column as a row's combo names it, *People · Name*: joined by the
+/// middle dot the app joins every pair of names with, which the UI face has.
 fn column_words(doc: &Document, (d, c): fill::Cell) -> String {
     let set = doc.data_set(d);
     let table = set.map_or("Missing table", |s| s.name.as_str());
     let column = set
         .and_then(|s| s.table.column(c))
         .map_or("Missing column", |c| c.name.as_str());
-    format!("{table} \u{25B8} {column}")
+    format!("{table} \u{b7} {column}")
 }
 
 /// The document's tables, real data before invented: each under an eyebrow
 /// naming it and its rows, *By column name* first when asked, then its
 /// columns with the first row's cell as the faint tail. A shape's list shows
 /// only the tables and columns that name pictures; a table with no rows shows
-/// its eyebrow alone. Answers the pick.
-fn table_rows(ui: &mut egui::Ui, ask: &TableAsk<'_>, shape: bool) -> Option<TableContent> {
+/// its eyebrow alone.
+fn table_entries(ask: &TableAsk<'_>, shape: bool, out: &mut Vec<Entry>) {
     let doc = ask.doc;
-    let mut picked = None;
     for set in doc.data_sets() {
         let images: Vec<_> = set
             .table
@@ -700,20 +703,13 @@ fn table_rows(ui: &mut egui::Ui, ask: &TableAsk<'_>, shape: bool) -> Option<Tabl
             0 => "no rows".to_string(),
             n => ui::count(n, "row"),
         };
-        ui.add_space(4.0);
-        ui.horizontal(|ui| {
-            ui.add_space(8.0);
-            ui.label(ui::eyebrow(&format!("{} \u{b7} {tail}", set.name)));
-        });
+        out.push(Entry::Eyebrow(format!("{} \u{b7} {tail}", set.name)));
         if rows == 0 {
             continue;
         }
         if ask.by_name && !shape {
-            let on = ask.now == Some(TableContent::ByColumnName(set.id));
-            let row = MenuRow::new("", "By column name").checked(on);
-            if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
-                picked = Some(TableContent::ByColumnName(set.id));
-            }
+            let pick = TableContent::ByColumnName(set.id);
+            out.push(Entry::row("By column name", "", ask.now == Some(pick)).table(pick));
         }
         for c in columns {
             let cell = (set.id, c.id);
@@ -733,25 +729,119 @@ fn table_rows(ui: &mut egui::Ui, ask: &TableAsk<'_>, shape: bool) -> Option<Tabl
             };
             // An image column does nothing to a text: listed, dimmed.
             let enabled = shape || !images.contains(&c.id);
-            let row = MenuRow::new("", &c.name)
-                .checked(on)
-                .note(&sample)
-                .enabled(enabled);
-            if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() && enabled {
-                picked = Some(TableContent::Column(cell));
-            }
+            let pick = TableContent::Column(cell);
+            out.push(
+                Entry::row(&c.name, &sample, on)
+                    .table(pick)
+                    .enabled(enabled),
+            );
         }
     }
-    if picked.is_some() {
-        ui.close();
+}
+
+/// What a kind list's row picks: a kind (or the head row), or a table.
+#[derive(Clone, Copy)]
+enum Choice {
+    Kind(Pick),
+    Table(TableContent),
+}
+
+/// One line of a kind list, gathered before it is drawn so the open list can
+/// be as wide as its widest line.
+enum Entry {
+    /// A group's or a table's name over its rows.
+    Eyebrow(String),
+    Row {
+        label: String,
+        note: String,
+        on: bool,
+        enabled: bool,
+        pick: Choice,
+    },
+}
+
+impl Entry {
+    fn row(label: &str, note: &str, on: bool) -> Self {
+        Self::Row {
+            label: label.to_string(),
+            note: note.to_string(),
+            on,
+            enabled: true,
+            pick: Choice::Kind((None, None)),
+        }
     }
-    picked
+
+    fn table(self, to: TableContent) -> Self {
+        self.picks(Choice::Table(to))
+    }
+
+    fn picks(mut self, to: Choice) -> Self {
+        if let Self::Row { pick, .. } = &mut self {
+            *pick = to;
+        }
+        self
+    }
+
+    fn enabled(mut self, yes: bool) -> Self {
+        if let Self::Row { enabled, .. } = &mut self {
+            *enabled = yes;
+        }
+        self
+    }
 }
 
 /// The kinds a text row or the Content row can choose, under their groups'
 /// eyebrows, each with its sample as a faint tail; a shape's list is its avatar
 /// styles instead, `style` the one it is drawn in now. The document's tables
-/// lead the groups (`tables`), their pick answered through `table`.
+/// lead the groups (`tables`).
+fn kind_entries(
+    b: &FillBox,
+    head: &str,
+    current: Option<Kind>,
+    shape: Option<AvatarStyle>,
+    tables: &TableAsk<'_>,
+) -> Vec<Entry> {
+    let mut out = vec![Entry::row(
+        head,
+        "",
+        current.is_none() && tables.now.is_none(),
+    )];
+    table_entries(tables, shape.is_some(), &mut out);
+    if let Some(style) = shape {
+        let note = b.sample(Kind::Avatar);
+        for s in STYLES {
+            let on = current == Some(Kind::Avatar) && style == s;
+            let pick = Choice::Kind((Some(Kind::Avatar), Some(s)));
+            out.push(Entry::row(&avatar_label(s), note, on).picks(pick));
+        }
+    } else {
+        let mut group: Option<Group> = None;
+        for kind in Kind::ALL.into_iter().filter(|k| k.is_text()) {
+            if group != Some(kind.group()) {
+                group = Some(kind.group());
+                out.push(Entry::Eyebrow(kind.group().label().to_string()));
+            }
+            let on = current == Some(kind);
+            let pick = Choice::Kind((Some(kind), None));
+            out.push(Entry::row(kind.label(), b.sample(kind), on).picks(pick));
+        }
+    }
+    out
+}
+
+/// The width of a kind list's rows: its widest line with its tail, at least
+/// `min` (the dropdown's own width) and at most [`KIND_LIST_MAX_W`].
+fn list_width(ctx: &egui::Context, entries: &[Entry], min: f32) -> f32 {
+    let rows = entries.iter().map(|e| match e {
+        Entry::Eyebrow(name) => (name.as_str(), ""),
+        Entry::Row { label, note, .. } => (label.as_str(), note.as_str()),
+    });
+    ui::menu_noted_width(ctx, rows, true).clamp(min, KIND_LIST_MAX_W.max(min))
+}
+
+/// [`kind_entries`] drawn as an open list `min` wide or wider, a table's pick
+/// answered through `table`.
+#[allow(clippy::too_many_arguments)]
 fn kind_list(
     ui: &mut egui::Ui,
     b: &FillBox,
@@ -760,61 +850,47 @@ fn kind_list(
     shape: Option<AvatarStyle>,
     tables: &TableAsk<'_>,
     table: &mut Option<TableContent>,
+    min: f32,
 ) -> Option<Pick> {
-    ui.set_min_width(KIND_LIST_W);
+    let entries = kind_entries(b, head, current, shape, tables);
+    ui.set_width(list_width(ui.ctx(), &entries, min));
     let mut picked = None;
-    if ui::menu_row(
-        ui,
-        MenuRow::new("", head).checked(current.is_none() && tables.now.is_none()),
-        ui::MENU_ROW_H,
-    )
-    .clicked()
-    {
-        picked = Some((None, None));
-    }
-    *table = table_rows(ui, tables, shape.is_some());
-    if table.is_some() {
-        return None;
-    }
-    if let Some(style) = shape {
-        let note = b.sample(Kind::Avatar);
-        for s in STYLES {
-            let on = current == Some(Kind::Avatar) && style == s;
-            let label = avatar_label(s);
-            if ui::menu_row(
-                ui,
-                MenuRow::new("", &label).checked(on).note(note),
-                ui::MENU_ROW_H,
-            )
-            .clicked()
-            {
-                picked = Some((Some(Kind::Avatar), Some(s)));
-            }
-        }
-    } else {
-        let mut group: Option<Group> = None;
-        for kind in Kind::ALL.into_iter().filter(|k| k.is_text()) {
-            if group != Some(kind.group()) {
-                group = Some(kind.group());
+    for e in &entries {
+        match e {
+            Entry::Eyebrow(name) => {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.add_space(8.0);
-                    ui.label(ui::eyebrow(kind.group().label()));
+                    ui.label(ui::eyebrow(name));
                 });
             }
-            let on = current == Some(kind);
-            let row = MenuRow::new("", kind.label())
-                .checked(on)
-                .note(b.sample(kind));
-            if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() {
-                picked = Some((Some(kind), None));
+            Entry::Row {
+                label,
+                note,
+                on,
+                enabled,
+                pick,
+            } => {
+                let mut row = MenuRow::new("", label).checked(*on).enabled(*enabled);
+                if !note.is_empty() {
+                    row = row.note(note);
+                }
+                if ui::menu_row(ui, row, ui::MENU_ROW_H).clicked() && *enabled {
+                    picked = Some(*pick);
+                }
             }
         }
     }
     if picked.is_some() {
         ui.close();
     }
-    picked
+    match picked? {
+        Choice::Kind(pick) => Some(pick),
+        Choice::Table(t) => {
+            *table = Some(t);
+            None
+        }
+    }
 }
 
 fn content_row(ui: &mut egui::Ui, doc: &Document, b: &mut FillBox) {
@@ -844,7 +920,7 @@ fn content_row(ui: &mut egui::Ui, doc: &Document, b: &mut FillBox) {
             "fill-content-kind",
             &shown,
             "What every text layer is filled with",
-            |ui| {
+            |ui, w| {
                 picked = kind_list(
                     ui,
                     b,
@@ -853,6 +929,7 @@ fn content_row(ui: &mut egui::Ui, doc: &Document, b: &mut FillBox) {
                     None,
                     &ask,
                     &mut table,
+                    w,
                 )
             },
         );
@@ -1229,23 +1306,29 @@ fn fill_row(ui: &mut egui::Ui, doc: &Document, b: &FillBox, i: usize) -> RowOut 
     // The combo and the die go in children that do not move the list's cursor: a
     // placed child resets it to its own bottom, above the row's, and every row
     // under a hovered one would ride up.
+    // Fixed at `KIND_W` whatever its choice is called: a long table and column
+    // is cut with an ellipsis and said whole under the pointer, rather than
+    // running over the value.
     let mut kind_ui = ui.new_child(egui::UiBuilder::new().max_rect(kind_rect));
-    kind_ui.spacing_mut().interact_size.y = KIND_H;
-    kind_ui.spacing_mut().button_padding.y = 0.0;
-    egui::ComboBox::from_id_salt(("fill-content-row", r.node))
-        .icon(ui::combo_chevron)
-        .width(KIND_W)
-        .height(KIND_LIST_H)
-        .selected_text(shown)
-        .show_ui(&mut kind_ui, |ui| {
+    let salt = ("fill-content-row", r.node);
+    ui::fitted_combo_h(
+        &mut kind_ui,
+        salt,
+        KIND_W,
+        KIND_H,
+        shown.as_str(),
+        &shown,
+        |ui| {
             ui::menu_rows(ui);
             let mut table = None;
-            out.kind = kind_list(ui, b, "Leave as is", r.kind, style, &ask, &mut table);
+            let w = KIND_W;
+            out.kind = kind_list(ui, b, "Leave as is", r.kind, style, &ask, &mut table, w);
             out.column = table.and_then(|t| match t {
                 TableContent::Column(c) => Some(c),
                 TableContent::ByColumnName(_) => None,
             });
-        });
+        },
+    );
 
     // The value, and the die at its end while the row is hovered.
     let value_x = kind_rect.right() + 10.0;
@@ -2116,5 +2199,138 @@ mod tests {
             Some("2 cards"),
             "control: named while private mode is off"
         );
+    }
+
+    /// The team, a table named `table` whose second column is `column`, and the
+    /// box open with every text filled from that column. Answers the app after
+    /// a few frames, and the last frame's output.
+    fn filled_from_column(
+        table: &str,
+        column: &str,
+    ) -> (egui::Context, MastikApp, egui::FullOutput) {
+        use mastik_core::chart::{Column, ColumnId, Table};
+        let (ctx, mut app) = app();
+        team(&mut app);
+        let set = mastik_core::list::DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: table.into(),
+            table: Table {
+                columns: vec![
+                    Column {
+                        id: ColumnId(0),
+                        name: "Name".into(),
+                    },
+                    Column {
+                        id: ColumnId(1),
+                        name: column.into(),
+                    },
+                ],
+                rows: vec![
+                    vec!["Ada Lovelace".into(), "ada@example.com".into()],
+                    vec!["Grace Hopper".into(), "grace@example.com".into()],
+                ],
+            },
+            source: None,
+            pictures: Vec::new(),
+        };
+        let data = set.id;
+        assert!(app.session.commit(Transaction(vec![Operation::SetDataSet {
+            id: data,
+            set: Some(Box::new(set)),
+        }])));
+        pass(&ctx, &mut app);
+        app.open_fill_content();
+        app.fill_content.as_mut().unwrap().opts.table =
+            Some(TableContent::Column((data, ColumnId(1))));
+        for _ in 0..4 {
+            pass(&ctx, &mut app);
+        }
+        let mut frame = eframe::Frame::_new_kittest();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1320.0, 820.0),
+            )),
+            ..Default::default()
+        };
+        let out = ctx.run_ui(input, |ui| eframe::App::ui(&mut app, ui, &mut frame));
+        (ctx, app, out)
+    }
+
+    /// Every character of a row's *table · column* face draws a glyph of the UI
+    /// face, not the missing-glyph box.
+    /// flip: `column_words` joining with `▸` (U+25B8) → fails at "draws".
+    #[test]
+    fn a_table_column_face_draws_no_missing_glyph() {
+        let (ctx, app, _) = filled_from_column("team.json", "Email");
+        let b = app.fill_content.as_ref().expect("the box is open");
+        let cell = b.opts.table.and_then(|t| match t {
+            TableContent::Column(c) => Some(c),
+            TableContent::ByColumnName(_) => None,
+        });
+        let words = column_words(&app.session.doc, cell.expect("a column"));
+        let uv = |s: &str| {
+            let g = ctx.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    s.to_owned(),
+                    egui::FontId::proportional(ui::CONTROL_PT),
+                    egui::Color32::WHITE,
+                )
+            });
+            g.rows[0].glyphs[0].uv_rect
+        };
+        let tofu = uv("\u{10FFFD}");
+        for c in words.chars().filter(|c| !c.is_whitespace()) {
+            assert_ne!(uv(&c.to_string()), tofu, "{c:?} of {words:?} draws");
+        }
+    }
+
+    /// A row's dropdown keeps its width under a long table and column: the face
+    /// is cut with an ellipsis instead of running over the value beside it.
+    /// flip: `fill_row` building a bare `ComboBox` rather than
+    /// `ui::fitted_combo_h` → fails at "cut".
+    #[test]
+    fn a_long_column_is_cut_on_a_rows_dropdown() {
+        let table = "Quarterly speaker roster for the spring conference.json";
+        let (_, _, out) = filled_from_column(table, "Email address");
+        let faces: Vec<&egui::epaint::TextShape> = out
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.shape {
+                egui::epaint::Shape::Text(t) if t.galley.job.text.starts_with(table) => Some(t),
+                _ => None,
+            })
+            .collect();
+        // The Content row's face, and one per text row of the two cards.
+        assert!(faces.len() >= 5, "the fixture: the rows show the column");
+        let cut: Vec<_> = faces.iter().filter(|f| f.galley.elided).collect();
+        assert_eq!(cut.len(), 4, "cut on every row");
+        for f in cut {
+            assert!(f.galley.size().x < KIND_W, "within the dropdown");
+        }
+    }
+
+    /// An open kind list is as wide as its widest line: a short list keeps the
+    /// dropdown's width, a long one widens, up to its cap.
+    /// flip: `list_width` answering `min` → fails at "widens".
+    #[test]
+    fn a_kind_list_is_as_wide_as_its_lines() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let short = [
+            Entry::row("Name", "Ada", false),
+            Entry::row("City", "Rome", false),
+        ];
+        let long = [Entry::row(
+            "Street address",
+            "1234 Some Remarkably Long Avenue Name",
+            false,
+        )];
+        let huge = [Entry::row(&"Very long column name ".repeat(8), "", false)];
+        assert_eq!(list_width(&ctx, &short, KIND_W), KIND_W, "a short list");
+        let w = list_width(&ctx, &long, KIND_W);
+        assert!(w > KIND_W + 20.0, "widens: {w}");
+        assert_eq!(list_width(&ctx, &huge, KIND_W), KIND_LIST_MAX_W, "capped");
     }
 }

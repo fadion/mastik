@@ -1006,7 +1006,9 @@ ImageSink>)` is the edit.
   `content_fill::sample`). Each table is listed inline under an eyebrow *People · 12 rows* (*no
   rows* shows the eyebrow alone), not in a flyout: *By column name*, then its columns, each with
   the first row's cell as its faint tail; an image column is listed dimmed, as it gives a text
-  nothing. The face reads *People · by column name* or *People ▸ Name* (`column_words`). Picking a
+  nothing. The face reads *People · by column name* or *People · Name* (`column_words`). An open
+  kind list is as wide as its widest label and tail (`list_width`), never narrower than its
+  dropdown nor wider than `KIND_LIST_MAX_W` (360), a longer tail cut. Picking a
   kind or a table there drops the text rows' own choices, kind or column, and keeps the shapes'.
   *Rows*, under *Content* while any row reads a table: a *From row* `value_field` at half width
   and an *In order* / *Shuffled* `ui::segmented_tipped` (*Each record takes the next row*, *Rows
@@ -1027,8 +1029,10 @@ ImageSink>)` is the edit.
   private mode), a kind combo (a text row: *Leave as is*, the tables' columns as under *Content*
   without *By column name*, and every text kind; a shape row: *Leave as is*, only the tables with
   an image column and only those columns, each with a *N pictures* tail, then *Avatar · Initials*
-  and *Avatar · Pattern*; the face names the pick the same way, a column as *People ▸ Name*; a
-  shape with no pick of its own shows the box's style), then the value: a kept row's
+  and *Avatar · Pattern*; the face names the pick the same way, a column as *People · Name*; a
+  shape with no pick of its own shows the box's style). The combo is a `ui::fitted_combo_h`
+  128 wide at `TOOLBAR_H`: a long table and column is cut with an ellipsis and named whole in the
+  tooltip, never running over the value. Then the value: a kept row's
   current text, faint; a table's cell with a faint *row 2* tail; a picture by its words; an
   overflow in warn ink with *Longer than its box: no draw fitted*; an avatar
   as its ground swatch with the initials, then the name. A hovered row with a kind shows a `DICE`

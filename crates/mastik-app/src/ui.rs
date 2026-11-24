@@ -5292,12 +5292,27 @@ pub fn fitted_combo<R>(
     whole: &str,
     menu: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<Option<R>> {
+    fitted_combo_h(ui, salt, width, CONTROL_H, face, whole, menu)
+}
+
+/// [`fitted_combo`] `height` tall rather than [`CONTROL_H`]: a list row's
+/// dropdown at the toolbar scale (*Fill with content*'s preview rows).
+pub fn fitted_combo_h<R>(
+    ui: &mut egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+    width: f32,
+    height: f32,
+    face: impl Into<egui::WidgetText>,
+    whole: &str,
+    menu: impl FnOnce(&mut egui::Ui) -> R,
+) -> egui::InnerResponse<Option<R>> {
     let face = face.into();
     ui.allocate_ui_with_layout(
-        egui::vec2(width, CONTROL_H),
+        egui::vec2(width, height),
         egui::Layout::left_to_right(egui::Align::Center),
         |ui| {
-            combo_height(ui);
+            ui.spacing_mut().interact_size.y = height;
+            ui.spacing_mut().button_padding.y = 0.0;
             let s = ui.spacing();
             let room = width - 2.0 * s.button_padding.x - s.icon_spacing - s.icon_width;
             let cut = face
@@ -5309,7 +5324,7 @@ pub fn fitted_combo<R>(
                     egui::TextStyle::Button,
                 )
                 .elided;
-            let out = egui::ComboBox::from_id_salt(salt)
+            let out = egui::ComboBox::from_id_salt(opening_salt(ui, salt))
                 .icon(combo_chevron)
                 .width(width)
                 .truncate()
@@ -5326,6 +5341,31 @@ pub fn fitted_combo<R>(
         },
     )
     .inner
+}
+
+/// The key a dropdown's `ComboBox` is built with: `salt` and how many times its
+/// list has closed. An egui popup lays its list out in the size it painted at
+/// last time, so a list that grew since opened cut short with a scroll bar and
+/// a wider one clipped; a new key each opening has egui measure it afresh before
+/// its first visible frame. Call it in the `Ui` the combo is added to.
+pub fn opening_salt(
+    ui: &egui::Ui,
+    salt: impl std::hash::Hash + std::fmt::Debug,
+) -> (egui::Id, u32) {
+    let base = ui.make_persistent_id(salt).with("opening");
+    let ctx = ui.ctx();
+    let (n, was_open) = ctx.data(|d| d.get_temp::<(u32, bool)>(base).unwrap_or_default());
+    // As `ComboBox` keys its button and then its popup.
+    let popup = ui
+        .make_persistent_id(egui::IdSalt::new((base, n)))
+        .with("popup");
+    let open = egui::Popup::is_id_open(ctx, popup);
+    let n = match was_open && !open {
+        true => n.wrapping_add(1),
+        false => n,
+    };
+    ctx.data_mut(|d| d.insert_temp(base, (n, open)));
+    (base, n)
 }
 
 /// Height of a [`level_bar`]: a reading, thinner than any control.
@@ -13591,6 +13631,64 @@ mod combo_chevron_tests {
             DROPDOWN_GAP,
             "above: {list:?} over {field:?}"
         );
+    }
+
+    /// A fitted dropdown's list that grew while it was shut opens whole, not cut
+    /// to the height it painted at last time.
+    /// flip: `fitted_combo_h` keyed by `salt` rather than `opening_salt` → fails at
+    /// "whole".
+    #[test]
+    fn a_list_that_grew_while_shut_opens_whole() {
+        let ctx = egui::Context::default();
+        theme::install(&ctx);
+        // One frame with `rows` in the list, opening or closing it first; answers
+        // the list's height while it is up.
+        let run = |rows: usize, open: bool, close: bool| -> Option<f32> {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(800.0, 600.0),
+                )),
+                ..Default::default()
+            };
+            let mut layer = None;
+            let _ = ctx.run_ui(input, |ui| {
+                ui.add_space(40.0);
+                let r = fitted_combo(ui, "probe", 160.0, "Value", "Value", |ui| {
+                    menu_rows(ui);
+                    for i in 0..rows {
+                        let _ = menu_row(ui, MenuRow::new("", &format!("Row {i}")), MENU_ROW_H);
+                    }
+                    layer = Some(ui.layer_id());
+                });
+                if open {
+                    egui::Popup::open_id(ui.ctx(), r.response.id.with("popup"));
+                }
+                if close {
+                    egui::Popup::close_all(ui.ctx());
+                }
+            });
+            layer.and_then(|l| ctx.memory(|m| m.area_rect(l.id)).map(|r| r.height()))
+        };
+        run(3, true, false);
+        let mut short = None;
+        for _ in 0..4 {
+            short = run(3, false, false);
+        }
+        let short = short.expect("the short list is up");
+        run(3, false, true);
+        run(10, false, false);
+        run(10, true, false);
+        let mut tall = None;
+        for _ in 0..4 {
+            tall = run(10, false, false);
+        }
+        let tall = tall.expect("the tall list is up");
+        assert!(
+            short < 5.0 * MENU_ROW_H,
+            "the fixture: three rows are short ({short})"
+        );
+        assert!(tall >= 10.0 * MENU_ROW_H, "whole: {tall} after {short}");
     }
 
     fn is_triangle(shape: &egui::epaint::Shape) -> bool {
