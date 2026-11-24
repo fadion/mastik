@@ -1870,8 +1870,12 @@ fn paint_node_pass<P: ScenePainter>(
             .unwrap_or_else(|| doc.drawn_opacity_of(node)),
     };
 
-    // The box the paint is stored against: a gesture's kind is its stored one.
-    let stored = over.and_then(|o| o.kind.as_ref()).unwrap_or(node.kind());
+    // The box the paint is stored against: a gesture's kind is its stored one,
+    // a laid-out one (play's) is not.
+    let stored = over
+        .filter(|o| !o.laid_out)
+        .and_then(|o| o.kind.as_ref())
+        .unwrap_or(node.kind());
     let kind = over
         .and_then(|o| o.kind.as_ref())
         .unwrap_or_else(|| res.used_kind_of(node));

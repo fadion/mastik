@@ -32,6 +32,10 @@ pub struct NodeOverride {
     pub transform: Option<Affine>,
     /// Replacement kind — geometry edits and text content/style changes.
     pub kind: Option<NodeKind>,
+    /// Whether `kind` is a box layout gives the node, as play's patches are,
+    /// rather than an edit of its stored one: the paint's gradients then still
+    /// map from the stored box.
+    pub laid_out: bool,
     pub paint: Option<Paint>,
     /// Replacement effect stack (§5.3a), the whole stack as the operation carries it.
     /// Kept apart from `paint` because effects live on containers, which have no `Paint`.
@@ -600,6 +604,7 @@ impl RenderOverrides {
                 }
                 if changed {
                     out.set_kind(doc, res, p.node, kind);
+                    out.entry(p.node).laid_out = true;
                     out.mark_moved(doc, p.node);
                 }
             }

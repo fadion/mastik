@@ -3,7 +3,7 @@
 
 use mastik_core::Brush;
 use mastik_core::kurbo::{Affine, Point, RoundedRectRadii, Size};
-use mastik_core::peniko::Color;
+use mastik_core::peniko::{Color, Gradient};
 use mastik_core::prototype::{
     Action, Direction, Easing, Reaction, Timing, Transition, TransitionKind, Trigger,
 };
@@ -104,4 +104,76 @@ fn each_layer_draws_at_its_place_in_screen_space() {
         [0, 0, 255, 255],
         "the frame at x = 500 draws at the origin"
     );
+}
+
+/// A play patch on a layer's corner radii keeps its gradient on the box layout
+/// gives it: a rect stored 50 wide, pinned left and right to a 100-wide screen,
+/// draws the same ramp with and without the patch.
+/// flip: the scene walk taking a laid-out override kind for the stored box →
+/// fails at "the ramp spans the stretched box".
+#[test]
+fn a_radii_patch_keeps_a_stretched_gradient_stretched() {
+    let mut ids = IdSource::new(0x7E57);
+    let page = ids.mint();
+    let mut doc = Document::new(page);
+    let screen = frame(&mut doc, &mut ids, page, 0.0, [255, 0, 0]);
+    let rect = ids.mint();
+    let ramp = Gradient::new_linear(Point::new(0.0, 0.0), Point::new(50.0, 0.0)).with_stops([
+        (0.0_f32, Color::from_rgba8(0, 0, 0, 255)),
+        (1.0_f32, Color::from_rgba8(255, 255, 255, 255)),
+    ]);
+    let px = |v| Some(mastik_core::LengthPct::Px(v));
+    doc.apply(&Transaction(vec![
+        Operation::CreateNode {
+            id: rect,
+            parent: screen,
+            index: 0,
+            kind: NodeKind::Rect {
+                size: Size::new(50.0, 100.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: None,
+        },
+        Operation::SetFills {
+            id: rect,
+            fills: keyed_by_position([Fill {
+                brush: Brush::Gradient(ramp.into()).into(),
+                visible: true,
+            }]),
+        },
+        Operation::SetInsets {
+            id: rect,
+            insets: mastik_core::Insets {
+                left: px(0.0),
+                right: px(0.0),
+                ..Default::default()
+            },
+        },
+    ]))
+    .expect("a stretched rect");
+    let p = Player::new(&doc, Start::Frame(screen), 0x91A7).expect("plays");
+    let draw = |scene: &mastik_play::Scene| {
+        let (rgba, w, _) = VelloCpuRenderer::new().render_play_to_rgba(
+            p.document(),
+            p.resolved(),
+            &ImageStore::new(),
+            scene,
+            1.0,
+        );
+        let i = ((50 * w + 75) * 4) as usize;
+        rgba[i]
+    };
+    let plain = p.scene();
+    let still = draw(&plain);
+    assert!(
+        (150..230).contains(&still),
+        "fixture: three quarters along the stretched ramp, got {still}"
+    );
+    let mut patched = plain.clone();
+    let mut radii = mastik_play::Patch::new(rect);
+    radii.radii = Some(RoundedRectRadii::from_single_radius(4.0));
+    patched.patches.push(radii);
+    assert_eq!(draw(&patched), still, "the ramp spans the stretched box");
 }
