@@ -2097,6 +2097,109 @@ mod tests {
         assert_eq!(images(&app), before + 1, "nothing read again");
     }
 
+    /// A relink reads the pictures beside the new file again, replacing the
+    /// set's map rather than adding to it; *Unlink data file* drops the link in
+    /// one step and does nothing to a set with none.
+    /// flip: `replace_data_set_table` keeping the old `pictures` → fails at "the
+    /// new file's picture". `unlink_data_set`'s no-link return has no flip of
+    /// its own: the unchanged commit it skips makes no step either.
+    #[test]
+    fn a_relink_reads_its_pictures_again_and_unlink_drops_the_link() {
+        use mastik_core::chart::DataLink;
+        use mastik_core::list::{List, Target};
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let inst = with_photo(&mut app);
+        let dir = std::env::temp_dir().join(format!("mastik-relink-pics-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = crate::app::rgba_to_png(&[10; 16], (2, 2)).unwrap();
+        std::fs::write(dir.join("ada.png"), first).unwrap();
+        let set = DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "People".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "pic".into(),
+                }],
+                rows: vec![vec!["ada.png".into()]],
+            },
+            source: Some(DataLink {
+                path: dir.join("people.csv").to_string_lossy().into_owned(),
+                size: 0,
+                modified: 0,
+                header: None,
+            }),
+            pictures: Vec::new(),
+        };
+        let data = set.id;
+        let (tx, l) = list::make(
+            &app.session.doc,
+            &app.session.resolved,
+            &mut app.session.ids,
+            inst,
+            Source::New(set),
+        )
+        .unwrap();
+        assert!(app.commit_edit(tx));
+        let photo = mastik_core::variant::instance_properties(&app.session.doc, inst)
+            .iter()
+            .find(|p| p.name == "Photo")
+            .map(|p| p.id)
+            .expect("fixture: the image property");
+        let now: List = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        app.commit_list_fill(
+            l,
+            List {
+                fill: vec![list::Fill {
+                    target: Target::Prop(photo),
+                    column: ColumnId(0),
+                }],
+                ..now
+            },
+        );
+        let read = |app: &MastikApp| {
+            let doc = &app.session.doc;
+            let set = doc.data_set(data).unwrap();
+            (set.pictures.len(), set.picture(doc, "ada.png"))
+        };
+        let (_, old) = read(&app);
+        assert!(old.is_some(), "fixture: the first file's picture");
+
+        // The new file sits in `read_into`'s folder, beside its own picture.
+        let name = "relinked.csv";
+        let there = std::env::temp_dir().join(format!("mastik-read-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&there).unwrap();
+        let second = crate::app::rgba_to_png(&[90; 16], (2, 2)).unwrap();
+        std::fs::write(there.join("ada.png"), second).unwrap();
+        read_into(&mut app, name, "pic\nada.png\n", |path| {
+            crate::chart_import::Then::DataSet {
+                set: data,
+                path: path.to_string_lossy().into_owned(),
+                relink: true,
+            }
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        let (pairs, new) = read(&app);
+        assert!(new.is_some() && new != old, "the new file's picture");
+        assert_eq!(pairs, 1, "the map replaced, not added to");
+
+        let depth = app.session.history.undo_depth();
+        app.unlink_data_set(data);
+        assert!(
+            app.session.doc.data_set(data).unwrap().source.is_none(),
+            "the link dropped"
+        );
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
+        app.unlink_data_set(data);
+        assert_eq!(
+            app.session.history.undo_depth(),
+            depth + 1,
+            "nothing to unlink"
+        );
+    }
+
     /// An image property's *Replace…* lands on the one layer it drives and that
     /// layer's image fill, not its first fill; with two instances selected it
     /// has nowhere to land.
