@@ -2257,7 +2257,7 @@ fn paint_link(
 
 /// The gap a flow chip keeps above its frame.
 const FLOW_CHIP_GAP: f32 = 6.0;
-/// The most variables the list `@` opens in an expression shows.
+/// The most variables the list an open `{` shows in an expression.
 const AT_LIST_MAX: usize = 12;
 /// The springs a timing offers by name, in the order the dropdown lists them.
 /// *Quick* is the one a new spring takes, the drag settle's default too.
@@ -9794,7 +9794,7 @@ mod tests {
         })
     }
 
-    /// Clicks the branch field and types `1 + @cart` over its text, leaving the
+    /// Clicks the branch field and types `1 + {cart` over its text, leaving the
     /// list of names open under it.
     fn type_a_name(ctx: &egui::Context, app: &mut MastikApp) {
         let text_at = |out: &egui::FullOutput, text: &str| {
@@ -9823,7 +9823,7 @@ mod tests {
             app,
             vec![
                 key_event(egui::Key::A, egui::Modifiers::COMMAND),
-                egui::Event::Text("1 + @cart".into()),
+                egui::Event::Text("1 + {cart".into()),
             ],
         );
         let out = app_frame(ctx, app, vec![]);
@@ -9870,7 +9870,7 @@ mod tests {
         assert!(!names_listed(&out), "the list is closed");
         assert_eq!(
             f.app.proto.draft.as_ref().map(|d| d.text.as_str()),
-            Some("1 + @cart"),
+            Some("1 + {cart"),
             "the typed text stays"
         );
         assert!(

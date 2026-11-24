@@ -403,7 +403,7 @@ redo and save (`input::resolve`; a text entry keeps even those), and these are t
 
 | Key | Action |
 |---|---|
-| `Tab` / `Shift+Tab` | the next / previous control; an open popover or dialog keeps it inside, wrapping. In a `ui::suggest_field` showing a ghost or a lit row, or a prototype expression field's open `@`/`{` list, `Tab` takes it |
+| `Tab` / `Shift+Tab` | the next / previous control; an open popover or dialog keeps it inside, wrapping. In a `ui::suggest_field` showing a ghost or a lit row, or a prototype expression field's open `{` list, `Tab` takes it |
 | `Enter` · `Space` | press it, as a click does |
 | `Shift+F10` | right-click it: its menu, where the pointer's would open (`ui::menu_key_as_right_click`) |
 | `Alt+↓` | open the list behind it: a split button's choices, a tool group's members (`ui::list_key`), a `ui::suggest_field`'s names |
