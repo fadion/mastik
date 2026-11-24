@@ -3091,6 +3091,154 @@ fn a_publish_leaves_out_actions_whose_targets_are_outside_the_main() {
     assert_eq!(changed_in(&d), ours(&d), "after the update");
 }
 
+/// A publish carries none of the kit's tables, so it leaves out and names a
+/// row action, a condition reading a cell, and a reaction on *table changes*
+/// whole, keeping the main's other actions.
+///
+/// flip: `kept_inside` not judging an action's tables, or not judging the
+/// trigger's table → fails at "each table action is named".
+#[test]
+fn a_publish_leaves_out_actions_naming_the_kits_tables() {
+    use mastik_core::Keyed;
+    use mastik_core::prototype::{Action, Branch, Expr, Reaction, Trigger};
+    let mut k = kit();
+    let mut lids = IdSource::new(0xAE);
+    let table = lids.mint_data_set();
+    let add = Action::AddRow {
+        table,
+        at: Default::default(),
+        cells: Vec::new(),
+    };
+    let url = Action::OpenUrl {
+        url: "https://example.com".into(),
+    };
+    let reads = Action::Conditional {
+        branches: vec![Branch {
+            when: Expr(format!("{{{}:rows}} > 0", table.0.to_wire())),
+            actions: vec![Keyed::new(lids.mint_item(), url.clone())],
+        }],
+        otherwise: Vec::new(),
+    };
+    let mut on = |trigger: Trigger, actions: Vec<Action>| {
+        Keyed::new(
+            lids.mint_item(),
+            Reaction {
+                trigger,
+                actions: actions
+                    .into_iter()
+                    .map(|a| Keyed::new(lids.mint_item(), a))
+                    .collect(),
+            },
+        )
+    };
+    let reactions = vec![
+        on(
+            Trigger::Click,
+            vec![add.clone(), reads.clone(), url.clone()],
+        ),
+        on(Trigger::TableChanges { table }, vec![url.clone()]),
+    ];
+    k.doc
+        .apply(&Transaction(vec![Operation::SetReactions {
+            id: k.card,
+            reactions,
+        }]))
+        .unwrap();
+    let left: Vec<Action> = kit::left_out(&k.doc)
+        .into_iter()
+        .map(|l| l.action)
+        .collect();
+    assert_eq!(
+        left,
+        [add, reads, url.clone()],
+        "each table action is named"
+    );
+    assert_eq!(kit::publish(&mut k.doc, None, 1), Some(5));
+    let frozen = published(&k).document().get(k.card).unwrap().reactions();
+    assert_eq!(frozen.len(), 1, "the table trigger's reaction is dropped");
+    let kept: Vec<&Action> = frozen[0].actions.iter().map(|a| &a.value).collect();
+    assert_eq!(kept, [&url], "the address stays");
+}
+
+/// An update re-points a synced reaction whose target only a later sync
+/// brings in: Card, held before the Button set in the consumer's vault, gains
+/// a change of state to a variant the same publish adds to the set, so Card's
+/// sync finds no copy yet and the deferred pass points it at the set's.
+///
+/// flip: `update_in_order` without its `later_reactions` loop → fails at "the
+/// consumer's Medium".
+#[test]
+fn an_update_points_a_reaction_at_a_variant_a_later_sync_brings() {
+    use mastik_core::Keyed;
+    use mastik_core::prototype::{Action, Reaction, Transition, Trigger};
+    let mut k = kit();
+    let (mut d, mut ids) = consumer();
+    insert(&mut d, &mut ids, &k, k.card);
+    insert(&mut d, &mut ids, &k, k.small);
+    let vault = vault_children(&d);
+    let at = |of: NodeId| vault.iter().position(|t| *t == copy_of(&d, of)).unwrap();
+    assert!(at(k.card) < at(k.set), "Card is synced before the set");
+
+    let mut lids = IdSource::new(0xAF);
+    let medium = lids.mint();
+    k.doc
+        .apply(&Transaction(vec![
+            create(medium, k.set, 2, frame(100.0, 35.0), "Medium"),
+            main_on(medium),
+            Operation::SetVariantSet {
+                id: k.set,
+                set: Some(VariantSet {
+                    props: vec![VariantProp::new(
+                        "Size",
+                        vec!["Large".into(), "Small".into(), "Medium".into()],
+                    )],
+                }),
+            },
+            Operation::SetVariant {
+                id: medium,
+                values: vec!["Medium".into()],
+            },
+        ]))
+        .expect("a third variant");
+    let button = instance(&mut k.doc, &mut lids, k.small, k.card);
+    let change = Action::ChangeState {
+        instance: button,
+        to: medium,
+        transition: Transition::default(),
+    };
+    k.doc
+        .apply(&Transaction(vec![Operation::SetReactions {
+            id: k.card,
+            reactions: vec![Keyed::new(
+                lids.mint_item(),
+                Reaction {
+                    trigger: Trigger::Click,
+                    actions: vec![Keyed::new(lids.mint_item(), change)],
+                },
+            )],
+        }]))
+        .unwrap();
+    assert_eq!(kit::publish(&mut k.doc, None, 1), Some(5));
+    accept(&mut d, &mut ids, &k);
+
+    let card = copy_of(&d, k.card);
+    let ours = mastik_core::build::subtree_nodes(&d, &[copy_of(&d, k.set)])
+        .into_iter()
+        .find(|n| {
+            d.get(*n)
+                .unwrap()
+                .origin()
+                .is_some_and(|o| o.node == medium)
+        })
+        .expect("the set's copy holds Medium");
+    let to = match d.get(card).unwrap().reactions()[0].actions[0].value {
+        Action::ChangeState { to, .. } => to,
+        ref other => panic!("not a change of state: {other:?}"),
+    };
+    assert_ne!(ours, medium, "a consumer id, not the kit's");
+    assert_eq!(to, ours, "the consumer's Medium");
+}
+
 /// A main's reactions name the kit's variables and scripts; vendored, they name
 /// the consumer's copies — the variable held as a kit variable, a condition's
 /// `{id}` too, and the script copied into the document's own list — and an

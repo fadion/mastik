@@ -49,6 +49,10 @@ pub(crate) fn left_out_named(doc: &Document, left: &[mastik_core::kit::LeftOut])
         n if n.is_empty() => "a missing layer".to_owned(),
         n => n.into_owned(),
     };
+    let table_name = |id| {
+        doc.data_set(id)
+            .map_or_else(|| "a missing table".to_owned(), |d| d.name.clone())
+    };
     left.iter()
         .map(|l| {
             let action = match &l.action {
@@ -59,7 +63,12 @@ pub(crate) fn left_out_named(doc: &Document, left: &[mastik_core::kit::LeftOut])
                 Action::ChangeState { instance, .. } => {
                     format!("Change state of {}", name(*instance))
                 }
-                // Only an action naming a layer is left out.
+                Action::AddRow { table, .. } => format!("Add row to {}", table_name(*table)),
+                Action::EditRow { table, .. } => format!("Edit row of {}", table_name(*table)),
+                Action::DeleteRow { table, .. } => {
+                    format!("Delete row of {}", table_name(*table))
+                }
+                // The rest are left out for a table they read, or a trigger.
                 _ => "action".to_owned(),
             };
             format!("{}'s {action}", name(l.main))

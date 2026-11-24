@@ -329,7 +329,9 @@ pub fn left_out(doc: &Document) -> Vec<LeftOut> {
 /// reaction this leaves with no action dropped; answers what it took out. A
 /// change of state is judged by its instance alone: the variant it switches to
 /// is a main the kit carries. A reaction whose trigger watches a frame outside
-/// (a scroll trigger) is taken out whole. A target is read as its holder reads it
+/// (a scroll trigger) is taken out whole. A publish carries none of the kit's
+/// tables, so an action naming one (a row action, an expression reading a cell)
+/// is taken out too, and a reaction on *table changes* whole. A target is read as its holder reads it
 /// ([`crate::prototype::resolve_target`]), so a nested instance's reaction that
 /// names its own layers is kept.
 fn kept_inside(doc: &Document, captured: &mut [Node]) -> Vec<LeftOut> {
@@ -342,6 +344,20 @@ fn kept_inside(doc: &Document, captured: &mut [Node]) -> Vec<LeftOut> {
     ) -> Vec<Keyed<Action>> {
         let mut keep = Vec::new();
         for k in list {
+            // The kit's tables never reach a consumer, so an action naming one,
+            // or a condition reading one, is left out whole.
+            let names_table = match &k.value {
+                Action::Conditional { .. } => k
+                    .value
+                    .exprs()
+                    .iter()
+                    .any(|e| e.refs().iter().any(|r| r.table().is_some())),
+                other => !other.tables().is_empty(),
+            };
+            if names_table {
+                out.push(k.value.clone());
+                continue;
+            }
             let targets = match &k.value {
                 Action::Conditional {
                     branches,
@@ -392,9 +408,12 @@ fn kept_inside(doc: &Document, captured: &mut [Node]) -> Vec<LeftOut> {
             .reactions
             .iter()
             .filter_map(|r| {
-                // A trigger watching a frame outside never fires in the kit:
-                // the whole reaction is left out.
-                if r.trigger.layer_target().is_some_and(|t| !reaches(t)) {
+                // A trigger watching a frame outside, or one of the kit's
+                // tables, never fires in a consumer: the whole reaction is
+                // left out.
+                if r.trigger.layer_target().is_some_and(|t| !reaches(t))
+                    || r.trigger.table().is_some()
+                {
                     taken.extend(r.actions.iter().map(|k| k.value.clone()));
                     return None;
                 }
