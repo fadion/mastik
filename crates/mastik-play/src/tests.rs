@@ -1702,6 +1702,46 @@ fn live_update_keeps_play_state() {
     );
 }
 
+/// The start screen deleted under an open overlay: the overlay closes as a
+/// navigation would, and the frame fallen back to becomes the start, so a
+/// take recorded now begins there and replays.
+///
+/// flip: `fall_back` not closing the overlays → fails at "the overlay closed";
+/// not moving the start → fails at "recording restarted".
+#[test]
+fn a_deleted_start_screen_closes_overlays_and_moves_the_start() {
+    let (mut fx, a, b, _) = two_screens(Transition::INSTANT);
+    let menu = fx.frame("Menu", 900.0, 80.0, 40.0);
+    let go = fx.rect(b, "Go", 150.0, 50.0, 40.0, 40.0);
+    fx.on(
+        go,
+        Trigger::Click,
+        vec![Action::OpenOverlay {
+            overlay: menu,
+            settings: OverlaySettings::default(),
+            transition: Transition::INSTANT,
+        }],
+    );
+    let mut p = fx.play(b);
+    click(&mut p, 160.0, 60.0);
+    assert_eq!(p.overlays(), vec![menu], "fixture: open");
+    p.tick(2000.0);
+    assert!(p.now() > 0.0, "fixture: time passed");
+    assert_eq!(p.overlays(), vec![menu], "fixture: still open");
+
+    let tx = Transaction(vec![Operation::DeleteNode { id: b }]);
+    fx.doc.apply(&tx).unwrap();
+    p.apply_edit(&tx).unwrap();
+    assert_eq!(p.screen(), a, "fell back to the first frame");
+    assert!(p.overlays().is_empty(), "the overlay closed");
+
+    p.record();
+    assert_eq!(p.now(), 0.0, "recording restarted");
+    assert_eq!(p.screen(), a);
+    let take = p.stop_recording().unwrap();
+    assert!(crate::Replay::new(&fx.doc, take, PLAYER).is_ok(), "replays");
+}
+
 /// An edit the copy takes cannot write over play's own choices: a page's modes
 /// edited keep the mode *Set mode* gave, and the screen resized keeps its
 /// play size.

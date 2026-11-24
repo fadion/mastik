@@ -168,7 +168,17 @@ impl Player {
                         .find(|c| self.is_frame(*c))
                 })
             };
-            if let Some(to) = start.filter(|f| self.is_frame(*f)).or_else(first) {
+            let kept = start.filter(|f| self.is_frame(*f));
+            if let Some(to) = kept.or_else(first) {
+                // Overlays were opened over the screen that is gone; close
+                // them as a navigation would, before their timers go.
+                while let Some(o) = self.overlays.pop() {
+                    self.on_close(o.frame);
+                }
+                // Restart and Record start from where the run now begins.
+                if kept.is_none() {
+                    self.start = crate::Start::Frame(to);
+                }
                 self.timers.clear();
                 self.anims = Default::default();
                 self.history.clear();
