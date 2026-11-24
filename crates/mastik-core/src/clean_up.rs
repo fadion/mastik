@@ -149,7 +149,8 @@ pub enum Kept {
     Spacer,
     /// A layer with an export.
     Export,
-    /// A layer with reactions or prototype settings: an empty one is a hotspot.
+    /// A layer with reactions or prototype settings, an empty one being a
+    /// hotspot, or one the prototype names (a *Scroll to* anchor).
     Prototype,
     /// A list a style supplies: the list is the style's.
     Style,
@@ -269,6 +270,7 @@ pub fn plan(doc: &Document, res: &Resolved, scope: &Scope, rules: &Rules) -> Pla
         scope,
         rules,
         plan: Plan::default(),
+        targets: targeted(doc),
     };
     if rules.is_on(Rule::HiddenPaint) {
         run.hidden_paint();
@@ -296,6 +298,34 @@ struct Run<'a> {
     scope: &'a Scope,
     rules: &'a Rules,
     plan: Plan,
+    /// The layers the prototype names ([`targeted`]), kept as its holders are.
+    targets: HashSet<NodeId>,
+}
+
+/// Every layer a reaction, a scroll trigger, a scroll effect or a flow start in
+/// `doc` names, each read as its holder reads it: deleting or ungrouping one
+/// would leave the prototype pointing at nothing.
+fn targeted(doc: &Document) -> HashSet<NodeId> {
+    let mut out = HashSet::new();
+    for id in doc.node_ids() {
+        let Some(n) = doc.get(id) else { continue };
+        let named = n
+            .reactions()
+            .iter()
+            .flat_map(|r| {
+                r.value
+                    .actions
+                    .iter()
+                    .flat_map(|a| a.value.layer_targets())
+                    .chain(r.value.trigger.layer_target())
+            })
+            .chain(n.play().layer_target());
+        out.extend(named.map(|t| crate::prototype::resolve_target(doc, id, t)));
+    }
+    for p in doc.pages() {
+        out.extend(p.flows.iter().map(|f| f.value.start));
+    }
+    out
 }
 
 impl Run<'_> {
@@ -680,7 +710,7 @@ impl Run<'_> {
                     Some(Kept::Mask)
                 } else if !n.exports().is_empty() {
                     Some(Kept::Export)
-                } else if n.in_prototype() {
+                } else if n.in_prototype() || self.targets.contains(&id) {
                     Some(Kept::Prototype)
                 } else if n.component() {
                     Some(Kept::Main {
@@ -739,7 +769,7 @@ impl Run<'_> {
             Some(Kept::Mask)
         } else if !n.exports().is_empty() {
             Some(Kept::Export)
-        } else if n.in_prototype() {
+        } else if n.in_prototype() || self.targets.contains(&id) {
             Some(Kept::Prototype)
         } else if self.sim.resolved_display(id).is_some() {
             Some(Kept::Layout)

@@ -1074,3 +1074,47 @@ fn a_nested_one_layer_group_in_an_auto_layout_goes() {
     assert_eq!(f.doc.get(a).unwrap().parent(), Some(outer));
     assert_eq!(boxes(&f), before, "nothing moves");
 }
+
+/// An empty frame and a one-layer group that a *Scroll to* names are kept as
+/// in the prototype, so the reaction still finds them.
+/// flip: `Run::empty_layers` not asking `targets` → fails at "the empty
+/// anchor"; `Run::group_kept` not asking it → fails at "the group".
+#[test]
+fn a_layer_a_reaction_names_is_kept() {
+    use mastik_core::Keyed;
+    use mastik_core::prototype::{Action, Reaction, Transition, Trigger};
+    let mut f = Fixture::new();
+    let frame = f.frame;
+    let anchor = f.add(frame, rect_frame());
+    let a = f.painted(frame, &[(RED, true)]);
+    let group = f.group(&[a]);
+    let button = f.painted(frame, &[(BLUE, true)]);
+    let scroll = |layer| Action::ScrollTo {
+        layer,
+        transition: Transition::default(),
+    };
+    let reaction = Reaction {
+        trigger: Trigger::Click,
+        actions: vec![
+            Keyed::new(f.ids.mint_item(), scroll(anchor)),
+            Keyed::new(f.ids.mint_item(), scroll(group)),
+        ],
+    };
+    let key = f.ids.mint_item();
+    f.commit(vec![Operation::SetReactions {
+        id: button,
+        reactions: vec![Keyed::new(key, reaction)],
+    }]);
+    let p = f.run(&only(&[Rule::EmptyLayers, Rule::OneLayerGroups]));
+    assert_eq!(
+        kept(&p, Rule::EmptyLayers, anchor),
+        Some(Kept::Prototype),
+        "the empty anchor"
+    );
+    assert_eq!(
+        kept(&p, Rule::OneLayerGroups, group),
+        Some(Kept::Prototype),
+        "the group"
+    );
+    assert!(f.doc.contains(anchor) && f.doc.contains(group));
+}
