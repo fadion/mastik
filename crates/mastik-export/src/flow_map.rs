@@ -19,6 +19,8 @@ use mastik_core::prototype::{
 };
 use mastik_core::{Document, ExportText, Keyed, NodeId, NodeKind, Resolved, subtree_nodes};
 
+use crate::svg::escape_xml as escape;
+
 /// A words page's size, in points: A4.
 const PAGE: (f64, f64) = (595.0, 842.0);
 /// A words page's margin, in points.
@@ -729,13 +731,6 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     }
     out.push(line);
     out
-}
-
-fn escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 #[cfg(test)]

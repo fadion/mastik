@@ -263,3 +263,24 @@ fn no_flow_no_map() {
     let res = Resolved::rebuild(&doc);
     assert!(flow_map(&doc, &res).is_none());
 }
+
+/// A control character in a name the map writes is left out, so the page
+/// still parses and the flow map is made.
+///
+/// flip: `flow_map`'s escaper keeping C0 controls → fails at "a control
+/// character in a name".
+#[test]
+fn a_control_character_in_a_name_does_not_lose_the_map() {
+    let (mut doc, [home, ..], _) = shop();
+    doc.apply(&Transaction(vec![Operation::SetName {
+        id: home,
+        name: "Home\u{1}".into(),
+    }]))
+    .expect("the rename");
+    assert_eq!(doc.get(home).map(|n| n.name()), Some("Home\u{1}"));
+    let res = Resolved::rebuild(&doc);
+    assert!(
+        flow_map(&doc, &res).is_some(),
+        "a control character in a name"
+    );
+}

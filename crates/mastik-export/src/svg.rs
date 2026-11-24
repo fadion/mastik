@@ -3521,8 +3521,9 @@ fn credits_metadata(out: &mut String, doc: &Document, origins: &[NodeId]) {
 
 /// `s` as XML text or attribute content. A char outside XML 1.0's `Char`
 /// production (C0 controls but tab, LF and CR; U+FFFE/U+FFFF) is dropped: one
-/// would make the whole file unparseable, and credit text comes from the network.
-fn escape_xml(s: &str) -> String {
+/// would make the whole file unparseable, and credit text and names come from
+/// the network and from imports.
+pub(crate) fn escape_xml(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {
