@@ -1395,11 +1395,12 @@ impl MastikApp {
         let mut close = false;
         let ctx = ui.ctx().clone();
         let anchor = Self::popover_anchor(&ctx, head.rect, POP_W);
+        let screen = ctx.input(|i| i.content_rect());
         let menu = egui::Area::new(egui::Id::new(("export-settings", index)))
             .order(egui::Order::Foreground)
             .fixed_pos(anchor)
             // Keeps the card on screen when its row is near the bottom.
-            .constrain_to(ctx.input(|i| i.content_rect()).shrink(ui::SCREEN_MARGIN))
+            .constrain_to(screen.shrink(ui::SCREEN_MARGIN))
             .show(&ctx, |ui| {
                 ui::hold_tab(ui);
                 ui::menu_frame(ui::POPOVER_PAD).show(ui, |ui| {
@@ -1407,9 +1408,29 @@ impl MastikApp {
                     ui.spacing_mut().item_spacing.y = SECTION_GAP;
 
                     // --- header ------------------------------------------------
+                    let head_top = ui.cursor().min.y;
                     if ui::popover_head(ui, "Export settings") {
                         close = true;
                     }
+                    // The rest scrolls under the head once the card would pass the
+                    // screen. An explicit rect, as the Type popover's: a `ScrollArea`
+                    // in an `Area` sizes from the area's last-frame size, so its height
+                    // would ratchet down and never grow back.
+                    let body_h = (screen.height()
+                        - ui::SCREEN_MARGIN * 2.0
+                        - ui::MENU_BORDER * 2.0
+                        - ui::POPOVER_PAD * 2.0
+                        - (ui.cursor().min.y - head_top))
+                        .max(0.0);
+                    let body =
+                        egui::Rect::from_min_size(ui.cursor().min, egui::vec2(POP_INNER, body_h));
+                    ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_salt(("export-settings-body", index))
+                        .auto_shrink([true, true])
+                        .show(ui, |ui| {
+                    ui.set_width(POP_INNER);
+                    ui.spacing_mut().item_spacing.y = SECTION_GAP;
 
                     // --- prefix, then suffix (filename order) ------------------
                     if let Some(text) = self.name_part_field(
@@ -1634,6 +1655,8 @@ impl MastikApp {
                         let variants = sets && spec.each_variant && !rows_on;
                         self.per_row_rows(ui, index, spec, variants, &mut out);
                     }
+                        });
+                    });
                 })
             })
             .response;
@@ -1900,7 +1923,6 @@ impl MastikApp {
                     fill,
                     ..per_row.clone()
                 });
-                return;
             }
         }
     }
@@ -6324,6 +6346,188 @@ mod code_export_tests {
         };
         let (first, second) = (summary(0), summary(1));
         assert_ne!(first, second, "each row draws its own");
+    }
+
+    /// A frame of `slots` text layers exporting a PNG a file per row of a
+    /// two-column table, its settings open. Answers the app.
+    fn per_row_settings_app(ctx: &egui::Context, slots: usize) -> crate::app::MastikApp {
+        use mastik_core::list::DataSet;
+        crate::theme::install(ctx);
+        let mut app = crate::app::MastikApp::headless(ctx);
+        let page = app.session.doc.first_page();
+        let frame = app.session.doc.get(page).expect("the page").children()[0];
+        let table = app.session.ids.mint_data_set();
+        let mut t = mastik_core::chart::Table::default();
+        for name in ["Alpha", "Beta"] {
+            let id = t.next_column_id();
+            t.columns.push(mastik_core::chart::Column {
+                id,
+                name: name.into(),
+            });
+        }
+        t.rows = vec![vec!["a".into(), "b".into()]];
+        let mut ops = vec![Operation::SetDataSet {
+            id: table,
+            set: Some(Box::new(DataSet {
+                id: table,
+                name: "Speakers".into(),
+                table: t,
+                source: None,
+                pictures: Vec::new(),
+            })),
+        }];
+        for i in 0..slots {
+            ops.push(Operation::CreateNode {
+                id: app.session.ids.mint(),
+                parent: frame,
+                index: i,
+                kind: crate::control_audit::text_kind("Placeholder"),
+                transform: None,
+                name: Some(format!("slot {i}")),
+            });
+        }
+        let spec = ExportSpec {
+            per_row: Some(PerRow::new(table)),
+            ..ExportSpec::new(ExportFormat::Png, ExportScale::Times(1.0))
+        };
+        ops.push(Operation::SetExports {
+            id: frame,
+            exports: mastik_core::keyed_by_position([spec]),
+        });
+        assert!(app.session.commit(Transaction(ops)));
+        app.session.selection.set_one(frame);
+        app.export_row_open = Some(0);
+        app
+    }
+
+    /// One frame of the app on a screen `h` tall.
+    fn pass_at(
+        ctx: &egui::Context,
+        app: &mut crate::app::MastikApp,
+        h: f32,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut frame = eframe::Frame::_new_kittest();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1320.0, h),
+            )),
+            events,
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame))
+    }
+
+    /// The settings card's rect on screen, if it was drawn.
+    fn settings_card(ctx: &egui::Context) -> Option<egui::Rect> {
+        ctx.memory(|m| m.area_rect(egui::Id::new(("export-settings", 0usize))))
+            .filter(|_| {
+                ctx.memory(|m| {
+                    m.areas().visible_last_frame(&egui::LayerId::new(
+                        egui::Order::Foreground,
+                        egui::Id::new(("export-settings", 0usize)),
+                    ))
+                })
+            })
+    }
+
+    /// The settings card fits a short window: its body scrolls under the head
+    /// rather than running off the screen.
+    /// flip: `export_settings_popup` without its pinned `ScrollArea` body → fails
+    /// at "on screen".
+    #[test]
+    fn the_settings_card_scrolls_on_a_short_window() {
+        const H: f32 = 420.0;
+        let ctx = egui::Context::default();
+        let mut app = per_row_settings_app(&ctx, 14);
+        for _ in 0..8 {
+            pass_at(&ctx, &mut app, H, Vec::new());
+        }
+        let card = settings_card(&ctx).expect("the card is up");
+        assert!(
+            card.height() > H / 2.0,
+            "the fixture: the card fills the window ({card:?})"
+        );
+        assert!(
+            card.bottom() <= H - ui::SCREEN_MARGIN + 0.5 && card.top() >= 0.0,
+            "on screen: {card:?}"
+        );
+    }
+
+    /// Picking a column for a slot keeps the settings card open at its size on
+    /// every frame, the one the pick lands on included.
+    /// flip: `per_row_fill` returning after a pick → fails at "held".
+    #[test]
+    fn a_column_pick_keeps_the_settings_card_as_it_was() {
+        let ctx = egui::Context::default();
+        let mut app = per_row_settings_app(&ctx, 4);
+        let h = 820.0;
+        let mut out = pass_at(&ctx, &mut app, h, Vec::new());
+        for _ in 0..8 {
+            out = pass_at(&ctx, &mut app, h, Vec::new());
+        }
+        let card = settings_card(&ctx).expect("the card is up");
+        let text_at = |out: &egui::FullOutput, word: &str, inside: Option<egui::Rect>| {
+            out.shapes
+                .iter()
+                .find_map(|c| match &c.shape {
+                    egui::Shape::Text(t)
+                        if t.galley.text() == word && inside.is_none_or(|r| r.contains(t.pos)) =>
+                    {
+                        Some(egui::Rect::from_min_size(t.pos, t.galley.size()).center())
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("{word} is drawn"))
+        };
+        let click = |ctx: &egui::Context, app: &mut crate::app::MastikApp, at: egui::Pos2| {
+            let button = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            let mut seen = Vec::new();
+            for events in [
+                vec![egui::Event::PointerMoved(at)],
+                vec![button(true)],
+                vec![button(false)],
+            ] {
+                let out = pass_at(ctx, app, h, events);
+                seen.push(settings_card(ctx));
+                let _ = out;
+            }
+            seen
+        };
+        // The first slot's dropdown, which reads *None*.
+        let none = text_at(&out, "None", Some(card));
+        click(&ctx, &mut app, none);
+        let mut list = pass_at(&ctx, &mut app, h, Vec::new());
+        for _ in 0..3 {
+            list = pass_at(&ctx, &mut app, h, Vec::new());
+        }
+        let alpha = text_at(&list, "Alpha", None);
+        let mut seen = click(&ctx, &mut app, alpha);
+        for _ in 0..4 {
+            pass_at(&ctx, &mut app, h, Vec::new());
+            seen.push(settings_card(&ctx));
+        }
+        let frame = app
+            .session
+            .doc
+            .get(app.session.doc.first_page())
+            .unwrap()
+            .children()[0];
+        let picked = app.session.doc.get(frame).unwrap().exports()[0]
+            .value
+            .per_row
+            .as_ref()
+            .is_some_and(|p| !p.fill.is_empty());
+        assert!(picked, "the fixture: the pick was written");
+        for (i, s) in seen.iter().enumerate() {
+            assert_eq!(*s, Some(card), "held on frame {i}");
+        }
     }
 
     /// A row writing a file per table row counts its files on the size line,
