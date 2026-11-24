@@ -521,8 +521,12 @@ impl Playing {
     /// Take this pass's plain and Shift-ed keys and text for the player, leaving
     /// chords with Ctrl or Alt for the editor. An Escape the prototype does not
     /// use closes the sharing card when it is open, else hands the keyboard
-    /// back; answers whether one did.
+    /// back; answers whether one did. A text field holding focus (the state
+    /// card's) keeps every key, Escape included.
     fn take_keys(&mut self, ctx: &egui::Context) -> bool {
+        if ctx.text_edit_focused() {
+            return false;
+        }
         let mut gave_back = false;
         let player = &mut self.player;
         ctx.input_mut(|i| {
@@ -2021,6 +2025,15 @@ mod tests {
 
     /// One frame of the whole app, with `events` delivered to it.
     fn whole_frame(ctx: &egui::Context, app: &mut MastikApp, events: Vec<egui::Event>) {
+        let _ = frame_out(ctx, app, events);
+    }
+
+    /// [`whole_frame`], answering egui's output.
+    fn frame_out(
+        ctx: &egui::Context,
+        app: &mut MastikApp,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
         let mut frame = eframe::Frame::_new_kittest();
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
@@ -2030,7 +2043,30 @@ mod tests {
             events,
             ..Default::default()
         };
-        let _ = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
+        ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame))
+    }
+
+    /// Where the drawn text reading `text` sits in `out`, its centre.
+    fn text_at(out: &egui::FullOutput, text: &str) -> Option<egui::Pos2> {
+        out.shapes.iter().find_map(|c| match &c.shape {
+            egui::Shape::Text(t) if t.galley.text() == text => {
+                Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+            }
+            _ => None,
+        })
+    }
+
+    /// A press and release at `at`, the pointer brought there first.
+    fn click(ctx: &egui::Context, app: &mut MastikApp, at: egui::Pos2) {
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        whole_frame(ctx, app, vec![egui::Event::PointerMoved(at)]);
+        whole_frame(ctx, app, vec![button(true)]);
+        whole_frame(ctx, app, vec![button(false)]);
     }
 
     /// Over the canvas the bar paints no ground of its own, which as a square
@@ -2496,6 +2532,79 @@ mod tests {
         whole_frame(&ctx, &mut app, vec![key(true), key(false)]);
         let p = app.playing.as_ref().expect("still playing");
         assert_eq!(p.player.screen(), b, "the key reaction fired");
+    }
+
+    /// A key typed into the state card's text field is the field's, set on
+    /// leaving it, and fires no key reaction though the player holds the keys.
+    ///
+    /// flip: `Playing::take_keys` not leaving the keys to a focused text field
+    /// → fails at "typed into the field".
+    #[test]
+    fn the_state_cards_field_takes_typed_keys() {
+        use mastik_core::variable::{Cell, CollectionId, Mode, Variable};
+        let ctx = egui::Context::default();
+        let (mut app, [a, ..]) = fixture(&ctx, false);
+        let (mode, var) = (app.session.ids.mint_mode(), app.session.ids.mint_var());
+        assert!(app.session.commit(Transaction(vec![
+            Operation::AddMode {
+                collection: CollectionId::FIRST,
+                mode: Mode {
+                    id: mode,
+                    name: "Default".into(),
+                },
+                index: 0,
+                cells: vec![],
+            },
+            Operation::AddVariable {
+                var: Variable {
+                    id: var,
+                    name: "Word".into(),
+                    kind: VarKind::String,
+                    cells: [(mode, Cell::String("qq".into()))].into(),
+                    scope: None,
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+        ])));
+        app.session.selection.set_one(a);
+        app.play(&ctx, Place::Over, false);
+        app.player_act(&ctx, BarAct::Card);
+        for _ in 0..3 {
+            whole_frame(&ctx, &mut app, Vec::new());
+        }
+        let out = frame_out(&ctx, &mut app, Vec::new());
+        let field = text_at(&out, "qq").expect("fixture: the card shows the field");
+        click(&ctx, &mut app, field);
+        assert!(ctx.text_edit_focused(), "fixture: the field holds focus");
+        let n = egui::Event::Key {
+            key: egui::Key::N,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        whole_frame(&ctx, &mut app, vec![n, egui::Event::Text("N".into())]);
+        let card = ctx
+            .memory(|m| m.area_rect(egui::Id::new(CARD_ID)))
+            .expect("fixture: the card's place");
+        click(
+            &ctx,
+            &mut app,
+            egui::pos2(card.left() - 40.0, card.center().y),
+        );
+        let p = app.playing.as_ref().expect("still playing");
+        let word = p.player.values().into_iter().find(|r| r.var == var);
+        let typed = match word.map(|r| r.value) {
+            Some(Value::String(s)) => s,
+            other => panic!("the variable's row: {other:?}"),
+        };
+        assert!(
+            typed.len() == 3 && typed.contains('N'),
+            "typed into the field: {typed:?}"
+        );
+        assert_eq!(p.player.screen(), a, "no key reaction fired");
     }
 
     /// An Escape the prototype does not use closes the sharing card and keeps
