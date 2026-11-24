@@ -4746,6 +4746,124 @@ mod drop_indent_tests {
         assert!(app.drop_is_legal(m, root), "a main in its own parent");
     }
 
+    /// A list frame lists its template and not its copies, wears its row count
+    /// where a frame wears its size, and takes no layer dropped in; its template
+    /// may stay where it is.
+    /// flip: the tree listing a list's copies → fails at "the template only";
+    /// the badge as the frame's size → fails at "3 rows"; `drop_is_legal`
+    /// without its list clause → fails at "nothing enters a list".
+    #[test]
+    fn a_list_lists_its_template_counts_its_rows_and_takes_no_drop() {
+        use mastik_core::chart::{Column, ColumnId, Table};
+        use mastik_core::list::{self, DataSet, Source};
+        use mastik_core::verbs::{self, Ctx};
+        use serde_json::json;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let verb = |app: &mut MastikApp, name: &str, args: serde_json::Value| {
+            let res = app.session.resolved.clone();
+            let done = verbs::call(
+                &mut Ctx {
+                    doc: &app.session.doc,
+                    res: &res,
+                    ids: &mut app.session.ids,
+                    images: None,
+                    contrast: None,
+                },
+                name,
+                &args,
+            )
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(app.session.commit(done.tx), "{name} commits");
+            done.created
+        };
+        let page = app.session.doc.first_page().to_wire();
+        let board = serde_json::to_value(NodeKind::Artboard {
+            size: Size::new(120.0, 30.0),
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        })
+        .unwrap();
+        let main = verb(
+            &mut app,
+            "create_node",
+            json!({ "parent": page, "kind": board, "name": "Row", "x": -4000 }),
+        )[0];
+        verb(
+            &mut app,
+            "make_component",
+            json!({ "nodes": [main.to_wire()] }),
+        );
+        let inst = verb(
+            &mut app,
+            "create_instance",
+            json!({ "main": main.to_wire(), "parent": page, "x": 0, "y": 0 }),
+        )[0];
+        let rect = verb(
+            &mut app,
+            "create_node",
+            json!({ "parent": page, "kind": serde_json::to_value(NodeKind::Rect {
+                size: Size::new(10.0, 10.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            }).unwrap(), "x": 400, "y": 0 }),
+        )[0];
+        let set = DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "rows.csv".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "title".into(),
+                }],
+                rows: vec![vec!["A".into()], vec!["B".into()], vec!["C".into()]],
+            },
+            source: None,
+            pictures: Vec::new(),
+        };
+        let (tx, l) = list::make(
+            &app.session.doc,
+            &app.session.resolved,
+            &mut app.session.ids,
+            inst,
+            Source::New(set),
+        )
+        .unwrap();
+        assert!(app.commit_edit(tx));
+        let copies = app
+            .session
+            .doc
+            .get(l)
+            .unwrap()
+            .list()
+            .unwrap()
+            .copies
+            .clone();
+        assert_eq!(copies.len(), 2, "fixture: three rows");
+
+        let rows: Vec<NodeId> = app.flat_rows(None).iter().map(|r| r.id).collect();
+        let under: Vec<NodeId> = rows
+            .iter()
+            .copied()
+            .filter(|r| app.session.doc.get(*r).and_then(|n| n.parent()) == Some(l))
+            .collect();
+        assert_eq!(under, [inst], "the template only");
+
+        let texts: Vec<String> = pump(&mut app, &ctx, None)
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t == "3 rows"), "3 rows: {texts:?}");
+
+        assert!(!app.drop_is_legal(rect, l), "nothing enters a list");
+        assert!(app.drop_is_legal(inst, l), "its template stays");
+    }
+
     /// A set keeps to one kind through the panel, and a refused drop says why (§15
     /// D1003 (5)): mixed kinds onto an empty set, and a group main onto a set of
     /// frames, are refused with the canvas's message (`LayerDrag::refused`).
