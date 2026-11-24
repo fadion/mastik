@@ -2481,6 +2481,51 @@ fn prototype_properties_read_as_their_verbs_take_them() {
     );
 }
 
+/// `reactions` copied to a layer on a page whose default transition differs
+/// keeps each transition as it was.
+/// flip: `props::read` leaving out a transition's fields equal to its page's
+/// default → fails at "the same transition".
+#[test]
+fn reactions_copied_to_another_page_keep_their_transitions() {
+    use mastik_core::prototype::{Direction, PagePlay, Transition, TransitionKind};
+    let mut h = TestHost::new();
+    let a = h.frame("A", 100.0, 100.0);
+    let b = h.frame("B", 100.0, 100.0);
+    let one = h.rect(a, "One", 0.0, 0.0, 10.0, 10.0);
+    h.make(
+        "set_reactions",
+        json!({ "nodes": [one.to_wire()], "reactions": [
+            { "trigger": "click", "actions": [{ "navigate": { "to": b.to_wire() } }] },
+        ] }),
+    );
+    h.make("add_page", json!({}));
+    let page = h.doc.pages().last().unwrap().id;
+    h.doc
+        .apply(&Transaction(vec![mastik_core::Operation::SetPagePlay {
+            id: page,
+            play: PagePlay {
+                transition: Transition {
+                    kind: TransitionKind::Push,
+                    direction: Direction::Right,
+                    ..Transition::default()
+                },
+                ..PagePlay::default()
+            },
+        }]))
+        .unwrap();
+    let there = h.rect(page, "There", 0.0, 0.0, 10.0, 10.0);
+    let labels = FxHashMap::default();
+    let selected = [there];
+    let e = env(&selected, &labels);
+    run_script(&mut h, &e, "sel.reactions = One.reactions").unwrap();
+    let action = |h: &TestHost, id: NodeId| {
+        h.doc.get(id).unwrap().reactions()[0].value.actions[0]
+            .value
+            .clone()
+    };
+    assert_eq!(action(&h, there), action(&h, one), "the same transition");
+}
+
 /// `play` is bound only where the host has play state: elsewhere it raises at
 /// its line, unless a layer has the name. Its members and, after `play.vars.`,
 /// the variables complete.

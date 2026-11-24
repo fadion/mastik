@@ -924,16 +924,10 @@ pub(crate) fn read(doc: &Document, res: &Resolved, id: NodeId, prop: &str) -> Re
         "layout_item" => {
             serde_json::to_value(doc.bound_item(id)).map_or(Val::Nil, |v| short("layout_item", v))
         }
-        // A transition left out where it is the page's default, as
-        // `set_reactions` fills it back in on the page it writes to.
-        "reactions" => {
-            let base = doc
-                .page_of(id)
-                .and_then(|p| doc.page(p))
-                .map(|p| p.play.transition)
-                .unwrap_or_default();
-            Val::Json(mastik_core::verbs::reactions_value(node.reactions(), &base))
-        }
+        // Each transition whole: `set_reactions` fills a left-out field from the
+        // page it writes to, so one tightened against this page's default would
+        // change when copied to a page with another.
+        "reactions" => Val::Json(mastik_core::verbs::play_value(&node.reactions())),
         "play" => Val::Json(mastik_core::verbs::play_value(node.play())),
         "flows" => doc
             .page_of(id)
