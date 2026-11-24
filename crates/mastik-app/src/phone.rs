@@ -717,6 +717,7 @@ pub(crate) fn browser_name(agent: &str) -> String {
 
 // ── The player's share ──────────────────────────────────────────────────────
 
+use crate::job::Job;
 use crate::theme::{self, color};
 use crate::ui;
 use eframe::egui;
@@ -745,9 +746,17 @@ type Files = (Vec<u8>, String);
 /// none, and what it last sent the phones.
 pub(crate) struct Sharing {
     share: Result<Share, String>,
-    /// The browser player's files, kept to write each new page.
-    wasm: Vec<u8>,
-    glue: String,
+    /// The browser player's files, kept to write each new page; shared with the
+    /// worker that builds a version, so it copies none of the megabytes.
+    wasm: Arc<[u8]>,
+    glue: Arc<str>,
+    /// The version being built on a worker, sent when it lands. One at a time:
+    /// an edit meanwhile waits for it, then goes as the next.
+    building: Option<(u64, Job<Result<Built, String>>)>,
+    /// How many pages were packed (tests only), so a test can tell an edit
+    /// played in place from a reload.
+    #[cfg(test)]
+    packed: usize,
     /// Where the player's files are found for a document: `player_build`, or
     /// a test's stand-in.
     lookup: fn(&Document) -> Result<Files, String>,
@@ -790,12 +799,6 @@ struct Built {
     doc: Vec<u8>,
 }
 
-#[cfg(test)]
-thread_local! {
-    /// How many pages `build` packed on this thread.
-    static PACKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
 /// The parts for `opening`: the document, and the page written for `version`
 /// when `wants_page` asks for it given the fonts counted. The page packs the
 /// whole player, megabytes of deflate and base64, so an edit the phones can
@@ -818,11 +821,7 @@ fn build(
         Opening::Frame(f) => Some(f),
         Opening::Flow(_) => None::<NodeId>,
     };
-    let page = wants_page(fonts).then(|| {
-        #[cfg(test)]
-        PACKED.with(|n| n.set(n.get() + 1));
-        parts.mirror_html(frame, version).into_bytes()
-    });
+    let page = wants_page(fonts).then(|| parts.mirror_html(frame, version).into_bytes());
     Ok(Built {
         fonts,
         page,
@@ -857,8 +856,11 @@ impl Sharing {
     fn stopped(opening: Opening) -> Sharing {
         Sharing {
             share: Err(String::new()),
-            wasm: Vec::new(),
-            glue: String::new(),
+            wasm: Arc::from(&[][..]),
+            glue: Arc::from(""),
+            building: None,
+            #[cfg(test)]
+            packed: 0,
             lookup: crate::player_build,
             scripts: false,
             stale_page: false,
@@ -895,6 +897,10 @@ impl Sharing {
             doc: bytes,
         } = build(doc, &wasm, &glue, self.opening, self.version, |_| true)?;
         let page = page.unwrap_or_default();
+        #[cfg(test)]
+        {
+            self.packed += 1;
+        }
         let wake = {
             let ctx = ctx.clone();
             move || ctx.request_repaint()
@@ -920,7 +926,8 @@ impl Sharing {
                 .collect();
             (w, dark)
         });
-        (self.wasm, self.glue, self.fonts) = (wasm, glue, fonts);
+        (self.wasm, self.glue, self.fonts) = (wasm.into(), glue.into(), fonts);
+        self.building = None;
         self.scripts = !crate::player::scripts_played(doc).is_empty();
         self.stale_page = false;
         self.started = Some(Instant::now());
@@ -951,10 +958,18 @@ impl Sharing {
 
     /// Send the phones `doc` once it has sat still for [`SETTLE`]: as a new
     /// version they play where they are, or as a new page when it needs fonts
-    /// the page lacks or a script the page's player cannot run. Asks for a
+    /// the page lacks or a script the page's player cannot run. The version is
+    /// built on a worker and sent when a later call finds it landed. Asks for a
     /// repaint while one is owed.
     pub(crate) fn send(&mut self, ctx: &egui::Context, doc: &Document, now: f64) {
-        let (Some(at), true) = (self.owed, self.share.is_ok()) else {
+        if self.share.is_err() {
+            return;
+        }
+        self.land();
+        if self.building.is_some() {
+            return;
+        }
+        let Some(at) = self.owed else {
             return;
         };
         if now - at < SETTLE {
@@ -967,33 +982,75 @@ impl Sharing {
             // the plain one, which is no reason for a new page.
             self.scripts = true;
             if let Ok((wasm, glue)) = (self.lookup)(doc)
-                && (wasm != self.wasm || glue != self.glue)
+                && (*wasm != *self.wasm || *glue != *self.glue)
             {
-                (self.wasm, self.glue, self.stale_page) = (wasm, glue, true);
+                (self.wasm, self.glue, self.stale_page) = (wasm.into(), glue.into(), true);
             }
         }
         let version = self.version + 1;
-        // An edit the trim refuses (the flow playing deleted) leaves the phones
-        // where they are.
         let (known, stale) = (self.fonts, self.stale_page);
-        let Ok(Built {
-            fonts,
-            page,
-            doc: bytes,
-        }) = build(doc, &self.wasm, &self.glue, self.opening, version, |f| {
-            stale || f != known
-        })
+        let (doc, wasm, glue, opening) = (
+            doc.clone(),
+            Arc::clone(&self.wasm),
+            Arc::clone(&self.glue),
+            self.opening,
+        );
+        let job = Job::spawn("mastik-phone-build", ctx, move || {
+            build(&doc, &wasm, &glue, opening, version, |f| {
+                stale || f != known
+            })
+        });
+        self.building = Some((version, job));
+    }
+
+    /// Send the version built on the worker, once it has landed. One the trim
+    /// refuses (the flow playing deleted) leaves the phones where they are.
+    fn land(&mut self) {
+        let Some((version, job)) = &self.building else {
+            return;
+        };
+        let built = match job.poll() {
+            Ok(None) => return,
+            Ok(Some(built)) => built.ok(),
+            Err(()) => None,
+        };
+        let version = *version;
+        self.building = None;
+        let (
+            Some(Built {
+                fonts,
+                page,
+                doc: bytes,
+            }),
+            Ok(share),
+        ) = (built, &self.share)
         else {
             return;
         };
-        let Ok(share) = &self.share else { return };
         self.version = version;
         match page {
             None => share.publish(bytes, version),
             Some(page) => {
+                #[cfg(test)]
+                {
+                    self.packed += 1;
+                }
                 (self.fonts, self.stale_page) = (fonts, false);
                 share.reload(page, bytes, version);
             }
+        }
+    }
+
+    /// [`Sharing::send`], then waiting for the worker's version and sending it
+    /// (tests only).
+    #[cfg(test)]
+    fn send_settled(&mut self, ctx: &egui::Context, doc: &Document, now: f64) {
+        self.send(ctx, doc, now);
+        let until = Instant::now() + Duration::from_secs(10);
+        while self.building.is_some() {
+            assert!(Instant::now() < until, "the version is built");
+            std::thread::yield_now();
+            self.land();
         }
     }
 
@@ -1390,12 +1447,12 @@ mod tests {
     }
 
     /// An edit reaches a following phone as a new version once the document
-    /// has sat still, the document it fetches carries the edit, and an edit
-    /// needing no new fonts packs no page.
+    /// has sat still, built on a worker; the document it fetches carries the
+    /// edit, and an edit needing no new fonts packs no page.
     ///
     /// flip: `Sharing::send` not waiting for the document to settle → fails at
     /// "nothing before it settles"; `build` packing the page whether asked or
-    /// not → fails at "no page packed".
+    /// not → fails at "the new version" (a reload instead).
     #[test]
     fn an_edit_reaches_the_phone_once_it_settles() {
         use mastik_core::kurbo::{Affine, RoundedRectRadii, Size};
@@ -1420,8 +1477,6 @@ mod tests {
             .expect("a frame");
         let ctx = egui::Context::default();
         let opening = Opening::Frame(frame);
-        let packed = || PACKED.with(std::cell::Cell::get);
-        let before = packed();
         let mut s = Sharing::start_with(
             &ctx,
             &doc,
@@ -1429,7 +1484,7 @@ mod tests {
             (b"\0asm".to_vec(), "let wasm_bindgen;".into()),
             Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
         );
-        assert_eq!(packed(), before + 1, "control: the first page is packed");
+        assert_eq!(s.packed, 1, "control: the first page is packed");
         let share = s.share.as_ref().expect("sharing on loopback");
         let host = share
             .url
@@ -1462,12 +1517,10 @@ mod tests {
         s.send(&ctx, &doc, 10.1);
         assert_eq!(next_event(), None, "nothing before it settles");
         s.send(&ctx, &doc, 10.0 + SETTLE);
+        assert!(s.building.is_some(), "built on a worker, off the UI thread");
+        s.send_settled(&ctx, &doc, 10.0 + SETTLE);
         assert_eq!(next_event().as_deref(), Some("2"), "the new version");
-        assert_eq!(
-            packed(),
-            before + 1,
-            "no page packed for an edit played in place"
-        );
+        assert_eq!(s.packed, 1, "no page packed for an edit played in place");
         let mut req = TcpStream::connect(&host).unwrap();
         req.write_all(format!("GET /{t}/doc?v=2 HTTP/1.1\r\n\r\n").as_bytes())
             .unwrap();
@@ -1570,11 +1623,11 @@ mod tests {
             "fixture: the script is run"
         );
         s.changed(10.0);
-        s.send(&ctx, &doc, 10.0 + SETTLE);
+        s.send_settled(&ctx, &doc, 10.0 + SETTLE);
         assert_eq!(next_event().as_deref(), Some("reload"), "a new page");
-        assert_eq!(s.glue, "let scripts;", "the scripts player");
+        assert_eq!(&*s.glue, "let scripts;", "the scripts player");
         s.changed(20.0);
-        s.send(&ctx, &doc, 20.0 + SETTLE);
+        s.send_settled(&ctx, &doc, 20.0 + SETTLE);
         assert_eq!(next_event().as_deref(), Some("3"), "then played in place");
         assert_eq!(LOOKED_UP.load(Ordering::Relaxed), 1, "looked up once");
     }
