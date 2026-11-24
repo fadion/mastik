@@ -433,6 +433,10 @@ where…* test as source text, everything it names stored by id (`expr::Ref`,
   written whole or with at most three decimals; `==` and `!=` need two of one kind; `<`-style
   comparisons take two numbers or two texts; `and`/`or`/`not` take booleans and short-circuit.
   Division by zero is an error.
+- **Depth**: parentheses, `not`s and unary `-`s nest at most 16 deep (`MAX_NEST`), and the tree
+  goes at most 64 operators deep, a chain counted (`MAX_HEIGHT`). Past either the expression is
+  a syntax error, so one from a file or an agent cannot overflow the stack as it is parsed,
+  kinded, evaluated or dropped.
 - **Errors** carry the byte range they are about (`ExprError::at`): syntax, a type, a variable
   not there, a name nothing has, a table or column not there (`MissingTable`).
 - **The field** shows names: `with_names_in(&Names)` writes `{<name>}` for each id it can name, and

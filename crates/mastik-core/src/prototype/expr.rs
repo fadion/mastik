@@ -766,15 +766,58 @@ enum Ast {
 struct Node {
     ast: Ast,
     at: Range<usize>,
+    /// How many nodes deep the tree under it goes, itself counted.
+    height: usize,
 }
+
+/// The deepest an expression's parentheses, `not`s and unary `-`s may nest. The
+/// parser recurses about a dozen frames per level, so this keeps a hostile
+/// expression from a file or an agent from overflowing the stack.
+const MAX_NEST: usize = 16;
+
+/// The deepest an expression's tree may go, operators chained one after
+/// another counted. [`eval`], [`type_of`] and dropping a tree recurse once per
+/// level, so this bounds them as [`MAX_NEST`] bounds the parser.
+const MAX_HEIGHT: usize = 64;
 
 struct Parser {
     toks: Vec<(Tok, Range<usize>)>,
     pos: usize,
     end: usize,
+    /// How many parentheses, `not`s and unary `-`s are open where it reads.
+    nest: usize,
+}
+
+/// A node over `ast`, refused when it would go deeper than [`MAX_HEIGHT`].
+fn node(at: Range<usize>, ast: Ast) -> Result<Node, ExprError> {
+    let height = 1 + match &ast {
+        Ast::Lit(_) | Ast::Ref(_) => 0,
+        Ast::Neg(n) | Ast::Not(n) => n.height,
+        Ast::Bin(_, l, r) => l.height.max(r.height),
+    };
+    if height > MAX_HEIGHT {
+        return Err(ExprError::Syntax {
+            at,
+            msg: format!("an expression goes at most {MAX_HEIGHT} operators deep"),
+        });
+    }
+    Ok(Node { ast, at, height })
 }
 
 impl Parser {
+    /// Opens one more level of nesting at `at`, refused past [`MAX_NEST`]; the
+    /// caller closes it with `self.nest -= 1` once the level is read.
+    fn open(&mut self, at: Range<usize>) -> Result<(), ExprError> {
+        if self.nest >= MAX_NEST {
+            return Err(ExprError::Syntax {
+                at,
+                msg: format!("an expression nests at most {MAX_NEST} deep"),
+            });
+        }
+        self.nest += 1;
+        Ok(())
+    }
+
     fn peek(&self) -> Option<&Tok> {
         self.toks.get(self.pos).map(|t| &t.0)
     }
@@ -806,10 +849,10 @@ impl Parser {
                 Tok::Word(w) | Tok::Sym(w) => w,
                 _ => unreachable!("operators are words and symbols"),
             };
-            left = Node {
-                at: left.at.start..right.at.end,
-                ast: Ast::Bin(name, Box::new(left), Box::new(right)),
-            };
+            left = node(
+                left.at.start..right.at.end,
+                Ast::Bin(name, Box::new(left), Box::new(right)),
+            )?;
         }
         Ok(left)
     }
@@ -823,13 +866,12 @@ impl Parser {
     }
 
     fn not(&mut self) -> Result<Node, ExprError> {
-        let start = self.here().start;
+        let here = self.here();
         if self.eat(&Tok::Word("not")) {
+            self.open(here.clone())?;
             let inner = self.not()?;
-            return Ok(Node {
-                at: start..inner.at.end,
-                ast: Ast::Not(Box::new(inner)),
-            });
+            self.nest -= 1;
+            return node(here.start..inner.at.end, Ast::Not(Box::new(inner)));
         }
         self.compare()
     }
@@ -855,10 +897,10 @@ impl Parser {
                 msg: "compare two values at a time; join comparisons with and".into(),
             });
         }
-        Ok(Node {
-            at: left.at.start..right.at.end,
-            ast: Ast::Bin(op, Box::new(left), Box::new(right)),
-        })
+        node(
+            left.at.start..right.at.end,
+            Ast::Bin(op, Box::new(left), Box::new(right)),
+        )
     }
 
     fn add(&mut self) -> Result<Node, ExprError> {
@@ -873,13 +915,12 @@ impl Parser {
     }
 
     fn unary(&mut self) -> Result<Node, ExprError> {
-        let start = self.here().start;
+        let here = self.here();
         if self.eat(&Tok::Sym("-")) {
+            self.open(here.clone())?;
             let inner = self.unary()?;
-            return Ok(Node {
-                at: start..inner.at.end,
-                ast: Ast::Neg(Box::new(inner)),
-            });
+            self.nest -= 1;
+            return node(here.start..inner.at.end, Ast::Neg(Box::new(inner)));
         }
         self.primary()
     }
@@ -899,7 +940,9 @@ impl Parser {
             Tok::Bool(b) => Ast::Lit(Value::Boolean(b)),
             Tok::Ref(r) => Ast::Ref(r),
             Tok::Sym("(") => {
+                self.open(at.clone())?;
                 let inner = self.or()?;
+                self.nest -= 1;
                 let close = self.here();
                 if !self.eat(&Tok::Sym(")")) {
                     return Err(ExprError::Syntax {
@@ -909,7 +952,7 @@ impl Parser {
                 }
                 return Ok(Node {
                     at: at.start..close.end,
-                    ast: inner.ast,
+                    ..inner
                 });
             }
             _ => {
@@ -919,7 +962,7 @@ impl Parser {
                 });
             }
         };
-        Ok(Node { ast, at })
+        node(at, ast)
     }
 }
 
@@ -935,6 +978,7 @@ fn parse(src: &str, var: &dyn Fn(&str) -> Result<Ref, Lookup>) -> Result<Node, E
         toks,
         pos: 0,
         end: src.len(),
+        nest: 0,
     };
     let node = p.or()?;
     if p.pos < p.toks.len() {
@@ -1070,75 +1114,89 @@ fn type_of(
     }
 }
 
+/// What `n` comes to. Each node's work is done in [`unary_op`] and
+/// [`binary_op`], outside this recursive frame, so the frame stays small: a
+/// debug build otherwise gives it kilobytes, and [`MAX_HEIGHT`] of them
+/// overflow a small stack.
 fn eval(n: &Node, read: &dyn Fn(&Ref) -> Result<Value, Unread>) -> Result<Value, ExprError> {
-    let wrong = |msg: String| ExprError::Type {
-        at: n.at.clone(),
-        msg,
-    };
     match &n.ast {
         Ast::Lit(v) => Ok(v.clone()),
         Ast::Ref(r) => read(r).map_err(|why| ExprError::unread(why, r, &n.at)),
-        Ast::Neg(inner) => match eval(inner, read)? {
-            Value::Number(x) => Ok(Value::Number(-x)),
-            v => Err(wrong(format!(
-                "- needs a number, not {}",
-                kind_word(kind_of_value(&v))
-            ))),
-        },
-        Ast::Not(inner) => match eval(inner, read)? {
-            Value::Boolean(b) => Ok(Value::Boolean(!b)),
-            v => Err(wrong(format!(
-                "not needs true or false, not {}",
-                kind_word(kind_of_value(&v))
-            ))),
-        },
-        Ast::Bin(op @ ("and" | "or"), l, r) => {
-            let Value::Boolean(a) = eval(l, read)? else {
-                return Err(wrong(format!("{op} needs true or false on both sides")));
-            };
+        Ast::Neg(inner) => unary_op("-", eval(inner, read)?, &n.at),
+        Ast::Not(inner) => unary_op("not", eval(inner, read)?, &n.at),
+        Ast::Bin(op @ ("and" | "or"), l, r) => match eval(l, read)? {
             // Short-circuit: the right side is not read once the left decides.
-            if (*op == "and" && !a) || (*op == "or" && a) {
-                return Ok(Value::Boolean(a));
-            }
-            match eval(r, read)? {
-                Value::Boolean(b) => Ok(Value::Boolean(b)),
-                _ => Err(wrong(format!("{op} needs true or false on both sides"))),
-            }
-        }
+            Value::Boolean(a) if a == (*op == "or") => Ok(Value::Boolean(a)),
+            a @ Value::Boolean(_) => binary_op(op, a, eval(r, read)?, &n.at),
+            a => binary_op(op, a, Value::Boolean(false), &n.at),
+        },
         Ast::Bin(op, l, r) => {
-            let (a, b) = (eval(l, read)?, eval(r, read)?);
-            bin_kind(op, kind_of_value(&a), kind_of_value(&b)).map_err(&wrong)?;
-            Ok(match (*op, a, b) {
-                ("+", a @ Value::String(_), b) | ("+", a, b @ Value::String(_)) => {
-                    Value::String(format_value(&a) + &format_value(&b))
-                }
-                (op, Value::Number(x), Value::Number(y)) => match op {
-                    "+" => Value::Number(x + y),
-                    "-" => Value::Number(x - y),
-                    "*" => Value::Number(x * y),
-                    "/" | "%" if y == 0.0 => return Err(wrong("division by zero".into())),
-                    "/" => Value::Number(x / y),
-                    "%" => Value::Number(x.rem_euclid(y)),
-                    "==" => Value::Boolean(x == y),
-                    "!=" => Value::Boolean(x != y),
-                    "<" => Value::Boolean(x < y),
-                    "<=" => Value::Boolean(x <= y),
-                    ">" => Value::Boolean(x > y),
-                    _ => Value::Boolean(x >= y),
-                },
-                (op, Value::String(x), Value::String(y)) => Value::Boolean(match op {
-                    "==" => x == y,
-                    "!=" => x != y,
-                    "<" => x < y,
-                    "<=" => x <= y,
-                    ">" => x > y,
-                    _ => x >= y,
-                }),
-                ("==", a, b) => Value::Boolean(a == b),
-                (_, a, b) => Value::Boolean(a != b),
-            })
+            let a = eval(l, read)?;
+            binary_op(op, a, eval(r, read)?, &n.at)
         }
     }
+}
+
+/// `-` or `not` over `a`, the error naming `at`: one node's work in [`eval`].
+fn unary_op(op: &str, a: Value, at: &Range<usize>) -> Result<Value, ExprError> {
+    let msg = match (op, a) {
+        ("-", Value::Number(x)) => return Ok(Value::Number(-x)),
+        ("not", Value::Boolean(b)) => return Ok(Value::Boolean(!b)),
+        ("-", v) => format!("- needs a number, not {}", kind_word(kind_of_value(&v))),
+        (_, v) => format!(
+            "not needs true or false, not {}",
+            kind_word(kind_of_value(&v))
+        ),
+    };
+    Err(ExprError::Type {
+        at: at.clone(),
+        msg,
+    })
+}
+
+/// `op` over `a` and `b`, the error naming `at`: one node's work in [`eval`].
+/// An `and` or `or` comes here only once its left side has not decided it.
+fn binary_op(op: &str, a: Value, b: Value, at: &Range<usize>) -> Result<Value, ExprError> {
+    let wrong = |msg: String| ExprError::Type {
+        at: at.clone(),
+        msg,
+    };
+    if op == "and" || op == "or" {
+        return match (a, b) {
+            (Value::Boolean(_), Value::Boolean(b)) => Ok(Value::Boolean(b)),
+            _ => Err(wrong(format!("{op} needs true or false on both sides"))),
+        };
+    }
+    bin_kind(op, kind_of_value(&a), kind_of_value(&b)).map_err(&wrong)?;
+    Ok(match (op, a, b) {
+        ("+", a @ Value::String(_), b) | ("+", a, b @ Value::String(_)) => {
+            Value::String(format_value(&a) + &format_value(&b))
+        }
+        (op, Value::Number(x), Value::Number(y)) => match op {
+            "+" => Value::Number(x + y),
+            "-" => Value::Number(x - y),
+            "*" => Value::Number(x * y),
+            "/" | "%" if y == 0.0 => return Err(wrong("division by zero".into())),
+            "/" => Value::Number(x / y),
+            "%" => Value::Number(x.rem_euclid(y)),
+            "==" => Value::Boolean(x == y),
+            "!=" => Value::Boolean(x != y),
+            "<" => Value::Boolean(x < y),
+            "<=" => Value::Boolean(x <= y),
+            ">" => Value::Boolean(x > y),
+            _ => Value::Boolean(x >= y),
+        },
+        (op, Value::String(x), Value::String(y)) => Value::Boolean(match op {
+            "==" => x == y,
+            "!=" => x != y,
+            "<" => x < y,
+            "<=" => x <= y,
+            ">" => x > y,
+            _ => x >= y,
+        }),
+        ("==", a, b) => Value::Boolean(a == b),
+        (_, a, b) => Value::Boolean(a != b),
+    })
 }
 
 #[cfg(test)]
@@ -1214,6 +1272,43 @@ mod tests {
         assert_eq!(run(&src), Ok(Value::Boolean(false)), "short-circuit");
         let src = format!("true and {}", wire(9));
         assert!(matches!(run(&src), Err(ExprError::MissingVariable { .. })));
+    }
+
+    /// A hostile nesting is a syntax error, not a stack overflow, and an
+    /// expression at the limits parses, kinds and evaluates on a small stack.
+    ///
+    /// flip: `Parser::open` never refusing → the thread overflows its stack at
+    /// "parens", aborting the run.
+    #[test]
+    fn deep_nesting_is_refused_before_it_overflows() {
+        let small = std::thread::Builder::new().stack_size(256 * 1024);
+        small
+            .spawn(|| {
+                let deep = 100_000;
+                let refused = |src: String, what: &str| {
+                    let e = Expr(src).check();
+                    assert!(matches!(e, Err(ExprError::Syntax { .. })), "{what}: {e:?}");
+                };
+                refused("(".repeat(deep) + "1" + &")".repeat(deep), "parens");
+                refused("not ".repeat(deep) + "true", "nots");
+                refused("- ".repeat(deep) + "1", "negations");
+                refused("1".to_owned() + &" + 1".repeat(deep), "a chain");
+                refused(
+                    "(".repeat(MAX_NEST + 1) + "1" + &")".repeat(MAX_NEST + 1),
+                    "one past",
+                );
+                refused("1".to_owned() + &" + 1".repeat(MAX_HEIGHT), "one op past");
+
+                let nested = "(-".repeat(MAX_NEST / 2) + "1" + &")".repeat(MAX_NEST / 2);
+                assert_eq!(run(&nested), Ok(Value::Number(1.0)), "at the nesting limit");
+                let chain = "1".to_owned() + &" + 1".repeat(MAX_HEIGHT - 1);
+                assert_eq!(run(&chain), Ok(Value::Number(MAX_HEIGHT as f64)));
+                let kind = Expr(chain).kind(&|_| Ok(None));
+                assert_eq!(kind, Ok(Some(VarKind::Number)), "at the height limit");
+            })
+            .expect("a thread")
+            .join()
+            .expect("no panic");
     }
 
     /// Each error names the range of source it is about.
