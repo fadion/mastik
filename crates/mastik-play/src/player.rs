@@ -117,10 +117,13 @@ pub struct ModeRow {
 pub struct OpenedRow {
     pub data: mastik_core::list::DataSetId,
     pub name: String,
-    /// Each row by its first cell.
+    /// The first [`mastik_core::list::MAX_DRAWN`] rows, each by its first
+    /// cell: what the dropdown lists.
     pub rows: Vec<String>,
     /// The row open now: 0 until a tap or a pick opens another.
     pub current: usize,
+    /// The open row by its first cell, which may lie past `rows`.
+    pub open: String,
 }
 
 /// Why a value from the state card was not taken.
@@ -638,17 +641,22 @@ impl Player {
             .filter_map(|d| {
                 let l = lists.iter().find(|l| l.data == d.id)?;
                 // The row by its first column, the cell a person reads it by.
+                let label =
+                    |r: &Vec<String>| r.first().map(|c| c.trim().to_string()).unwrap_or_default();
                 let rows = d
                     .table
                     .rows
                     .iter()
-                    .map(|r| r.first().map(|c| c.trim().to_string()).unwrap_or_default())
+                    .take(list::MAX_DRAWN)
+                    .map(label)
                     .collect();
+                let current = l.opened.min(d.table.rows.len().saturating_sub(1));
                 Some(OpenedRow {
                     data: d.id,
                     name: d.name.clone(),
                     rows,
-                    current: l.opened.min(d.table.rows.len().saturating_sub(1)),
+                    current,
+                    open: d.table.rows.get(current).map(label).unwrap_or_default(),
                 })
             })
             .collect()

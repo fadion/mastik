@@ -1122,7 +1122,7 @@ fn opened_row(ui: &mut egui::Ui, p: &mut Playing, i: usize, row: &mastik_play::O
     let mut pick = None;
     let label = |n: usize| crate::list_data::row_words(n, row.rows.get(n).map(String::as_str));
     ui::label_row(ui, &row.name, theme::text::muted(), |ui| {
-        let shown = label(row.current);
+        let shown = crate::list_data::row_words(row.current, Some(&row.open));
         ui::fitted_combo(ui, ("play-opened", i), field, &shown, &shown, |ui| {
             ui::menu_rows(ui);
             for n in 0..row.rows.len().min(crate::list_data::ROWS_LISTED) {

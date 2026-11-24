@@ -3696,6 +3696,7 @@ fn a_row_picked_in_the_state_card_opens() {
     assert_eq!(rows[0].current, 0);
     p.input(Input::OpenRow { data, row: 2 });
     assert_eq!(p.opened_rows()[0].current, 2, "picked");
+    assert_eq!(p.opened_rows()[0].open, "C", "the open row's label");
 }
 
 /// A list filtered by a variable is drawn again on the copy when the variable

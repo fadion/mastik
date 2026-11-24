@@ -526,7 +526,8 @@ MCP's Phase 3 (`mcp.md`), each acting as its door in the app.
   (`a_tapped_row_is_opened_on_the_detail_screen`).
 - **The player's state card starts with *Opened rows*** (`state_rows`): one row per data set an
   *Opened row* list reads (`Player::opened_rows` → `mastik_play::OpenedRow`), its name and a
-  dropdown of its rows as *N · first cell* (up to 200 listed), the open one ticked. A pick is
+  dropdown of its rows as *N · first cell* (up to 200 listed, and only those labelled each pass,
+  with the open row's own label in `OpenedRow::open`), the open one ticked. A pick is
   `Input::OpenRow { data, row }`, which a take records, and opens the row as a tap does
   (`Player::open_data_row`, which `open_row` calls).
 - **A filter follows its variables in play.** When a variable's value changes
