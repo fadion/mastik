@@ -1561,6 +1561,7 @@ impl Transaction {
                 | Operation::SetPageDraft { id, .. }
                 | Operation::SetFlows { id, .. }
                 | Operation::SetPagePlay { id, .. }
+                | Operation::SetNote { id, .. }
                 | Operation::AddPage { id, .. }
                 | Operation::RemovePage { id }
                 | Operation::MovePage { id, .. } => Some(*id),

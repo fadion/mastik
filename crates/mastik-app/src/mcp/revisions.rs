@@ -220,7 +220,7 @@ pub(super) fn layers_of_doc(
     doc: &mastik_core::Document,
     res: &mastik_core::Resolved,
 ) -> HashMap<String, Layer> {
-    layers(&mastik_export::snapshot(doc, res))
+    layers(&mastik_export::snapshot(doc, res), doc)
 }
 
 /// The step on top of the history and the document's fingerprint at the
@@ -232,15 +232,27 @@ pub(super) fn look_at(conn: &Connection, rev: u64) -> Option<(Option<u64>, u64)>
         .map(|s| (s.top, s.print))
 }
 
-/// Every layer's fingerprint: its snapshot entry, hashed.
-fn layers(snapshot: &mastik_export::Snapshot) -> HashMap<String, Layer> {
-    use std::hash::Hasher as _;
+/// Every layer's fingerprint: its snapshot entry, hashed with what a registry
+/// verb writes on it that the entry leaves out — its note, and on a page's
+/// root the page's settings (flows, play) — so `base_rev` sees them change.
+fn layers(
+    snapshot: &mastik_export::Snapshot,
+    doc: &mastik_core::Document,
+) -> HashMap<String, Layer> {
+    use std::hash::{Hash as _, Hasher as _};
+    let pages: HashMap<&str, &mastik_export::snapshot::PageSnapshot> =
+        snapshot.pages.iter().map(|p| (p.id.as_str(), p)).collect();
     snapshot
         .nodes
         .iter()
         .map(|n| {
             let mut h = std::hash::DefaultHasher::new();
             let _ = serde_json::to_writer(HashWriter(&mut h), n);
+            if let Some(p) = pages.get(n.id.as_str()) {
+                let _ = serde_json::to_writer(HashWriter(&mut h), p);
+            }
+            let note = mastik_core::NodeId::from_wire(&n.id).and_then(|id| doc.get(id));
+            note.map(|n| n.note()).unwrap_or_default().hash(&mut h);
             (
                 n.id.clone(),
                 Layer {
@@ -273,7 +285,7 @@ fn looked(s: &EditorSession) -> Looked {
         return l;
     }
     let snap = mastik_export::snapshot(&s.doc, &s.resolved);
-    let fingerprints = Rc::new(layers(&snap));
+    let fingerprints = Rc::new(layers(&snap, &s.doc));
     let l = (Rc::new(snap), fingerprints);
     LOOKED.set(Some((at, l.clone())));
     l
@@ -852,6 +864,43 @@ mod tests {
         assert!(late.is_error, "refused");
         let id = mastik_core::NodeId::from_wire(&child).unwrap();
         assert!(docs.session.doc.get(id).is_some(), "the child stays");
+    }
+
+    /// A `set_note` or `set_page_play` whose layer or page another client
+    /// changed after its `base_rev` is refused: the note and the page's
+    /// settings are in the fingerprint though the snapshot entry lacks them.
+    ///
+    /// flip: `layers` without the note → fails at "the note is refused";
+    /// without the page settings → fails at "the page is refused".
+    #[test]
+    fn a_stale_note_or_page_play_is_refused() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        open(&mut engine, &mut docs, 2);
+        let layer = rect(&mut engine, &mut docs, 1, "Card");
+        let page = docs.session.doc.first_page().to_wire();
+        let read = call(
+            &mut engine,
+            &mut docs,
+            2,
+            "get_node",
+            json!({ "id": layer }),
+        );
+        let base = ok(&read)["rev"].clone();
+        let note = json!({ "node": layer, "text": "Scrolls" });
+        ok(&call(&mut engine, &mut docs, 1, "set_note", note));
+        let late = json!({ "node": layer, "text": "Fixed", "base_rev": base });
+        let late = call(&mut engine, &mut docs, 2, "set_note", late);
+        assert!(late.is_error, "the note is refused");
+
+        let read = call(&mut engine, &mut docs, 2, "get_node", json!({ "id": page }));
+        let base = ok(&read)["rev"].clone();
+        let play = mastik_core::verbs::example("PagePlay").unwrap();
+        let args = json!({ "page": page, "play": play });
+        ok(&call(&mut engine, &mut docs, 1, "set_page_play", args));
+        let args = json!({ "page": page, "play": play, "base_rev": base });
+        let late = call(&mut engine, &mut docs, 2, "set_page_play", args);
+        assert!(late.is_error, "the page is refused");
     }
 
     /// `run_script` holds a stale `base_rev` to the same rule: a script deleting
