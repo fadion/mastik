@@ -1741,6 +1741,30 @@ mod tests {
         assert_eq!(app.session.history.undo_depth(), depth, "no step");
     }
 
+    /// The Text card's content field over a template text a column fills is
+    /// shown disabled; over a text no column fills it is editable.
+    /// flip: `type_content_row`'s `read_only` without `filled` → fails at
+    /// "read-only".
+    #[test]
+    fn the_text_cards_content_is_read_only_on_a_filled_text() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let _ = listed(&mut app, inst, &["Linen", "Wool"]);
+        let label = app.session.doc.get(inst).unwrap().children()[0];
+        let main = mastik_core::component::main_of(&app.session.doc, inst).unwrap();
+        let free = app.session.doc.get(main).unwrap().children()[0];
+        let enabled = |app: &mut MastikApp, id: NodeId| {
+            app.session.selection.set_one(id);
+            for _ in 0..4 {
+                pass(&ctx, app);
+            }
+            ctx.read_response(egui::Id::new(("type-content", id)))
+                .map(|r| r.enabled())
+        };
+        assert_eq!(enabled(&mut app, free), Some(true), "control: editable");
+        assert_eq!(enabled(&mut app, label), Some(false), "read-only");
+    }
+
     /// A list over `with_row`'s row whose `on_sale` column fills a boolean
     /// property bound to the template's text; answers the template's text.
     fn listed_with_a_shown_column(ctx: &egui::Context) -> (MastikApp, NodeId) {
