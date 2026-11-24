@@ -387,7 +387,7 @@ fn file_safe(name: &str) -> String {
 fn take_words(t: &crate::player::TakeRec) -> (String, String) {
     let secs = t.at as i64 + crate::library::clock::local_offset(t.at);
     let day = secs.rem_euclid(86_400);
-    let when = format!("{}, {}:{:02}", t.name, day / 3600, (day % 3600) / 60);
+    let when = format!("{}, {}:{:02}", t.name(), day / 3600, (day % 3600) / 60);
     let clicks = match t.clicks() {
         1 => "1 click".to_string(),
         n => format!("{n} clicks"),
@@ -578,7 +578,7 @@ impl MastikApp {
                             Format::Mp4 => ("mp4", "MP4 video"),
                             Format::Gif => ("gif", "Animated GIF"),
                         };
-                        let name = format!("{stem} — {}.{ext}", file_safe(&take.name));
+                        let name = format!("{stem} — {}.{ext}", file_safe(&take.name()));
                         if let Some(path) = self.ask_path(filter, ext, &name) {
                             self.export_take_to(take.take, card.video.options(), path);
                             return;

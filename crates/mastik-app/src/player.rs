@@ -65,13 +65,38 @@ const CARD_ID: &str = "prototype-player";
 #[derive(Clone)]
 pub(crate) struct TakeRec {
     pub(crate) take: Take,
-    /// What played: the flow's name, else the page's.
-    pub(crate) name: String,
+    /// What played, unmasked: the flow's name, else the page's.
+    name: PlayName,
     /// When it was recorded, in seconds since the epoch.
     pub(crate) at: u64,
 }
 
+/// What played, by its real name and its place, so private mode masks it
+/// where it is drawn rather than when it was recorded.
+#[derive(Clone)]
+pub(crate) enum PlayName {
+    /// A flow's name and its place among its page's flows.
+    Flow(String, usize),
+    /// A page's name and its place among the pages.
+    Page(String, usize),
+}
+
+impl PlayName {
+    /// The name as drawn now: masked while private mode is on.
+    pub(crate) fn shown(&self) -> std::borrow::Cow<'_, str> {
+        match self {
+            PlayName::Flow(name, at) => crate::private::flow(name, *at),
+            PlayName::Page(name, at) => crate::private::page_named(name, *at),
+        }
+    }
+}
+
 impl TakeRec {
+    /// What played, as drawn now.
+    pub(crate) fn name(&self) -> std::borrow::Cow<'_, str> {
+        self.name.shown()
+    }
+
     /// How many clicks the take holds.
     pub(crate) fn clicks(&self) -> usize {
         self.take
@@ -80,6 +105,20 @@ impl TakeRec {
             .filter(|(_, i)| matches!(i, Input::PointerDown(_)))
             .count()
     }
+}
+
+/// What `p` plays: its flow, else its page.
+fn play_name(p: &Playing) -> PlayName {
+    let doc = p.player.document();
+    if let Start::Flow(r) = p.start
+        && let Some(i) = doc.page(r.page)
+        && let Some(at) = i.flows.iter().position(|f| f.id == r.flow)
+    {
+        return PlayName::Flow(i.flows[at].name.clone(), at);
+    }
+    let page = p.player.page();
+    let name = doc.get(page).map_or("", |n| n.name()).to_string();
+    PlayName::Page(name, doc.page_index(page).unwrap_or(0))
 }
 
 /// Play asked for and held while its scripts are shown first.
@@ -1700,16 +1739,7 @@ impl crate::app::MastikApp {
     /// The player's title: the flow's name, else the page's, masked in private
     /// mode as the page and flow names are everywhere.
     fn play_title(&self, p: &Playing) -> String {
-        let doc = p.player.document();
-        let page = p.player.page();
-        let flow = match p.start {
-            Start::Flow(r) => doc.page(r.page).and_then(|i| {
-                let at = i.flows.iter().position(|f| f.id == r.flow)?;
-                Some(crate::private::flow(&i.flows[at].name, at).into_owned())
-            }),
-            Start::Frame(_) => None,
-        };
-        flow.unwrap_or_else(|| crate::private::page(doc, page).into_owned())
+        play_name(p).shown().into_owned()
     }
 
     fn player_act(&mut self, ctx: &egui::Context, act: BarAct) {
@@ -1752,7 +1782,7 @@ impl crate::app::MastikApp {
             BarAct::ShareCopied => self.session.info("Copied the link".to_string()),
             BarAct::Restart | BarAct::Hints | BarAct::Card | BarAct::Record | BarAct::Turn => {
                 let title = match self.playing.as_deref() {
-                    Some(p) => self.play_title(p),
+                    Some(p) => play_name(p),
                     None => return,
                 };
                 let Some(p) = self.playing.as_mut() else {
@@ -2161,6 +2191,36 @@ mod tests {
         });
         assert_eq!(p.player.screen(), b, "navigated");
         assert_eq!(back_steps(&p.player), 1, "one step back");
+    }
+
+    /// A take recorded with private mode off is masked once it is turned on, and
+    /// one recorded while private shows its name once it is off.
+    /// flip: `TakeRec` keeping the name masked at record time → fails at
+    /// "masked afterwards".
+    #[test]
+    fn a_takes_name_is_masked_as_it_is_drawn() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = fixture(&ctx, true);
+        app.play(&ctx, Place::Over, false);
+        let record = |app: &mut MastikApp| {
+            app.player_act(&ctx, BarAct::Record);
+            app.player_act(&ctx, BarAct::Record);
+        };
+        record(&mut app);
+        crate::private::set(true);
+        record(&mut app);
+        let names = |app: &MastikApp| {
+            let p = app.playing.as_ref().expect("playing");
+            p.takes
+                .iter()
+                .map(|t| t.name().into_owned())
+                .collect::<Vec<_>>()
+        };
+        let private = names(&app);
+        crate::private::set(false);
+        let open = names(&app);
+        assert_eq!(private, vec!["Flow 1", "Flow 1"], "masked afterwards");
+        assert_eq!(open, vec!["Checkout", "Checkout"], "shown afterwards");
     }
 
     /// An edit committed in the editor reaches the played copy on the next pass;
