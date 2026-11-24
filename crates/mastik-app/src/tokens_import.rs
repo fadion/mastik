@@ -89,7 +89,7 @@ pub(crate) const MAX_READ: u64 = 16 * 1024 * 1024;
 /// a stat of `\\host\share` sends the user's credentials to that host; on Unix
 /// a stat under the automount roots `/net/<host>` and `/Network` contacts the
 /// host, from the UI thread.
-fn local_path(path: &Path) -> bool {
+pub(crate) fn local_path(path: &Path) -> bool {
     use std::path::{Component, Prefix};
     if !path.is_absolute() {
         return false;

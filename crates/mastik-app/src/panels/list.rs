@@ -829,6 +829,7 @@ mod tests {
     use mastik_core::verbs::{self, Ctx};
     use mastik_core::{NodeId, NodeKind};
     use serde_json::{Value, json};
+    use std::path::{Path, PathBuf};
 
     /// Run verb `name` on the app's document and commit it as the app does.
     fn verb(app: &mut MastikApp, name: &str, args: Value) -> Vec<NodeId> {
@@ -1471,5 +1472,45 @@ mod tests {
         let cells: Vec<&str> = pairs.iter().map(|(c, _)| c.as_str()).collect();
         assert_eq!(cells, ["img/a.png"], "not climbed out");
         assert_eq!(ops.len(), 1, "added once");
+    }
+
+    /// Pictures beside a data file are read only under a local absolute folder:
+    /// a folder the document names as relative (or, on Windows, behind a
+    /// non-drive prefix) is never looked at, though the file is there; a cell
+    /// written with `\` reads on every platform.
+    /// flip: `read_pictures_in` dropping its `local_path` check → fails at "not local".
+    #[test]
+    fn pictures_are_read_only_beside_a_local_file() {
+        let ctx = egui::Context::default();
+        let (app, _) = with_row(&ctx);
+        let png = crate::app::rgba_to_png(&[200; 16], (2, 2)).unwrap();
+        let table = Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "photo".into(),
+            }],
+            rows: vec![vec![r"img\a.png".to_string()]],
+        };
+        let read = |dir: &Path| {
+            crate::list_data::read_pictures(&app.session.doc, Some(dir), &table, &[ColumnId(0)])
+        };
+        let abs = std::env::temp_dir().join(format!("mastik-local-{}", std::process::id()));
+        std::fs::create_dir_all(abs.join("img")).unwrap();
+        std::fs::write(abs.join("img").join("a.png"), &png).unwrap();
+        let rel = PathBuf::from(format!(".mastik-local-{}", std::process::id()));
+        std::fs::create_dir_all(rel.join("img")).unwrap();
+        std::fs::write(rel.join("img").join("a.png"), &png).unwrap();
+        let found = read(&abs).1.len();
+        let relative = read(&rel).1.len();
+        let verbatim = cfg!(windows).then(|| {
+            read(&PathBuf::from(format!(r"\\?\{}", abs.display())))
+                .1
+                .len()
+        });
+        let _ = std::fs::remove_dir_all(&abs);
+        let _ = std::fs::remove_dir_all(&rel);
+        assert_eq!(found, 1, "a local folder is read, `\\` or not");
+        assert_eq!(relative, 0, "not local: relative");
+        assert_eq!(verbatim.unwrap_or(0), 0, "not local: verbatim prefix");
     }
 }

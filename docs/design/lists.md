@@ -112,7 +112,10 @@ list's description as it drops a misplaced one.
 - **A cell naming nothing gives the row the main's picture.** The List card warns under that fill
   row (`list::unmatched_pictures`, *Fill*, below).
 - **The app reads the files** (`list_data::read_pictures`): only a plain relative path beside the
-  data file (no absolute path, no `..`), only in the rows a list can draw (`MAX_DRAWN`), each file
+  data file (no absolute path, no `..`; `\` reads as `/`), and only when the joined path passes
+  `tokens_import::local_path`, since the folder comes from the document's own link and a stat
+  under `\\host\share` sends the user's credentials there. Only in the rows a list can draw
+  (`MAX_DRAWN`), each file
   up to `tokens_import::MAX_READ`, decoded by `app::read_picture`. A cell already naming a
   document picture's id is not read, and each cell is tried once per read however many rows name
   it. Each new picture's `AddImage` lands in the same step as the map. Reads happen on the import

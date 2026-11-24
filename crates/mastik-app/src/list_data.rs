@@ -227,7 +227,8 @@ fn picture_columns_of(
 /// file in `dir`, in the rows a list can draw: read and decoded now, each new
 /// picture's `AddImage` and every (cell, picture) pair. A cell already naming a
 /// picture's id, one that is no plain relative path (absolute, or climbing out
-/// with `..`), or one that does not read as a picture is left out.
+/// with `..`), one outside a local folder, or one that does not read as a
+/// picture is left out.
 pub(crate) fn read_pictures(
     doc: &mastik_core::Document,
     dir: Option<&Path>,
@@ -264,7 +265,9 @@ pub(crate) fn read_pictures_in(
             {
                 continue;
             }
-            let rel = Path::new(cell);
+            // `img\a.png` names the same file on every platform.
+            let rel = cell.replace('\\', "/");
+            let rel = Path::new(&rel);
             let plain = rel.components().all(|k| {
                 matches!(
                     k,
@@ -274,7 +277,12 @@ pub(crate) fn read_pictures_in(
             if !plain {
                 continue;
             }
+            // `dir` comes from the document's own link, so it is untrusted: a stat
+            // under `\\host\share` sends the user's credentials to that host.
             let path = dir.join(rel);
+            if !crate::tokens_import::local_path(&path) {
+                continue;
+            }
             let fits = std::fs::metadata(&path)
                 .is_ok_and(|m| m.is_file() && m.len() <= crate::tokens_import::MAX_READ);
             let Some(bytes) = fits.then(|| std::fs::read(&path).ok()).flatten() else {
