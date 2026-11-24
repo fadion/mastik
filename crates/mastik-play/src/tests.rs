@@ -1430,6 +1430,58 @@ fn smart_animate_with_no_side_fades() {
     assert_eq!(n.transform, None, "not moved");
 }
 
+/// A paired layer of the outgoing frame that holds a fading one, however deep,
+/// carries it: drawn with its paint blank rather than hidden, while one that
+/// holds none is hidden.
+///
+/// flip: `Smart::between_frames` marking no carriers → fails at "the card
+/// carries its badge".
+#[test]
+fn smart_animate_carries_a_fading_layer_with_its_pair() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let b = fx.frame("B", 300.0, 200.0, 100.0);
+    let go = fx.rect(a, "Go", 0.0, 0.0, 20.0, 20.0);
+    let card_a = fx.node(a, "Card", frame_kind(80.0, 60.0), (40.0, 0.0));
+    let row = fx.node(card_a, "Row", frame_kind(80.0, 20.0), (0.0, 0.0));
+    fx.rect(row, "Badge", 0.0, 0.0, 10.0, 10.0);
+    let tag_a = fx.rect(a, "Tag", 150.0, 0.0, 10.0, 10.0);
+    let card_b = fx.node(b, "Card", frame_kind(80.0, 60.0), (40.0, 30.0));
+    fx.node(card_b, "Row", frame_kind(80.0, 20.0), (0.0, 0.0));
+    fx.rect(b, "Tag", 150.0, 0.0, 10.0, 10.0);
+    let mut fade = linear(TransitionKind::SmartAnimate, 100);
+    fade.direction = Direction::None;
+    fx.on(
+        go,
+        Trigger::Click,
+        vec![Action::Navigate {
+            to: b,
+            transition: fade,
+            keep_scroll: false,
+        }],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 5.0, 5.0);
+    p.tick(50.0);
+    let s = p.scene();
+    let patch = |id| s.patches.iter().find(|x| x.node == id).cloned();
+    let card = patch(card_a).expect("the card is patched");
+    assert!(
+        card.visible != Some(false) && card.paint.is_some(),
+        "the card carries its badge"
+    );
+    assert_eq!(
+        patch(row).and_then(|r| r.visible),
+        None,
+        "and so does its row"
+    );
+    assert_eq!(
+        patch(tag_a).and_then(|t| t.visible),
+        Some(false),
+        "a pair holding nothing is hidden"
+    );
+}
+
 /// A fading layer whose opacity is bound fades from what it is drawn at, its
 /// variable's percentage, not the literal 0 its binding leaves.
 ///

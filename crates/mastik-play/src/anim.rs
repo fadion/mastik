@@ -171,6 +171,7 @@ impl Smart {
             ..Smart::default()
         };
         let mut faded: FxHashSet<NodeId> = FxHashSet::default();
+        let mut tracked: FxHashSet<NodeId> = FxHashSet::default();
         // Pre-order, so a parent's track is before its children's.
         for (id, path) in p.paths(b) {
             if id == b {
@@ -195,12 +196,13 @@ impl Smart {
                     start.rel = Affine::translate(-p.drawn_shift(id)) * start.rel;
                     smart.tracks.push(Track {
                         node: id,
-                        parent: parent.filter(|q| *q != b && smart.tracked(*q)),
-                        parent_rel: parent.map_or(Affine::IDENTITY, |q| p.look(b, q).rel),
+                        parent: parent.filter(|q| *q != b && tracked.contains(q)),
+                        parent_rel: parent.map_or(Affine::IDENTITY, |q| p.rel(b, q)),
                         root: false,
                         from: start,
                         to: p.look(b, id),
                     });
+                    tracked.insert(id);
                 }
                 None => {
                     if !parent.is_some_and(|q| faded.contains(&q)) {
@@ -226,14 +228,23 @@ impl Smart {
             }
             gone.insert(*id);
         }
+        // A layer carries a fading one when it holds it: every layer above a
+        // fading one, marked once.
+        let mut carriers: FxHashSet<NodeId> = FxHashSet::default();
+        for id in &smart.fade_out {
+            let mut at = p.doc.get(*id).and_then(|n| n.parent());
+            while let Some(q) = at {
+                if !carriers.insert(q) {
+                    break;
+                }
+                at = p.doc.get(q).and_then(|n| n.parent());
+            }
+        }
         for (id, _) in &paths_a {
             let Some(to) = pair.get(id).copied().filter(|_| *id != a) else {
                 continue;
             };
-            let carries = subtree_nodes(&p.doc, &[*id])
-                .iter()
-                .any(|x| smart.fade_out.contains(x));
-            match carries {
+            match carriers.contains(id) {
                 true => smart.carry.push((*id, to)),
                 false => smart.hide.push(*id),
             }
@@ -249,7 +260,7 @@ impl Smart {
         for (ids, frame) in [(&smart.fade_in, b), (&smart.fade_out, a)] {
             for id in ids {
                 let parent = p.doc.get(*id).and_then(|n| n.parent()).unwrap_or(frame);
-                parents.insert(*id, p.look(frame, parent).rel);
+                parents.insert(*id, p.rel(frame, parent));
             }
         }
         smart.slide = Some((span, parents));
@@ -275,17 +286,21 @@ impl Smart {
         let reference = p.reference(instance);
         let mut smart = Smart::default();
         let mut faded: FxHashSet<NodeId> = FxHashSet::default();
+        let mut tracked: FxHashSet<NodeId> = FxHashSet::default();
         for id in subtree_nodes(&p.doc, &[instance]) {
             let parent = p.doc.get(id).and_then(|n| n.parent());
             match before.get(&id) {
-                Some(from) => smart.tracks.push(Track {
-                    node: id,
-                    parent: parent.filter(|q| smart.tracked(*q)),
-                    parent_rel: parent.map_or(Affine::IDENTITY, |q| p.look(reference, q).rel),
-                    root: false,
-                    from: from.clone(),
-                    to: p.look(reference, id),
-                }),
+                Some(from) => {
+                    smart.tracks.push(Track {
+                        node: id,
+                        parent: parent.filter(|q| tracked.contains(q)),
+                        parent_rel: parent.map_or(Affine::IDENTITY, |q| p.rel(reference, q)),
+                        root: false,
+                        from: from.clone(),
+                        to: p.look(reference, id),
+                    });
+                    tracked.insert(id);
+                }
                 None => {
                     if !parent.is_some_and(|q| faded.contains(&q)) {
                         smart.fade_in.push(id);
@@ -304,10 +319,6 @@ impl Smart {
         let parent = parents.get(&id).copied().unwrap_or(Affine::IDENTITY);
         let local = p.res.used_local(&p.doc, id).unwrap_or(Affine::IDENTITY);
         Some(parent.inverse() * Affine::translate(*span * k) * parent * local)
-    }
-
-    fn tracked(&self, id: NodeId) -> bool {
-        self.tracks.iter().any(|t| t.node == id && !t.root)
     }
 
     /// The patches for the end's layers at progress `t`, into `out`.
@@ -441,8 +452,7 @@ impl Player {
 
     /// `id`'s look, measured from `reference`; a bound opacity as drawn.
     pub(crate) fn look(&self, reference: NodeId, id: NodeId) -> Look {
-        let world = |x| self.res.world_transform(x).unwrap_or(Affine::IDENTITY);
-        let rel = world(reference).inverse() * world(id);
+        let rel = self.rel(reference, id);
         let (opacity, paint, effects) = match self.doc.get(id) {
             // A side that hides the layer draws it clear, so one shown only at
             // the end fades in as a new layer does.
@@ -468,6 +478,12 @@ impl Player {
         }
     }
 
+    /// `id`'s transform measured from `reference`: [`Self::look`]'s place alone.
+    fn rel(&self, reference: NodeId, id: NodeId) -> Affine {
+        let world = |x| self.res.world_transform(x).unwrap_or(Affine::IDENTITY);
+        world(reference).inverse() * world(id)
+    }
+
     /// [`Self::look`] where `id` is drawn: moved by the scrolling frames above it.
     fn look_scrolled(&self, reference: NodeId, id: NodeId) -> Look {
         let mut look = self.look(reference, id);
@@ -478,11 +494,11 @@ impl Player {
     /// Every layer of `frame` with its pairing path, pre-order, `frame` first
     /// with the empty path.
     fn paths(&self, frame: NodeId) -> Vec<(NodeId, Path)> {
-        let mut out = vec![(frame, Vec::new())];
-        let mut i = 0;
-        while i < out.len() {
-            let (id, path) = out[i].clone();
-            i += 1;
+        let mut out = Vec::new();
+        // Children pushed last first, so each pops right after its parent.
+        let mut stack = vec![(frame, Vec::new())];
+        while let Some((id, path)) = stack.pop() {
+            out.push((id, path.clone()));
             let Some(n) = self.doc.get(id) else { continue };
             let mut seen: FxHashMap<String, usize> = FxHashMap::default();
             let mut kids = Vec::new();
@@ -509,10 +525,7 @@ impl Player {
                 *k += 1;
                 kids.push((*c, p));
             }
-            // Children right after their parent keeps the list pre-order.
-            for (offset, kid) in kids.into_iter().enumerate() {
-                out.insert(i + offset, kid);
-            }
+            stack.extend(kids.into_iter().rev());
         }
         out
     }
