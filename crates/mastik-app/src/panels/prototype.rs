@@ -4981,10 +4981,11 @@ impl MastikApp {
                 }))
         {
             self.proto.open = None;
-        }
-        self.popover_heard = true;
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        } else if ui::popover_escaped(&ctx) {
+            // Closed after the body: its fields read the same press as given up.
             self.proto.open = None;
+        } else {
+            ui::keep_popover_escape(&ctx);
         }
         let mut v = r.value.clone();
         let (a, label, glyph) = edit?;
@@ -9656,6 +9657,8 @@ mod tests {
                 ..Default::default()
             };
             ctx.run_ui(input, |ui| {
+                // As the frame body: the popover's `Escape` is claimed first.
+                ui::claim_popup_escape(ui.ctx());
                 ui.set_max_width(280.0);
                 app.inspector_ui(ui)
             })

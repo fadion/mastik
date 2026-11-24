@@ -738,18 +738,11 @@ impl MastikApp {
             && !ctx
                 .pointer_interact_pos()
                 .is_some_and(|p| button.contains(p));
-        if away || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if away || ui::popup_escaped(ctx) {
             self.size_preview.menu = false;
+        } else {
+            ui::keep_escape(ctx);
         }
-        // Heard, so the Escape that closes it spends no rung of the ladder.
-        if self.size_preview.menu {
-            self.popover_heard = true;
-        }
-    }
-
-    /// Whether the ⋯ menu is open and so claims an `Escape` press.
-    pub(crate) fn size_preview_owns_escape(&self) -> bool {
-        self.size_preview.menu
     }
 
     /// The loupe beside the card: the hovered pixel tile at [`LOUPE_ZOOM`], each
@@ -1093,8 +1086,8 @@ mod tests {
     }
 
     /// Escape closes the ⋯ menu and only that: the selection stays.
-    /// flip: `a_popover_owns_escape` without the size preview's menu → fails at
-    /// "the selection stays".
+    /// flip: `size_preview_menu` not calling `ui::keep_escape` → fails at "the menu
+    /// closed".
     #[test]
     fn escape_closes_the_sizes_menu_and_keeps_the_selection() {
         let ctx = egui::Context::default();

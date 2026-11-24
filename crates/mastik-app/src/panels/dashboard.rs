@@ -1109,12 +1109,9 @@ impl MastikApp {
             self.tab_key(key);
         }
         // The tab menu holds the keyboard (`library_keys_are_free`); `Escape` closes
-        // only it, consumed so `dashboard_keys` does not also clear the cursor.
+        // only it, claimed before `dashboard_keys` could clear the cursor with it.
         if self.tabs.menu.is_some() {
-            if ui
-                .ctx()
-                .input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-            {
+            if crate::ui::popup_escaped(ui.ctx()) {
                 self.tabs.menu = None;
             } else {
                 self.tabs.menu_nav = crate::menu::read_nav(ui.ctx());

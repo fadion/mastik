@@ -2202,11 +2202,11 @@ impl MastikApp {
             })
         {
             self.type_menu = None;
-        }
-        // The router may spend next frame's `Escape` on this popover.
-        self.popover_heard = true;
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        } else if ui::popover_escaped(&ctx) {
+            // Closed after the body: its fields read the same press as given up.
             self.type_menu = None;
+        } else {
+            ui::keep_popover_escape(&ctx);
         }
     }
 

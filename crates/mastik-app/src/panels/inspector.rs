@@ -7186,13 +7186,12 @@ impl MastikApp {
         {
             self.stroke_menu = None;
             self.stroke_dash_text = None;
-        }
-        // One Escape closes the popover and the cap list with it. Heard, for the
-        // router's sake (§15 D847, `MastikApp::popover_heard`).
-        self.popover_heard = true;
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        } else if ui::popover_escaped(&ctx) {
+            // Closed after the body: its fields read the same press as given up.
             self.stroke_menu = None;
             self.stroke_dash_text = None;
+        } else {
+            ui::keep_popover_escape(&ctx);
         }
         out
     }
@@ -11186,12 +11185,11 @@ impl MastikApp {
             })
         {
             self.effect_menu = None;
-        }
-        // Escape closes the popover and any open kind list in one press
-        // (`MastikApp::popover_heard` tells the router).
-        self.popover_heard = true;
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        } else if ui::popover_escaped(&ctx) {
+            // Closed after the body: its fields read the same press as given up.
             self.effect_menu = None;
+        } else {
+            ui::keep_popover_escape(&ctx);
         }
         // After the `Area`, whose closure holds `&mut self`.
         if let Some(mode) = shadow_blend {

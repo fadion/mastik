@@ -1182,8 +1182,9 @@ impl MastikApp {
 
     /// A tab's right-click menu: *Pin tab* or *Unpin tab*, then *Close*, *Close
     /// others* and *Close all*, none of which closes a pinned tab. It opens at the
-    /// press and closes on a choice, a click elsewhere, or `Escape` (read with the
-    /// keys: the editor's routing and `dashboard_keys`).
+    /// press and closes on a choice, a click elsewhere, or `Escape` (claimed through
+    /// `ui::keep_escape`, closed where the keys are read: the editor's routing and
+    /// `dashboard_keys`).
     fn tab_menu(&mut self, ctx: &egui::Context) {
         use crate::menu::{Nav, navigate_index, pointer_moved};
         use crate::theme::icon;
@@ -1308,6 +1309,8 @@ impl MastikApp {
             pass != opened && ctx.input(|i| i.pointer.any_click()) && !menu.contains_pointer();
         if elsewhere {
             self.tabs.menu = None;
+        } else {
+            crate::ui::keep_escape(ctx);
         }
     }
 
@@ -1603,7 +1606,7 @@ impl MastikApp {
         if !strip_drawn {
             // The tab menu holds the keyboard here as in the editor.
             if !keys_read && self.tabs.menu.is_some() && !self.modal_is_up() {
-                if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if crate::ui::popup_escaped(&ctx) {
                     self.tabs.menu = None;
                 } else {
                     self.tabs.menu_nav = crate::menu::read_nav(&ctx);
@@ -2444,6 +2447,8 @@ mod tests {
         );
 
         app.tabs.menu = Some((failed, egui::pos2(40.0, 20.0), 0));
+        frame(&ctx, &mut app, Vec::new());
+        assert!(app.tabs.menu.is_some(), "fixture: the menu is drawn open");
         frame(
             &ctx,
             &mut app,

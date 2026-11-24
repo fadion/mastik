@@ -3520,6 +3520,8 @@ impl MastikApp {
             self.context_menu = None;
         } else if let Some(menu) = self.context_menu.as_mut() {
             menu.just_opened = false;
+            // `update` closes its submenu, else it, on the press this claims.
+            crate::ui::keep_escape(ctx);
         }
     }
 

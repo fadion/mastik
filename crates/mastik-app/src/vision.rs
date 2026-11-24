@@ -136,9 +136,6 @@ impl MastikApp {
         }
         self.vision_bar(ctx);
         self.vision_menu(ctx);
-        if self.vision.as_ref().is_some_and(|v| v.menu) {
-            self.popover_heard = true;
-        }
     }
 
     fn vision_bar(&mut self, ctx: &egui::Context) {
@@ -307,19 +304,15 @@ impl MastikApp {
             self.prefs.save();
         }
         let away = ctx.input(|i| i.pointer.any_click()) && !menu.contains_pointer();
-        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let escape = crate::ui::popup_escaped(ctx);
         if let Some(v) = &mut self.vision {
             if chosen.is_some() || (away && !v.menu_opening) || escape {
                 v.menu = false;
+            } else {
+                crate::ui::keep_escape(ctx);
             }
             v.menu_opening = false;
         }
-    }
-
-    /// Whether the condition menu is open, which an Escape closes before it
-    /// reaches the canvas.
-    pub(crate) fn vision_owns_escape(&self) -> bool {
-        self.vision.as_ref().is_some_and(|v| v.menu)
     }
 
     /// The frame a simulation shows, for tests.

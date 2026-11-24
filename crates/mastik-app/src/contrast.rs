@@ -183,12 +183,6 @@ impl Contrast {
             .collect()
     }
 
-    /// Whether the fix card or the level menu is open, either of which an Escape
-    /// closes before it reaches the canvas.
-    pub(crate) fn owns_escape(&self) -> bool {
-        self.fix.is_some() || self.level_menu
-    }
-
     fn measured(&self) -> usize {
         self.subjects
             .iter()
@@ -784,10 +778,6 @@ impl MastikApp {
         self.contrast_bar(ctx);
         self.contrast_level_menu(ctx);
         self.contrast_fix_card(ctx);
-        if self.contrast.as_ref().is_some_and(Contrast::owns_escape) {
-            // The card and the menu own Escape, as the inspector's popovers do.
-            self.popover_heard = true;
-        }
     }
 
     fn contrast_bar(&mut self, ctx: &egui::Context) {
@@ -1013,11 +1003,13 @@ impl MastikApp {
             self.prefs.save();
         }
         let away = ctx.input(|i| i.pointer.any_click()) && !menu.contains_pointer();
-        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let escape = crate::ui::popup_escaped(ctx);
         if let Some(c) = &mut self.contrast {
             // The level head's own click opened the menu; it is not a click away.
             if (away && !c.menu_opening) || escape {
                 c.level_menu = false;
+            } else {
+                crate::ui::keep_escape(ctx);
             }
             c.menu_opening = false;
         }
@@ -1123,12 +1115,9 @@ impl MastikApp {
             })
             .response;
 
-        let (escape, clicked_away) = ctx.input(|i| {
-            (
-                i.key_pressed(egui::Key::Escape),
-                i.pointer.any_click() && !resp.contains_pointer() && !opening,
-            )
-        });
+        let escape = crate::ui::popover_escaped(ctx);
+        let clicked_away =
+            ctx.input(|i| i.pointer.any_click() && !resp.contains_pointer() && !opening);
         let mut enter = false;
         if let Some(card) = self.contrast.as_mut().and_then(|c| c.fix.as_mut()) {
             card.opening = false;
@@ -1147,6 +1136,7 @@ impl MastikApp {
             self.close_fix();
             return;
         }
+        crate::ui::keep_popover_escape(ctx);
         self.preview_fix(id, &f, level, hovered);
     }
 

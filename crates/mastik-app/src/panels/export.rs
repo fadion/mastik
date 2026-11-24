@@ -1689,6 +1689,11 @@ impl MastikApp {
             self.export_row_open = None;
             self.export_prefix_text = None;
             self.export_suffix_text = None;
+        } else if ui::popover_escaped(&ctx) {
+            // Closed after the body: its fields read the same press as given up.
+            self.export_row_open = None;
+        } else {
+            ui::keep_popover_escape(&ctx);
         }
         out
     }
@@ -2416,17 +2421,6 @@ impl MastikApp {
         if let Some(head) = head {
             self.export_menu_popup(ui, &head, subjects);
         }
-        // Escape closes both of this card's popovers (§15 D801). `key_pressed` rather
-        // than `consume_key`: `MastikApp::a_popover_owns_escape` is what keeps the
-        // ladder from seeing it. Heard only when one is open, so a card with nothing
-        // open does not vouch for a Type popover nobody draws (§15 D847).
-        if self.export_menu || self.export_row_open.is_some() {
-            self.popover_heard = true;
-        }
-        if ui.ctx().input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.export_menu = false;
-            self.export_row_open = None;
-        }
     }
 
     /// The panel's own menu: what to do with a set of settings, and the two
@@ -2608,8 +2602,11 @@ impl MastikApp {
                 in_gesture: ctx.dragged_id().is_some() || self.gesture_cancelled,
                 press_away,
             })
+            || ui::popover_escaped(&ctx)
         {
             self.export_menu = false;
+        } else {
+            ui::keep_popover_escape(&ctx);
         }
         if let Some(act) = act {
             self.perform_export_menu(act, subjects, current);

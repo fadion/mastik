@@ -240,8 +240,9 @@ stack.
   (the hovered row, else the first) while neither the palette, a modal nor a text field has the
   keyboard, applies it as one undo step, *Fix contrast*. Escape, a click away, an undo or a redo
   closes it. A remeasure redoes the rows, and closes the card when the layer now passes or is
-  gone. The card and the level menu own Escape through `a_popover_owns_escape` and
-  `popover_heard`.
+  gone. The card takes Escape as a popover (`ui::keep_popover_escape`) and the level menu as a
+  popup (`ui::keep_escape`), so the press reaches neither the canvas nor, with the menu open, the
+  card.
 - **Every fix passes in every mode.** A raw colour is the same in all modes, so a fix for one mode
   that breaks another is no fix: *Nearest* must pass every mode's worst backdrop, and *Variables*
   lists only variables that pass in every mode, nearest the ink first. When no lightness at the
@@ -290,7 +291,7 @@ colour deficiencies barely move.
   Achromatopsia, a hairline, then Blurred vision, Contrast loss, Ghosting, Yellowing, each a
   ticked row *Label · gloss* (*Blurred vision · Out of focus*). A pick switches at once and closes
   the menu. Escape or a click away closes it, Escape before it reaches the canvas
-  (`vision_owns_escape`).
+  (`ui::keep_escape`).
 - **Preferences** (`prefs.vision`, `VisionPrefs`): the condition last chosen (`Condition::key`;
   deuteranopia by default) and each condition's own severity, so the slider shows the picked
   condition's. A condition never set opens at `Condition::default_severity`: 100% for a

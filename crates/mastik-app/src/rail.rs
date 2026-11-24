@@ -372,13 +372,9 @@ impl MastikApp {
             })
             .response;
 
-        let (released, pressed, escape) = ctx.input(|i| {
-            (
-                i.pointer.primary_released(),
-                i.pointer.any_pressed(),
-                i.key_pressed(egui::Key::Escape),
-            )
-        });
+        let (released, pressed) =
+            ctx.input(|i| (i.pointer.primary_released(), i.pointer.any_pressed()));
+        let escape = ui::popup_escaped(ctx);
         if flyout.held && released {
             picked = picked.or(dragged_over);
             flyout.held = false;
@@ -391,6 +387,9 @@ impl MastikApp {
         let elsewhere =
             pressed && !area.contains_pointer() && !pointer.is_some_and(|p| flyout.at.contains(p));
         self.rail.flyout = (!escape && !elsewhere).then_some(flyout);
+        if self.rail.flyout.is_some() {
+            ui::keep_escape(ctx);
+        }
     }
 }
 
@@ -465,6 +464,8 @@ mod tests {
             let (app, group) = (&mut self.app, self.group);
             let mut slot = egui::Rect::NOTHING;
             let _ = self.ctx.run_ui(input, |ui| {
+                // As the frame body: an open row's `Escape` is claimed first.
+                ui::claim_popup_escape(ui.ctx());
                 slot = app.rail_group(ui, group).rect;
                 app.rail_flyout(ui.ctx());
             });
@@ -774,8 +775,8 @@ mod tests {
 
     /// Escape with a members row open closes the row and reaches nothing else:
     /// the selection and the armed tool stay.
-    /// flip: removing the gate's `rail.flyout` arm in `ui` → fails at the selection
-    /// assertion.
+    /// flip: `rail_flyout` not calling `ui::keep_escape` → fails at the first
+    /// `rail.flyout.is_none()` (the row stays, and the press deselects).
     #[test]
     fn escape_on_the_row_leaves_the_selection_and_the_tool() {
         let ctx = egui::Context::default();
@@ -797,12 +798,15 @@ mod tests {
             modifiers: Default::default(),
         };
         app.rail.flyout = open_row(Group::Pen);
+        app_frame(&ctx, &mut app, Vec::new());
+        assert!(app.rail.flyout.is_some(), "fixture: the row is drawn open");
         app_frame(&ctx, &mut app, vec![escape()]);
         assert!(app.rail.flyout.is_none());
         assert_eq!(app.session.selection.ids(), [id]);
 
         app.choose_tool(Tool::Rect);
         app.rail.flyout = open_row(Group::Frame);
+        app_frame(&ctx, &mut app, Vec::new());
         app_frame(&ctx, &mut app, vec![escape()]);
         assert!(app.rail.flyout.is_none());
         assert_eq!(app.tool, Tool::Rect);

@@ -688,11 +688,6 @@ pub struct MastikApp {
     pub(crate) play_disclosure: Option<crate::player::Owed>,
     /// The prototype's export card, while open (`prototype_export.rs`).
     pub(crate) proto_export: Option<crate::prototype_export::ExportCard>,
-    /// Whether an open popover's own `Escape` handler ran this frame; written by the
-    /// handler, read and cleared by the key router next frame. Read instead of the open
-    /// flag, because a flag whose panel was skipped would swallow `Escape` with nothing
-    /// on screen.
-    pub(crate) popover_heard: bool,
     /// In-progress name edit on a card head; commits once, on defocus.
     pub(crate) name_edit: Option<crate::ui::Draft<NodeId>>,
     /// In-progress description edit on a component card; commits once, on defocus.
@@ -2194,7 +2189,6 @@ impl MastikApp {
             playing: None,
             play_disclosure: None,
             proto_export: None,
-            popover_heard: false,
         }
     }
 }
@@ -2495,7 +2489,6 @@ impl MastikApp {
         self.contrast_claim_keys(&ctx);
         let mut palette_keys = crate::palette::Keys::default();
         let mut bar_keys = crate::command::Keys::default();
-        let popover_heard = std::mem::take(&mut self.popover_heard);
         if self.picking() && !self.modal_is_up() {
             // The bar's Pick focus: the labels take the letters, then its keymap
             // the rest; every other editor key rests.
@@ -2515,7 +2508,7 @@ impl MastikApp {
             palette_keys = crate::palette::read_keys(&ctx);
         } else if let Some(menu) = self.context_menu.as_mut() {
             // One rung a press: an open submenu first, then the menu.
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if crate::ui::popup_escaped(&ctx) {
                 if menu.flyout.take().is_none() {
                     self.context_menu = None;
                 }
@@ -2524,14 +2517,11 @@ impl MastikApp {
             }
         } else if self.tabs.menu.is_some() {
             // The tab menu holds the keyboard; `Escape` closes only it.
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            if crate::ui::popup_escaped(&ctx) {
                 self.tabs.menu = None;
             } else {
                 self.tabs.menu_nav = crate::menu::read_nav(&ctx);
             }
-        } else if self.rail.flyout.is_some() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-            // A rail slot's members row spends Escape on closing itself.
-            self.rail.flyout = None;
         } else if self.modal_is_up() {
             // A modal owns every key; `input::resolve` is no second guard, since a modal
             // of buttons does not make egui want the keyboard.
@@ -2543,21 +2533,15 @@ impl MastikApp {
             // The Scripts window, pressed on last, keeps the keys from the canvas;
             // its open menu holds them as a context menu does.
             self.scripts_keys(&ctx);
-        } else if popover_heard
-            && self.a_popover_owns_escape()
-            && ctx.input(|i| i.key_pressed(egui::Key::Escape))
-        {
-            // Escape is spent on a popover heard last frame; other keys pass.
+        } else if crate::ui::popover_escaped(&ctx) {
+            // The press is a popover's, which closes itself as it draws; no rung pays out.
         } else {
-            // A popover flag nobody heard is dead: clear it, and let the press pay out.
-            if self.a_popover_owns_escape() && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.type_menu = None;
-                self.stroke_menu = None;
-                self.stroke_dash_text = None;
-                self.effect_menu = None;
-                self.export_menu = false;
-                self.export_row_open = None;
-                self.proto.open = None;
+            // A popover or dropdown drawn last frame took its `Escape` before this
+            // (`ui::claim_popup_escape`), so a press still here found none: a flag left
+            // set behind a skipped panel is dead. Clear it, and let the press pay out.
+            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.close_inspector_popovers();
+                self.open_menu = TopMenu::None;
             }
             // Before the keymap: a tab key moves every key after it to another document.
             if let Some(key) = crate::tabs::read_keys(&ctx) {
@@ -3025,11 +3009,6 @@ impl MastikApp {
             Action::Enter if self.warp.is_some() => self.commit_warp(),
             Action::Enter if self.pen.is_some() => {}
             Action::Enter => self.enter_action(),
-            // The Escape that closes a top-bar dropdown closes only it (an open dropdown
-            // focuses nothing, so egui's keyboard guard cannot stand in).
-            Action::Escape if self.open_menu != TopMenu::None => {
-                self.open_menu = TopMenu::None;
-            }
             Action::Escape => self.escape(ctx),
             Action::Group => self.group_selection(),
             Action::Mask => self.toggle_mask(),
@@ -8675,8 +8654,11 @@ impl MastikApp {
         {
             self.open_menu = TopMenu::None;
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        // A popover, not a popup: a row menu or a list open inside it closes first.
+        if crate::ui::popover_escaped(ctx) {
             self.open_menu = TopMenu::None;
+        } else if self.open_menu != TopMenu::None {
+            crate::ui::keep_popover_escape(ctx);
         }
     }
 
@@ -9898,22 +9880,6 @@ impl MastikApp {
             || self.repeat.open
             || self.blend.open
             || self.edited_image().is_some()
-    }
-
-    /// Whether a popover flag is set that would claim an `Escape` press, so one press
-    /// dismisses it and pays out no rung of the ladder. Half of the claim: the router
-    /// also asks [`Self::popover_heard`]. [`Self::a_popover_is_open`] minus the
-    /// image-edit card on purpose: leaving that mode is the ladder's own rung.
-    fn a_popover_owns_escape(&self) -> bool {
-        self.type_menu.is_some()
-            || self.stroke_menu.is_some()
-            || self.effect_menu.is_some()
-            || self.export_menu
-            || self.export_row_open.is_some()
-            || self.proto.open.is_some()
-            || self.contrast.as_ref().is_some_and(|c| c.owns_escape())
-            || self.vision_owns_escape()
-            || self.size_preview_owns_escape()
     }
 
     /// The inspector: a column of individually floating panels over the right of the
@@ -17852,7 +17818,7 @@ mod library_wiring_tests {
     /// One `Escape` over a top-bar dropdown closes the dropdown and nothing else; the
     /// keyboard guard does not cover it, as a click leaves no focused widget.
     ///
-    /// flip: removing the `Action::Escape if open_menu != None` arm → fails at the tool assertion (the menu closes either way)
+    /// flip: `dropdown_padded` not calling `ui::keep_popover_escape` → fails at the tool assertion (the dead-flag clearing closes the menu either way)
     #[test]
     fn escape_over_a_top_bar_dropdown_closes_only_the_dropdown() {
         let ctx = egui::Context::default();
@@ -18607,7 +18573,7 @@ mod context_menu_rule_tests {
     /// One `Escape` closes each of the five popovers and pays out no rung of the
     /// ladder; the no-popover control proves `Escape` still pays out.
     ///
-    /// flip: removing `a_popover_owns_escape`'s arm from `update` → fails at `stroke_menu`'s tool assertion
+    /// flip: removing the `ui::popover_escaped` arm from `frame_body`'s key routing → fails at `stroke_menu`'s tool assertion
     /// flip: the arm swallowing every key → fails at "a tool letter still reaches the keymap"
     #[test]
     fn escape_over_a_popover_closes_it_and_pays_out_no_rung() {
@@ -18705,7 +18671,7 @@ mod context_menu_rule_tests {
     /// A popover flag nothing is drawing does not own `Escape` (B: the selection
     /// leaves the text layer; A: focus mode hides the inspector).
     ///
-    /// flip: dropping `popover_heard` from the gate → fails case B at "the press reaches the ladder"
+    /// flip: `claim_popup_escape` giving a popover the press without its `keep_popover_escape` → fails case B at "the press reaches the ladder"
     /// flip: dropping the dead-flag clearing → fails at "and the dead flag is cleared"
     #[test]
     fn a_popover_flag_nothing_draws_does_not_own_escape() {
@@ -18776,6 +18742,168 @@ mod context_menu_rule_tests {
         assert!(
             app.session.selection.is_empty(),
             "with nothing open the next press deselects"
+        );
+    }
+
+    /// One frame of the whole app, answering what it drew.
+    fn drawn_frame(
+        ctx: &egui::Context,
+        app: &mut MastikApp,
+        events: Vec<egui::Event>,
+    ) -> egui::FullOutput {
+        let mut frame = eframe::Frame::_new_kittest();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1320.0, 820.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame))
+    }
+
+    /// Where the text run `face` (a dropdown's glyph and word) was drawn.
+    fn face_at(out: &egui::FullOutput, glyph: &str, word: &str) -> Option<egui::Pos2> {
+        out.shapes.iter().find_map(|s| match &s.shape {
+            egui::Shape::Text(t)
+                if t.galley.job.text.starts_with(glyph) && t.galley.job.text.ends_with(word) =>
+            {
+                Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+            }
+            _ => None,
+        })
+    }
+
+    /// Escape over the stroke and the type popover closes the popover and keeps the
+    /// selection; the next press deselects.
+    /// flip: the popovers' end not closing on `ui::popover_escaped` → fails at "Escape
+    /// closes the popover".
+    /// flip: `frame_body`'s key routing without its `ui::popover_escaped` arm → fails at "the
+    /// selection stays".
+    #[test]
+    fn escape_over_a_popover_closes_it_and_keeps_the_selection() {
+        let case = |name: &str,
+                    (mut app, id): (MastikApp, NodeId),
+                    ctx: &egui::Context,
+                    open: &dyn Fn(&mut MastikApp),
+                    up: &dyn Fn(&MastikApp) -> bool| {
+            whole_frame(ctx, &mut app, Vec::new());
+            open(&mut app);
+            whole_frame(ctx, &mut app, Vec::new());
+            whole_frame(ctx, &mut app, Vec::new());
+            assert!(up(&app), "{name}: fixture: the popover is drawn open");
+
+            whole_frame(ctx, &mut app, vec![key(egui::Key::Escape)]);
+            assert!(!up(&app), "{name}: Escape closes the popover");
+            assert_eq!(
+                app.session.selection.ids(),
+                [id],
+                "{name}: the selection stays"
+            );
+
+            whole_frame(ctx, &mut app, vec![key(egui::Key::Escape)]);
+            assert!(
+                app.session.selection.is_empty(),
+                "{name}: with nothing open the next press deselects"
+            );
+        };
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        case(
+            "stroke",
+            probe_app(&ctx),
+            &ctx,
+            &|a| a.stroke_menu = Some(0),
+            &|a| a.stroke_menu.is_some(),
+        );
+        let text = probe_text_app(&ctx);
+        let id = text.session.selection.ids()[0];
+        case(
+            "type",
+            (text, id),
+            &ctx,
+            &|a| a.type_menu = Some(crate::app::TypeTab::Character),
+            &|a| a.type_menu.is_some(),
+        );
+    }
+
+    /// With a dropdown open inside the stroke or the type popover, one Escape closes
+    /// the dropdown alone; the next closes the popover, and only the third deselects.
+    /// flip: `claim_popup_escape` giving a popover the press while a popup is open →
+    /// fails at "the popover stays".
+    #[test]
+    fn escape_over_a_dropdown_in_a_popover_closes_only_the_dropdown() {
+        use crate::theme::icon;
+        let case = |name: &str,
+                    (mut app, id): (MastikApp, NodeId),
+                    ctx: &egui::Context,
+                    open: &dyn Fn(&mut MastikApp),
+                    up: &dyn Fn(&MastikApp) -> bool,
+                    (glyph, word): (&str, &str)| {
+            whole_frame(ctx, &mut app, Vec::new());
+            open(&mut app);
+            whole_frame(ctx, &mut app, Vec::new());
+            whole_frame(ctx, &mut app, Vec::new());
+            let out = drawn_frame(ctx, &mut app, Vec::new());
+            let at = face_at(&out, glyph, word)
+                .unwrap_or_else(|| panic!("{name}: fixture: the dropdown {word} is drawn"));
+            let press = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            whole_frame(ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+            whole_frame(ctx, &mut app, vec![press(true)]);
+            whole_frame(ctx, &mut app, vec![press(false)]);
+            whole_frame(ctx, &mut app, Vec::new());
+            assert!(
+                up(&app) && egui::Popup::is_any_open(ctx),
+                "{name}: fixture: the dropdown is open inside the popover"
+            );
+
+            whole_frame(ctx, &mut app, vec![key(egui::Key::Escape)]);
+            assert!(
+                !egui::Popup::is_any_open(ctx),
+                "{name}: Escape closes the dropdown"
+            );
+            assert!(up(&app), "{name}: the popover stays");
+            assert_eq!(
+                app.session.selection.ids(),
+                [id],
+                "{name}: the selection stays"
+            );
+
+            whole_frame(ctx, &mut app, vec![key(egui::Key::Escape)]);
+            assert!(!up(&app), "{name}: the next press closes the popover");
+            assert_eq!(app.session.selection.ids(), [id], "{name}: and only it");
+
+            whole_frame(ctx, &mut app, vec![key(egui::Key::Escape)]);
+            assert!(
+                app.session.selection.is_empty(),
+                "{name}: the third press deselects"
+            );
+        };
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        case(
+            "stroke",
+            probe_app(&ctx),
+            &ctx,
+            &|a| a.stroke_menu = Some(0),
+            &|a| a.stroke_menu.is_some(),
+            (icon::STROKE_CAP, "Straight"),
+        );
+        let text = probe_text_app(&ctx);
+        let id = text.session.selection.ids()[0];
+        case(
+            "type",
+            (text, id),
+            &ctx,
+            &|a| a.type_menu = Some(crate::app::TypeTab::Character),
+            &|a| a.type_menu.is_some(),
+            (icon::TRANSLATE, "None"),
         );
     }
 }

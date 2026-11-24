@@ -6734,14 +6734,21 @@ fn kept_tab_id() -> egui::Id {
 /// hosting it nor the canvas's selection hears it. Called once at the top of the
 /// frame body, before any key reader. egui's own popups (a `ComboBox`,
 /// `Popup::menu`, a context menu) are closed here; one the app holds open asks for
-/// the press with [`keep_escape`] and closes on [`popup_escaped`].
+/// the press with [`keep_escape`] and closes on [`popup_escaped`]. A popover (a
+/// card hosting popups of its own) asks with [`keep_popover_escape`] and is given
+/// the press only while none of those is open.
 pub fn claim_popup_escape(ctx: &egui::Context) {
     // One accessor at a time: the context lock is not re-entrant.
     let kept = ctx
         .data_mut(|d| d.remove_temp::<bool>(kept_escape_id()))
         .is_some();
+    let popover = ctx
+        .data_mut(|d| d.remove_temp::<bool>(kept_popover_escape_id()))
+        .is_some();
     let open = kept || egui::Popup::is_any_open(ctx);
-    let claimed = open && ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    let claimed = open && pressed;
+    let popover_claimed = !open && popover && pressed;
     if claimed {
         ctx.input_mut(|i| {
             i.events.retain(|e| {
@@ -6756,7 +6763,10 @@ pub fn claim_popup_escape(ctx: &egui::Context) {
         });
         egui::Popup::close_all(ctx);
     }
-    ctx.data_mut(|d| d.insert_temp(escaped_id(), claimed));
+    ctx.data_mut(|d| {
+        d.insert_temp(escaped_id(), claimed);
+        d.insert_temp(popover_escaped_id(), popover_claimed);
+    });
 }
 
 /// Marks a popup whose open state the app holds (not egui's memory) as open, so
@@ -6772,14 +6782,41 @@ pub fn popup_escaped(ctx: &egui::Context) -> bool {
         .unwrap_or(false)
 }
 
+/// Marks a popover the app holds open (an inspector popover, a top-bar dropdown,
+/// the contrast fix card) as open, so next frame's `Escape` is its when no popup
+/// inside or over it was open. Call it every frame the popover shows, and close it
+/// on [`popover_escaped`] after drawing its body. The press stays in the input: a
+/// typed field in the popover reads it to give its text up, where its loss of
+/// focus alone would commit it. `MastikApp::frame_body`'s key routing reads
+/// [`popover_escaped`] so no rung of the ladder pays out.
+pub fn keep_popover_escape(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(kept_popover_escape_id(), true));
+}
+
+/// Whether [`claim_popup_escape`] gave this frame's `Escape` to an open popover.
+pub fn popover_escaped(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(popover_escaped_id()))
+        .unwrap_or(false)
+}
+
 /// Set by [`keep_escape`], spent by the next [`claim_popup_escape`].
 fn kept_escape_id() -> egui::Id {
     egui::Id::new("popup-kept-escape")
 }
 
-/// This frame's answer of [`claim_popup_escape`].
+/// Set by [`keep_popover_escape`], spent by the next [`claim_popup_escape`].
+fn kept_popover_escape_id() -> egui::Id {
+    egui::Id::new("popover-kept-escape")
+}
+
+/// This frame's answer of [`claim_popup_escape`] for a popup.
 fn escaped_id() -> egui::Id {
     egui::Id::new("popup-escaped")
+}
+
+/// This frame's answer of [`claim_popup_escape`] for a popover.
+fn popover_escaped_id() -> egui::Id {
+    egui::Id::new("popover-escaped")
 }
 
 /// Moves the focus one stop along the surface `ui` draws, as `Tab` (or, `back`,

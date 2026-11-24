@@ -581,16 +581,21 @@ group; coming back out is the ladder's job.
 
 **An open dropdown, menu or suggestion list takes the press before anything else**: egui's own
 popups (every `ComboBox`, `Popup::menu`, a picker's *Ends and mixing*, a dialog's dropdown) and
-the lists that call `ui::keep_escape` close, and nothing behind them — the ladder, the dialog or
-popover hosting them — hears that press (`ui::claim_popup_escape`, at the top of the frame).
+the ones that call `ui::keep_escape` (the context menu, its submenu first, the tab menu, the rail's
+members row, the contrast and simulation menus, a kit update's row menu, the tab overflow list)
+close, and nothing behind them — the ladder, the dialog or popover hosting them — hears that
+press (`ui::claim_popup_escape`, at the top of the frame).
 
 **Anything floating takes the press before the ladder and takes only one thing** (§15 D527, D801):
-a context menu, a top-bar dropdown (`Action::Escape if open_menu != None`), a modal, the detached
-colour picker and the five inspector/Export popovers close on `Escape` and pay out no rung —
-dismissing something opened by accident must not deselect or drop the tool. 🚨 **Only a popover on
-screen takes the press** (§15 D847): a flag outlives its popover when the panel drawing it is
-skipped (non-text selection, focus mode), and `Escape` was swallowed for the session; such a flag
-is cleared by the press, which then pays out its rung. ⚠️ **Image editing's card is deliberately
+a context menu, a modal, the detached colour picker and the popovers close on `Escape` and pay out
+no rung — dismissing something opened by accident must not deselect or drop the tool. A popover
+(the five inspector/Export popovers, a top-bar dropdown, the contrast fix card) calls
+`ui::keep_popover_escape` as it draws and is given the press only when no popup was open, so a
+dropdown inside it closes first; it closes on `ui::popover_escaped` after its body, and the
+routing in `frame_body` skips the ladder on that press. 🚨 **Only a popover on screen takes the
+press** (§15 D847): a flag outlives its popover when the panel drawing it is skipped (non-text
+selection, focus mode), and claims nothing then; the press clears such a flag and pays out its
+rung. ⚠️ **Image editing's card is deliberately
 not in that set**: it is a tool, and leaving it is the ladder's last rung.
 
 **Image editing's only keyboard door is `Enter`** (§15 D268); `Escape` or a second `Enter` leaves,

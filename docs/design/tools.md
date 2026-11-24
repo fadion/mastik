@@ -253,14 +253,17 @@ that menu exists.
 
 **Opening the next floating thing closes the last** (R4). `MastikApp::context_menu` is the one slot;
 opening it clears `open_menu`, `picker`, `stroke_menu`, `type_menu`, `effect_menu`, `export_menu` and
-`export_row_open`. The image-editing card is left out: it is a mode, not a popover. Three popover
+`export_row_open`. The image-editing card is left out: it is a mode, not a popover. Two popover
 lists exist:
 
 | List | Members |
 | --- | --- |
 | `a_popover_is_open` (the lane test) | the inspector's popovers (`inspector_popover_open`), the Repeat and Blend cards, the image card |
 | R4's clear | the inspector's popovers, plus the dropdown slot and the picker |
-| `a_popover_owns_escape` | the inspector's popovers and the contrast and simulation bars; not the image card, because `Escape` is how image editing is left, nor the Repeat and Blend cards, which are rungs of the ladder |
+
+`Escape` keeps no list: each popover claims it as it draws (`ui::keep_popover_escape`). The image
+card does not, because `Escape` is how image editing is left, nor do the Repeat and Blend cards,
+which are rungs of the ladder.
 
 - `ContextMenu::just_opened` makes the opening frame skip the dismissal test, or the opening release would dismiss it.
 - A click that dismisses a menu is spent on the dismissal: the canvas skips its mode input and a layers row its click. The library screen's ⋮ popup and project-filter dropdown follow the rule (§9.5).
@@ -272,15 +275,14 @@ and the second leaves focus mode.
 
 **A press that dismisses a floating thing is spent on it.** By door:
 
-- the context menu's arm at the top of the frame returns;
-- the top-bar dropdowns have a `dispatch` arm on `Action::Escape if open_menu != TopMenu::None`;
+- the context menu, the tab menu and the rail's members row call `ui::keep_escape` as they draw, so `ui::claim_popup_escape` takes the press out of the input at the top of the next frame; the context menu's and the tab menu's arms in `frame_body` close them on `ui::popup_escaped` (the context menu's submenu first);
+- the top-bar dropdowns (`dropdown_padded`) and the five inspector and Export popovers call `ui::keep_popover_escape` as they draw; the claim leaves the press in the input for their fields, `frame_body`'s arm on `ui::popover_escaped` keeps it from the ladder, and they close themselves later in the frame;
 - the three modals are gated out of `input::resolve` and answer `should_close()`;
-- the colour picker is a rung of `escape`'s `else if` chain, which pays out one rung (an armed pick button is the rung above it, and an open menu of the picker's, such as the gradient's *Ends and mixing*, the rung between: that press closes only the menu, the next the picker);
-- the five inspector and Export popovers: an empty-bodied arm in `update`, gated by `a_popover_owns_escape`; they close themselves later in the frame.
+- the colour picker is a rung of `escape`'s `else if` chain, which pays out one rung (an armed pick button is the rung above it, and an open menu of the picker's, such as the gradient's *Ends and mixing*, the rung between: that press closes only the menu, the next the picker).
 
-That gate is for `Escape` only, and counts only popovers actually drawn: each open popover's handler
-sets `MastikApp::popover_heard`, read by the arm at the top of the next frame; if nothing heard the
-press, the flag is cleared and the press pays out its rung.
+The claim counts only what was drawn last frame: a flag whose panel was skipped claims nothing, so
+the press reaches the final arm, which clears the inspector's popover flags and `open_menu` and
+pays out its rung.
 
 ### Menu chrome
 
@@ -842,9 +844,9 @@ centre.
 - **A warp's preview is not its commit.** Previewing `warp::warp`'s transaction would show nothing, since a render preview with a `DeleteNode` is dropped whole; `warp::preview` hides each replaced leaf under a stand-in instead. `a_warp_bakes_a_group_into_paths` pins that the preview deletes nothing.
 - **Same press, two consumers.** The cancel and the context menu share one press: `gesture_cancelled` must be read at the top of `canvas_context_menu`, before any branch selects.
 - **Dropdown keyboard focus.** A dropdown opened by clicking its head leaves `focused() == None`, so `egui_wants_keyboard_input` does not cover it.
-- **Popover flags outlive popovers.** Gate on `popover_heard`, not on the flags, or Escape is swallowed behind a popover nobody is drawing.
-- **Three popover lists.** They differ by the image card and by the Repeat and Blend cards. A shared list would have to carry those exceptions.
-- **Inert `TopMenu` row.** `TopMenu` needs its own Escape arm; without one, Escape closes the menu *and* drops the tool.
+- **Popover flags outlive popovers.** Claim `Escape` from the drawing (`ui::keep_popover_escape`, `ui::keep_escape`), never from the flag, or Escape is swallowed behind a popover nobody is drawing.
+- **Two popover lists.** They differ by the image card, the Repeat and Blend cards, the dropdown slot and the picker. A shared list would have to carry those exceptions.
+- **A dropdown drawn outside `dropdown_padded`.** A `TopMenu` drawn any other way must call `ui::keep_popover_escape` itself; without it, Escape closes the menu *and* drops the tool.
 - **Two copies of one resize rule.** `resized_box` and `resize_factors` have diverged twice. Change both, and test both: the box can be identical while the path differs.
 - **Unguarded `draw_drop_indicator`.** It does not check `shown_visible`, so a picture inside a hidden group is still ringed during a file drag.
 - **Accelerators by hand for the chords read in code.** A table chord's label is spelled from its `input::BINDINGS` row, but the clipboard chords, `Ctrl+Alt+X`, `F2`, `Del`/`Backspace`, centre-align, the text session's Alt+arrows and the host-dependent chords are spelled by hand in `Item::spec`/`Item::alt_accel`; only the cheatsheet's chord test holds those to `input::resolve`.
