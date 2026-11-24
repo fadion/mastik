@@ -114,10 +114,16 @@ impl FillBox {
                 _ => None,
             })
             .collect();
+        // Read when the box opened: a picture may have entered the document
+        // since, by a list over the same table or a redo, and adding it again
+        // would refuse the whole fill.
         let mut ops: Vec<Operation> = self
             .read
             .iter()
-            .filter(|op| matches!(op, Operation::AddImage { id, .. } if used.contains(&id)))
+            .filter(|op| {
+                matches!(op, Operation::AddImage { id, .. }
+                    if used.contains(&id) && !doc.has_image(id))
+            })
             .cloned()
             .collect();
         for set in doc.data_sets() {
@@ -125,7 +131,11 @@ impl FillBox {
                 .opts
                 .pictures
                 .iter()
-                .filter(|(s, _, id)| *s == set.id && used.contains(&id))
+                .filter(|(s, cell, id)| {
+                    *s == set.id
+                        && used.contains(&id)
+                        && !set.pictures.iter().any(|(c, _)| c == cell)
+                })
                 .map(|(_, cell, id)| (cell.clone(), id.clone()))
                 .collect();
             if new.is_empty() {
@@ -1604,6 +1614,92 @@ mod tests {
             "the picture beside the file"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A picture read on open that enters the document before *Fill*, by a list
+    /// over the same table or a redo, is not added twice: the fill commits.
+    /// flip: `beside_ops` keeping an `AddImage` the document has → fails at
+    /// "the fill commits".
+    #[test]
+    fn a_picture_that_arrived_while_the_box_was_open_is_not_added_twice() {
+        use mastik_core::chart::{Column, ColumnId, DataLink, Table};
+        let (ctx, mut app) = app();
+        let (_, rows) = team(&mut app);
+        let dir = std::env::temp_dir().join(format!("mastik-fill-arrived-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = crate::app::rgba_to_png(&[0, 0, 255, 255], (1, 1)).unwrap();
+        std::fs::write(dir.join("ada.png"), png).unwrap();
+        let set = mastik_core::list::DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "People".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "Photo".into(),
+                }],
+                rows: vec![vec!["ada.png".into()], vec!["ada.png".into()]],
+            },
+            source: Some(DataLink {
+                path: dir.join("people.csv").to_string_lossy().into_owned(),
+                size: 0,
+                modified: 0,
+                header: None,
+            }),
+            pictures: Vec::new(),
+        };
+        let data = set.id;
+        assert!(app.session.commit(Transaction(vec![Operation::SetDataSet {
+            id: data,
+            set: Some(Box::new(set)),
+        }])));
+        pass(&ctx, &mut app);
+        app.dispatch(&ctx, crate::input::Action::FillContent);
+        pass(&ctx, &mut app);
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut b = app.fill_content.take().expect("the box opened");
+        let avatar = |app: &MastikApp, row: NodeId| {
+            let doc = &app.session.doc;
+            *doc.get(row)
+                .unwrap()
+                .children()
+                .iter()
+                .find(|c| doc.get(**c).unwrap().name() == "Avatar")
+                .unwrap()
+        };
+        for row in &rows {
+            b.opts
+                .columns
+                .insert(avatar(&app, *row), (data, ColumnId(0)));
+        }
+        b.replan(
+            &app.session.doc,
+            &app.session.resolved,
+            app.session.page,
+            app.session.revision(),
+        );
+        let arrived: Vec<Operation> = b
+            .read
+            .iter()
+            .filter(|op| matches!(op, Operation::AddImage { .. }))
+            .cloned()
+            .collect();
+        assert_eq!(arrived.len(), 1, "the box read the picture");
+        assert!(app.session.commit(Transaction(arrived)), "it arrives");
+        let before = app.session.history.undo_depth();
+        app.commit_fill_content(&b);
+        assert_eq!(
+            app.session.history.undo_depth(),
+            before + 1,
+            "the fill commits"
+        );
+        let doc = &app.session.doc;
+        assert!(
+            doc.data_set(data)
+                .unwrap()
+                .picture(doc, "ada.png")
+                .is_some(),
+            "the table maps it"
+        );
     }
 
     /// A row past the 200 the box reads on open, taken by *From row*, still
