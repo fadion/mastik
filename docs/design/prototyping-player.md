@@ -30,6 +30,13 @@ gesture's preview, and commits arriving faster than it draws land together. A pa
 journal waits, and its player catches up when the tab is in front again. A document read in
 again starts play over from the same start.
 
+The player stays up while another tab is in front, and its bar still acts on the played
+document, never the front one: a flow pick and *Play on a phone* read the played tab's parked
+session, stopping turns off that session's journal, *From the selected frame* is disabled
+(*The canvas shows another document*), and Export brings the played tab forward before its
+card opens. The export card lists only the takes of a player playing the document in front
+(`MastikApp::front_takes`), since it replays them against that document.
+
 ## Where it shows
 
 - **Over the canvas**: a card the size of the screen at the page's *Fit*, at most 70% of the

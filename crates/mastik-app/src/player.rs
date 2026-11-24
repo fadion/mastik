@@ -652,6 +652,8 @@ struct FlowMenu {
     page: String,
     flows: Vec<(FlowRef, String, String)>,
     frame: Option<(NodeId, String)>,
+    /// Why *From the selected frame* is off while `frame` is `None`.
+    no_frame: &'static str,
     /// The flow playing, ticked.
     current: Option<FlowRef>,
 }
@@ -714,7 +716,7 @@ fn flow_menu(ui: &mut egui::Ui, menu: &FlowMenu) -> Option<BarAct> {
                 Some((f, _)) if row.clicked() => act = Some(BarAct::Frame(f)),
                 Some(_) => {}
                 None => {
-                    row.on_disabled_hover_text("Select a frame on the canvas");
+                    row.on_disabled_hover_text(menu.no_frame);
                 }
             }
         });
@@ -1161,6 +1163,44 @@ pub(crate) fn value_words(v: &Value) -> String {
     }
 }
 
+/// Whether the document `p` plays is the one in front: its tab is active, or
+/// no tab shows it.
+fn plays_front(p: &Playing, tabs: &crate::tabs::Tabs) -> bool {
+    p.tab.is_none() || p.tab == tabs.active
+}
+
+/// The session holding the document `tab` plays: `session`, the fields', while
+/// that tab is active or no tab shows it, else the one parked with the tab;
+/// `None` once the tab is closed or not read.
+fn played_session<'a>(
+    session: &'a crate::session::EditorSession,
+    tabs: &'a crate::tabs::Tabs,
+    tab: Option<TabId>,
+) -> Option<&'a crate::session::EditorSession> {
+    match tab {
+        Some(t) if tabs.active != Some(t) => match &tabs.get(t)?.body {
+            crate::tabs::Body::Parked(parked) => Some(&parked.session),
+            _ => None,
+        },
+        _ => Some(session),
+    }
+}
+
+/// [`played_session`], to change.
+fn played_session_mut<'a>(
+    session: &'a mut crate::session::EditorSession,
+    tabs: &'a mut crate::tabs::Tabs,
+    tab: Option<TabId>,
+) -> Option<&'a mut crate::session::EditorSession> {
+    match tab {
+        Some(t) if tabs.active != Some(t) => match &mut tabs.get_mut(t)?.body {
+            crate::tabs::Body::Parked(parked) => Some(&mut parked.session),
+            _ => None,
+        },
+        _ => Some(session),
+    }
+}
+
 impl crate::app::MastikApp {
     /// Play the prototype from the current page in `place`, where `start_for`
     /// says: the selected frame, the page's first flow, the page's first frame,
@@ -1191,7 +1231,7 @@ impl crate::app::MastikApp {
     }
 
     /// The bar's flow menu for `p`: the flows of the page it plays, and the
-    /// frame selected on the canvas.
+    /// frame selected on the canvas while the canvas shows the played document.
     fn flow_menu_for(&self, p: &Playing) -> FlowMenu {
         let doc = p.player.document();
         let page = p.player.page();
@@ -1206,7 +1246,8 @@ impl crate::app::MastikApp {
                 })
                 .collect()
         });
-        let frame = self.selected_frame().map(|f| {
+        let in_front = plays_front(p, &self.tabs);
+        let frame = in_front.then(|| self.selected_frame()).flatten().map(|f| {
             let name = crate::private::layer(&self.session.doc, f).into_owned();
             (f, name)
         });
@@ -1215,6 +1256,10 @@ impl crate::app::MastikApp {
             page: crate::private::page(doc, page).into_owned(),
             flows,
             frame,
+            no_frame: match in_front {
+                true => "Select a frame on the canvas",
+                false => "The canvas shows another document",
+            },
             current: match p.start {
                 Start::Flow(r) => Some(r),
                 Start::Frame(_) => None,
@@ -1295,7 +1340,19 @@ impl crate::app::MastikApp {
             self.session
                 .info("Stopped sharing — the player closed".to_string());
         }
-        self.session.history.keep_journal(false);
+        // The played document's journal, parked behind another tab or not.
+        if let Some(s) = played_session_mut(&mut self.session, &mut self.tabs, p.tab) {
+            s.history.keep_journal(false);
+        }
+    }
+
+    /// The takes of a player playing the document in front: the export card
+    /// replays them against that document, so another document's never show.
+    pub(crate) fn front_takes(&self) -> &[TakeRec] {
+        self.playing
+            .as_ref()
+            .filter(|p| plays_front(p, &self.tabs))
+            .map_or(&[], |p| &p.takes)
     }
 
     /// Whether the player holds the keyboard this pass.
@@ -1751,14 +1808,25 @@ impl crate::app::MastikApp {
             BarAct::Attach => self.place_player(ctx, Place::Over),
             BarAct::Fullscreen => self.place_player(ctx, Place::Fullscreen),
             BarAct::Export => {
-                let takes = self.playing.as_ref().is_some_and(|p| !p.takes.is_empty());
+                // The card exports the document in front: bring the played one
+                // forward first.
+                if let Some(tab) = self.playing.as_ref().and_then(|p| p.tab)
+                    && self.tabs.active != Some(tab)
+                {
+                    self.activate_tab(tab);
+                }
+                let takes = !self.front_takes().is_empty();
                 self.open_export(match takes {
                     true => crate::prototype_export::Output::Video,
                     false => crate::prototype_export::Output::Html,
                 });
             }
             BarAct::Phone | BarAct::ShareRetry => {
-                let doc = &self.session.doc;
+                let tab = self.playing.as_ref().and_then(|p| p.tab);
+                let Some(session) = played_session(&self.session, &self.tabs, tab) else {
+                    return;
+                };
+                let doc = &session.doc;
                 let Some(p) = self.playing.as_mut() else {
                     return;
                 };
@@ -1820,13 +1888,19 @@ impl crate::app::MastikApp {
         }
     }
 
-    /// Restart the player on `start`, where it shows: a new copy, play state
-    /// dropped as *Restart* drops it, a recording under way ended unkept.
+    /// Restart the player on `start`, where it shows: a new copy of the played
+    /// document, front or parked, play state dropped as *Restart* drops it, a
+    /// recording under way ended unkept.
     fn replay_from(&mut self, start: Start) {
+        let tab = self.playing.as_ref().and_then(|p| p.tab);
+        let Some(session) = played_session(&self.session, &self.tabs, tab) else {
+            return;
+        };
+        let fresh = Player::new(&session.doc, start, crate::session::random_actor());
         let Some(p) = self.playing.as_mut() else {
             return;
         };
-        match Player::new(&self.session.doc, start, crate::session::random_actor()) {
+        match fresh {
             Ok(fresh) => {
                 p.player = fresh;
                 p.start = start;
@@ -2191,6 +2265,74 @@ mod tests {
         });
         assert_eq!(p.player.screen(), b, "navigated");
         assert_eq!(back_steps(&p.player), 1, "one step back");
+    }
+
+    /// While another tab is in front, the bar acts on the played document: a
+    /// flow pick replays from its parked copy, *From the selected frame* is off,
+    /// a frame of the front document cannot replace it, and stopping turns off
+    /// the played document's journal, not the front one's.
+    ///
+    /// flip: `replay_from` building from `self.session` → fails at "the copy
+    /// is still the played document"; `stop_playing` turning off `self.session`'s journal
+    /// → fails at "the played document's journal is off".
+    #[test]
+    fn the_bar_acts_on_the_played_tab_from_behind_another() {
+        let ctx = egui::Context::default();
+        let (mut app, [a, b, rect]) = fixture(&ctx, true);
+        let played = app.tabs.active.expect("fixture: a tab in front");
+        // On frame A, so the flow, which starts on B, is seen to replay.
+        app.session.selection.set_one(a);
+        app.play(&ctx, Place::Over, false);
+        whole_frame(&ctx, &mut app, Vec::new());
+        // A second document in a tab of its own, one frame on its page.
+        let mut ids = IdSource::new(0x5A);
+        let other_page = ids.mint();
+        let other_frame = ids.mint();
+        let mut other = Document::new(other_page);
+        other
+            .apply(&Transaction(vec![Operation::CreateNode {
+                id: other_frame,
+                parent: other_page,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: Size::new(50.0, 50.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: Some("Other".into()),
+            }]))
+            .expect("the other document applies");
+        let front = app.tab_for_adopting(None);
+        app.session.adopt_document(other, None);
+        app.session.selection.set_one(other_frame);
+        whole_frame(&ctx, &mut app, Vec::new());
+        assert_ne!(front, played, "fixture: another tab in front");
+        let p = app.playing.as_ref().expect("fixture: still playing");
+        assert_eq!(p.player.screen(), a, "fixture: playing from A");
+
+        let menu = {
+            let p = app.playing.as_ref().expect("playing");
+            app.flow_menu_for(p)
+        };
+        assert!(menu.frame.is_none(), "no frame of another document");
+        let flow = menu.flows[0].0;
+        app.player_act(&ctx, BarAct::Frame(other_frame));
+        app.player_act(&ctx, BarAct::Flow(flow));
+        let p = app.playing.as_ref().expect("still playing");
+        assert!(
+            p.player.document().get(rect).is_some(),
+            "the copy is still the played document"
+        );
+        assert_eq!(p.player.screen(), b, "the played flow replays");
+
+        app.player_act(&ctx, BarAct::Close);
+        assert!(app.playing.is_none(), "fixture: stopped");
+        app.activate_tab(played);
+        assert!(
+            !app.session.history.keeps_journal(),
+            "the played document's journal is off"
+        );
     }
 
     /// A take recorded with private mode off is masked once it is turned on, and

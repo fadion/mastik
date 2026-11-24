@@ -411,7 +411,7 @@ impl MastikApp {
                 .info(format!("Add a flow in prototype mode to export {what}"));
             return;
         }
-        let takes = self.playing.as_ref().map_or(0, |p| p.takes.len());
+        let takes = self.front_takes().len();
         if let Some(card) = self.proto_export.as_mut() {
             card.output = output;
             card.video.take = takes.saturating_sub(1);
@@ -487,11 +487,7 @@ impl MastikApp {
         if card.output == Output::Html && !all.is_empty() {
             self.measure_export(ctx, &mut card, revision);
         }
-        let takes: Vec<crate::player::TakeRec> = self
-            .playing
-            .as_ref()
-            .map(|p| p.takes.clone())
-            .unwrap_or_default();
+        let takes: Vec<crate::player::TakeRec> = self.front_takes().to_vec();
         if card.output == Output::Video
             && let Some(t) = takes.get(card.video.take)
         {
