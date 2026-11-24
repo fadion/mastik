@@ -4,7 +4,8 @@
 //! from a screen, so a video is the same wherever it is made.
 //!
 //! MP4 goes through OpenH264, built from source, and the `mp4` crate's muxer;
-//! GIF through the `gif` crate, each frame quantised to its own palette.
+//! GIF through the `gif` crate, each frame quantised to its own palette and a
+//! run of identical frames written once.
 
 use mastik_core::Document;
 use mastik_play::{Replay, StartError, Take};
@@ -381,8 +382,29 @@ fn fit(rgba: &[u8], from: (u32, u32), to: (u32, u32)) -> Vec<u8> {
 
 /// Where the frames go.
 enum Sink {
-    Gif(Option<gif::Encoder<Vec<u8>>>),
+    Gif(Option<Gif>),
     Mp4(Option<Box<Mp4>>),
+}
+
+/// A GIF being written: the encoder, and the frame not written yet with its
+/// size and its delay so far. A frame the same as the one before it adds its
+/// delay to that one instead of being written again, so a screen nothing
+/// moves on costs one frame, not one per frame time.
+struct Gif {
+    encoder: gif::Encoder<Vec<u8>>,
+    held: Option<(Vec<u8>, (u16, u16), u16)>,
+}
+
+impl Gif {
+    /// Write the held frame, if any.
+    fn flush(&mut self) -> Result<(), gif::EncodingError> {
+        if let Some((mut frame, (w, h), delay)) = self.held.take() {
+            let mut f = gif::Frame::from_rgba_speed(w, h, &mut frame, 10);
+            f.delay = delay;
+            self.encoder.write_frame(&f)?;
+        }
+        Ok(())
+    }
 }
 
 /// An MP4 being written: the encoder, the parameter sets from its first frame,
@@ -398,7 +420,7 @@ struct Mp4 {
 impl Sink {
     fn push(
         &mut self,
-        mut frame: Vec<u8>,
+        frame: Vec<u8>,
         size: (u32, u32),
         i: usize,
         fps: u32,
@@ -414,13 +436,26 @@ impl Sink {
                     let mut e = gif::Encoder::new(Vec::new(), w, h, &[]).map_err(|e| encode(&e))?;
                     e.set_repeat(gif::Repeat::Infinite)
                         .map_err(|e| encode(&e))?;
-                    *enc = Some(e);
+                    *enc = Some(Gif {
+                        encoder: e,
+                        held: None,
+                    });
                 }
-                let mut f = gif::Frame::from_rgba_speed(w, h, &mut frame, 10);
-                f.delay = gif_delay(i, fps);
-                enc.as_mut()
-                    .map_or(Ok(()), |e| e.write_frame(&f))
-                    .map_err(|e| encode(&e))
+                let Some(g) = enc.as_mut() else {
+                    return Ok(());
+                };
+                let delay = gif_delay(i, fps);
+                if let Some((held, held_size, so_far)) = &mut g.held
+                    && *held_size == (w, h)
+                    && *held == frame
+                    && let Some(longer) = so_far.checked_add(delay)
+                {
+                    *so_far = longer;
+                    return Ok(());
+                }
+                g.flush().map_err(|e| encode(&e))?;
+                g.held = Some((frame, (w, h), delay));
+                Ok(())
             }
             Sink::Mp4(mp4) => {
                 if mp4.is_none() {
@@ -476,10 +511,11 @@ impl Sink {
     fn finish(self, fps: u32) -> Result<Vec<u8>, VideoError> {
         let encode = |e: &dyn std::fmt::Display| VideoError::Encode(e.to_string());
         match self {
-            Sink::Gif(enc) => enc
-                .ok_or(VideoError::Empty)?
-                .into_inner()
-                .map_err(|e| encode(&e)),
+            Sink::Gif(enc) => {
+                let mut g = enc.ok_or(VideoError::Empty)?;
+                g.flush().map_err(|e| encode(&e))?;
+                g.encoder.into_inner().map_err(|e| encode(&e))
+            }
             Sink::Mp4(m) => {
                 let m = m.ok_or(VideoError::Empty)?;
                 // The muxer indexes into both and panics on an empty one.
@@ -531,10 +567,11 @@ impl Sink {
 }
 
 /// Frame `i`'s delay in a GIF's hundredths of a second at `fps`: the rounding
-/// carried, so the frames add up to the take's length.
+/// carried, so the frames add up to the take's length. The times are counted
+/// wide: only one frame's delay has to fit a `u16`.
 fn gif_delay(i: usize, fps: u32) -> u16 {
-    let at = |n: usize| (n as f64 * 100.0 / f64::from(fps)).round() as u16;
-    at(i + 1) - at(i)
+    let at = |n: usize| (n as f64 * 100.0 / f64::from(fps.max(1))).round() as u64;
+    u16::try_from(at(i + 1) - at(i)).unwrap_or(u16::MAX)
 }
 
 /// A bit rate for screens of `size` at `fps`: about a tenth of a bit a pixel a
@@ -563,6 +600,15 @@ mod tests {
     fn gif_delays_add_up() {
         let sum: u32 = (0..3).map(|i| u32::from(gif_delay(i, 30))).sum();
         assert_eq!(sum, 10);
+    }
+
+    /// A frame past 655 s still has its delay: the times are not counted in a
+    /// `u16`.
+    ///
+    /// flip: `gif_delay` measuring time in a `u16` → fails at "past 655 s".
+    #[test]
+    fn a_late_frame_keeps_its_delay() {
+        assert_eq!(gif_delay(20_000, 30), 3, "past 655 s");
     }
 
     /// An MP4 of a desktop, a tablet or a square screen at 3×, with or without

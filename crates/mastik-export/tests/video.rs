@@ -113,8 +113,9 @@ fn is_blue(p: &[u8]) -> bool {
     p[0] < 60 && p[1] < 60 && p[2] > 200
 }
 
-/// A GIF has a frame at every tenth of a second from the start to the take's
-/// end, red before the click and blue from it, each a tenth long.
+/// A GIF draws a frame at every tenth of a second from the start to the
+/// take's end, red before the click and blue from it; the two blue ones are
+/// one frame two tenths long.
 ///
 /// flip: `video` drawing every frame at the start time → fails at "blue at the
 /// end".
@@ -144,10 +145,32 @@ fn a_take_becomes_a_gif() {
         assert_eq!((f.width, f.height), (40, 30));
         frames.push((f.buffer.to_vec(), f.delay));
     }
-    assert_eq!(frames.len(), 3);
+    assert_eq!(frames.len(), 2);
     assert!(is_red(&frames[0].0[..4]), "red at the start");
-    assert!(is_blue(&frames[2].0[..4]), "blue at the end");
-    assert!(frames.iter().all(|(_, delay)| *delay == 10));
+    assert!(is_blue(&frames[1].0[..4]), "blue at the end");
+    let delays: Vec<u16> = frames.iter().map(|(_, d)| *d).collect();
+    assert_eq!(delays, vec![10, 20]);
+}
+
+/// Two seconds on which nothing moves are one GIF frame two seconds long,
+/// however many frame times they span.
+///
+/// flip: `Sink::push` writing every frame → fails at "one frame".
+#[test]
+fn a_still_screen_is_one_gif_frame() {
+    let (doc, mut take) = red_to_blue();
+    take.inputs.clear();
+    take.length = 2000.0;
+    let options = Options {
+        fps: 30,
+        ..options(Format::Gif)
+    };
+    assert_eq!(frame_count(&take, 30), 61);
+    let gif = video(&doc, &take, ACTOR, &options, &mut |_, _| true).expect("a gif");
+    let frames = gif_frames(&gif);
+    assert_eq!(frames.len(), 1, "one frame: {frames:?}");
+    // 61 frame times at 30 fps run to 61/30 s.
+    assert_eq!(frames[0].1, 203, "the delays add up to the frame times");
 }
 
 /// An MP4 holds one H.264 sample a frame at the frame rate, sized evenly, and

@@ -415,7 +415,8 @@ in the accent widens and fades over `CLICK_MS` (500 ms) where each press landed;
 the screen sits in the exported page's device frame (`in_device`: a `BEZEL` of 14 units, screen
 corners 40 under 600 units on the short side, else 18) on white. `still` draws one such frame,
 for the export card's preview. A GIF loops, each frame on its own palette, its delays carrying
-their rounding so they add up to the take. An MP4 is H.264
+their rounding so they add up to the take; a frame the same as the one before adds its delay to
+that one rather than being written again, so a still stretch costs one frame. An MP4 is H.264
 from OpenH264 built from source (BSD-2-Clause; the C++ toolchain `mlua` already needs builds it,
 and its patent licence covers only Cisco's own binaries), at even sizes, muxed by the `mp4` crate
 with one sample a frame. `progress` hears each frame and stops the job by answering false.
