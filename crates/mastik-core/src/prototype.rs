@@ -1455,8 +1455,8 @@ fn map_modes_in(
 /// `{row.…}` read against `row`, a name that is gone left as its id.
 pub fn expr_shown(doc: &Document, e: &Expr, row: Option<DataSetId>) -> String {
     let vars = doc.variables();
-    let var_id = |n: &str| vars.by_name(n).map(|v| v.id);
-    let var_name = |v: VarId| vars.get(v).map(|v| v.name.clone());
+    let var_id = |n: &str| vars.ids_named(n);
+    let var_name = |v: VarId| vars.expr_name(v);
     e.with_names_in(&expr::Names {
         var_id: &var_id,
         var_name: &var_name,

@@ -717,6 +717,20 @@ impl Variables {
             .iter()
             .find_map(|c| self.by_name_in(c.id, name))
     }
+    /// Every variable named `name`, the kits' among them: what a name typed in
+    /// an expression may mean. More than one is a name that reads two ways.
+    pub fn ids_named(&self, name: &str) -> Vec<VarId> {
+        self.iter()
+            .filter(|v| v.name == name)
+            .map(|v| v.id)
+            .collect()
+    }
+    /// `id`'s name as an expression shows it: `None` when the variable is gone
+    /// or another shares its name, so the field keeps the id that reads back.
+    pub fn expr_name(&self, id: VarId) -> Option<String> {
+        let name = &self.get(id)?.name;
+        (self.iter().filter(|v| &v.name == name).count() == 1).then(|| name.clone())
+    }
     /// The document's own variable named `name` in collection `c`.
     pub fn by_name_in(&self, c: CollectionId, name: &str) -> Option<&Variable> {
         self.of_collection(c).find(|v| v.name == name)

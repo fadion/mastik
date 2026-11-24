@@ -1095,8 +1095,8 @@ pub(crate) fn expr_stored(
     reads: Reads,
 ) -> Result<Expr, (String, Option<std::ops::Range<usize>>)> {
     let vars = doc.variables();
-    let var_id = |n: &str| vars.by_name(n).map(|v| v.id);
-    let var_name = |v: VarId| vars.get(v).map(|v| v.name.clone());
+    let var_id = |n: &str| vars.ids_named(n);
+    let var_name = |v: VarId| vars.expr_name(v);
     let (e, error) = match reads {
         Reads::Vars => Expr::from_names(text, &var_id),
         Reads::Tables(row) => Expr::from_names_in(
@@ -7653,7 +7653,10 @@ impl MastikApp {
         let alias = t
             .strip_prefix('{')
             .and_then(|r| r.strip_suffix('}'))
-            .and_then(|n| doc.variables().by_name(n))
+            .and_then(|n| match doc.variables().ids_named(n)[..] {
+                [one] => doc.variables().get(one),
+                _ => None,
+            })
             .filter(|v| v.kind == kind && v.id != var)
             .map(|v| Cell::Alias(v.id));
         let read = alias.or(match kind {

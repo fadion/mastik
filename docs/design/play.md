@@ -460,7 +460,12 @@ where…* test as source text, everything it names stored by id (`expr::Ref`,
   (`with_names` and `from_names` are the variables-only forms a list filter uses). A typed name
   is resolved against the real table and column names (`Names::resolve`), since a name may
   hold a dot (an imported table is named after its file, `products.csv`): every reading is
-  collected, and a name that reads two ways is refused with *pick it from the @ list*. `row` is
+  collected, and a name that reads two ways is refused with *pick it from the @ list*. A variable
+  name is looked up among every variable, the kits' among them (`Variables::ids_named`); a name two
+  variables share is refused at both doors rather than given to the first, and is shown by its id
+  (`Variables::expr_name`), which reads back; so is a name holding `}` or leading or trailing
+  space, which the braces cannot hold. A brace inside quotes opens no name, for
+  `var_tokens` as for the parse. `row` is
   reserved: no table takes it (`list::free_name`; the loader renames one). `kind(kind_of)`
   answers the kind an expression comes to without evaluating it, `None` when it is known only in
   play (`table_kind`: a count and a total are numbers, a cell has no kind until play), for

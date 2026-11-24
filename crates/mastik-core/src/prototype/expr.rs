@@ -152,10 +152,21 @@ pub enum Lookup {
     Why(String),
 }
 
+/// Why a typed name two variables share is refused: no list can tell them
+/// apart by name.
+fn shared_name(name: &str) -> Lookup {
+    Lookup::Why(format!(
+        "two variables are named “{name}”; rename one to read it here"
+    ))
+}
+
 /// What typed names are read against: the document's variables and tables,
 /// and the table `row` reads inside a row action.
 pub struct Names<'a> {
-    pub var_id: &'a dyn Fn(&str) -> Option<VarId>,
+    /// Every variable a typed name may mean (`Variables::ids_named`).
+    pub var_id: &'a dyn Fn(&str) -> Vec<VarId>,
+    /// A variable's name as shown, `None` to keep its id
+    /// (`Variables::expr_name`).
     pub var_name: &'a dyn Fn(VarId) -> Option<String>,
     pub tables: &'a [DataSet],
     /// The row action's table: what `{row.<column>}` reads. `None` outside one.
@@ -200,8 +211,10 @@ impl Names<'_> {
                 found.push(r);
             }
         }
-        if let Some(v) = (self.var_id)(s) {
-            push(&mut found, Ref::Var(v));
+        match (self.var_id)(s).as_slice() {
+            [] => {}
+            [v] => push(&mut found, Ref::Var(*v)),
+            _ => return Err(shared_name(s)),
         }
         if let Some(r) = Ref::from_wire(s) {
             push(&mut found, r);
@@ -511,11 +524,16 @@ impl Expr {
         self.shown(&|r| names.name(r))
     }
 
+    /// Each id `name_of` names written as its name; a name holding `}` or
+    /// leading or trailing space would not read back, so it keeps its id.
     fn shown(&self, name_of: &dyn Fn(&Ref) -> Option<String>) -> String {
         let mut out = String::with_capacity(self.0.len());
         let mut last = 0;
         for (at, inner) in var_tokens(&self.0) {
-            let Some(name) = Ref::from_wire(inner).and_then(|r| name_of(&r)) else {
+            let Some(name) = Ref::from_wire(inner)
+                .and_then(|r| name_of(&r))
+                .filter(|n| !n.contains('}') && n.trim() == n)
+            else {
                 continue;
             };
             out.push_str(&self.0[last..at.start]);
@@ -533,13 +551,11 @@ impl Expr {
     /// stored form whatever happens, and the first error in `text` (positions in
     /// `text`), so a field can keep a draft and underline it. A name `id_of` does
     /// not know is kept as written and is the error.
-    pub fn from_names(
-        text: &str,
-        id_of: &dyn Fn(&str) -> Option<VarId>,
-    ) -> (Expr, Option<ExprError>) {
-        Self::stored_from(text, &|inner| match id_of(inner.trim()) {
-            Some(v) => Ok(Ref::Var(v)),
-            None => by_wire(inner).map(Ref::Var).ok_or(Lookup::Unknown),
+    pub fn from_names(text: &str, id_of: &dyn Fn(&str) -> Vec<VarId>) -> (Expr, Option<ExprError>) {
+        Self::stored_from(text, &|inner| match id_of(inner.trim()).as_slice() {
+            [v] => Ok(Ref::Var(*v)),
+            [] => by_wire(inner).map(Ref::Var).ok_or(Lookup::Unknown),
+            _ => Err(shared_name(inner.trim())),
         })
     }
 
@@ -573,17 +589,35 @@ fn stored(inner: &str) -> Result<Ref, Lookup> {
     Ref::from_wire(inner).ok_or(Lookup::Unknown)
 }
 
-/// Every `{…}` in `text`: its byte range, braces included, and what is inside.
-/// An unclosed brace ends the list.
+/// Every `{…}` in `text` outside quoted text: its byte range, braces included,
+/// and what is inside. Quotes and `\` escapes are read as `lex` reads them, so
+/// the stored form and the parse agree on which braces are names. An unclosed
+/// brace or quote ends the list.
 pub fn var_tokens(text: &str) -> Vec<(Range<usize>, &str)> {
     let mut out = Vec::new();
-    let mut from = 0;
-    while let Some(open) = text[from..].find('{').map(|i| i + from) {
-        let Some(close) = text[open + 1..].find('}').map(|i| i + open + 1) else {
-            break;
-        };
-        out.push((open..close + 1, &text[open + 1..close]));
-        from = close + 1;
+    let mut i = 0;
+    while let Some(c) = text[i..].chars().next() {
+        let start = i;
+        i += c.len_utf8();
+        if c == '"' || c == '\'' {
+            loop {
+                let Some(ch) = text[i..].chars().next() else {
+                    return out;
+                };
+                i += ch.len_utf8();
+                if ch == '\\' {
+                    i += text[i..].chars().next().map_or(0, char::len_utf8);
+                } else if ch == c {
+                    break;
+                }
+            }
+        } else if c == '{' {
+            let Some(close) = text[i..].find('}').map(|k| k + i) else {
+                break;
+            };
+            out.push((start..close + 1, &text[i..close]));
+            i = close + 1;
+        }
     }
     out
 }
@@ -1367,14 +1401,15 @@ mod tests {
         assert!(matches!(k(wire(7)), Err(ExprError::MissingVariable { .. })));
     }
 
-    /// The field's names go to ids and back, and an unknown name is kept as typed
-    /// and reported where it is.
+    /// The field's names go to ids and back, an unknown name is kept as typed
+    /// and reported where it is, and a name holding `}` is shown by id.
     ///
-    /// flip: `from_names` skipping the id write → fails at "stored by id".
+    /// flip: `from_names` skipping the id write → fails at "stored by id";
+    /// `Expr::shown` writing every name → fails at "kept as its id".
     #[test]
     fn names_round_trip_through_ids() {
         let name_of = |v: VarId| (v.0.seq == 1).then(|| "cart/count".to_owned());
-        let id_of = |n: &str| (n == "cart/count").then(|| var(1));
+        let id_of = |n: &str| (n == "cart/count").then(|| var(1)).into_iter().collect();
         let stored = Expr(format!("{} + 1", wire(1)));
         let shown = stored.with_names(&name_of);
         assert_eq!(shown, "{cart/count} + 1");
@@ -1385,6 +1420,34 @@ mod tests {
         assert_eq!(kept.0, format!("{} + {{gone}}", wire(1)), "kept as typed");
         assert_eq!(err.map(|e| e.at()), Some(15..21));
         assert_eq!(stored.vars(), vec![var(1)]);
+
+        // A name the braces cannot hold is shown by id, which reads back.
+        let odd = |_: VarId| Some("Price {EUR}".to_owned());
+        let shown = stored.with_names(&odd);
+        assert_eq!(shown, format!("{} + 1", wire(1)), "kept as its id");
+        let (back, err) = Expr::from_names(&shown, &|_| Vec::new());
+        assert_eq!((back, err), (stored, None));
+    }
+
+    /// A brace inside quotes opens no name, for the stored form as for the
+    /// parse: the name after it is stored by id, read by `refs` and mapped.
+    ///
+    /// flip: `var_tokens` not skipping quoted text → fails at "stored by id".
+    #[test]
+    fn a_quoted_brace_opens_no_name() {
+        let id_of = |n: &str| (n == "Total").then(|| var(1)).into_iter().collect();
+        let (e, err) = Expr::from_names(r#""{" + {Total} + '\'}'"#, &id_of);
+        assert_eq!(err, None);
+        assert_eq!(
+            e.0,
+            format!(r#""{{" + {} + '\'}}'"#, wire(1)),
+            "stored by id"
+        );
+        assert_eq!(e.refs(), vec![Ref::Var(var(1))]);
+        let mapped = e.map_vars(&mut |_| var(2));
+        assert_eq!(mapped.vars(), vec![var(2)], "mapped");
+        assert_eq!(run(&e.0), Ok(Value::String("{4'}".into())));
+        assert!(var_tokens("'{x}").is_empty(), "an unclosed quote ends it");
     }
 
     fn set(seq: u64, name: &str, cols: &[&str], rows: &[&[&str]]) -> DataSet {
@@ -1430,7 +1493,7 @@ mod tests {
     #[test]
     fn table_reads_resolve_by_name_and_store_ids() {
         let sets = shop();
-        let vid = |n: &str| (n == "Total").then(|| var(1));
+        let vid = |n: &str| (n == "Total").then(|| var(1)).into_iter().collect();
         let vname = |v: VarId| (v == var(1)).then(|| "Total".to_owned());
         let names = Names {
             var_id: &vid,
@@ -1471,13 +1534,15 @@ mod tests {
         );
     }
 
-    /// A name that reads two ways is refused rather than guessed.
+    /// A name that reads two ways is refused rather than guessed, a name two
+    /// variables share among them.
     ///
-    /// flip: `Names::resolve` answering its first candidate → fails at "two ways".
+    /// flip: `Names::resolve` answering its first candidate → fails at "two ways";
+    /// answering the first variable → fails at "shared".
     #[test]
     fn a_name_reading_two_ways_is_refused() {
         let sets = shop();
-        let vid = |n: &str| (n == "Cart.rows").then(|| var(1));
+        let vid = |n: &str| (n == "Cart.rows").then(|| var(1)).into_iter().collect();
         let vname = |_: VarId| None;
         let names = Names {
             var_id: &vid,
@@ -1492,6 +1557,20 @@ mod tests {
             "two ways"
         );
         assert_eq!(err.at(), 0..11);
+
+        // Two variables of one name: refused at both doors, never the first.
+        let both = |n: &str| match n {
+            "count" => vec![var(1), var(2)],
+            _ => Vec::new(),
+        };
+        let names = Names {
+            var_id: &both,
+            ..names
+        };
+        let (_, err) = Expr::from_names_in("{count} + 1", &names);
+        assert!(err.unwrap().to_string().contains("two variables"), "shared");
+        let (_, err) = Expr::from_names("{count} + 1", &both);
+        assert!(err.unwrap().to_string().contains("two variables"));
     }
 
     /// Each form evaluates in play, and one that cannot says why.

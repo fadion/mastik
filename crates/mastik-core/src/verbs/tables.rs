@@ -795,9 +795,8 @@ pub(super) fn set_list(ctx: &mut Ctx<'_>, a: &Args<'_>) -> Result<Done, VerbErro
                 true => crate::prototype::expr::Expr(text),
                 false => {
                     let vars = doc.variables();
-                    let (e, error) = crate::prototype::expr::Expr::from_names(&text, &|n| {
-                        vars.by_name(n).map(|v| v.id)
-                    });
+                    let (e, error) =
+                        crate::prototype::expr::Expr::from_names(&text, &|n| vars.ids_named(n));
                     if let Some(error) = error {
                         return Err(a.invalid("filter", format!("`{text}`: {error}")));
                     }

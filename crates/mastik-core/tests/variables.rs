@@ -152,6 +152,94 @@ fn drawn(doc: &Document, id: NodeId) -> Brush {
     doc.resolve_brush(id, &fill.brush).into_owned()
 }
 
+/// An expression field reads a kit's variable by name and shows it back the
+/// same way; a name two variables share is shown by id, which reads back.
+///
+/// flip: `Variables::ids_named` searching only the document's collections →
+/// fails at the first `err`, "no variable is named “space/4”".
+#[test]
+fn an_expression_names_a_kits_variable_and_never_guesses_between_two() {
+    use mastik_core::prototype::expr::{Expr, Names};
+    let mut f = fixture();
+    const KIT: &str = "5eed0000000000000000000000000011";
+    let (k_light, kit_var, twin) = (f.ids.mint_mode(), f.ids.mint_var(), f.ids.mint_var());
+    let mut space = var(
+        kit_var,
+        "space/4",
+        VarKind::Number,
+        [(k_light, Cell::Number(4.0)), (k_light, Cell::Number(4.0))],
+    );
+    space.origin = Some(mastik_core::variable::VarOrigin {
+        kit: KIT.into(),
+        var: kit_var,
+        version: 1,
+    });
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::SetKitModes {
+                kit: KIT.into(),
+                modes: Some(mastik_core::variable::KitModes {
+                    name: None,
+                    modes: vec![mastik_core::variable::KitMode {
+                        id: k_light,
+                        name: "Light".into(),
+                        from: k_light,
+                        collection: String::new(),
+                    }],
+                    map: Default::default(),
+                }),
+            },
+            Operation::AddVariable { var: space },
+        ]))
+        .unwrap();
+    let vars = f.doc.variables();
+    let names = |vars: &mastik_core::variable::Variables| {
+        let ids = |n: &str| vars.ids_named(n);
+        let name = |v: VarId| vars.expr_name(v);
+        let (e, err) = Expr::from_names_in(
+            "{space/4} + {brand/500}",
+            &Names {
+                var_id: &ids,
+                var_name: &name,
+                tables: &[],
+                row: None,
+            },
+        );
+        (e, err.map(|e| e.to_string()))
+    };
+    let (e, err) = names(vars);
+    assert_eq!(err, None);
+    assert_eq!(
+        e.vars(),
+        vec![kit_var, f.brand],
+        "a kit's variable is stored"
+    );
+    assert_eq!(
+        mastik_core::prototype::expr_shown(&f.doc, &e, None),
+        "{space/4} + {brand/500}"
+    );
+
+    // A kit's `brand/500` beside the document's: neither is guessed.
+    let mut brand = var(
+        twin,
+        "brand/500",
+        VarKind::Color,
+        [(k_light, Cell::Color(RED)), (k_light, Cell::Color(RED))],
+    );
+    brand.origin = Some(mastik_core::variable::VarOrigin {
+        kit: KIT.into(),
+        var: twin,
+        version: 1,
+    });
+    f.doc
+        .apply(&Transaction(vec![Operation::AddVariable { var: brand }]))
+        .unwrap();
+    let (_, err) = names(f.doc.variables());
+    assert!(err.unwrap().contains("two variables"), "refused");
+    let shown = mastik_core::prototype::expr_shown(&f.doc, &e, None);
+    assert_eq!(shown, format!("{{space/4}} + {{{}}}", f.brand.0.to_wire()));
+}
+
 /// A bound fill reads in the **default mode** — the first — until a frame above
 /// it sets one, then in that frame's; its `%` multiplies the variable's alpha.
 /// Undoing the mode puts the default back.
