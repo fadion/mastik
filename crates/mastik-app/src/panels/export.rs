@@ -836,6 +836,31 @@ impl MastikApp {
         }
     }
 
+    /// The copy a row's file is drawn from: its row filled, as `plan::render`
+    /// draws it, with the row's pictures beside a linked table read as the
+    /// worker reads them. `None` when `spec` fills no row.
+    fn preview_row_copy(
+        &self,
+        node: NodeId,
+        spec: &ExportSpec,
+        row: usize,
+    ) -> Option<(
+        mastik_core::Document,
+        mastik_core::Resolved,
+        mastik_core::list::RowFilled,
+    )> {
+        let doc = &self.session.doc;
+        let mut pictured = None;
+        if let Some(p) = &spec.per_row
+            && doc.data_set(p.table).is_some_and(|s| s.source.is_some())
+            && let Some(tx) = row_pictures(doc, p.table, Some(row))
+        {
+            let mut copy = doc.clone();
+            pictured = copy.apply(&tx).is_ok().then_some(copy);
+        }
+        mastik_export::plan::filled_copy(pictured.as_ref().unwrap_or(doc), node, spec, row)
+    }
+
     /// Render one spec and keep the result: its size on disk, and a texture small
     /// enough to draw in the card.
     ///
@@ -886,26 +911,9 @@ impl MastikApp {
         if !key.spec.format.is_raster() {
             return None;
         }
-        // A row's file is drawn from its row's filled copy, as `plan::render`
-        // draws it, with the row's pictures beside a linked table read as the
-        // worker reads them.
-        let filled = key.row.and_then(|row| {
-            let mut pictured = None;
-            let linked = |t| {
-                self.session
-                    .doc
-                    .data_set(t)
-                    .is_some_and(|s| s.source.is_some())
-            };
-            if let Some(p) = &key.spec.per_row
-                && linked(p.table)
-            {
-                let mut doc = self.session.doc.clone();
-                pictured = add_row_pictures(&mut doc, p.table, Some(row)).then_some(doc);
-            }
-            let base = pictured.as_ref().unwrap_or(&self.session.doc);
-            mastik_export::plan::filled_copy(base, key.node, &key.spec, row)
-        });
+        let filled = key
+            .row
+            .and_then(|row| self.preview_row_copy(key.node, &key.spec, row));
         let (doc, res) = match &filled {
             Some((copy, res, _)) => (copy, res),
             None => (&self.session.doc, &self.session.resolved),
@@ -3965,33 +3973,48 @@ fn add_row_pictures(
     id: mastik_core::list::DataSetId,
     only: Option<usize>,
 ) -> bool {
-    let Some(set) = doc.data_set(id).cloned() else {
-        return false;
-    };
-    let Some(link) = &set.source else {
-        return false;
-    };
+    // A picture that does not apply leaves the cell missing, as before.
+    row_pictures(doc, id, only).is_some_and(|tx| doc.apply(&tx).is_ok())
+}
+
+/// The transaction [`add_row_pictures`] applies, read without touching `doc`;
+/// `None` when nothing is left to add. A cell the table already maps is never
+/// read from disk, so a preview over a mapped table costs no file reads.
+fn row_pictures(
+    doc: &mastik_core::Document,
+    id: mastik_core::list::DataSetId,
+    only: Option<usize>,
+) -> Option<Transaction> {
+    let set = doc.data_set(id)?;
+    let link = set.source.as_ref()?;
     let dir = std::path::Path::new(&link.path).parent();
     let columns: Vec<_> = set.table.columns.iter().map(|c| c.id).collect();
-    let one;
-    let table = match only {
-        None => &set.table,
-        Some(row) => {
-            one = mastik_core::chart::Table {
-                columns: set.table.columns.clone(),
-                rows: set.table.rows.get(row).cloned().into_iter().collect(),
-            };
-            &one
-        }
+    let rows = match only {
+        None => set.table.rows.as_slice(),
+        Some(row) => set.table.rows.get(row..=row).unwrap_or_default(),
     };
+    // Mapped cells blanked, which `read_pictures_in` skips.
+    let unmapped = mastik_core::chart::Table {
+        columns: set.table.columns.clone(),
+        rows: rows
+            .iter()
+            .map(|row| {
+                row.iter()
+                    .map(|cell| match set.picture(doc, cell.trim()) {
+                        Some(_) => String::new(),
+                        None => cell.clone(),
+                    })
+                    .collect()
+            })
+            .collect(),
+    };
+    if unmapped.rows.iter().flatten().all(|c| c.trim().is_empty()) {
+        return None;
+    }
     let (mut ops, pairs) =
-        crate::list_data::read_pictures_in(doc, dir, table, &columns, table.rows.len());
-    let pairs: Vec<_> = pairs
-        .into_iter()
-        .filter(|(cell, _)| set.picture(doc, cell).is_none())
-        .collect();
+        crate::list_data::read_pictures_in(doc, dir, &unmapped, &columns, unmapped.rows.len());
     if pairs.is_empty() {
-        return false;
+        return None;
     }
     let mut next = set.clone();
     next.pictures.extend(pairs);
@@ -3999,8 +4022,7 @@ fn add_row_pictures(
         id,
         set: Some(Box::new(next)),
     });
-    // A picture that does not apply leaves the cell missing, as before.
-    doc.apply(&Transaction(ops)).is_ok()
+    Some(Transaction(ops))
 }
 
 /// A planned path's file name, folders and all left off.
@@ -6202,9 +6224,10 @@ mod code_export_tests {
     /// The worker's copy reads the pictures beside a linked table for every row,
     /// past the 200 a list reads, and the table maps them; a *One PDF* file,
     /// which has no row of its own, reads them too, and a preview reads only its
-    /// row's. Whether `build_export_preview` calls the read is pinned by no test.
+    /// row's, and not a cell the table already maps.
     /// flip: `with_row_pictures` reading `list::MAX_DRAWN` rows → fails at "row 201";
-    /// `draws_rows` reading only `row` → fails at "one PDF".
+    /// `draws_rows` reading only `row` → fails at "one PDF"; `row_pictures`
+    /// not blanking mapped cells → fails at "a mapped cell is not read".
     #[test]
     fn the_worker_reads_every_rows_picture_beside_a_linked_table() {
         use mastik_core::list::DataSet;
@@ -6274,8 +6297,11 @@ mod code_export_tests {
             add_row_pictures(&mut first, table, Some(0)),
             add_row_pictures(&mut last, table, Some(200)),
         );
+        // A cell the table now maps is not read again, though its file is there.
+        let again = row_pictures(&last, table, Some(200));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(previews, (false, true), "one row's pictures");
+        assert!(again.is_none(), "a mapped cell is not read");
         let set = read.data_set(table).expect("the table");
         assert!(set.picture(&read, "last.png").is_some(), "row 201");
         let set = pdf.data_set(table).expect("the table");
@@ -6347,6 +6373,85 @@ mod code_export_tests {
         };
         let (first, second) = (summary(0), summary(1));
         assert_ne!(first, second, "each row draws its own");
+    }
+
+    /// A per-row preview over a linked table draws the picture its row's cell
+    /// names beside the table's file, as the exported file does.
+    /// flip: `preview_row_copy` without its `row_pictures` read → fails at
+    /// "the row's picture is drawn".
+    #[test]
+    fn a_per_row_preview_draws_its_rows_picture() {
+        use mastik_core::list::DataSet;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = crate::app::MastikApp::headless(&ctx);
+        let page = app.session.doc.first_page();
+        let frame = app.session.doc.get(page).expect("the page").children()[0];
+        let dir = std::env::temp_dir().join(format!("mastik-row-preview-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = crate::app::rgba_to_png(&[0, 255, 0, 255], (1, 1)).unwrap();
+        std::fs::write(dir.join("face.png"), png).unwrap();
+        let table = app.session.ids.mint_data_set();
+        let mut t = mastik_core::chart::Table::default();
+        let column = t.next_column_id();
+        t.columns.push(mastik_core::chart::Column {
+            id: column,
+            name: "Photo".into(),
+        });
+        t.rows = vec![vec!["face.png".into()]];
+        let photo = app.session.ids.mint();
+        assert!(app.session.commit(Transaction(vec![
+            Operation::SetDataSet {
+                id: table,
+                set: Some(Box::new(DataSet {
+                    id: table,
+                    name: "Speakers".into(),
+                    table: t,
+                    source: Some(mastik_core::chart::DataLink {
+                        path: dir.join("speakers.csv").to_string_lossy().into_owned(),
+                        size: 0,
+                        modified: 0,
+                        header: None,
+                    }),
+                    pictures: Vec::new(),
+                })),
+            },
+            Operation::CreateNode {
+                id: photo,
+                parent: frame,
+                index: 0,
+                kind: mastik_core::NodeKind::Rect {
+                    size: mastik_core::kurbo::Size::new(40.0, 40.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: Some("Photo".into()),
+            },
+            Operation::SetFills {
+                id: photo,
+                fills: mastik_core::keyed_by_position([mastik_core::Fill {
+                    brush: mastik_core::image_brush(mastik_core::ImageId("seal".into())).into(),
+                    visible: true,
+                }]),
+            },
+        ])));
+        let spec = ExportSpec {
+            per_row: Some(PerRow::new(table)),
+            ..ExportSpec::new(ExportFormat::Png, ExportScale::Times(1.0))
+        };
+        let copy = app.preview_row_copy(frame, &spec, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+        let (copy, _, _) = copy.expect("a row's copy");
+        let photo = copy.get(photo).expect("the photo");
+        let at = photo.paint().image_fill().expect("an image fill");
+        let Some(mastik_core::Brush::Image(image)) = photo.paint().fills[at].brush.literal() else {
+            panic!("an image brush");
+        };
+        assert!(
+            image.image.id.0 != "seal" && copy.image(&image.image.id).is_some(),
+            "the row's picture is drawn"
+        );
     }
 
     /// A frame of `slots` text layers exporting a PNG a file per row of a
