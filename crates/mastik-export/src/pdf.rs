@@ -88,20 +88,20 @@ fn pdf_framed(
     pages: &[(String, Vec<NodeId>, Option<mastik_core::kurbo::Rect>)],
     text: ExportText,
 ) -> Option<Export> {
-    let pages: Vec<PdfPage> = pages
-        .iter()
-        .map(|(name, origins, view)| PdfPage {
+    let mut writer = PdfWriter::new(text);
+    for (name, origins, view) in pages {
+        writer.page(&PdfPage {
             doc,
             res,
             name: name.clone(),
             origins: origins.clone(),
             view: *view,
-        })
-        .collect();
-    pdf_documents(&pages, text)
+        })?;
+    }
+    writer.finish()
 }
 
-/// One page of [`pdf_documents`]: the subtrees it draws, from which document,
+/// One page of a [`PdfWriter`]: the subtrees it draws, from which document,
 /// framed on `view` where it names one and on their extent where it does not.
 pub struct PdfPage<'a> {
     pub doc: &'a Document,
@@ -112,16 +112,34 @@ pub struct PdfPage<'a> {
     pub view: Option<mastik_core::kurbo::Rect>,
 }
 
-/// [`pdf_pages`] over pages drawn from documents of their own: what *One file
-/// per row* writes as one PDF, a page from each row's filled copy.
-pub fn pdf_documents(pages: &[PdfPage], text: ExportText) -> Option<Export> {
-    if pages.is_empty() {
-        return None;
+/// A PDF written a page at a time, each page drawn when it is handed over, so
+/// its document can be dropped before the next is made: *One file per row*
+/// writes one PDF from a filled copy per row this way, holding one copy at a
+/// time however long the table.
+pub struct PdfWriter {
+    document: krilla::Document,
+    outline: krilla::outline::Outline,
+    approximated: Vec<String>,
+    pages: usize,
+    bookmarked: bool,
+    text: ExportText,
+}
+
+impl PdfWriter {
+    pub fn new(text: ExportText) -> Self {
+        Self {
+            document: krilla::Document::new(),
+            outline: krilla::outline::Outline::new(),
+            approximated: Vec::new(),
+            pages: 0,
+            bookmarked: false,
+            text,
+        }
     }
-    let mut document = krilla::Document::new();
-    let mut outline = krilla::outline::Outline::new();
-    let mut approximated: Vec<String> = Vec::new();
-    for (index, page) in pages.iter().enumerate() {
+
+    /// Draws `page` as the next page. `None` when it has nothing to frame or the
+    /// converter refuses it; the caller then drops the whole PDF.
+    pub fn page(&mut self, page: &PdfPage) -> Option<()> {
         let PdfPage {
             doc,
             res,
@@ -129,7 +147,7 @@ pub fn pdf_documents(pages: &[PdfPage], text: ExportText) -> Option<Export> {
             origins,
             view,
         } = page;
-        let (doc, res) = (*doc, *res);
+        let (doc, res, text) = (*doc, *res, self.text);
         if view.is_none() {
             crate::extent(res, origins)?;
         }
@@ -137,8 +155,8 @@ pub fn pdf_documents(pages: &[PdfPage], text: ExportText) -> Option<Export> {
         let svg = crate::svg::svg_linking(doc, res, origins, Default::default(), text, *view, true);
         let shown = shown_nodes(doc, origins);
         for note in approximations(doc, res, &shown, svg.approximated, text) {
-            if !approximated.contains(&note) {
-                approximated.push(note);
+            if !self.approximated.contains(&note) {
+                self.approximated.push(note);
             }
         }
 
@@ -146,13 +164,15 @@ pub fn pdf_documents(pages: &[PdfPage], text: ExportText) -> Option<Export> {
         let tree = page_tree(&svg.svg, fonts_used(res, &shown), &missed)?;
         for (family, drawn_in) in missed.into_inner().unwrap_or_default() {
             let note = format!("{family}, which is not available, drawn in {drawn_in}");
-            if !approximated.contains(&note) {
-                approximated.push(note);
+            if !self.approximated.contains(&note) {
+                self.approximated.push(note);
             }
         }
         let size = krilla::geom::Size::from_wh(tree.size().width(), tree.size().height())?;
-        let mut page = document.start_page_with(krilla::page::PageSettings::new(size));
-        let mut surface = page.surface();
+        let mut drawn = self
+            .document
+            .start_page_with(krilla::page::PageSettings::new(size));
+        let mut surface = drawn.surface();
         surface.draw_svg(
             &tree,
             size,
@@ -162,21 +182,35 @@ pub fn pdf_documents(pages: &[PdfPage], text: ExportText) -> Option<Export> {
             },
         );
         surface.finish();
-        page.finish();
+        drawn.finish();
         if !name.is_empty() {
             let top = krilla::geom::Point::from_xy(0.0, 0.0);
-            outline.push_child(krilla::outline::OutlineNode::new(
+            self.outline.push_child(krilla::outline::OutlineNode::new(
                 name.clone(),
-                krilla::destination::XyzDestination::new(index, top),
+                krilla::destination::XyzDestination::new(self.pages, top),
             ));
+            self.bookmarked = true;
         }
+        self.pages += 1;
+        Some(())
     }
-    // Only with a bookmark in it, so a one-page export's bytes are what they were.
-    if pages.iter().any(|p| !p.name.is_empty()) {
-        document.set_outline(outline);
+
+    /// The PDF of every page drawn, and every page's notes, deduplicated. `None`
+    /// when no page was drawn.
+    pub fn finish(mut self) -> Option<Export> {
+        if self.pages == 0 {
+            return None;
+        }
+        // Only with a bookmark in it, so a one-page export's bytes are what they were.
+        if self.bookmarked {
+            self.document.set_outline(self.outline);
+        }
+        let pdf = self.document.finish().ok()?;
+        Some(Export {
+            pdf,
+            approximated: self.approximated,
+        })
     }
-    let pdf = document.finish().ok()?;
-    Some(Export { pdf, approximated })
 }
 
 /// One page's SVG read back against exactly `fonts`, each face filed under its

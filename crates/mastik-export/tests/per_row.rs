@@ -350,9 +350,11 @@ fn fill_picks_override_the_match_by_name() {
 }
 
 /// A PDF row writing its rows as pages plans one file, named as the layer's
-/// one file is, of a page per row, each bookmarked; an empty table plans none.
+/// one file is, of a page per row, each bookmarked and drawn from its own row;
+/// an empty table plans none.
 ///
-/// flip: `plan::row_pages` drawing only row 0 → fails at the page count.
+/// flip: `plan::each_row_page` filling every page from row 0 → fails at "each
+/// page draws its own row".
 #[test]
 fn one_pdf_holds_a_page_per_row() {
     let mut f = fixture(&[
@@ -377,6 +379,18 @@ fn one_pdf_holds_a_page_per_row() {
     let pages = text.matches("/Type/Page").count() - text.matches("/Type/Pages").count();
     assert_eq!(pages, 3, "a page per row");
     assert_eq!(text.matches("/Dest").count(), 3, "a bookmark each");
+
+    let mut drawn = Vec::new();
+    mastik_export::plan::each_row_page(&f.doc, &planned[0], |page| {
+        let content = match page.doc.get(f.name).map(|n| n.kind()) {
+            Some(NodeKind::Text { content, .. }) => content.clone(),
+            _ => panic!("the text"),
+        };
+        drawn.push((page.name.clone(), content));
+    })
+    .expect("a table");
+    let want = ["Ada Lovelace", "Alan Turing", "Grace Hopper"].map(|s| (s.into(), s.into()));
+    assert_eq!(drawn, want, "each page draws its own row");
 
     let mut empty = fixture(&[]);
     set_exports(&mut empty, spec);
