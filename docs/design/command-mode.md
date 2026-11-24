@@ -721,7 +721,10 @@ rules*): a row's name is never cut for its note.
   (`gesture_cancelled`), so it neither selects nor starts the `Alt` duplicate-drag.
 - **The list above**, in Type only: the log while the field is empty, else completion, at most
   eight rows in sections *Names*, *Verbs*, *Properties*, *Labels*, *Layers*, *Choices* (a verb's next argument's
-  words), the typed letters lit; an almost-match is a dim row naming what it meant. A whole-name
+  words: a choice's words, and the names of the tables, variables, styles, scripts, modes or
+  collections the argument takes, each with a note — *12 rows · 4 columns*, *number · Theme*,
+  *fill style*, *3 lines*, *mode · Theme*, *4 variables · 2 modes* — the verbs taking a name in
+  place of the id), the typed letters lit; an almost-match is a dim row naming what it meant. A whole-name
   match outranks a prefix, and a section whose best row matches better goes first, so a label or
   name typed out whole leads the list. The lit row's layer (a label's, or a layer's by name) is
   outlined on the canvas as a hovered Layers row is.

@@ -2369,6 +2369,43 @@ fn table_names_complete_after_tables_and_for_a_table_argument() {
     assert_eq!(label(c), want, "after tables. in a script");
 }
 
+/// A verb's variable and script arguments complete with their names and a
+/// note each, and the name completion writes runs on the one it names.
+/// flip: `verb_argument` not offering `id_names` → fails at "a variable
+/// argument".
+#[test]
+fn id_arguments_complete_by_name_and_run_on_what_they_name() {
+    let mut h = TestHost::new();
+    h.make("add_variable", json!({ "kind": "number", "name": "Count" }));
+    h.make(
+        "add_script",
+        json!({ "name": "Tidy", "source": "print(1)\nprint(2)" }),
+    );
+    let labels = FxHashMap::default();
+    let label = |c: Completion| c.rows.first().map(|r| (r.label.clone(), r.detail.clone()));
+    let c = complete(&h.doc, h.page, &labels, "rename_variable Co", 18);
+    assert_eq!(
+        label(c),
+        Some(("Count".to_owned(), "number \u{b7} Variables".to_owned())),
+        "a variable argument"
+    );
+    let c = complete(&h.doc, h.page, &labels, "remove_script Ti", 16);
+    assert_eq!(
+        label(c),
+        Some(("Tidy".to_owned(), "2 lines".to_owned())),
+        "a script argument"
+    );
+    let e = env(&[], &labels);
+    run_line(&mut h, &e, "rename_variable Count Total").unwrap();
+    assert_eq!(
+        h.doc.variables().ids_named("Total").len(),
+        1,
+        "renamed by its name"
+    );
+    let err = run_line(&mut h, &e, "remove_script Nothing").unwrap_err();
+    assert!(err.message.contains("script"), "{}", err.message);
+}
+
 /// A run that fails part-way writes no table, and a write names what is wrong.
 #[test]
 fn tables_refuses_and_a_failed_run_writes_nothing() {

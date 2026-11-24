@@ -108,7 +108,6 @@ fn word_before(text: &str) -> &str {
 /// The document's tables `word` matches, each with its size (*12 rows · 4
 /// columns*): after `tables.`, and for a verb's `table` argument.
 fn table_names(doc: &Document, word: &str) -> Vec<Row> {
-    let count = |n: usize, one: &str| format!("{n} {one}{}", if n == 1 { "" } else { "s" });
     rank(
         Section::Choices,
         word,
@@ -121,6 +120,91 @@ fn table_names(doc: &Document, word: &str) -> Vec<Row> {
             (d.name.as_str(), size)
         }),
     )
+}
+
+/// `n` and `one`, plural past one: "12 rows", "1 column".
+fn count(n: usize, one: &str) -> String {
+    format!("{n} {one}{}", if n == 1 { "" } else { "s" })
+}
+
+/// The document's variables `word` matches, each with its kind and collection
+/// (*number · Theme*): after `play.vars.`, and for a verb's variable argument.
+fn variable_names(doc: &Document, word: &str) -> Vec<Row> {
+    use mastik_core::variable::VarKind;
+    let t = doc.variables();
+    rank(
+        Section::Choices,
+        word,
+        t.iter().map(|v| {
+            let kind = match v.kind {
+                VarKind::Number => "number",
+                VarKind::String => "text",
+                VarKind::Boolean => "boolean",
+                VarKind::Color => "colour",
+            };
+            let detail = match t.collection_of(v.id) {
+                Some(c) => format!("{kind} \u{b7} {}", c.name),
+                None => kind.to_owned(),
+            };
+            (v.name.as_str(), detail)
+        }),
+    )
+}
+
+/// The names a verb's `Id` argument of `what` takes, each with a short note;
+/// `None` for a kind no name fills.
+fn id_names(doc: &Document, what: &str, word: &str) -> Option<Vec<Row>> {
+    let t = doc.variables();
+    Some(match what {
+        "variable" => variable_names(doc, word),
+        "style" => rank(
+            Section::Choices,
+            word,
+            doc.styles().iter().map(|s| {
+                use mastik_core::style::StyleSlot;
+                let slot = match s.slot() {
+                    StyleSlot::Fills => "fill style",
+                    StyleSlot::Strokes => "stroke style",
+                    StyleSlot::Effects => "effect style",
+                    StyleSlot::Text => "text style",
+                    StyleSlot::Layout => "layout style",
+                };
+                (s.name.as_str(), slot.to_owned())
+            }),
+        ),
+        "script" => rank(
+            Section::Choices,
+            word,
+            doc.scripts()
+                .iter()
+                .map(|s| (s.name.as_str(), count(s.source.lines().count(), "line"))),
+        ),
+        "mode" => rank(
+            Section::Choices,
+            word,
+            t.collections().iter().flat_map(|c| {
+                c.modes
+                    .iter()
+                    .map(|m| (m.name.as_str(), format!("mode \u{b7} {}", c.name)))
+            }),
+        ),
+        "collection" => rank(
+            Section::Choices,
+            word,
+            t.collections().iter().map(|c| {
+                let vars = t
+                    .iter()
+                    .filter(|v| t.collection_of(v.id).map(|o| o.id) == Some(c.id));
+                let detail = format!(
+                    "{} \u{b7} {}",
+                    count(vars.count(), "variable"),
+                    count(c.modes.len(), "mode")
+                );
+                (c.name.as_str(), detail)
+            }),
+        ),
+        _ => return None,
+    })
 }
 
 /// Rows of `section` for every `(name, detail)` `word` matches, best first.
@@ -279,7 +363,9 @@ fn properties(word: &str) -> Vec<Row> {
 /// The choices of a verb's next argument when `line` is a verb then bare words
 /// (rule 1) and the word being typed, starting at `start`, is an argument.
 /// `None` when the line is not such a call; no rows when the argument takes no
-/// fixed words. A `table` argument takes the document's table names.
+/// fixed words. A `table` argument takes the document's table names, and a
+/// variable, style, script, mode or collection argument their names, which the
+/// verbs take in place of the id.
 fn verb_argument(doc: &Document, line: &str, start: usize, word: &str) -> Option<Vec<Row>> {
     let lead = line.len() - line.trim_start().len();
     let text = &line[lead..];
@@ -307,6 +393,9 @@ fn verb_argument(doc: &Document, line: &str, start: usize, word: &str) -> Option
     // which no name fills.
     if matches!(param.kind, ParamKind::Text) && matches!(param.name, "table" | "data") {
         return Some(table_names(doc, word));
+    }
+    if let ParamKind::Id(what) = param.kind {
+        return Some(id_names(doc, what, word).unwrap_or_default());
     }
     let ParamKind::Choice(words) = param.kind else {
         return Some(Vec::new());
