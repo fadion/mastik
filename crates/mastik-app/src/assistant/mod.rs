@@ -180,7 +180,7 @@ impl Why {
     /// The sentence the composer shows.
     pub(crate) fn sentence(&self) -> String {
         match self {
-            Why::Off => "The assistant is off. Choose an agent in Settings ▸ Assistant.".into(),
+            Why::Off => "The assistant is off. Choose an agent in Settings › Assistant.".into(),
             Why::Private => "Not available in private mode".into(),
             Why::Looking(h) => format!("Looking for {}…", h.label()),
             Why::NotFound(h, nf) => {
@@ -1700,6 +1700,31 @@ impl MastikApp {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Every character of the off sentence draws a glyph of the UI face, not
+    /// the missing-glyph box: its menu path joins with `›`, which the face has.
+    /// flip: `Why::sentence` joining with `▸` (U+25B8) → fails at "draws".
+    #[test]
+    fn the_off_sentence_draws_no_missing_glyph() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let uv = |s: &str| {
+            let g = ctx.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    s.to_owned(),
+                    egui::FontId::proportional(crate::ui::SMALL_PT),
+                    egui::Color32::WHITE,
+                )
+            });
+            g.rows[0].glyphs[0].uv_rect
+        };
+        let tofu = uv("\u{10FFFD}");
+        let words = Why::Off.sentence();
+        for c in words.chars().filter(|c| !c.is_whitespace()) {
+            assert_ne!(uv(&c.to_string()), tofu, "{c:?} of {words:?} draws");
+        }
+    }
 
     /// Lowering a live chat's level keeps its session and changes the host's
     /// grant for its key at once, so its next write is refused.
