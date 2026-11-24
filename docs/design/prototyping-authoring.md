@@ -338,7 +338,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   mode, its collection (as *Set mode*'s, less those another row names) and its mode, and `×`;
   *Add a starting mode* adds the first collection not yet named, at a mode the start frame does
   not read now, dimmed when none is left. Then its starting values: a row per value, the
-  variable (a variable dropdown; a new pick starts at its first mode's value), the value typed as
+  variable (a variable dropdown, the ones another row sets shown disabled; a new pick starts at
+  its value in its collection's first mode), the value typed as
   the variable's kind reads it (a number, text, `true` / `false`, a colour, or `{name}` for
   another variable of that kind; refused and ringed when it does not read) and `×`; *Add a
   starting value* adds the first variable not yet named, dimmed when every one is.

@@ -23,7 +23,7 @@ use mastik_core::prototype::{
     ScrollProp, Side, Snap, SnapAlign, Timing, Transition, TransitionKind, Trigger, VarChange,
     WhichRow,
 };
-use mastik_core::variable::{Cell, ModeId, ModeOwner, Switchable, VarId, VarKind};
+use mastik_core::variable::{Cell, ModeId, ModeOwner, Switchable, VarId, VarKind, Variable};
 use mastik_core::{Document, NodeKind, Operation, Transaction};
 
 /// Prototype mode's state between frames: its open popover, a typed field's
@@ -1847,6 +1847,26 @@ fn free_flow_name(flows: &[Keyed<Flow>]) -> String {
 /// nothing until it is typed over. An empty one would refuse the export.
 fn keeps(var: VarId) -> Expr {
     Expr(format!("{{{}}}", var.0.to_wire()))
+}
+
+/// What a flow's new starting value for `v` holds: its value at its collection's
+/// first mode (a kit's, at its kit collection's first). `cells` is ordered by mode
+/// id, which a reorder of the modes leaves behind.
+fn starting_cell(vars: &mastik_core::variable::Variables, v: &Variable) -> Option<Cell> {
+    let first = vars
+        .collection_of(v.id)
+        .and_then(|c| c.default_mode())
+        .or_else(|| {
+            vars.kits()
+                .values()
+                .flat_map(|k| &k.modes)
+                .map(|m| m.id)
+                .find(|m| v.cells.contains_key(m))
+        });
+    first
+        .and_then(|m| v.cells.get(&m))
+        .or_else(|| v.cells.values().next())
+        .cloned()
 }
 
 /// *Set variable*'s change once `old` (of `kind`) is swapped for `new`: one that
@@ -4454,7 +4474,8 @@ impl MastikApp {
                 }
             }
             Trigger::VariableChanges { var } => {
-                if let Some(v) = self.variable_combo(ui, ("when-var", r.id), Some(*var), None) {
+                if let Some(v) = self.variable_combo(ui, ("when-var", r.id), Some(*var), None, None)
+                {
                     out.write = Some((
                         with(&|x: &mut Reaction| x.trigger = Trigger::VariableChanges { var: v }),
                         "Change trigger",
@@ -5354,7 +5375,8 @@ impl MastikApp {
             }
             Action::SetVariable { var, change } => {
                 let kind = doc.variables().get(*var).map(|v| v.kind);
-                if let Some(v) = self.variable_combo(ui, ("set-var", k.id), Some(*var), None) {
+                if let Some(v) = self.variable_combo(ui, ("set-var", k.id), Some(*var), None, None)
+                {
                     let new_kind = self.session.doc.variables().get(v).map(|x| x.kind);
                     let change = repicked_change(*var, kind, v, new_kind, change);
                     // Answered, with the rows below still drawn this frame.
@@ -6361,12 +6383,14 @@ impl MastikApp {
     }
 
     /// A variable's dropdown, by name, `kind` narrowing it; answers a new pick.
+    /// `taken` lists variables shown disabled, with the reason they cannot be picked.
     fn variable_combo(
         &mut self,
         ui: &mut egui::Ui,
         salt: impl std::hash::Hash + std::fmt::Debug,
         current: Option<VarId>,
         kind: Option<VarKind>,
+        taken: Option<(&[VarId], &'static str)>,
     ) -> Option<VarId> {
         let doc = &self.session.doc;
         let vars: Vec<(VarId, String)> = doc
@@ -6392,6 +6416,15 @@ impl MastikApp {
             }
             for (v, n) in &vars {
                 let on = current == Some(*v);
+                if let Some((list, why)) = taken
+                    && !on
+                    && list.contains(v)
+                {
+                    ui.add_enabled_ui(false, |ui| ui.selectable_label(false, n))
+                        .inner
+                        .on_disabled_hover_text(why);
+                    continue;
+                }
                 if ui.selectable_label(on, n).clicked() && !on {
                     pick = Some(*v);
                 }
@@ -6825,7 +6858,7 @@ impl MastikApp {
                         ui.scope(|ui| {
                             ui.set_width(cw);
                             if let Some(v) =
-                                app.variable_combo(ui, ("input", id), current, Some(kind))
+                                app.variable_combo(ui, ("input", id), current, Some(kind), None)
                             {
                                 let mut p = play.clone();
                                 let property = match text {
@@ -7547,6 +7580,7 @@ impl MastikApp {
                         })
                         .collect()
                 };
+                let set: Vec<VarId> = f.values.iter().map(|(v, _)| *v).collect();
                 for (i, (var, cell)) in f.values.iter().enumerate() {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = COL;
@@ -7554,17 +7588,19 @@ impl MastikApp {
                         let half = (w - COL) / 2.0;
                         let picked = ui
                             .allocate_ui(egui::vec2(half, ui::CONTROL_H), |ui| {
-                                app.variable_combo(ui, ("flow-value", f.id, i), Some(*var), None)
+                                app.variable_combo(
+                                    ui,
+                                    ("flow-value", f.id, i),
+                                    Some(*var),
+                                    None,
+                                    Some((&set, "Another row sets it as the flow starts")),
+                                )
                             })
                             .inner;
                         if let Some(v) = picked {
                             let mut values = f.values.clone();
-                            let start = app
-                                .session
-                                .doc
-                                .variables()
-                                .get(v)
-                                .and_then(|x| x.cells.values().next().cloned());
+                            let vars = app.session.doc.variables();
+                            let start = vars.get(v).and_then(|x| starting_cell(vars, x));
                             if let Some(c) = start {
                                 values[i] = (v, c);
                                 next = Some((with_values(values), "Change starting value"));
@@ -7587,13 +7623,11 @@ impl MastikApp {
                 }
                 // The first variable no starting value names yet, at its first
                 // mode's value.
-                let unused = app
-                    .session
-                    .doc
-                    .variables()
+                let vars = app.session.doc.variables();
+                let unused = vars
                     .iter()
-                    .find(|v| !f.values.iter().any(|(x, _)| *x == v.id))
-                    .and_then(|v| Some((v.id, v.cells.values().next()?.clone())));
+                    .find(|v| !set.contains(&v.id))
+                    .and_then(|v| Some((v.id, starting_cell(vars, v)?)));
                 if crate::settings::text_button(
                     ui,
                     "Add a starting value",
@@ -9802,6 +9836,52 @@ mod tests {
         frame(&mut f.app);
         assert_eq!(f.app.proto.open, None, "the action is gone");
         assert!(!f.app.proto.opened_on_canvas);
+    }
+
+    /// A flow's new starting value takes the variable's value at its collection's
+    /// first mode, not at its lowest mode id.
+    /// flip: `starting_cell` answering `cells.values().next()` → fails at "first mode".
+    #[test]
+    fn a_starting_value_is_seeded_from_the_first_mode() {
+        use mastik_core::variable::{CollectionId, Mode};
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let [low, high] = [(); 2].map(|_| f.app.session.ids.mint_mode());
+        let var = f.app.session.ids.mint_var();
+        let mode = |id, name: &str| Operation::AddMode {
+            collection: CollectionId::FIRST,
+            mode: Mode {
+                id,
+                name: name.into(),
+            },
+            index: 0,
+            cells: vec![],
+        };
+        assert!(f.app.session.commit(Transaction(vec![
+            mode(low, "Light"),
+            // At index 0, ahead of the lower id.
+            mode(high, "Dark"),
+            Operation::AddVariable {
+                var: Variable {
+                    id: var,
+                    name: "gap".into(),
+                    kind: VarKind::Number,
+                    cells: [(low, Cell::Number(1.0)), (high, Cell::Number(2.0))].into(),
+                    scope: None,
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+        ])));
+        let vars = f.app.session.doc.variables();
+        assert_eq!(vars.default_mode(), Some(high), "fixture: Dark is first");
+        assert!(low < high, "fixture: Light's id is lower");
+        assert_eq!(
+            starting_cell(vars, vars.get(var).unwrap()),
+            Some(Cell::Number(2.0)),
+            "first mode"
+        );
     }
 
     /// Prototype mode is remembered by the library for the document, as the
