@@ -1597,39 +1597,100 @@ pub fn states_of(doc: &Document, instance: NodeId) -> Vec<NodeId> {
         .unwrap_or_default()
 }
 
-/// `r` as *Paste interactions* writes it on `to`, copied from `from`: what was
-/// `from`'s own becomes `to`'s. A *Change to* of `from`'s own instance switches
-/// `to`'s, which must be of the same set, and *On drop at* one of `from`'s snap
-/// points names `to`'s point of that name. Other targets stay the document's
-/// layers. `Err` says why `to` cannot take it.
-pub fn rehomed(doc: &Document, from: NodeId, to: NodeId, r: &Reaction) -> Result<Reaction, String> {
-    let name = doc
-        .get(to)
-        .map_or_else(|| "The layer".to_owned(), |n| n.name().to_owned());
-    let points = |id: NodeId| {
-        doc.get(id)
-            .and_then(|n| n.play().follow.clone())
-            .map(|f| f.points)
-            .unwrap_or_default()
-    };
+/// What re-homing a copied reaction needs of the layer it was copied from,
+/// read when it is copied: the layer may be gone by the time it is pasted.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CopiedFrom {
+    /// The layer's snap points, which an *On drop at* names by id.
+    pub points: Vec<Keyed<DragPoint>>,
+    /// The instance a *Change to* of its own switches ([`state_instance`]).
+    pub own: Option<NodeId>,
+}
+
+impl CopiedFrom {
+    /// What re-homing needs of layer `from`, as it stands in `doc`.
+    pub fn of(doc: &Document, from: NodeId) -> Self {
+        Self {
+            points: snap_points(doc, from),
+            own: state_instance(doc, from),
+        }
+    }
+}
+
+/// Layer `id`'s snap points, none when it follows no drag.
+fn snap_points(doc: &Document, id: NodeId) -> Vec<Keyed<DragPoint>> {
+    doc.get(id)
+        .and_then(|n| n.play().follow.clone())
+        .map(|f| f.points)
+        .unwrap_or_default()
+}
+
+/// Why *Paste interactions* refuses a layer, naming it by id so the caller
+/// words it (the app masks names in private mode).
+#[derive(Clone, Debug, PartialEq)]
+pub enum PasteRefused {
+    /// `layer` has no snap point named `point`, which a pasted *On drop at* names.
+    NoPoint { layer: NodeId, point: String },
+    /// `layer` is no instance of the set a pasted *Change to* switches.
+    NotInstance { layer: NodeId },
+    /// The list the paste makes fails the door's check.
+    Check(String),
+}
+
+impl PasteRefused {
+    /// The reason in words, `name` naming the layer.
+    pub fn worded(&self, name: &str) -> String {
+        match self {
+            Self::NoPoint { point, .. } => format!("{name} has no snap point named “{point}”"),
+            Self::NotInstance { .. } => {
+                format!("{name} is no instance of the set its Change to switches")
+            }
+            Self::Check(why) => why.clone(),
+        }
+    }
+
+    /// [`Self::worded`] with the layer's name in `doc`.
+    pub fn in_doc(&self, doc: &Document) -> String {
+        let layer = match self {
+            Self::NoPoint { layer, .. } | Self::NotInstance { layer } => Some(*layer),
+            Self::Check(_) => None,
+        };
+        let name = layer
+            .and_then(|l| doc.get(l))
+            .map_or_else(|| "The layer".to_owned(), |n| n.name().to_owned());
+        self.worded(&name)
+    }
+}
+
+/// `r` as *Paste interactions* writes it on `to`, copied from a layer `from`
+/// describes: what was that layer's own becomes `to`'s. A *Change to* of its
+/// own instance switches `to`'s, which must be of the same set, and *On drop
+/// at* one of its snap points names `to`'s point of that name. Other targets
+/// stay the document's layers. `Err` says why `to` cannot take it.
+pub fn rehomed(
+    doc: &Document,
+    from: &CopiedFrom,
+    to: NodeId,
+    r: &Reaction,
+) -> Result<Reaction, PasteRefused> {
     let mut trigger = r.trigger.clone();
     if let Trigger::Drop {
         at: DropAt::Point(p),
     } = &mut trigger
-        && let Some(point) = points(from).into_iter().find(|k| k.id == *p)
+        && let Some(point) = from.points.iter().find(|k| k.id == *p)
     {
-        let Some(there) = points(to)
+        let Some(there) = snap_points(doc, to)
             .into_iter()
             .find(|k| k.value.name == point.value.name)
         else {
-            return Err(format!(
-                "{name} has no snap point named “{}”",
-                point.value.name
-            ));
+            return Err(PasteRefused::NoPoint {
+                layer: to,
+                point: point.value.name.clone(),
+            });
         };
         *p = there.id;
     }
-    let own = state_instance(doc, from);
+    let own = from.own;
     let target = state_instance(doc, to);
     fn walk(
         list: &[Keyed<Action>],
@@ -1671,21 +1732,20 @@ pub fn rehomed(doc: &Document, from: NodeId, to: NodeId, r: &Reaction) -> Result
     }
     // `to`'s instance, when the variant it switches to is one of its states.
     let switch = |variant: NodeId| target.filter(|t| states_of(doc, *t).contains(&variant));
-    let actions = walk(&r.actions, own, &switch)
-        .ok_or_else(|| format!("{name} is no instance of the set its Change to switches"))?;
+    let actions = walk(&r.actions, own, &switch).ok_or(PasteRefused::NotInstance { layer: to })?;
     Ok(Reaction { trigger, actions })
 }
 
-/// `to`'s reactions with `copied`, read from `from`, added after its own as
-/// *Paste interactions* adds them: each rehomed ([`rehomed`]) and given fresh
-/// item ids, the whole list checked as the door checks it.
+/// `to`'s reactions with `copied`, read from the layer `from` describes, added
+/// after its own as *Paste interactions* adds them: each rehomed ([`rehomed`])
+/// and given fresh item ids, the whole list checked as the door checks it.
 pub fn pasted(
     doc: &Document,
-    from: NodeId,
+    from: &CopiedFrom,
     to: NodeId,
     copied: &[Reaction],
     mint: &mut impl FnMut() -> ItemId,
-) -> Result<Vec<Keyed<Reaction>>, String> {
+) -> Result<Vec<Keyed<Reaction>>, PasteRefused> {
     let mut list = doc
         .get(to)
         .map(|n| n.reactions().to_vec())
@@ -1698,7 +1758,7 @@ pub fn pasted(
         };
         list.push(Keyed::new(mint(), copy));
     }
-    check(&list).map_err(|why| why.to_string())?;
+    check(&list).map_err(|why| PasteRefused::Check(why.to_string()))?;
     Ok(list)
 }
 

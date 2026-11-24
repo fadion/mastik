@@ -6155,14 +6155,17 @@ pub static VERBS: &[Verb] = &[
                 return Err(VerbError::Nothing("the layer has no reactions to copy"));
             }
             let mut ops = Vec::new();
+            let origin = crate::prototype::CopiedFrom::of(ctx.doc, from);
             for id in existing_layers(ctx, a)? {
                 if id == from {
                     continue;
                 }
                 let ids = &mut *ctx.ids;
                 let reactions =
-                    crate::prototype::pasted(ctx.doc, from, id, &copied, &mut || ids.mint_item())
-                        .map_err(|why| a.invalid("nodes", why))?;
+                    crate::prototype::pasted(ctx.doc, &origin, id, &copied, &mut || {
+                        ids.mint_item()
+                    })
+                    .map_err(|why| a.invalid("nodes", why.in_doc(ctx.doc)))?;
                 ops.push(Operation::SetReactions { id, reactions });
             }
             Ok(Done::ops(ops))

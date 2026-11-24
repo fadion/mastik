@@ -75,7 +75,10 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   or writes nothing and says why when the door refuses a layer's list. What was the source's own
   is re-homed (`prototype::rehomed`): a *Change to* of the source's instance switches the
   target's, which must be of the same set, and *On drop at* a source snap point names the
-  target's point of that name; a target that has neither refuses the paste with the reason. The
+  target's point of that name; a target that has neither refuses the paste with the reason, the
+  layer named as the app names it (masked in private mode; `prototype::PasteRefused`). What
+  re-homing needs of the source (its snap points, its instance; `prototype::CopiedFrom`) is read
+  at the copy, so a paste after the source is deleted re-homes all the same. The
   whole paste is `prototype::pasted`, which the verb `copy_reactions(nodes, from)` runs too, so
   an agent or a script copies interactions as the tab pastes them.
 - **Triggers** are offered in two groups under `ui::menu_eyebrow`s, *Pointer* (*On click*, *On

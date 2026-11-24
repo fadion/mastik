@@ -70,10 +70,15 @@ pub(crate) struct ProtoState {
     /// last.
     pub marks_drawn: std::cell::RefCell<Vec<(ProtoMark, egui::Rect)>>,
     /// The interactions *Copy interactions* took, with the tab they were copied
-    /// in and the layer they came from: *Paste interactions* offers them on that
+    /// in and what re-homing needs of the layer they came from, read then, as
+    /// it may be gone by the paste: *Paste interactions* offers them on that
     /// tab's document only, since their targets are that document's layers, and
     /// re-homes what was the source's own (`rehomed`).
-    pub copied: Option<(Option<crate::tabs::TabId>, NodeId, Vec<Reaction>)>,
+    pub copied: Option<(
+        Option<crate::tabs::TabId>,
+        mastik_core::prototype::CopiedFrom,
+        Vec<Reaction>,
+    )>,
     /// The interaction block picked by a click on one of its connectors, by its
     /// layer and reaction: ringed in the card among two or more, and on the
     /// canvas its connectors and scroll line are the layer's only ones drawn
@@ -3777,7 +3782,8 @@ impl MastikApp {
             1 => "Copied 1 interaction".to_string(),
             n => format!("Copied {n} interactions"),
         });
-        self.proto.copied = Some((self.tabs.active, id, list));
+        let from = mastik_core::prototype::CopiedFrom::of(&self.session.doc, id);
+        self.proto.copied = Some((self.tabs.active, from, list));
     }
 
     /// *Paste interactions*: add the copied interactions after each selected
@@ -3797,13 +3803,16 @@ impl MastikApp {
             }
             let session = &mut self.session;
             let mut mint = || session.ids.mint_item();
-            match mastik_core::prototype::pasted(&session.doc, source, id, &copied, &mut mint) {
+            match mastik_core::prototype::pasted(&session.doc, &source, id, &copied, &mut mint) {
                 Ok(list) => ops.push(Operation::SetReactions {
                     id,
                     reactions: list,
                 }),
                 Err(why) => {
-                    self.session.info(format!("Not pasted: {why}"));
+                    // The layer named as everywhere, masked in private mode.
+                    let name = crate::private::layer(&self.session.doc, id).into_owned();
+                    self.session
+                        .info(format!("Not pasted: {}", why.worded(&name)));
                     return;
                 }
             }
@@ -10346,10 +10355,13 @@ mod tests {
 
     /// Pasted interactions take the target's own instance for a *Change to* of
     /// the source's, and its snap point of the same name for *On drop at*; a
-    /// target with neither refuses the paste and keeps what it had.
+    /// target with neither refuses the paste and keeps what it had, its name
+    /// masked in private mode; the source deleted since the copy still re-homes.
     ///
     /// flip: `rehomed` keeping the copied instance → fails at "switches its
-    /// own"; keeping the copied point → fails at "its own point".
+    /// own"; keeping the copied point → fails at "its own point"; the panel
+    /// wording `in_doc` → fails at "masked". The gone-source case has no flip
+    /// of its own: only `CopiedFrom` is kept, so nothing re-reads the source.
     #[test]
     fn pasted_interactions_take_the_targets_own_instance_and_point() {
         use mastik_core::prototype::{DragPoint, Follow, LayerPlay};
@@ -10477,8 +10489,32 @@ mod tests {
             "its own point"
         );
         f.app.session.selection.set_one(f.home);
+        crate::private::set(true);
         f.app.paste_interactions();
+        crate::private::set(false);
         assert!(read(&f, f.home).is_empty(), "no such point: refused");
+        let home = f.app.session.doc.get(f.home).unwrap().name().to_owned();
+        let said = f.app.session.status().text.clone();
+        assert!(
+            said.starts_with("Not pasted") && !said.contains(&home),
+            "masked in private mode: {said}"
+        );
+
+        // With the source deleted since the copy, its point still re-homes.
+        assert!(
+            f.app
+                .session
+                .commit(Transaction(vec![Operation::DeleteNode { id: f.add }]))
+        );
+        f.app.session.selection.set_one(f.cart);
+        f.app.paste_interactions();
+        assert_eq!(
+            read(&f, f.cart).last().map(|r| r.value.trigger.clone()),
+            Some(Trigger::Drop {
+                at: DropAt::Point(item(60))
+            }),
+            "its own point, the source gone"
+        );
     }
 
     /// A scroll trigger's line moves along its frame's scroll and snaps to a
