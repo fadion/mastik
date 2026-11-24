@@ -242,8 +242,9 @@ The prototype's other file is the flow map (`mastik_export::flow_map`; the expor
 map*, `mastik export --flow-map`): a PDF giving each flow (`flow_map_of` and `plans_of` take the
 flows picked, every flow when none is) a page of its frames as they sit on
 the canvas, drawn by the PDF export's path, with an arrow from each layer that moves the screen
-and a numbered badge on each layer with a reaction, then pages writing those reactions out in
-words, for review and sign-off. A flow with no frame on its page, its start gone or on another
+and a numbered badge for each reaction at its layer's corner (one that would cover an earlier
+badge, a layer's second reaction or a layer at its frame's corner, steps right past it), then
+pages writing those reactions out in words, for review and sign-off. A flow with no frame on its page, its start gone or on another
 page, gets its words pages alone; it never costs the other flows their pages. The file fails
 only when there is no flow or the converter refuses a page, and the app and the CLI say which.
 

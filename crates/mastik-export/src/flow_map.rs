@@ -5,8 +5,8 @@
 //! words as its interactions need. The map is the flow's frames on its page as
 //! they sit on the canvas, drawn by the PDF export's own path ([`crate::pdf`]),
 //! with an arrow from each layer that moves the screen to the frame it shows
-//! and a numbered badge on every layer with a reaction; the words pages list the
-//! same numbers. A frame the flow reaches on another page is named, not drawn.
+//! and a numbered badge for each reaction at its layer's corner, stepped right
+//! past any badge it would cover; the words pages list the same numbers. A frame the flow reaches on another page is named, not drawn.
 
 use std::fmt::Write as _;
 
@@ -637,13 +637,21 @@ fn map_svg(
             );
         }
     }
+    let radius = unit * 9.0;
+    let mut placed: Vec<Point> = Vec::new();
     for w in &plan.written {
         if !here.contains(&w.frame) {
             continue;
         }
         let Some(r) = rect(w.layer) else { continue };
-        let radius = unit * 9.0;
-        let (x, y) = (r.x0, r.y0);
+        // A badge that would cover an earlier one, a second reaction on the
+        // layer or a layer at its frame's corner, steps right past it.
+        let mut at = Point::new(r.x0, r.y0);
+        while placed.iter().any(|p| p.distance(at) < radius * 2.0) {
+            at.x += radius * 2.2;
+        }
+        placed.push(at);
+        let (x, y) = (at.x, at.y);
         let _ = write!(
             over,
             "<circle cx=\"{x}\" cy=\"{y}\" r=\"{radius}\" fill=\"{INK}\"/>\
@@ -759,5 +767,117 @@ mod tests {
     fn words_wrap_at_spaces() {
         assert_eq!(wrap("aa bb cc", 5), vec!["aa bb", "cc"]);
         assert_eq!(wrap("aaaaaaa b", 3), vec!["aaaaaaa", "b"]);
+    }
+
+    /// Every badge centre the map page draws.
+    fn badges(svg: &str) -> Vec<(f64, f64)> {
+        svg.split("<circle cx=\"")
+            .skip(1)
+            .filter_map(|s| {
+                let (x, rest) = s.split_once('"')?;
+                let y = rest.strip_prefix(" cy=\"")?.split('"').next()?;
+                Some((x.parse().ok()?, y.parse().ok()?))
+            })
+            .collect()
+    }
+
+    /// Two reactions on one layer, and one on the frame whose corner that
+    /// layer shares, are three badges that do not cover one another.
+    ///
+    /// flip: `map_svg` drawing each badge at its layer's corner → fails at
+    /// "apart".
+    #[test]
+    fn badges_on_one_corner_stand_apart() {
+        use mastik_core::kurbo::{Affine, RoundedRectRadii, Size};
+        use mastik_core::{IdSource, Operation, Transaction};
+        let mut ids = IdSource::new(0xBA);
+        let page = ids.mint();
+        let mut doc = Document::new(page);
+        let (frame, button) = (ids.mint(), ids.mint());
+        let mut reaction = |trigger| {
+            Keyed::new(
+                ids.mint_item(),
+                Reaction {
+                    trigger,
+                    actions: vec![Keyed::new(ids.mint_item(), Action::Back)],
+                },
+            )
+        };
+        let (hover, click, opens) = (
+            reaction(Trigger::HoverWhile),
+            reaction(Trigger::Click),
+            reaction(Trigger::FrameOpens),
+        );
+        let flow = Keyed::new(
+            ids.mint_item(),
+            mastik_core::prototype::Flow {
+                name: "Buy".into(),
+                start: frame,
+                modes: Vec::new(),
+                values: vec![],
+            },
+        );
+        let create = |id, parent, kind, name: &str| Operation::CreateNode {
+            id,
+            parent,
+            index: 0,
+            kind,
+            transform: Some(Affine::IDENTITY),
+            name: Some(name.into()),
+        };
+        doc.apply(&Transaction(vec![
+            create(
+                frame,
+                page,
+                NodeKind::Artboard {
+                    size: Size::new(200.0, 300.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                "Home",
+            ),
+            create(
+                button,
+                frame,
+                NodeKind::Rect {
+                    size: Size::new(200.0, 40.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                "Buy",
+            ),
+            Operation::SetReactions {
+                id: frame,
+                reactions: vec![opens],
+            },
+            Operation::SetReactions {
+                id: button,
+                reactions: vec![hover, click],
+            },
+            Operation::SetFlows {
+                id: page,
+                flows: vec![flow],
+            },
+        ]))
+        .expect("the frame");
+        let res = Resolved::rebuild(&doc);
+        let plan = plans(&doc).remove(0);
+        let layers: Vec<NodeId> = plan.written.iter().map(|w| w.layer).collect();
+        assert_eq!(
+            layers,
+            vec![frame, button, button],
+            "the fixture's reactions"
+        );
+        let here = [frame];
+        let extent = crate::extent(&res, &here).expect("an extent");
+        let svg = map_svg(&doc, &res, &plan, &here, extent).expect("a map");
+        let at = badges(&svg);
+        assert_eq!(at.len(), 3, "a badge a reaction: {at:?}");
+        for (i, a) in at.iter().enumerate() {
+            for b in &at[i + 1..] {
+                let d = (a.0 - b.0).hypot(a.1 - b.1);
+                assert!(d >= 18.0, "apart: {at:?}");
+            }
+        }
     }
 }
