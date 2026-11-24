@@ -1321,10 +1321,11 @@ impl Chart {
     /// onto its columns. On the set it already reads a column is kept by id, so
     /// a rename keeps it; moved onto a table, a column is kept where `table` has
     /// it under the same id and name, else onto the column of its name, else
-    /// dropped. When no column
-    /// that draws survives (a series, or a Sankey's value), the mapping is
-    /// guessed, so a chart moved onto an unrelated table draws it. The link is
-    /// dropped, since the data set holds its own.
+    /// dropped. When no column that draws (a series, or a Sankey's value)
+    /// survives the move or the edit, the mapping is guessed, so a chart moved
+    /// onto an unrelated table draws it; on the set it reads, a mapping that
+    /// drew nothing already stays as it is. The link is dropped, since the data
+    /// set holds its own.
     pub fn reading(&self, data: crate::list::DataSetId, table: &Table) -> Chart {
         let old = &self.table;
         let same = self.data == Some(data);
@@ -1354,7 +1355,10 @@ impl Chart {
             to: m.to.and_then(onto),
             value: m.value.and_then(onto),
         };
-        if mapping.series.is_empty() && mapping.value.is_none() {
+        // On the set it reads, a mapping drawing nothing before the edit is the
+        // person's own choice, not a loss to make up for.
+        let drew = !m.series.is_empty() || m.value.is_some();
+        if mapping.series.is_empty() && mapping.value.is_none() && (drew || !same) {
             mapping = Mapping::guess(self.kind, table);
         }
         let mut styles: Vec<SeriesStyle> = Vec::new();

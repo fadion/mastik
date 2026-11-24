@@ -1035,3 +1035,73 @@ fn named_marks_draw_their_bound_colours() {
         "the groups draw the binding"
     );
 }
+
+/// A table of the named columns, numbered by `ids`, with one row of `cells`.
+fn set_table(columns: &[(u32, &str)], cells: &[&str]) -> Table {
+    Table {
+        columns: columns
+            .iter()
+            .map(|(id, name)| Column {
+                id: ColumnId(*id),
+                name: (*name).into(),
+            })
+            .collect(),
+        rows: vec![cells.iter().map(|c| (*c).into()).collect()],
+    }
+}
+
+/// A data set's id for these tests.
+fn set_id(seq: u64) -> crate::list::DataSetId {
+    crate::list::DataSetId(crate::NodeId { actor: 7, seq })
+}
+
+/// A chart moved between two sets keeps a column only under the same id and
+/// name, else finds it by name: *Sales* at id 1 in one set lands on id 3 in
+/// the other, whose id 1 is another number column.
+/// flip: `Chart::reading`'s `onto` keeping a matching id whatever its name →
+/// fails at "found by name".
+#[test]
+fn a_chart_moved_between_sets_follows_a_column_by_name() {
+    let a = set_table(
+        &[(0, "Month"), (1, "Sales"), (2, "Cost")],
+        &["Jan", "4", "2"],
+    );
+    let b = set_table(
+        &[(0, "Month"), (1, "Visits"), (2, "Cost"), (3, "Sales")],
+        &["Jan", "90", "2", "4"],
+    );
+    let mut chart = Chart::sample(ChartKind::Column).reading(set_id(1), &a);
+    chart.mapping.category = Some(ColumnId(0));
+    chart.mapping.series = vec![ColumnId(1)];
+    let moved = chart.reading(set_id(2), &b);
+    assert_eq!(moved.mapping.series, [ColumnId(3)], "found by name");
+    assert_eq!(
+        moved.mapping.category,
+        Some(ColumnId(0)),
+        "same id and name"
+    );
+}
+
+/// On the set it reads, a chart whose mapping draws no series keeps it through
+/// an edit of the set rather than having it guessed again.
+/// flip: `Chart::reading` guessing whenever no series survives → fails at
+/// "the person's mapping kept".
+#[test]
+fn an_edit_of_its_set_keeps_a_chart_with_no_series() {
+    let t = set_table(
+        &[(0, "Month"), (1, "Region"), (2, "Sales"), (3, "Cost")],
+        &["Jan", "North", "4", "2"],
+    );
+    let mut chart = Chart::sample(ChartKind::Column).reading(set_id(1), &t);
+    chart.mapping = Mapping {
+        category: Some(ColumnId(1)),
+        ..Mapping::default()
+    };
+    let mut edited = t.clone();
+    edited.rows[0][2] = "5".into();
+    let after = chart.reading(set_id(1), &edited);
+    assert_eq!(after.mapping, chart.mapping, "the person's mapping kept");
+    assert_eq!(after.table, edited);
+    let moved = chart.reading(set_id(2), &edited);
+    assert!(!moved.mapping.series.is_empty(), "guessed on another set");
+}

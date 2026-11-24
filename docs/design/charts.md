@@ -109,7 +109,9 @@ everything below.
     already reads, a column is kept by id, so a rename in the set keeps the mapping and the
     series' style; moved onto a set, a column is kept under the same id and name, else on the
     column of its name, else dropped. `Mapping::guess` when no series and no Sankey value
-    survives.
+    survives; on the set it already reads, a mapping that drew none before the edit (the
+    person unticked the last series) stays as it is, so an unrelated cell edit never re-guesses
+    it.
   - **The commit keeps the copy in step.** `list::chart_follow_ops` answers a `SetChart` for
     every chart the transaction moved onto a set (its own `SetChart`), whose set it wrote
     (`SetDataSet`, through `list::charts_over`), or that it dirtied while reading a set (a pasted
