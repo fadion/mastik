@@ -905,6 +905,9 @@ const BOOT: &str = r##"(async () => {
     const bar = $("bar"), flowList = $("flows"), hintSwitch = $("hint-switch");
     const panel = $("inspect"), inspectSwitch = $("inspect-switch");
     let last = null, queued = false, hintsOn = false, hintsShown = false, placed = "";
+    // The hints canvas's device pixels per CSS pixel: the screen's density,
+    // lowered so a tall screen stays within the 2D canvas's limits.
+    let hintD = devicePixelRatio;
     // Inspect mode: interactions stop, and a click picks the layer under it.
     let inspecting = false, picked = "", over = "";
 
@@ -921,17 +924,18 @@ const BOOT: &str = r##"(async () => {
     }
     function place(p) {
       const [, sw, sh, x, y, w, h, b, r] = p;
-      const key = p.slice(1, 9).join() + "|" + devicePixelRatio;
+      const key = p.slice(1, 9).join() + "|" + p[11];
       if (key === placed) return;
       placed = key;
+      hintD = p[11];
       const px = v => v + "px";
       room.style.width = px(sw);
       room.style.height = px(sh);
       for (const c of [canvas, hints]) {
         Object.assign(c.style, { left: px(x), top: px(y), width: px(w), height: px(h), borderRadius: px(r) });
       }
-      hints.width = Math.max(1, Math.round(w * devicePixelRatio));
-      hints.height = Math.max(1, Math.round(h * devicePixelRatio));
+      hints.width = Math.max(1, Math.round(w * hintD));
+      hints.height = Math.max(1, Math.round(h * hintD));
       hintsShown = true;
       device.hidden = b === 0;
       Object.assign(device.style, {
@@ -942,7 +946,7 @@ const BOOT: &str = r##"(async () => {
       if (inspecting) return drawInspect();
       const alpha = player.hotspot_hints() ? (hintsOn ? 1 : flash) : 0;
       if (alpha <= 0 && !hintsShown) return;
-      const d = devicePixelRatio;
+      const d = hintD;
       hintCtx.clearRect(0, 0, hints.width, hints.height);
       hintsShown = alpha > 0;
       if (!hintsShown) return;
@@ -958,7 +962,7 @@ const BOOT: &str = r##"(async () => {
     // The picked layer's box, the hovered one's, and the distances between them
     // (or to the picked layer's parent) as the canvas's Alt measure draws them.
     function drawInspect() {
-      const d = devicePixelRatio, c = hintCtx;
+      const d = hintD, c = hintCtx;
       c.clearRect(0, 0, hints.width, hints.height);
       hintsShown = true;
       const box = (id, width, dash) => {

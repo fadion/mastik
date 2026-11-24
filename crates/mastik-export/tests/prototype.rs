@@ -608,7 +608,9 @@ fn arguments(s: &str, angle: bool) -> Vec<&str> {
 /// reads `frame`'s answer by the slots `frame` fills, in their order.
 ///
 /// flip: a slot inserted before `moving` in `Player::frame`'s answer → fails at
-/// "frame's slots"; a fifth parameter on `start` → fails at "as many arguments".
+/// "frame's slots"; a fifth parameter on `start` → fails at "as many arguments";
+/// `place` sizing the hints canvas by `devicePixelRatio` → fails at "the page
+/// reads frame's slots".
 #[test]
 fn the_page_calls_the_player_with_its_arity_and_reads_frames_slots() {
     let mut f = fixture();
@@ -676,6 +678,7 @@ fn the_page_calls_the_player_with_its_arity_and_reads_frames_slots() {
             "p.radius",
             "f64::from(u8::from(self.play.is_moving()))",
             "flash",
+            "hint_density",
         ],
         "frame's slots"
     );
@@ -684,6 +687,8 @@ fn the_page_calls_the_player_with_its_arity_and_reads_frames_slots() {
         "p.slice(1, 9)",
         "if (p[9])",
         "drawHints(p[10])",
+        "hintD = p[11];",
+        "hints.height = Math.max(1, Math.round(h * hintD));",
     ] {
         assert!(html.contains(read), "the page reads frame's slots: {read}");
     }

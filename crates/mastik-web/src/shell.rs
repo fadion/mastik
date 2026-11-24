@@ -275,13 +275,15 @@ pub fn measure_lines(a: Rect, b: Rect, scale: f64) -> Vec<String> {
 /// neither side of the drawing passes `side` pixels (WebGPU's texture limit) and
 /// its area stays within `area` (Mobile Safari's canvas cap). Lowering costs only
 /// sharpness; past either limit the canvas draws nothing at all.
+///
+/// The limits hold for the sides as `viewport` rounds them: each side may round
+/// up by half a pixel, so the area cap solves `(w·s + ½)(h·s + ½) ≤ area`.
 pub fn draw_scale(screen: Size, scale: f64, side: u32, area: f64) -> f64 {
     let (w, h) = (screen.width.max(1.0), screen.height.max(1.0));
     let side = f64::from(side);
-    scale
-        .min(side / w)
-        .min(side / h)
-        .min((area / (w * h)).sqrt())
+    let (a, b, c) = (w * h, (w + h) / 2.0, 0.25 - area);
+    let within_area = (-b + (b * b - 4.0 * a * c).sqrt()) / (2.0 * a);
+    scale.min(side / w).min(side / h).min(within_area)
 }
 
 /// The text a DOM key types into a focused field: one printable character, or
@@ -409,10 +411,24 @@ mod tests {
         assert!(s > 1.6, "lowered no more than it must: {s}");
         let s = draw_scale(tall, 2.0, 32_767, 16_777_216.0);
         assert!(
-            tall.width * s * tall.height * s <= 16_777_216.0,
+            (tall.width * s).round() * (tall.height * s).round() <= 16_777_216.0,
             "within the area"
         );
         assert_eq!(draw_scale(PHONE, 3.0, 8192, 16_777_216.0), 3.0, "a phone");
+    }
+
+    /// The area cap holds for the sides as the viewport rounds them: a 390 × 5000
+    /// screen at 3× rounds to 1144 × 14666 at the unrounded square-root scale,
+    /// over the cap.
+    /// flip: the area term back to `(area / (w * h)).sqrt()` → fails at "rounded area".
+    #[test]
+    fn the_area_cap_holds_on_the_rounded_sides() {
+        let tall = Size::new(390.0, 5000.0);
+        let area = 16_777_216.0;
+        let s = draw_scale(tall, 3.0, 32_767, area);
+        let (w, h) = ((tall.width * s).round(), (tall.height * s).round());
+        assert!(w * h <= area, "rounded area: {w} × {h} = {}", w * h);
+        assert!(s > 2.93, "lowered no more than it must: {s}");
     }
 
     /// One printable character types; a named key does not.

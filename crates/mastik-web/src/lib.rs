@@ -236,9 +236,11 @@ impl Player {
     /// Advance play by `ms`, place the screen in a room of `room_w` × `room_h` CSS
     /// pixels and draw it at `dpr` device pixels per CSS pixel, skipping the draw
     /// when nothing changed. Answers `[scale, stage_w, stage_h, x, y, w, h, bezel,
-    /// radius, moving, hint_flash]` (the `shell::Placement`, all CSS pixels but
-    /// `scale`; `moving` 1 while play changes without input; `hint_flash` the
-    /// hints' flash strength, 0 for none).
+    /// radius, moving, hint_flash, hint_density]` (the `shell::Placement`, all CSS
+    /// pixels but `scale`; `moving` 1 while play changes without input;
+    /// `hint_flash` the hints' flash strength, 0 for none; `hint_density` the
+    /// device pixels per CSS pixel the page's 2D hints canvas is drawn at, `dpr`
+    /// lowered to the 2D canvas's limits).
     pub fn frame(
         &mut self,
         ms: f64,
@@ -277,6 +279,7 @@ impl Player {
             self.draw(&scene, &vp, scale)?;
         }
         let flash = f64::from(scene.hint_flash.unwrap_or(0.0));
+        let hint_density = shell::draw_scale(p.screen, dpr.max(0.1), CANVAS_SIDE, CANVAS_AREA);
         self.drawn = Some((scene, vp.pixel_size));
         Ok(vec![
             p.scale,
@@ -290,6 +293,7 @@ impl Player {
             p.radius,
             f64::from(u8::from(self.play.is_moving())),
             flash,
+            hint_density,
         ])
     }
 
