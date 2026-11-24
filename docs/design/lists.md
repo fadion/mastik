@@ -483,6 +483,9 @@ MCP's Phase 3 (`mcp.md`), each acting as its door in the app.
   frame or its template, `rows` `"all"`, `{first}`, `{row}` or `"opened"`, columns named in the
   table the list reads after the call, and a `{Variable}` in a filter value stored in the id form
   (`Expr::from_names`). `table` moves the list as the Data dropdown does.
+- **`detach_list(nodes)`** is *Detach list* (`list::detach`), one step for every list; a layer
+  that is no list's frame is refused, so `make_component`'s refusal of a list (*detach it first
+  with `detach_list`*) names a step an agent can take.
 - **`set_chart_data`** writes a chart's set or gives the chart its own table (`charts.md`,
   *Elsewhere*).
 - **Scripts reach the tables through `tables`** (`mastik-vm` `run/tables.rs`; Luau's own `table`

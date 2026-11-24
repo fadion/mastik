@@ -547,6 +547,7 @@ fn settled_model(model: &str, v: &Value) -> Result<Value, String> {
         "ChartTable" => reads!(crate::chart::Table),
         "[Name]" => reads!(Vec<String>),
         "LayerPlay" => reads!(crate::prototype::LayerPlay),
+        "PlayExport" => reads!(crate::prototype::PlayExport),
         // A transition in part completed from a new page's, which is what the
         // verb reads too.
         "PagePlay" => {
@@ -1487,7 +1488,16 @@ pub fn example(model: &str) -> Option<Value> {
                     "var": "7e5b:9", "change": { "Set": { "to": "{Count} + 1" } } } }] }],
                 "otherwise": ["Back"] } }] },
         ]),
-        "LayerPlay" => serde_json::json!({ "scroll": "Vertical" }),
+        "LayerPlay" => serde_json::json!({
+            "scroll": "Horizontal", "snap": "Children", "snap_align": "Centre",
+            "follow": { "axis": "Vertical", "range": "Parent", "release": "Returns" },
+            "scroll_effect": { "from": 0, "to": 200,
+                "props": [{ "prop": "Opacity", "start": 1, "end": 0 }] },
+        }),
+        "PlayExport" => serde_json::json!({
+            "flows": [{ "page": "7e5b:1", "flow": "7e5b:20" }],
+            "device_frame": false, "scaling": "Fit",
+        }),
         "[Flow]" => serde_json::json!([{ "name": "Checkout", "start": "7e5b:40" }]),
         "PagePlay" => serde_json::json!({
             "scaling": "Fit",
@@ -2253,7 +2263,7 @@ fn not_main(why: crate::component::NotMain) -> &'static str {
         NotMain::SetKind => {
             "a component set holds one kind of layer; its variants are another kind"
         }
-        NotMain::List => "a list can't be part of a component; detach it first",
+        NotMain::List => "a list can't be part of a component; detach it first with `detach_list`",
     }
 }
 
@@ -5028,6 +5038,65 @@ pub static VERBS: &[Verb] = &[
         },
     },
     Verb {
+        name: "set_play_export",
+        doc: "Set the prototype's HTML export settings, as the export card keeps them: the flows that go in, the one it opens on, device frame, player bar, hotspot hints, scaling and a responsive page on a phone",
+        params: &[req(
+            "settings",
+            ParamKind::Model("PlayExport"),
+            "every setting; a flow is named by its page and its id as the page's `flows` read",
+        )],
+        run: |ctx, a| {
+            let settings = a.model::<crate::prototype::PlayExport>("settings")?;
+            let named = |f: &crate::prototype::FlowRef| {
+                ctx.doc
+                    .page(f.page)
+                    .is_some_and(|p| p.flows.iter().any(|k| k.id == f.flow))
+            };
+            let every = || {
+                let flows: Vec<String> = ctx
+                    .doc
+                    .pages()
+                    .iter()
+                    .flat_map(|p| {
+                        p.flows.iter().map(|k| {
+                            let page = p.id.to_wire();
+                            format!(
+                                "{} ({{page: {page}, flow: {}}})",
+                                k.value.name,
+                                k.id.0.to_wire()
+                            )
+                        })
+                    })
+                    .collect();
+                match flows.is_empty() {
+                    true => "the document has no flows; add one with `set_flows`".to_string(),
+                    false => format!("its flows are {}", flows.join(", ")),
+                }
+            };
+            if let Some(f) = settings
+                .flows
+                .iter()
+                .chain(&settings.opens)
+                .find(|f| !named(f))
+            {
+                let why = format!(
+                    "{{page: {}, flow: {}}} is no flow; {}",
+                    f.page.to_wire(),
+                    f.flow.0.to_wire(),
+                    every()
+                );
+                return Err(a.invalid("settings", why));
+            }
+            if let Some(o) = &settings.opens
+                && !settings.flows.is_empty()
+                && !settings.flows.contains(o)
+            {
+                return Err(a.invalid("settings", "`opens` is a flow `flows` lists"));
+            }
+            Ok(Done::ops(vec![Operation::SetPlayExport { settings }]))
+        },
+    },
+    Verb {
         name: "set_guides",
         doc: "Replace the ruler guides of a frame or a page: a listed guide with an `id` keeps it, one without is added, and an unlisted one is removed",
         params: &[
@@ -6066,7 +6135,7 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "set_play",
-        doc: "Replace layers' prototype settings: a frame's scroll, a child's pin, an input",
+        doc: "Replace layers' prototype settings: a frame's scroll and snap, a child's pin, an input, how a layer follows a drag, and a scroll effect",
         params: &[
             req("nodes", NODES, "the layers"),
             req("play", ParamKind::Model("LayerPlay"), "the settings"),
@@ -6899,6 +6968,22 @@ pub static VERBS: &[Verb] = &[
             ),
         ],
         run: tables::set_list,
+    },
+    Verb {
+        name: "detach_list",
+        doc: "Detach lists: each keeps its rows as plain instances and stops reading its table",
+        params: &[req("nodes", NODES, "the lists' frames")],
+        run: |ctx, a| {
+            let nodes = a.nodes("nodes")?;
+            if let Some(not) = nodes
+                .iter()
+                .find(|id| ctx.doc.get(**id).is_none_or(|n| n.list().is_none()))
+            {
+                let why = format!("{} is no list's frame", not.to_wire());
+                return Err(a.invalid("nodes", why));
+            }
+            Ok(Done::ops(crate::list::detach(ctx.doc, &nodes).0))
+        },
     },
 ];
 

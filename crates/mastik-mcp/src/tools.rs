@@ -40,7 +40,7 @@ pub const PHASE_1: [&str; 30] = [
 ///
 /// `create_node`, `insert_subtree`, `duplicate` and `add_image` return the new
 /// ids: the handler minted them, so it knows them.
-pub const PHASE_2: [&str; 90] = [
+pub const PHASE_2: [&str; 91] = [
     "create_node",
     "create_text",
     "insert_subtree",
@@ -122,6 +122,7 @@ pub const PHASE_2: [&str; 90] = [
     "set_canvas_colour",
     "set_flows",
     "set_page_play",
+    "set_play_export",
     "set_guides",
     "undo",
     "redo",
@@ -141,7 +142,7 @@ pub const PHASE_2: [&str; 90] = [
 /// still in use is refused at the commit. `create_instance`, `add_variable`,
 /// `add_mode`, `add_collection`, `duplicate_collection` and `add_style` return
 /// the new ids.
-pub const PHASE_3: [&str; 61] = [
+pub const PHASE_3: [&str; 62] = [
     "make_component",
     "duplicate_as_component",
     "create_instance",
@@ -203,6 +204,7 @@ pub const PHASE_3: [&str; 61] = [
     "unlink_table",
     "make_list",
     "set_list",
+    "detach_list",
 ];
 
 /// Phase 4 — kits and the library, the app's own actions (§8.4).

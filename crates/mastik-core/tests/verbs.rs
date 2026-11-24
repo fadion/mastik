@@ -7685,6 +7685,65 @@ fn set_reactions_stores_names_by_id_and_refuses_what_does_not_read() {
     );
 }
 
+/// `set_play_export` writes the HTML export's settings as the card keeps them,
+/// refusing a flow that is none (listing the flows) and an `opens` outside a
+/// non-empty `flows`.
+/// flip: `set_play_export` without its flow check → fails at "lists the flows".
+#[test]
+fn set_play_export_writes_the_settings_and_refuses_a_flow_that_is_none() {
+    let (mut doc, mut ids, page) = blank();
+    let a = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame(100.0, 100.0) }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "set_flows",
+        json!({ "page": page.to_wire(), "flows": [{ "name": "Checkout", "start": a.to_wire() },
+            { "name": "Browse", "start": a.to_wire() }] }),
+    );
+    let flows: Vec<_> = doc.page(page).unwrap().flows.iter().map(|k| k.id).collect();
+    let r = |f: mastik_core::item::ItemId| json!({ "page": page.to_wire(), "flow": f.0.to_wire() });
+    run(
+        &mut doc,
+        &mut ids,
+        "set_play_export",
+        json!({ "settings": { "flows": [r(flows[1])], "opens": r(flows[1]), "player_bar": false } }),
+    );
+    let s = doc.play_export();
+    assert_eq!(s.flows.len(), 1);
+    assert_eq!(s.opens.map(|o| o.flow), Some(flows[1]));
+    assert!(
+        !s.player_bar && s.device_frame,
+        "the rest as written or the default"
+    );
+
+    let gone = json!({ "page": page.to_wire(), "flow": "7e5b:999" });
+    let why = format!(
+        "{:?}",
+        answer(
+            &doc,
+            &mut ids,
+            "set_play_export",
+            json!({ "settings": { "flows": [gone] } })
+        )
+        .err()
+    );
+    assert!(
+        why.contains("Checkout") && why.contains("Browse"),
+        "lists the flows: {why}"
+    );
+    let outside = json!({ "settings": { "flows": [r(flows[0])], "opens": r(flows[1]) } });
+    let why = format!(
+        "{:?}",
+        answer(&doc, &mut ids, "set_play_export", outside).err()
+    );
+    assert!(why.contains("opens"), "{why}");
+}
+
 /// `get_tree` carries reactions and play settings in `set_reactions`' short
 /// forms, keeping the id of a layer a reaction targets; `insert_subtree` writes
 /// them back, a target inside the tree moved to its copy and one outside kept. A

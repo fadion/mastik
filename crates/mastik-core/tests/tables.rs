@@ -796,3 +796,53 @@ fn edit_table_never_hands_a_deleted_id_to_a_column_added_with_it() {
     let list = doc.get(l).unwrap().list().unwrap();
     assert!(list.fill.is_empty(), "the fill on Age is dropped");
 }
+
+/// `detach_list` is *Detach list*: the frame keeps its rows as plain instances and
+/// reads no table, so the table can be deleted; a layer that is no list is refused.
+/// flip: `detach_list` answering no ops → fails at "no list now".
+#[test]
+fn detach_list_keeps_the_rows_and_lets_the_table_go() {
+    let (mut doc, mut ids, page) = blank();
+    let mut h = History::default();
+    let inst = row_instance(&mut h, &mut doc, &mut ids, page);
+    let set = people(
+        &mut h,
+        &mut doc,
+        &mut ids,
+        json!([["Ana", "31"], ["Ben", "40"]]),
+    );
+    let l = made(
+        &mut h,
+        &mut doc,
+        &mut ids,
+        "make_list",
+        json!({ "node": inst.to_wire(), "table": set.0.to_wire() }),
+    );
+    let rows = titles(&doc, l);
+    assert_eq!(rows, ["Ana", "Ben"], "the list draws its rows");
+    let why = refused(
+        &doc,
+        &mut ids,
+        "detach_list",
+        json!({ "nodes": [page.to_wire()] }),
+    );
+    assert!(why.contains("no list"), "{why}");
+    let kids = doc.get(l).unwrap().children().to_vec();
+    run(
+        &mut h,
+        &mut doc,
+        &mut ids,
+        "detach_list",
+        json!({ "nodes": [l.to_wire()] }),
+    );
+    assert!(doc.get(l).unwrap().list().is_none(), "no list now");
+    assert_eq!(doc.get(l).unwrap().children(), kids, "the rows stay");
+    run(
+        &mut h,
+        &mut doc,
+        &mut ids,
+        "delete_table",
+        json!({ "table": "People" }),
+    );
+    assert!(doc.data_set(set).is_none(), "the table goes");
+}
