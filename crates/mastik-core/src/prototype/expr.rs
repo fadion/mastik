@@ -271,7 +271,7 @@ impl Names<'_> {
             [one] => Ok(*one),
             [] => Err(hint.map_or(Lookup::Unknown, Lookup::Why)),
             _ => Err(Lookup::Why(format!(
-                "“{s}” reads two ways; pick it from the @ list"
+                "“{s}” reads two ways; pick it from the list {{ opens"
             ))),
         }
     }
@@ -1543,6 +1543,31 @@ mod tests {
         ]
     }
 
+    /// A column whose name has an edge space is shown by its id, which reads
+    /// back to the stored form: written as a name, the braces would trim it to a
+    /// column that is none.
+    ///
+    /// flip: `Expr::shown` without its `n.trim() == n` half → fails at "kept as
+    /// its id".
+    #[test]
+    fn a_name_with_an_edge_space_is_shown_by_id() {
+        let sets = vec![set(1, "products.csv", &["Price "], &[&["42"]])];
+        let vid = |_: &str| Vec::<VarId>::new();
+        let vname = |_: VarId| None;
+        let names = Names {
+            var_id: &vid,
+            var_name: &vname,
+            tables: &sets,
+            row: None,
+        };
+        let cell = Ref::Cell(sets[0].id, RowAt::First, ColumnId(0));
+        let stored = Expr(format!("{{{}}} + 1", cell.wire()));
+        let shown = stored.with_names_in(&names);
+        assert_eq!(shown, stored.0, "kept as its id");
+        let (back, err) = Expr::from_names_in(&shown, &names);
+        assert_eq!((back, err), (stored, None), "reads back");
+    }
+
     /// A typed table read resolves by the real names, longest match, and is
     /// stored by ids that read back to the same text.
     ///
@@ -1610,7 +1635,7 @@ mod tests {
         let (_, err) = Expr::from_names_in("{Cart.rows} + 1", &names);
         let err = err.expect("two ways");
         assert!(
-            err.to_string().contains("pick it from the @ list"),
+            err.to_string().contains("pick it from the list { opens"),
             "two ways"
         );
         assert_eq!(err.at(), 0..11);

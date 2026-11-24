@@ -519,7 +519,7 @@ where…* test as source text, everything it names stored by id (`expr::Ref`,
   (`with_names` and `from_names` are the variables-only forms a list filter uses). A typed name
   is resolved against the real table and column names (`Names::resolve`), since a name may
   hold a dot (an imported table is named after its file, `products.csv`): every reading is
-  collected, and a name that reads two ways is refused with *pick it from the @ list*. A variable
+  collected, and a name that reads two ways is refused with *pick it from the list { opens*. A variable
   name is looked up among every variable, the kits' among them (`Variables::ids_named`); a name two
   variables share is refused at both doors rather than given to the first, and is shown by its id
   (`Variables::expr_name`), which reads back; so is a name holding `}` or leading or trailing
