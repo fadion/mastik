@@ -47,6 +47,11 @@ pub struct Budget {
     pub time: Duration,
     /// Interrupts, which Luau raises at every call and loop iteration.
     pub steps: u64,
+    /// The steps each unit of host work is charged: a layer a call reads or
+    /// writes, an operation committed, a `play` call. Zero where the clock
+    /// bounds host work; a budget with no clock needs it, or a loop of host
+    /// calls runs on for minutes in a handful of steps.
+    pub host: u64,
     /// Bytes beyond what the fresh state holds.
     pub memory: usize,
 }
@@ -56,16 +61,21 @@ pub struct Budget {
 pub const RUN_BUDGET: Budget = Budget {
     time: Duration::from_secs(1),
     steps: 200_000_000,
+    host: 0,
     memory: 64 << 20,
 };
 
 /// The budget of a prototype's *Run script* in play: steps and memory alone, no
 /// clock, so the app, the exported page and a take's replay all stop a run at
 /// the same step. Five million steps take from about 50 ms (a bare loop) to
-/// about 1.3 s (a loop building strings) natively.
+/// about 1.3 s (a loop building strings) natively. Host work is charged in
+/// steps, so 5,000 layer reads or `play` calls, or about half as many layer
+/// writes, spend it: a write costs from about 10 µs on a small page to about
+/// 1 ms among 2,000 siblings.
 pub const PLAY_BUDGET: Budget = Budget {
     time: Duration::MAX,
     steps: 5_000_000,
+    host: 1_000,
     memory: 64 << 20,
 };
 
@@ -75,6 +85,7 @@ pub const PLAY_BUDGET: Budget = Budget {
 pub const WORKER_BUDGET: Budget = Budget {
     time: Duration::from_secs(30),
     steps: 6_000_000_000,
+    host: 0,
     memory: 64 << 20,
 };
 
@@ -83,6 +94,7 @@ pub const WORKER_BUDGET: Budget = Budget {
 pub const READ_BUDGET: Budget = Budget {
     time: Duration::from_millis(20),
     steps: 500_000,
+    host: 0,
     memory: 8 << 20,
 };
 
@@ -775,10 +787,12 @@ struct State<'h> {
     /// Set by each host call, which may be slow: the interrupt then reads the
     /// clock at once rather than at its next 256th step.
     hosted: Rc<Cell<bool>>,
-    /// When the run started and how long it may take, read between the host
-    /// calls one Lua call makes for each layer, where no interrupt fires.
+    /// When the run started, read between the host calls one Lua call makes
+    /// for each layer, where no interrupt fires.
     start: Instant,
-    time: Duration,
+    budget: Budget,
+    /// The steps spent, shared with the interrupt, which host work is charged to.
+    steps: Rc<Cell<u64>>,
     /// Set from outside to stop the run ([`crate::Leash::stop`]).
     stop: Option<Arc<AtomicBool>>,
     /// The tables `tables` has read, with the writes gathered for the run's end.
@@ -786,27 +800,43 @@ struct State<'h> {
 }
 
 impl State<'_> {
-    /// Stop with the time budget's error once the run has spent it, or as
-    /// stopped once the stop flag is set.
-    fn on_time(&self) -> mlua::Result<()> {
+    /// Charge `units` of host work to the steps. The next interrupt, or the
+    /// next [`State::host_step`], stops the run once they are spent.
+    fn charge(&self, units: usize) {
+        let cost = self.budget.host.saturating_mul(units as u64);
+        self.steps.set(self.steps.get().saturating_add(cost));
+    }
+
+    /// Charge one layer's host work, then stop as stopped once the stop flag is
+    /// set, or with the budget's error once the run has spent its steps or its
+    /// time.
+    fn host_step(&self) -> mlua::Result<()> {
         if stopped(self.stop.as_deref()) {
             return Err(stopped_error());
         }
-        if self.start.elapsed() > self.time {
+        self.charge(1);
+        if self.steps.get() > self.budget.steps {
+            return Err(out_of_budget(format!(
+                "Stopped after {} steps",
+                self.budget.steps
+            )));
+        }
+        if self.start.elapsed() > self.budget.time {
             return Err(out_of_budget(format!(
                 "Stopped after {}",
-                duration(self.time)
+                duration(self.budget.time)
             )));
         }
         Ok(())
     }
 
-    /// Commit `tx` unless it is empty.
+    /// Commit `tx` unless it is empty, charging each of its operations.
     fn commit(&mut self, tx: mastik_core::Transaction) -> Result<(), String> {
         if tx.0.is_empty() {
             return Ok(());
         }
         self.hosted.set(true);
+        self.charge(tx.0.len());
         self.host.commit(tx)
     }
 
@@ -973,7 +1003,8 @@ pub(crate) fn run(
     let lua = Lua::new();
     let fail = |e: mlua::Error| convert(e, original, budget);
     lua.sandbox(true).map_err(fail)?;
-    let steps = Rc::new(Cell::new(0u64));
+    let spent = Rc::new(Cell::new(0u64));
+    let steps = spent.clone();
     let hosted = Rc::new(Cell::new(false));
     let start = Instant::now();
     let after_host = hosted.clone();
@@ -1010,7 +1041,8 @@ pub(crate) fn run(
         selection: None,
         hosted,
         start,
-        time: budget.time,
+        budget,
+        steps: spent,
         stop,
         tables: Vec::new(),
     });
@@ -1552,6 +1584,7 @@ fn read_shared(
         return Err(no_property(lua, prop));
     };
     let st = state.borrow();
+    st.charge(ids.len());
     let (doc, res) = (st.host.doc(), st.host.resolved());
     let read = |id| props::read(doc, res, id, prop).map_err(|why| raise(lua, why));
     if prop == "children" {
@@ -1725,7 +1758,7 @@ fn write(
             match prop {
                 "x" | "y" => {
                     for id in ids {
-                        st.on_time()?;
+                        st.host_step()?;
                         if let Some(why) = mastik_core::build::laid_out_refusal(st.host.doc(), *id)
                         {
                             return Err(fail(why));
@@ -1748,7 +1781,7 @@ fn write(
                 }
                 "width" | "height" => {
                     for id in ids {
-                        st.on_time()?;
+                        st.host_step()?;
                         let size = {
                             let (doc, res) = (st.host.doc(), st.host.resolved());
                             mastik_core::query::local_box(doc, res, *id).map(|b| b.size())
@@ -1773,7 +1806,7 @@ fn write(
                 }
                 "rotation" => {
                     for id in ids {
-                        st.on_time()?;
+                        st.host_step()?;
                         let tx = {
                             let (doc, res) = (st.host.doc(), st.host.resolved());
                             mastik_core::edit::turned_to(doc, res, *id, n.to_radians())
@@ -1789,7 +1822,7 @@ fn write(
                 }
                 "corner_radius" => {
                     for id in ids {
-                        st.on_time()?;
+                        st.host_step()?;
                         st.apply(
                             "set_geometry",
                             &json!({ "node": id.to_wire(), "geometry": { "CornerRadius": n } }),
@@ -1836,7 +1869,7 @@ fn write(
                     // One argument, its layer swapped for each, rather than a copy per layer.
                     let mut args = json!({ "node": null, prop: text });
                     for id in ids {
-                        st.on_time()?;
+                        st.host_step()?;
                         args["node"] = json!(id.to_wire());
                         st.apply(verb, &args).map_err(fail)?;
                     }
@@ -2049,7 +2082,7 @@ fn write_model(
         | "letter_spacing" | "text_case" => {
             let attr = char_attr(prop, &v).ok_or_else(wrong)?;
             for id in ids {
-                st.on_time()?;
+                st.host_step()?;
                 if !matches!(
                     st.host.doc().get(*id).map(|n| n.kind()),
                     Some(mastik_core::NodeKind::Text { .. })
@@ -2069,7 +2102,7 @@ fn write_model(
             };
             let align = model_word(&s.to_str()?);
             for id in ids {
-                st.on_time()?;
+                st.host_step()?;
                 let paragraph = match st.host.doc().get(*id).map(|n| n.kind()) {
                     Some(mastik_core::NodeKind::Text { paragraph, .. }) => {
                         serde_json::to_value(paragraph).map_err(|e| fail(e.to_string()))?
@@ -2196,7 +2229,7 @@ fn write_model(
                 _ => return Err(wrong()),
             };
             for id in ids {
-                st.on_time()?;
+                st.host_step()?;
                 let display = st.host.doc().get(*id).and_then(|n| n.display()).cloned();
                 let Some(display) = display else {
                     return Err(fail(format!(
@@ -2256,7 +2289,7 @@ fn write_percent(
     }
     let mut st = state.borrow_mut();
     for id in ids {
-        st.on_time()?;
+        st.host_step()?;
         let item = {
             let doc = st.host.doc();
             let Some(node) = doc.get(*id) else {
@@ -2478,7 +2511,7 @@ fn call_verb(
     let mut made = None;
     for run in 0..runs {
         // The host calls follow one another in Rust, where no interrupt fires.
-        state.borrow().on_time()?;
+        state.borrow().host_step()?;
         if let Some((key, ids)) = &each {
             args[*key] = json!(ids[run].to_wire());
         }

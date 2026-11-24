@@ -23,13 +23,17 @@ pub(crate) const MEMBERS: &[(&str, &str)] = &[
     ("go", "`play.go(\"Frame\")` shows a frame once the run ends"),
 ];
 
-/// Run `f` over the host's play state, raising when it has none.
+/// Run `f` over the host's play state, raising when it has none. Each call is
+/// charged as one unit of host work.
 fn with_play<R>(
     lua: &Lua,
     state: &RefCell<State<'_>>,
     f: impl FnOnce(&mut dyn crate::Play) -> Result<R, String>,
 ) -> mlua::Result<R> {
     let mut st = state.borrow_mut();
+    // A write clones the play values and updates the resolve in Rust, where
+    // no interrupt fires.
+    st.charge(1);
     let play = st.host.play().ok_or_else(|| {
         raise(
             lua,

@@ -285,8 +285,10 @@ sandbox. What is left is an escape through a bug in Luau or `mlua`.
   a collection counting each of its layers) and 16 MB of strings (`ARG_BYTES_MAX`), both spent
   before each copy: a table that shares a subtable at every level, or repeats a long string or a
   collection, is refused, not expanded. A verb of one layer, or a `.name`/`.text` write, hands its
-  argument to the host once per layer, so its bytes count once per layer; and the clock is read
-  between those per-layer host calls, which no interrupt separates. The
+  argument to the host once per layer, so its bytes count once per layer; and the clock and the
+  steps are read between those per-layer host calls, which no interrupt separates. A budget with
+  no clock charges host work to its steps instead (`Budget::host`: per layer read or written, per
+  operation committed, per `play` call); the others charge none. The
   editor's output pane lays out only the rows in view, and cuts a printed line past 2,000
   characters:
 
@@ -295,7 +297,7 @@ sandbox. What is left is an escape through a bug in Luau or `mlua`.
   | `WORKER_BUDGET`: Enter in the bar, a script, an `/ai` script, on a worker | 30 s | 6,000,000,000 | 64 MB |
   | `RUN_BUDGET`: an agent's `run_script`, holding the UI thread | 1 s | 200,000,000 | 64 MB |
   | `READ_BUDGET`: the bar's live read, every keystroke | 20 ms | 500,000 | 8 MB |
-  | `PLAY_BUDGET`: a prototype's *Run script* in play, which reads no clock (`play.md`) | none | 5,000,000 | 64 MB |
+  | `PLAY_BUDGET`: a prototype's *Run script* in play, which reads no clock (`play.md`) | none | 5,000,000, host work 1,000 a unit | 64 MB |
 
   A spent budget is `ErrorKind::Budget`, and the run is taken back (§7). A run on a worker no
   longer freezes the window, and the person stops it with `Escape`, so its time budget is only the

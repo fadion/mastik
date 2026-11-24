@@ -238,7 +238,13 @@ out both ends.
   player navigates there after the run with the page's transition, as *Navigate* would, the last
   call winning. The exported page's scripts player runs the same `Player`, so it reaches the same
   `play`. A run goes under `PLAY_BUDGET`, steps and memory with no clock, so the app, the
-  exported page and a take's replay stop a runaway at the same step. The copy, its resolve and
+  exported page and a take's replay stop a runaway at the same step. Host work, which runs in
+  Rust between interrupts, is charged to the steps (`Budget::host`): each layer a call reads or
+  writes, each operation committed and each `play` call costs 1,000, so a loop of layer or
+  `play.vars` writes ends at the budget rather than holding the UI thread for minutes. The memory
+  limit counts the allocator's bytes, which depend on the target's pointer width, so a run near it
+  may stop on the desktop and finish in the exported page (wasm32); that is the one bound not
+  shared, and a take's replay on the same machine still agrees. The copy, its resolve and
   the play values are snapshotted first and put back whole if the run fails, which then fires no
   change and navigates nowhere. A run that
   wrote a table ends with `Player::follow_tables` over the tables it wrote: every chart over one

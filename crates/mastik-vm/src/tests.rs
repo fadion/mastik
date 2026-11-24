@@ -790,7 +790,7 @@ fn a_runaway_loop_stops_at_the_budget() {
 
 /// A set stop flag ends a run as stopped: at the next step of a loop, and
 /// between the per-layer host calls of one write, where no interrupt fires.
-/// flip: `State::on_time` not reading the flag → fails at "one layer written".
+/// flip: `State::host_step` not reading the flag → fails at "one layer written".
 #[test]
 fn a_stop_flag_ends_the_run() {
     use std::sync::Arc;
