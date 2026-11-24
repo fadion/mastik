@@ -342,6 +342,69 @@ fn a_filter_follows_the_variable_it_reads() {
     );
 }
 
+/// A list filtered by a variable, moved into a frame in another mode, passes
+/// that mode's rows in the move's own step.
+/// flip: `touched` without its `by_mode` arm does not bite, since the move also
+/// dirties the template, whose walk up finds the list; without both → fails at
+/// "the frame's mode".
+#[test]
+fn a_filtered_list_moved_into_another_mode_follows_it() {
+    use mastik_core::list::{Test, TestOp};
+    let (mut doc, mut ids, page) = blank();
+    let (_, inst) = row_component(&mut doc, &mut ids, page);
+    let set = data(
+        &mut ids,
+        &[("Linen", "yes"), ("Wool", "no"), ("Camp", "yes")],
+    );
+    let res = Resolved::rebuild(&doc);
+    let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).unwrap();
+    let mut history = History::default();
+    commit(&mut history, &mut doc, &mut ids, tx);
+    let yes = serde_json::to_value(mastik_core::Cell::String("yes".into())).unwrap();
+    let no = serde_json::to_value(mastik_core::Cell::String("no".into())).unwrap();
+    let frame = serde_json::to_value(NodeKind::Artboard {
+        size: Size::new(600.0, 600.0),
+        corner_radii: Default::default(),
+        corner_smoothing: 0.0,
+    })
+    .unwrap();
+    let made = verbs::run_script(
+        &mut doc,
+        &mut ids,
+        Default::default(),
+        &json!([
+            { "verb": "add_variable", "args": { "kind": "string", "name": "Badge", "value": yes }, "as": "v" },
+            { "verb": "add_mode", "args": { "name": "Plain" }, "as": "m" },
+            { "verb": "set_variable_value", "args": { "variable": "@v", "mode": "@m", "value": no } },
+            { "verb": "create_node", "args": { "parent": page.to_wire(), "kind": frame, "x": 2000, "y": 0 }, "as": "f" },
+            { "verb": "set_frame_mode", "args": { "node": "@f", "mode": "@m" } },
+        ]),
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+    let var = doc.variables().by_name("Badge").unwrap().id;
+    let f = NodeId::from_wire(&made[3][0]).unwrap();
+    let mut filtered = doc.get(l).unwrap().list().unwrap().clone();
+    filtered.filter.tests.push(Test {
+        column: ColumnId(1),
+        op: TestOp::Is,
+        value: mastik_core::prototype::Expr(format!("{{{}}}", var.0.to_wire())),
+    });
+    let edit = Transaction(vec![Operation::SetList {
+        id: l,
+        list: Some(Box::new(filtered)),
+    }]);
+    commit(&mut history, &mut doc, &mut ids, edit);
+    assert_eq!(titles(&doc, l), ["Linen", "Camp"], "the page's mode");
+
+    let into = Transaction(vec![Operation::Reparent {
+        id: l,
+        new_parent: f,
+        index: 0,
+    }]);
+    commit(&mut history, &mut doc, &mut ids, into);
+    assert_eq!(titles(&doc, l), ["Wool"], "the frame's mode");
+}
+
 /// A boolean cell that reads as neither shown nor hidden gives its row the
 /// main's value, not the one row 1 last filled into the template.
 /// flip: `regenerate` skipping the property on an unread cell → fails at "made again".
