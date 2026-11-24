@@ -285,9 +285,6 @@ impl MastikApp {
     /// *Rows*: every row, the first few, one fixed row, or the row opened in
     /// play.
     fn list_rows_rows(&mut self, ui: &mut egui::Ui, id: NodeId, now: &List) {
-        if self.list_row_moved.as_ref().is_some_and(|m| m.0 != id) {
-            self.list_row_moved = None;
-        }
         if !self.card_fold(ui, "List rows", "Rows") {
             return;
         }
@@ -421,10 +418,9 @@ impl MastikApp {
         }
     }
 
-    /// The column dropdown of a filter test or a sort: *None* when `none` is
+    /// The column dropdown of a filter test, a sort or a fill: *None* when `none` is
     /// offered, then the table's columns; a column the table lacks shows
     /// *Missing column*. Answers the pick (`None` for *None*).
-    #[allow(clippy::too_many_arguments)]
     fn list_column_combo(
         ui: &mut egui::Ui,
         salt: impl std::hash::Hash + std::fmt::Debug,
@@ -455,6 +451,15 @@ impl MastikApp {
         pick.filter(|p| *p != now)
     }
 
+    /// The table's columns as the column dropdowns list them: id and name.
+    fn columns_of(table: &mastik_core::chart::Table) -> Vec<(ColumnId, String)> {
+        table
+            .columns
+            .iter()
+            .map(|c| (c.id, c.name.clone()))
+            .collect()
+    }
+
     /// *Filter*: tests on columns joined by *All* or *Any*, each a column, a
     /// test word and a value. Dimmed under a one-row mode.
     fn list_filter_rows(&mut self, ui: &mut egui::Ui, id: NodeId, now: &List) {
@@ -470,12 +475,7 @@ impl MastikApp {
         let Some(set) = doc.data_set(now.data).cloned() else {
             return;
         };
-        let columns: Vec<(ColumnId, String)> = set
-            .table
-            .columns
-            .iter()
-            .map(|c| (c.id, c.name.clone()))
-            .collect();
+        let columns = Self::columns_of(&set.table);
         let passing = now.passing(&set.table, &|v| doc.resolve_var(id, v)).len();
         let mut next: Option<List> = None;
         ui::disable_unless(ui, !one, |ui| {
@@ -614,12 +614,7 @@ impl MastikApp {
         let Some(set) = doc.data_set(now.data) else {
             return;
         };
-        let columns: Vec<(ColumnId, String)> = set
-            .table
-            .columns
-            .iter()
-            .map(|c| (c.id, c.name.clone()))
-            .collect();
+        let columns = Self::columns_of(&set.table);
         let note = now
             .sort
             .first()
@@ -710,15 +705,9 @@ impl MastikApp {
             .into_iter()
             .map(|(t, name, _)| (t, name))
             .collect();
-        let columns: Vec<(ColumnId, String)> = doc
+        let columns = doc
             .data_set(now.data)
-            .map(|d| {
-                d.table
-                    .columns
-                    .iter()
-                    .map(|c| (c.id, c.name.clone()))
-                    .collect()
-            })
+            .map(|d| Self::columns_of(&d.table))
             .unwrap_or_default();
         let unmatched = list::unmatched_variants(doc, id);
         let no_picture = list::unmatched_pictures(doc, id);
@@ -740,25 +729,11 @@ impl MastikApp {
         }
         for (target, name) in targets {
             let now_col = now.column_for(&target);
-            let shown = now_col
-                .and_then(|c| columns.iter().find(|(i, _)| *i == c))
-                .map_or("None", |(_, n)| n.as_str())
-                .to_string();
             let mut pick: Option<Option<ColumnId>> = None;
             ui::labelled(ui, &name, |ui| {
                 let w = ui.available_width();
                 let salt = ("list-fill", id, name.as_str());
-                ui::fitted_combo(ui, salt, w, ui::combo_text(&shown), &shown, |ui| {
-                    ui::menu_rows(ui);
-                    if ui.selectable_label(now_col.is_none(), "None").clicked() {
-                        pick = Some(None);
-                    }
-                    for (c, n) in &columns {
-                        if ui.selectable_label(now_col == Some(*c), n).clicked() {
-                            pick = Some(Some(*c));
-                        }
-                    }
-                });
+                pick = Self::list_column_combo(ui, salt, w, &columns, now_col, true);
             });
             if let Target::Variant(v) = &target
                 && let Some((_, cells)) = unmatched.iter().find(|(p, _)| p == v)
@@ -1342,6 +1317,45 @@ mod tests {
         let rows = app.session.doc.get(l).unwrap().list().unwrap().rows;
         assert_eq!(rows, Rows::Row(1), "the gutter's row");
         assert_eq!(app.list_row_moved, None, "the note goes with a new pick");
+    }
+
+    /// The moved-row note goes with an undo of the delete, and when the
+    /// inspector shows another layer.
+    /// flip: `document_rewound` keeping `list_row_moved` → fails at "undo";
+    /// `inspector_ui` not dropping it → fails at "another layer".
+    #[test]
+    fn a_moved_row_note_goes_with_undo_and_another_layer() {
+        use mastik_core::list::{List, Rows};
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let (l, set) = listed(&mut app, inst, &["A", "B", "C"]);
+        let now = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        app.list_commit(
+            l,
+            "List rows",
+            List {
+                rows: Rows::Row(2),
+                ..now
+            },
+        );
+        app.session.selection.set_one(l);
+        let delete = |app: &mut MastikApp| {
+            let mut table = app.session.doc.data_set(set).unwrap().table.clone();
+            table.rows.remove(0);
+            app.commit_data_table(set, table);
+        };
+        delete(&mut app);
+        assert!(app.list_row_moved.is_some(), "noted");
+        pass(&ctx, &mut app);
+        assert!(app.list_row_moved.is_some(), "kept while its list is shown");
+        app.undo();
+        assert_eq!(app.list_row_moved, None, "undo");
+
+        delete(&mut app);
+        assert!(app.list_row_moved.is_some(), "noted again");
+        app.session.selection.set_one(inst);
+        pass(&ctx, &mut app);
+        assert_eq!(app.list_row_moved, None, "another layer");
     }
 
     /// A copy of a list standing on the page picks as its list, and a

@@ -585,14 +585,18 @@ impl MastikApp {
             return;
         }
         let mut ops = Vec::new();
+        // One slot: the selected list's note wins over another's.
+        let mut note = None;
+        let shown = self.session.selection.single();
         for l in self.lists_over(set) {
             let Some(x) = self.session.doc.get(l).and_then(|n| n.list()).cloned() else {
                 continue;
             };
             if let mastik_core::list::Rows::Row(n) = x.rows
+                && (note.is_none() || shown == Some(l))
                 && let Some(moved) = row_moved(&now.table, &table, n)
             {
-                self.list_row_moved = Some((l, n, moved));
+                note = Some((l, n, moved));
             }
             let kept = x.on_columns_of(&table);
             if kept != x {
@@ -610,7 +614,9 @@ impl MastikApp {
             },
         );
         self.session.name_step("Edit table", icon::TABLE);
-        self.commit_edit(Transaction(ops));
+        if self.commit_edit(Transaction(ops)) && note.is_some() {
+            self.list_row_moved = note;
+        }
     }
 
     /// Data set `set` renamed, undo step *Rename table*; a name another data set

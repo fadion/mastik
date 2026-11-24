@@ -1290,7 +1290,8 @@ pub struct MastikApp {
     pub(crate) tables_last: Option<mastik_core::list::DataSetId>,
     /// A *Row* list whose row a table edit deleting rows moved onto another
     /// record: the list, its row, and that row's first cell before the edit.
-    /// The List card says so until it shows another layer.
+    /// The List card says so until it shows another layer, a row is picked or
+    /// the history moves.
     pub(crate) list_row_moved: Option<(NodeId, u32, String)>,
     /// The chart import box, while it is open.
     pub(crate) chart_import: Option<crate::chart_import::ChartImport>,
@@ -2832,6 +2833,8 @@ impl MastikApp {
     ///   redo with no commit between, dropped once a commit branches.
     pub(crate) fn document_rewound(&mut self) {
         self.points.clear();
+        // The row the note names is back where it was, or moved again.
+        self.list_row_moved = None;
         self.pen = None;
         self.pencil = None;
         self.builder = None;

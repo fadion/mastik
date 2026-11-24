@@ -977,6 +977,9 @@ impl MastikApp {
         // would ambush whoever selected that layer next.
         self.pending_picker
             .take_if(|(id, _)| !self.session.selection.contains(*id));
+        // The moved-row note lasts while the List card shows its list.
+        self.list_row_moved
+            .take_if(|m| self.session.selection.single() != Some(m.0));
         // A deselect can close the blend menu with no Appearance card left to
         // take its preview back.
         if !egui::Popup::is_id_open(ui.ctx(), blend_menu_id()) {
