@@ -285,15 +285,19 @@ fn written(set: &DataSet, table: Table) -> Done {
 }
 
 /// A table of `names` over `rows`, each column named apart from those before it
-/// and numbered by place; a row of another width is refused.
+/// and numbered by place; a row of another width is refused. A name is trimmed
+/// unless `old` has a column of exactly that name, so a table sent back as it
+/// was read keeps a name with edge spaces, and with it the column's id.
 fn table_from(
     a: &Args<'_>,
     names: Vec<String>,
     rows: Vec<Vec<CellIn>>,
+    old: Option<&Table>,
 ) -> Result<Table, VerbError> {
     let mut table = Table::default();
     for name in names {
-        let name = table.free_column_name(name.trim(), None);
+        let kept = old.is_some_and(|o| o.columns.iter().any(|c| c.name == name));
+        let name = table.free_column_name(if kept { &name } else { name.trim() }, None);
         let id = table.next_column_id();
         table.columns.push(Column { id, name });
     }
@@ -337,7 +341,7 @@ pub(super) fn add_table(ctx: &mut Ctx<'_>, a: &Args<'_>) -> Result<Done, VerbErr
             }],
             rows: vec![vec![String::new()]],
         },
-        (Some(names), rows) => table_from(a, names, rows.unwrap_or_default())?,
+        (Some(names), rows) => table_from(a, names, rows.unwrap_or_default(), None)?,
     };
     within_limits(a, "columns", &table)?;
     let id = ctx.ids.mint_data_set();
@@ -362,7 +366,8 @@ pub(super) fn add_table(ctx: &mut Ctx<'_>, a: &Args<'_>) -> Result<Done, VerbErr
 
 /// `edit_table`: cells set, rows added and deleted, columns added, renamed and
 /// deleted, in one step. Rows are numbered as the table stands before the call;
-/// `set` and `add` name columns as they stand after `columns`.
+/// `set` and `add` name columns as they stand after `columns`. Column deletes go
+/// before renames, so a rename may take a deleted or renamed-away name.
 pub(super) fn edit_table(ctx: &mut Ctx<'_>, a: &Args<'_>) -> Result<Done, VerbError> {
     let set = table_of(ctx.doc, a, "table")?;
     if ["set", "add", "delete", "columns"]
@@ -396,12 +401,6 @@ pub(super) fn edit_table(ctx: &mut Ctx<'_>, a: &Args<'_>) -> Result<Done, VerbEr
             .iter()
             .map(named)
             .collect::<Result<Vec<_>, VerbError>>()?;
-        for (id, new) in renames {
-            let name = t.free_column_name(new.trim(), Some(id));
-            if let Some(c) = t.columns.iter_mut().find(|c| c.id == id) {
-                c.name = name;
-            }
-        }
         for id in deletes {
             if let Some(i) = t.index_of(id) {
                 t.columns.remove(i);
@@ -409,6 +408,21 @@ pub(super) fn edit_table(ctx: &mut Ctx<'_>, a: &Args<'_>) -> Result<Done, VerbEr
                     r.remove(i);
                 });
             }
+        }
+        // The renames are named together, against the columns neither deleted
+        // nor renamed, so a rename may take a name freed in the same call.
+        let mut taken: rustc_hash::FxHashSet<String> = t
+            .columns
+            .iter()
+            .filter(|c| renames.iter().all(|(id, _)| *id != c.id))
+            .map(|c| c.name.clone())
+            .collect();
+        for (id, new) in renames {
+            let Some(i) = t.index_of(id) else { continue };
+            let free: rustc_hash::FxHashSet<&str> = taken.iter().map(String::as_str).collect();
+            let name = crate::chart::free_among(&free, new.trim());
+            taken.insert(name.clone());
+            t.columns[i].name = name;
         }
         for name in &edits.add {
             if t.columns.len() >= MAX_COLUMNS {
@@ -476,7 +490,7 @@ pub(super) fn edit_table(ctx: &mut Ctx<'_>, a: &Args<'_>) -> Result<Done, VerbEr
 pub(super) fn set_table(ctx: &mut Ctx<'_>, a: &Args<'_>) -> Result<Done, VerbError> {
     let set = table_of(ctx.doc, a, "table")?;
     refuse_linked(a, "table", set)?;
-    let mut t = table_from(a, a.model("columns")?, a.model("rows")?)?;
+    let mut t = table_from(a, a.model("columns")?, a.model("rows")?, Some(&set.table))?;
     t.take_ids_by_name(&set.table);
     within_limits(a, "rows", &t)?;
     Ok(written(set, t))
@@ -884,6 +898,7 @@ pub(super) fn set_chart_data(ctx: &mut Ctx<'_>, a: &Args<'_>) -> Result<Done, Ve
             }
             refuse_linked(a, "table", set)?;
             let mut table = table;
+            table.name_columns_apart();
             table.take_ids_by_name(&set.table);
             within_limits(a, "table", &table)?;
             super::chart_valid(a, &chart.reading(set.id, &table))?;

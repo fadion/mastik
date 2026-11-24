@@ -207,6 +207,18 @@ impl Table {
         free_among(&taken, wanted)
     }
 
+    /// Each column named apart from those before it, a repeat numbered past
+    /// (*Price*, *Price 2*): a table written by name always finds the first of
+    /// two equal names.
+    pub fn name_columns_apart(&mut self) {
+        let mut taken: FxHashSet<String> = FxHashSet::default();
+        for c in &mut self.columns {
+            let free: FxHashSet<&str> = taken.iter().map(String::as_str).collect();
+            c.name = free_among(&free, &c.name);
+            taken.insert(c.name.clone());
+        }
+    }
+
     /// The cells of column `id`, top to bottom; empty when the table has none.
     pub fn cells(&self, id: ColumnId) -> impl Iterator<Item = &str> + '_ {
         let at = self.index_of(id);
@@ -269,15 +281,13 @@ impl Table {
     }
 }
 
-/// `wanted` when `taken` lacks it or it is empty, else numbered past it.
+/// `wanted` when `taken` lacks it or it is empty, else numbered past it; at
+/// most [`MAX_CELL_CHARS`] either way.
 pub(crate) fn free_among(taken: &FxHashSet<&str>, wanted: &str) -> String {
-    if wanted.is_empty() || !taken.contains(wanted) {
-        return wanted.to_owned();
+    if wanted.is_empty() {
+        return String::new();
     }
-    match crate::naming::numbered(wanted) {
-        Some((stem, n)) => crate::naming::free_name(taken, stem, n.saturating_add(1)),
-        None => crate::naming::free_name(taken, wanted, 2),
-    }
+    crate::naming::free_or_numbered(taken, wanted, MAX_CELL_CHARS)
 }
 
 /// The first id from `from` up, wrapping, that `taken` does not hold. A table

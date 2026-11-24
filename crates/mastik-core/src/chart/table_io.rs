@@ -467,6 +467,24 @@ mod tests {
         assert_eq!(names, ["Price", "Price 3", "Price 2"], "numbered");
     }
 
+    /// Two headers equal in their first 256 characters are numbered within the
+    /// limit, so the table passes the validation every door applies.
+    /// flip: `naming::free_name_within` not cutting the stem → fails at "within
+    /// the limit".
+    #[test]
+    fn a_repeated_long_header_is_numbered_within_the_limit() {
+        let long = "q".repeat(300);
+        let r = read(&format!("{long}a,{long}b\n1,2\n"), Format::Csv, None).unwrap();
+        let names: Vec<&str> = r.table.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_ne!(names[0], names[1], "numbered apart");
+        assert!(names[1].ends_with(" 2"), "{}", names[1]);
+        assert!(
+            names.iter().all(|n| n.chars().count() <= MAX_CELL_CHARS),
+            "within the limit"
+        );
+        assert_eq!(crate::list::validate_table(&r.table), Ok(()));
+    }
+
     /// A semicolon file is read as one; a first row of numbers is data, not a
     /// header.
     #[test]

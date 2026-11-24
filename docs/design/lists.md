@@ -443,9 +443,12 @@ MCP's Phase 3 (`mcp.md`), each acting as its door in the app.
   adds, renames and deletes columns by name, `set` writes cells (`{row, column, value}`, the
   column by name or id), `add` inserts rows keyed by column name at `at` or the end, `delete`
   takes row numbers. Rows are numbered as the table stood before the call; `set` and `add` name
-  columns as they stand after `columns`. Said *People: 3 rows*.
+  columns as they stand after `columns`. Column deletes go before renames, and the renames are
+  named together, so a rename may take a name deleted or renamed away in the same call. Said
+  *People: 3 rows*.
 - **`set_table(table, columns, rows)`** replaces the cells; a column whose name survives keeps its
-  id (`Table::take_ids_by_name`), so the fills reading it hold.
+  id (`Table::take_ids_by_name`), so the fills reading it hold. Names are trimmed, except one the
+  table already has exactly, so a table sent back as read keeps a name with edge spaces.
 - **`rename_table`**, **`delete_table`** (refused while read: *Delete table: used by 1 list and 1
   chart. Point them at another table first.*) and **`unlink_table`** are the window's and the
   card's acts.

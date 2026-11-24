@@ -1100,7 +1100,8 @@ pub fn name_for_path(path: &std::path::Path) -> String {
         .unwrap_or_else(|| "Data".to_string())
 }
 
-/// A name no data set in `doc` has: `wanted`, else numbered past it.
+/// A name no data set in `doc` has: `wanted`, else numbered past it; at most
+/// [`MAX_NAME_CHARS`] either way.
 pub fn free_name(doc: &Document, wanted: &str) -> String {
     free_name_among(doc.data_sets(), wanted)
 }
@@ -1110,13 +1111,7 @@ pub fn free_name(doc: &Document, wanted: &str) -> String {
 pub fn free_name_among(sets: &[DataSet], wanted: &str) -> String {
     let mut taken: FxHashSet<&str> = sets.iter().map(|d| d.name.as_str()).collect();
     taken.insert(crate::prototype::expr::ROW);
-    if !taken.contains(wanted) {
-        return wanted.to_owned();
-    }
-    match crate::naming::numbered(wanted) {
-        Some((stem, n)) => crate::naming::free_name(&taken, stem, n.saturating_add(1)),
-        None => crate::naming::free_name(&taken, wanted, 2),
-    }
+    crate::naming::free_or_numbered(&taken, wanted, MAX_NAME_CHARS)
 }
 
 /// Bring list `id`'s copies to what its description and data set make of its

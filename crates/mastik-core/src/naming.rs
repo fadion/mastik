@@ -124,15 +124,45 @@ pub fn is_boolean_label(name: &str) -> bool {
 /// which `numbered` refuses. The final line is unreachable in memory; it answers a
 /// legal duplicate rather than an unparseable name.
 pub fn free_name(taken: &FxHashSet<&str>, stem: &str, from: u32) -> String {
+    free_name_within(taken, stem, from, usize::MAX)
+}
+
+/// [`free_name`] with every candidate at most `max` characters: the stem is cut
+/// so that `stem N` fits. A name at a length limit numbered past it would
+/// otherwise be refused by the validation that holds the limit.
+pub fn free_name_within(taken: &FxHashSet<&str>, stem: &str, from: u32, max: usize) -> String {
+    let candidate = |n: u32| {
+        let number = format!(" {n}");
+        format!("{}{number}", cut(stem, max.saturating_sub(number.len())))
+    };
     for start in [from.max(1), 1] {
         for n in start..=u32::MAX {
-            let candidate = format!("{stem} {n}");
+            let candidate = candidate(n);
             if !taken.contains(candidate.as_str()) {
                 return candidate;
             }
         }
     }
-    format!("{stem} {}", from.max(1))
+    candidate(from.max(1))
+}
+
+/// `wanted` cut to `max` characters when `taken` lacks it, else numbered past
+/// it within `max` — "Price" → "Price 2", "Price 2" → "Price 3". The naming of
+/// table columns and data sets, which both hold a length limit.
+pub fn free_or_numbered(taken: &FxHashSet<&str>, wanted: &str, max: usize) -> String {
+    let wanted = cut(wanted, max);
+    if !taken.contains(wanted) {
+        return wanted.to_owned();
+    }
+    match numbered(wanted) {
+        Some((stem, n)) => free_name_within(taken, stem, n.saturating_add(1), max),
+        None => free_name_within(taken, wanted, 2, max),
+    }
+}
+
+/// `s` cut to its first `max` characters.
+fn cut(s: &str, max: usize) -> &str {
+    s.char_indices().nth(max).map_or(s, |(i, _)| &s[..i])
 }
 
 /// The name a copy of a layer called `current` should carry among siblings called
@@ -450,5 +480,24 @@ mod tests {
         ] {
             assert_eq!(usable(raw).as_deref(), want, "usable({raw:?})");
         }
+    }
+
+    /// `free_or_numbered` keeps a free name, numbers a taken one past it, and
+    /// keeps both within `max` characters, cutting the stem rather than the
+    /// number. flip: `free_name_within` not cutting the stem → fails at "cut".
+    #[test]
+    fn free_or_numbered_stays_within_the_limit() {
+        assert_eq!(free_or_numbered(&taken(&["Price"]), "Cost", 8), "Cost");
+        assert_eq!(free_or_numbered(&taken(&["Price"]), "Price", 8), "Price 2");
+        assert_eq!(free_or_numbered(&taken(&[]), "Revenues", 5), "Reven");
+        let t = taken(&["Revenues"]);
+        assert_eq!(free_or_numbered(&t, "Revenues", 8), "Revenu 2", "cut");
+        let t = taken(&["Revenues", "Revenu 2"]);
+        assert_eq!(free_or_numbered(&t, "Revenues", 8), "Revenu 3");
+        assert_eq!(
+            free_or_numbered(&taken(&["été"]), "été", 4),
+            "ét 2",
+            "by character"
+        );
     }
 }

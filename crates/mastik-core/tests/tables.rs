@@ -561,3 +561,83 @@ fn set_table_and_rename_table() {
     assert_eq!(doc.data_set(set).unwrap().name, "Staff 2");
     assert!(done.said.unwrap().contains("Staff 2"));
 }
+
+/// The column names of table `set`.
+fn column_names(doc: &Document, set: DataSetId) -> Vec<String> {
+    let t = &doc.data_set(set).unwrap().table;
+    t.columns.iter().map(|c| c.name.clone()).collect()
+}
+
+/// `edit_table` deletes columns before it renames, and names its renames
+/// together, so a rename takes a name deleted or renamed away in the same call.
+/// flip: `edit_table` renaming before it deletes → fails at "Price".
+#[test]
+fn edit_table_renames_onto_a_name_freed_in_the_same_call() {
+    let (mut doc, mut ids, _) = blank();
+    let mut h = History::default();
+    let args = json!({ "columns": ["Name", "Price", "Cost"], "rows": [["a", "1", "2"]] });
+    let done = run(&mut h, &mut doc, &mut ids, "add_table", args);
+    let set = DataSetId(NodeId::from_wire(done.made.as_deref().unwrap()).unwrap());
+    let args = json!({
+        "table": set.0.to_wire(),
+        "columns": { "delete": ["Price"], "rename": { "Cost": "Price" } },
+    });
+    run(&mut h, &mut doc, &mut ids, "edit_table", args);
+    assert_eq!(column_names(&doc, set), ["Name", "Price"]);
+    let args = json!({
+        "table": set.0.to_wire(),
+        "columns": { "rename": { "Name": "Price", "Price": "Name" } },
+    });
+    run(&mut h, &mut doc, &mut ids, "edit_table", args);
+    assert_eq!(column_names(&doc, set), ["Price", "Name"], "swapped");
+}
+
+/// `set_table` keeps a column name with edge spaces the table already has, and
+/// so the column's id; a new name is trimmed.
+/// flip: `table_from` trimming every name → fails at the names.
+#[test]
+fn set_table_keeps_a_padded_name_it_was_given_back() {
+    let (mut doc, mut ids, _) = blank();
+    let mut h = History::default();
+    let set = people(&mut h, &mut doc, &mut ids, json!([["Ana", "31"]]));
+    let mut padded = doc.data_set(set).unwrap().clone();
+    padded.table.columns[1].name = " Age".into();
+    let age = padded.table.columns[1].id;
+    let tx = Transaction(vec![Operation::SetDataSet {
+        id: set,
+        set: Some(Box::new(padded)),
+    }]);
+    h.commit(&mut doc, tx).unwrap();
+    let args = json!({ "table": "People", "columns": [" Name", " Age"], "rows": [["Kim", "9"]] });
+    run(&mut h, &mut doc, &mut ids, "set_table", args);
+    assert_eq!(column_names(&doc, set), ["Name", " Age"]);
+    let t = &doc.data_set(set).unwrap().table;
+    assert_eq!(t.columns[1].id, age, "kept as it was");
+}
+
+/// `set_chart_data` writing through to its table numbers a repeated column
+/// name past, as every other table writer does.
+/// flip: the write-through without `name_columns_apart` → fails at "A 2".
+#[test]
+fn set_chart_data_writes_names_apart() {
+    let (mut doc, mut ids, page) = blank();
+    let mut h = History::default();
+    let set = people(&mut h, &mut doc, &mut ids, json!([["Ana", "31"]]));
+    let chart = made(
+        &mut h,
+        &mut doc,
+        &mut ids,
+        "insert_chart",
+        json!({ "parent": page.to_wire(), "kind": "column" }),
+    );
+    let args = json!({ "node": chart.to_wire(), "data": "People" });
+    run(&mut h, &mut doc, &mut ids, "set_chart_data", args);
+    let table: Table = serde_json::from_value(json!({
+        "columns": [{ "id": 0, "name": "A" }, { "id": 1, "name": "A" }],
+        "rows": [["x", "2"]],
+    }))
+    .unwrap();
+    let args = json!({ "node": chart.to_wire(), "table": table });
+    run(&mut h, &mut doc, &mut ids, "set_chart_data", args);
+    assert_eq!(column_names(&doc, set), ["A", "A 2"]);
+}
