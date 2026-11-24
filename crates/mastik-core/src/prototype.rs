@@ -32,6 +32,7 @@ use crate::list::DataSetId;
 use crate::script::ScriptId;
 use crate::variable::{Cell, ModeId, VarId};
 use peniko::Color;
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 /// A layer id in its wire form, `"<actor-hex>:<seq>"`, as every other saved id.
@@ -925,14 +926,15 @@ impl LayerPlay {
         *self == Self::default()
     }
 
-    /// Whether its numbers are finite and its settle timing usable, as the
-    /// door requires.
+    /// Whether its numbers are finite, its settle timing usable and its snap
+    /// points' ids unique, as the door requires.
     pub fn is_usable(&self) -> bool {
         let follow = self.follow.as_ref().is_none_or(|f| {
             f.settle.is_usable()
                 && f.points
                     .iter()
                     .all(|p| p.value.x.is_finite() && p.value.y.is_finite())
+                && crate::item::first_duplicate(&f.points).is_none()
         });
         let effect = self.scroll_effect.as_ref().is_none_or(|e| e.is_usable());
         follow && effect
@@ -1244,14 +1246,15 @@ pub enum ReactionError {
     BadTiming,
     #[error("an overlay's position and backdrop are finite numbers")]
     BadOverlay,
-    #[error("two actions in one list share the id {0:?}")]
+    #[error("two actions in one reaction share the id {0:?}")]
     DuplicateAction(ItemId),
     #[error("a scroll trigger's point is a finite number")]
     BadScrollPoint,
 }
 
 /// Checks a layer's reactions as the door takes them: a script only under a
-/// person's act, usable timings, and unique action ids in each list. Targets are
+/// person's act, usable timings, and unique action ids in each reaction,
+/// branches included. Targets are
 /// never checked — they may dangle.
 pub fn check(reactions: &[Keyed<Reaction>]) -> Result<(), ReactionError> {
     for r in reactions {
@@ -1260,18 +1263,23 @@ pub fn check(reactions: &[Keyed<Reaction>]) -> Result<(), ReactionError> {
         {
             return Err(ReactionError::BadScrollPoint);
         }
-        check_list(&r.trigger, &r.actions)?;
+        check_list(&r.trigger, &r.actions, &mut FxHashSet::default())?;
     }
     Ok(())
 }
 
-fn check_list(trigger: &Trigger, list: &[Keyed<Action>]) -> Result<(), ReactionError> {
-    let mut ids: Vec<ItemId> = list.iter().map(|k| k.id).collect();
-    ids.sort_unstable();
-    if let Some(w) = ids.windows(2).find(|w| w[0] == w[1]) {
-        return Err(ReactionError::DuplicateAction(w[0]));
-    }
+/// [`check`] over one list, `seen` holding every action id met so far in the
+/// reaction, branches included: the Prototype tab finds an action by id
+/// anywhere in its reaction's tree.
+fn check_list(
+    trigger: &Trigger,
+    list: &[Keyed<Action>],
+    seen: &mut FxHashSet<ItemId>,
+) -> Result<(), ReactionError> {
     for k in list {
+        if !seen.insert(k.id) {
+            return Err(ReactionError::DuplicateAction(k.id));
+        }
         match &k.value {
             Action::RunScript { .. } if !trigger.is_a_persons_act() => {
                 return Err(ReactionError::ScriptUnasked(trigger.clone()));
@@ -1296,9 +1304,9 @@ fn check_list(trigger: &Trigger, list: &[Keyed<Action>]) -> Result<(), ReactionE
                 otherwise,
             } => {
                 for b in branches {
-                    check_list(trigger, &b.actions)?;
+                    check_list(trigger, &b.actions, seen)?;
                 }
-                check_list(trigger, otherwise)?;
+                check_list(trigger, otherwise, seen)?;
             }
             _ => {}
         }

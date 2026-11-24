@@ -109,11 +109,13 @@ page's flows and play settings, so the inverse of a removal brings them back.
 - A non-finite scroll trigger point (`ReactionError::BadScrollPoint`).
 - Not the door but the `set_page_play` verb: a device name `presets::device_size` does not know,
   listing the offered ones. The door keeps such a name, which then plays the screen as drawn.
-- A `LayerPlay` whose follow settle timing is not usable or whose snap point or scroll-effect
-  number is not finite (`LayerPlay::is_usable`; `OpError::BadPlay`). Here the loader drops the
-  node's follow and scroll effect instead of refusing the file.
-- A repeated id: an action id within one list (`ReactionError::DuplicateAction`), a reaction id on
-  a layer (`Node::check_item_ids`), a flow id on a page.
+- A `LayerPlay` whose follow settle timing is not usable, whose snap point or scroll-effect
+  number is not finite, or whose snap points repeat an id (`LayerPlay::is_usable`;
+  `OpError::BadPlay`). Here the loader drops the node's follow and scroll effect instead of
+  refusing the file.
+- A repeated id: an action id anywhere in one reaction, its branches included, since the
+  Prototype tab finds an action by id in the whole tree (`ReactionError::DuplicateAction`), a
+  reaction id on a layer (`Node::check_item_ids`), a flow id on a page.
 
 **Targets dangle by design.** Neither the door nor the loader checks that an action's target, a
 flow's start, a scroll effect's frame, an input's variable, a *Set mode*'s mode, a named

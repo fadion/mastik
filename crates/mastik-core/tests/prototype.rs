@@ -136,6 +136,161 @@ fn a_script_under_a_timer_is_refused_by_the_door() {
     assert!(doc.get(a).unwrap().reactions().is_empty(), "unchanged");
 }
 
+/// Each rule the door holds a layer's reactions and play settings to refuses
+/// its case, nested under a branch where it can be.
+///
+/// flip: `check_list` not recursing into a branch → fails at "a script in a
+/// branch"; one id set per list instead of per reaction → fails at "an id
+/// repeated in a branch"; `LayerPlay::is_usable` not checking point ids → fails
+/// at "a repeated snap point".
+#[test]
+fn the_door_refuses_each_unusable_reaction_and_play() {
+    use mastik_core::prototype::{
+        Branch, DragPoint, Easing, Follow, LayerPlay, OverlaySettings, Timing,
+    };
+    let (mut doc, mut ids, a, b) = two_frames();
+    let refused =
+        |doc: &mut Document, reactions: Vec<Keyed<Reaction>>| match doc.apply(&set(a, reactions)) {
+            Err(OpError::BadReaction(why)) => Some(why),
+            _ => None,
+        };
+    let branch = |actions: Vec<Keyed<Action>>| Action::Conditional {
+        branches: vec![Branch {
+            when: mastik_core::prototype::expr::Expr("true".into()),
+            actions,
+        }],
+        otherwise: Vec::new(),
+    };
+    let timed = |timing| Action::Navigate {
+        to: b,
+        transition: Transition {
+            timing,
+            ..Transition::default()
+        },
+        keep_scroll: false,
+    };
+
+    let script = Keyed::new(
+        ids.mint_item(),
+        Action::RunScript {
+            script: ids.mint_script(),
+        },
+    );
+    let nested = on(
+        &mut ids,
+        Trigger::After { ms: 10 },
+        vec![branch(vec![script])],
+    );
+    assert!(
+        matches!(
+            refused(&mut doc, vec![nested]),
+            Some(ReactionError::ScriptUnasked(_))
+        ),
+        "a script in a branch"
+    );
+    for (timing, what) in [
+        (
+            Timing::Ease {
+                curve: Easing::Cubic([1.5, 0.0, 0.5, 1.0]),
+                ms: 200,
+            },
+            "a cubic's x past 1",
+        ),
+        (
+            Timing::Spring {
+                mass: 0.0,
+                stiffness: 100.0,
+                damping: 10.0,
+            },
+            "a massless spring",
+        ),
+    ] {
+        let r = on(&mut ids, Trigger::Click, vec![timed(timing)]);
+        assert_eq!(
+            refused(&mut doc, vec![r]),
+            Some(ReactionError::BadTiming),
+            "{what}"
+        );
+    }
+    let overlay = Action::OpenOverlay {
+        overlay: b,
+        settings: OverlaySettings {
+            backdrop: Some(mastik_core::peniko::Color::new([f32::NAN, 0.0, 0.0, 1.0])),
+            ..OverlaySettings::default()
+        },
+        transition: Transition::default(),
+    };
+    let r = on(&mut ids, Trigger::Click, vec![overlay]);
+    assert_eq!(refused(&mut doc, vec![r]), Some(ReactionError::BadOverlay));
+    let r = on(
+        &mut ids,
+        Trigger::ScrollPast {
+            frame: a,
+            at: f64::INFINITY,
+            going: Default::default(),
+        },
+        vec![Action::Back],
+    );
+    assert_eq!(
+        refused(&mut doc, vec![r]),
+        Some(ReactionError::BadScrollPoint)
+    );
+    let mut r = on(&mut ids, Trigger::Click, vec![Action::Back]);
+    let again = Keyed::new(r.value.actions[0].id, Action::Back);
+    r.value
+        .actions
+        .push(Keyed::new(ids.mint_item(), branch(vec![again])));
+    assert!(
+        matches!(
+            refused(&mut doc, vec![r]),
+            Some(ReactionError::DuplicateAction(_))
+        ),
+        "an id repeated in a branch"
+    );
+    assert!(
+        doc.get(a).unwrap().reactions().is_empty(),
+        "each refused whole"
+    );
+
+    let point = Keyed::new(
+        ids.mint_item(),
+        DragPoint {
+            name: "End".into(),
+            x: 40.0,
+            y: 0.0,
+        },
+    );
+    let play = |points, settle| LayerPlay {
+        follow: Some(Follow {
+            points,
+            settle,
+            ..Follow::default()
+        }),
+        ..LayerPlay::default()
+    };
+    let ok = Follow::default().settle;
+    for (play, what) in [
+        (
+            play(vec![point.clone(), point.clone()], ok),
+            "a repeated snap point",
+        ),
+        (
+            play(
+                vec![point],
+                Timing::Spring {
+                    mass: 1.0,
+                    stiffness: -1.0,
+                    damping: 1.0,
+                },
+            ),
+            "an unusable settle",
+        ),
+    ] {
+        let tx = Transaction(vec![Operation::SetPlay { id: a, play }]);
+        assert!(matches!(doc.apply(&tx), Err(OpError::BadPlay)), "{what}");
+    }
+}
+
 /// A target naming no layer in the document is saved and loaded as it is.
 ///
 /// flip: the loader refusing a reaction whose target is missing → fails at
