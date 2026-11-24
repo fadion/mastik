@@ -252,6 +252,16 @@ pub static TOOLS: &[Tool] = &[
         ],
     },
     Tool {
+        name: "export_prototype",
+        doc: "The prototype as one HTML file that plays in a browser, under the document's export settings (the report's `settings`: flows, opening flow, device frame, bar, scaling). Refused while an interaction acts on a layer that is gone or has an expression that does not read. Nothing is written to disk.",
+        params: &[],
+    },
+    Tool {
+        name: "export_flow_map",
+        doc: "Every prototype flow as a PDF for review: each flow's frames with its links and reactions drawn, then the reactions in words; `approximated` names what was drawn differently. Nothing is written to disk.",
+        params: &[],
+    },
+    Tool {
         name: "list_components",
         doc: "Every main component and variant set: id, name, page, description and documentation link; a variant's set and values, a set's properties.",
         params: &[QUERY_NAME],
@@ -1232,7 +1242,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 28_700;
-        const ALL_BUDGET: usize = 125_600;
+        const ALL_BUDGET: usize = 126_500;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

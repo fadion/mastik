@@ -4,7 +4,7 @@ How a prototype becomes one HTML file a client opens with a double-click: the br
 the player, the trim to the chosen flows, the fonts, the packing, and the page playing. The app's export
 card is `prototyping-player.md`.
 Code: `crates/mastik-web` (the page's player), `mastik-export/src/prototype.rs` (the packer and
-the page's script), `mastik export --prototype` (the CLI).
+the page's script), `mastik export --prototype` (the CLI), `export_prototype` (the MCP tool).
 
 ## The browser build
 
@@ -172,8 +172,8 @@ as `serve` does.
 - **What holds the export** (`holds`): on the pages the chosen flows reach, each layer with an
   action naming a layer or table that is gone, or with an expression that does not read
   (`Expr::check`, over every expression an action holds, a row action's cells included),
-  once per layer and kind. The app's card refuses to write while any is listed; the CLI does not
-  ask.
+  once per layer and kind. The app's card and `export_prototype` refuse to write while any is
+  listed; the CLI does not ask.
 
 ## The player in the page
 
@@ -254,7 +254,7 @@ canvas, the drawing and the page around them.
 ## The flow map
 
 The prototype's other file is the flow map (`mastik_export::flow_map`; the export card's *Flow
-map*, `mastik export --flow-map`): a PDF giving each flow (`flow_map_of` and `plans_of` take the
+map*, `mastik export --flow-map`, the MCP's `export_flow_map`): a PDF giving each flow (`flow_map_of` and `plans_of` take the
 flows picked, every flow when none is) a page of its frames as they sit on
 the canvas, drawn by the PDF export's path, with an arrow from each layer that moves the screen
 and a numbered badge for each reaction at its layer's corner (one that would cover an earlier

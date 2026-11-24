@@ -1174,11 +1174,17 @@ const NARROWER: &str =
 
 /// A read's answer, refused past [`ANSWER_BUDGET`] with the narrower call that
 /// tool takes. Every read passes here, behind any budget it applies itself;
-/// `run_exports` carries binary files under its own, and an image is bounded by
-/// its pixels, `export_png`'s two included.
+/// `run_exports`, `export_prototype` and `export_flow_map` carry their files
+/// under their own, and an image is bounded by its pixels, `export_png`'s two
+/// included.
 fn read_fits(tool: &str, answer: Answer) -> Result<Answer, String> {
     use mastik_mcp::schema::{Class, class};
-    if class(tool) != Class::Read || matches!(tool, "run_exports" | "export_png") {
+    if class(tool) != Class::Read
+        || matches!(
+            tool,
+            "run_exports" | "export_png" | "export_prototype" | "export_flow_map"
+        )
+    {
         return Ok(answer);
     }
     let size = match &answer {
@@ -1571,6 +1577,8 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
         }
         "run_exports" => reads::run_exports(s, nodes(args, "ids")?, row_range(args)),
         "export_code" => reads::export_code(s, args, nodes(args, "ids")?),
+        "export_prototype" => reads::export_prototype(s),
+        "export_flow_map" => reads::export_flow_map(s),
         "list_components" => json(reads::named(reads::components(&s.doc), "components", args)),
         "list_variables" => json(reads::named(reads::variables(&s.doc), "variables", args)),
         "list_styles" => json(reads::named(reads::styles(&s.doc), "styles", args)),
@@ -3232,6 +3240,131 @@ mod tests {
             json!({ "target": "svelte" }),
         );
         assert!(bad.is_error);
+    }
+
+    /// Two flows, `Browse` and `Checkout`, on the first page, and the page's id.
+    fn two_flows(engine: &mut Engine, docs: &mut One) -> String {
+        let a = rect(engine, docs, 1, "A");
+        let b = rect(engine, docs, 1, "B");
+        let page = docs.session.doc.first_page().to_wire();
+        let props = json!({ "flows": [
+            { "name": "Browse", "start": a },
+            { "name": "Checkout", "start": b },
+        ] });
+        ok(&call(
+            engine,
+            docs,
+            1,
+            "set",
+            json!({ "nodes": [page], "props": props }),
+        ));
+        page
+    }
+
+    /// The one file a file export answered, by name and bytes.
+    fn only_file(out: &Output) -> (&str, &[u8]) {
+        let files: Vec<(&str, &[u8])> = out
+            .content
+            .iter()
+            .filter_map(|c| match c {
+                Content::File { name, bytes, .. } => Some((name.as_str(), bytes.as_slice())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(files.len(), 1, "one file: {out:?}");
+        files[0]
+    }
+
+    /// `export_prototype` refuses a document with no flow, then answers the HTML
+    /// file the document's own export settings ask for: opening on the flow
+    /// they name, in its name and title.
+    ///
+    /// flip: `html_name` not finding the flow `opens` names → fails at the
+    /// file's name.
+    #[test]
+    fn export_prototype_answers_the_file_its_settings_open_on() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let none = call(&mut engine, &mut docs, 1, "export_prototype", json!({}));
+        assert!(none.is_error, "no flow: {none:?}");
+        two_flows(&mut engine, &mut docs);
+        let page = docs.session.doc.first_page();
+        let checkout = docs.session.doc.page(page).unwrap().flows[1].id;
+        let opens = mastik_core::prototype::FlowRef {
+            page,
+            flow: checkout,
+        };
+        let settings = mastik_core::prototype::PlayExport {
+            opens: Some(opens),
+            ..docs.session.doc.play_export().clone()
+        };
+        docs.session
+            .doc
+            .apply(&mastik_core::Transaction(vec![
+                mastik_core::Operation::SetPlayExport { settings },
+            ]))
+            .unwrap();
+        let out = call(&mut engine, &mut docs, 1, "export_prototype", json!({}));
+        let report = ok(&out);
+        assert!(!report["settings"]["opens"].is_null(), "{report}");
+        let (name, bytes) = only_file(&out);
+        assert_eq!(name, "Prototype — Checkout.html");
+        assert_eq!(report["files"][0]["path"], json!(name));
+        let html = String::from_utf8_lossy(bytes);
+        assert!(html.contains("<title>Checkout</title>"), "the title");
+    }
+
+    /// `export_prototype` is held by an interaction acting on a layer that is
+    /// gone, naming the layer, as the export card is.
+    ///
+    /// flip: `export_prototype` not checking `holds` → fails at "held".
+    #[test]
+    fn export_prototype_is_held_by_a_broken_interaction() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        two_flows(&mut engine, &mut docs);
+        let a = rect(&mut engine, &mut docs, 1, "Button");
+        let gone = rect(&mut engine, &mut docs, 1, "Gone");
+        let props = json!({
+            "reactions": [{ "trigger": "Click", "actions": [{ "Navigate": { "to": gone } }] }],
+        });
+        ok(&call(
+            &mut engine,
+            &mut docs,
+            1,
+            "set",
+            json!({ "nodes": [a], "props": props }),
+        ));
+        ok(&call(
+            &mut engine,
+            &mut docs,
+            1,
+            "delete_node",
+            json!({ "nodes": [gone] }),
+        ));
+        let out = call(&mut engine, &mut docs, 1, "export_prototype", json!({}));
+        assert!(out.is_error, "held: {out:?}");
+        let said = format!("{out:?}");
+        assert!(said.contains(&a) && said.contains("gone"), "{said}");
+    }
+
+    /// `export_flow_map` refuses a document with no flow, then answers the PDF
+    /// with what it drew differently.
+    ///
+    /// flip: `export_flow_map` answering the report without its file → fails
+    /// at "one file".
+    #[test]
+    fn export_flow_map_answers_the_pdf() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let none = call(&mut engine, &mut docs, 1, "export_flow_map", json!({}));
+        assert!(none.is_error, "no flow: {none:?}");
+        two_flows(&mut engine, &mut docs);
+        let out = call(&mut engine, &mut docs, 1, "export_flow_map", json!({}));
+        assert!(ok(&out)["approximated"].is_array());
+        let (name, bytes) = only_file(&out);
+        assert_eq!(name, "Prototype — Flow map.pdf");
+        assert!(bytes.starts_with(b"%PDF"), "a PDF");
     }
 
     /// The three table reads list what the verbs made: a variable with its

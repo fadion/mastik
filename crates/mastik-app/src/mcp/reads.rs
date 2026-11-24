@@ -1,7 +1,7 @@
 //! The reads that list what a document defines and render what it exports:
-//! `get_outline`, `run_exports`, `export_code`, `list_components`,
-//! `list_variables` and `list_styles` (§8.4). Files come back with their names
-//! and are never written.
+//! `get_outline`, `run_exports`, `export_code`, `export_prototype`,
+//! `export_flow_map`, `list_components`, `list_variables` and `list_styles`
+//! (§8.4). Files come back with their names and are never written.
 
 use super::Answer;
 use crate::session::EditorSession;
@@ -234,6 +234,85 @@ pub(super) fn export_code(
         })
         .collect();
     Ok(Answer::Files(report, files))
+}
+
+/// Where `export_prototype` finds the browser player: `player_build`, or in
+/// tests a stand-in, since no test builds the player.
+#[cfg(not(test))]
+const PLAYER: crate::prototype_export::PlayerLookup = crate::player_build;
+#[cfg(test)]
+const PLAYER: crate::prototype_export::PlayerLookup =
+    |_| Ok((b"\0asm\x01\0\0\0".to_vec(), "/* glue */".into()));
+
+/// One file as `export_prototype` and `export_flow_map` answer it: refused past
+/// [`FILES_BUDGET`], else named in the report's `files` and embedded.
+fn one_file(mut report: Value, name: String, bytes: Vec<u8>) -> Result<Answer, String> {
+    if bytes.len() > FILES_BUDGET {
+        return Err(format!(
+            "`{name}` is {} MB, past the {} MB one answer carries: export it from the \
+             export card instead",
+            bytes.len() / (1024 * 1024),
+            FILES_BUDGET / (1024 * 1024)
+        ));
+    }
+    report["files"] = json!([{ "path": name, "bytes": bytes.len() }]);
+    let file = Content::File {
+        mime: mime(&name),
+        name,
+        bytes,
+    };
+    Ok(Answer::Files(report, vec![file]))
+}
+
+/// The prototype as the export card's one HTML file, under the document's own
+/// export settings (`Document::play_export`), which the report repeats. Refused
+/// while an interaction holds it, naming each layer, as the card is.
+pub(super) fn export_prototype(s: &EditorSession) -> Result<Answer, String> {
+    use mastik_export::prototype::HoldWhy;
+    if crate::prototype_export::every_flow(&s.doc).is_empty() {
+        return Err("No page has a flow to export: add one with `set_flows`".into());
+    }
+    let holds = mastik_export::prototype::holds(&s.doc);
+    if !holds.is_empty() {
+        let each: Vec<String> = holds
+            .iter()
+            .map(|h| match &h.why {
+                HoldWhy::Missing => format!(
+                    "`{}` acts on a layer or table that is gone",
+                    h.layer.to_wire()
+                ),
+                HoldWhy::Expression(e) => {
+                    format!("`{}`'s expression doesn't read: {e}", h.layer.to_wire())
+                }
+            })
+            .collect();
+        return Err(format!(
+            "The export is held until these interactions are fixed with `set_reactions`: {}",
+            each.join("; ")
+        ));
+    }
+    let html = crate::prototype_export::html(&s.doc, PLAYER)?;
+    let settings = s.doc.play_export();
+    let stem = crate::prototype_export::stem_of(s.path.as_deref());
+    let name = crate::prototype_export::html_name(&s.doc, settings, &stem);
+    let report = json!({ "settings": serde_json::to_value(settings).unwrap_or(Value::Null) });
+    one_file(report, name, html.into_bytes())
+}
+
+/// The flow map of every flow, the export card's *Flow map* PDF, with what it
+/// drew differently.
+pub(super) fn export_flow_map(s: &EditorSession) -> Result<Answer, String> {
+    use mastik_export::flow_map;
+    let export = flow_map::flow_map(&s.doc, &s.resolved).ok_or_else(|| {
+        match flow_map::plans(&s.doc).is_empty() {
+            true => "No page has a flow to map: add one with `set_flows`".to_string(),
+            false => "The flow map could not be made".to_string(),
+        }
+    })?;
+    let stem = crate::prototype_export::stem_of(s.path.as_deref());
+    let name = crate::prototype_export::flow_map_name(&stem);
+    let report = json!({ "approximated": export.approximated });
+    one_file(report, name, export.pdf)
 }
 
 /// Every main component and variant set, in document order.

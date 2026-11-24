@@ -203,7 +203,9 @@ take picked once a take exists, else on *HTML file*; a flow chip's menu on *HTML
 *Flow map* holding it alone (`act_on_flow`). The HTML file and the flow map need a flow, so
 without one the card does not open and the status line says to add one. Each output asks where
 to write, offering a name led by the document's: `‹document› — ‹flow›.html` (the flow it opens
-on), `‹document› — ‹take›.mp4` or `.gif`, `‹document› — Flow map.pdf`.
+on), `‹document› — ‹take›.mp4` or `.gif`, `‹document› — Flow map.pdf`. The HTML file and the
+flow map have MCP doors too, `export_prototype` and `export_flow_map` (`mcp.md`, *Exports*),
+which answer the same files under the same names; a video does not.
 
 - **The flows** of the HTML file and of the flow map are a ticked list (`flow_ticks`), one
   `ui::tick_row` per flow wearing `PLAY` as the flow chips do, since a flow is something left out
