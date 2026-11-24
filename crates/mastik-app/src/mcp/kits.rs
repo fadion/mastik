@@ -272,6 +272,7 @@ fn insert(s: &mut EditorSession, lib: &Library, call: &Call) -> Result<Answer, S
     if s.doc.get(parent).is_none() {
         return Err(format!("no layer `{}`", parent.to_wire()));
     }
+    mastik_core::list::refuse_copy(&s.doc, parent)?;
     let number = |name| args.get(name).and_then(Value::as_f64);
     let (x, y) = (number("x"), number("y"));
     let source = Source::Kit {
@@ -426,6 +427,7 @@ fn make_local(s: &mut EditorSession, call: &Call) -> Result<Answer, String> {
     let wanted = super::nodes(&call.args, "ids")?.ok_or("`ids` is required")?;
     let mut tops: Vec<NodeId> = Vec::new();
     for id in wanted {
+        mastik_core::list::refuse_copy(&s.doc, id)?;
         let top = vault_top(&s.doc, id).ok_or_else(|| {
             format!(
                 "`{}` is no kit component, nor an instance of one",
@@ -947,6 +949,66 @@ mod tests {
                 .get(top)
                 .is_some_and(|n| n.parent() == Some(page)),
             "written to the file"
+        );
+    }
+
+    /// `insert_from_kit` into a list's copy, and `make_local` of a kit instance
+    /// inside one, are refused naming the list: the copy is made again from the
+    /// template at the next regeneration, and the edit would be lost.
+    ///
+    /// flip: `insert` without `list::refuse_copy` → fails at "insert refused";
+    /// `make_local` without it → fails at "make_local refused".
+    #[test]
+    fn the_kit_doors_refuse_a_list_copy() {
+        let mut f = fixture("kit-list-copy");
+        let (e, d) = (&mut f.engine, &mut f.docs);
+        let page = Documents::session(d, &f.consumer)
+            .unwrap()
+            .doc
+            .first_page()
+            .to_wire();
+        let kind = json!({ "Artboard": { "size": { "width": 200, "height": 40 } } });
+        let args = json!({ "parent": page, "kind": kind, "name": "Row" });
+        let row = ok(e, d, "create_node", args)["created"][0].clone();
+        let args = json!({ "kit": "Atlas", "main": f.main, "parent": row });
+        ok(e, d, "insert_from_kit", args);
+        let made = ok(e, d, "make_component", json!({ "nodes": [row] }));
+        let main = made["created"].get(0).cloned().unwrap_or(row);
+        let args = json!({ "main": main, "parent": page, "x": 300, "y": 0 });
+        let inst = ok(e, d, "create_instance", args)["created"][0].clone();
+        let args = json!({ "name": "People", "columns": ["Name"], "rows": [["Ana"], ["Ben"]] });
+        ok(e, d, "add_table", args);
+        let list = ok(
+            e,
+            d,
+            "make_list",
+            json!({ "node": inst, "table": "People" }),
+        );
+        let list = mastik_core::NodeId::from_wire(list["created"][0].as_str().unwrap()).unwrap();
+        let doc = &Documents::session(d, &f.consumer).unwrap().doc;
+        let copy = doc.get(list).unwrap().list().unwrap().copies[0];
+        let badge = doc.get(copy).unwrap().children()[0];
+        assert!(
+            mastik_core::component::main_of(doc, badge).is_some_and(|m| doc.in_vault(m)),
+            "fixture: the copy holds the kit instance"
+        );
+        let held = doc.get(copy).unwrap().children().len();
+
+        let args = json!({ "kit": "Atlas", "main": f.main, "parent": copy.to_wire() });
+        let why = refused(e, d, "insert_from_kit", args);
+        assert!(why.contains(&list.to_wire()), "insert refused: {why}");
+        let why = refused(e, d, "make_local", json!({ "ids": [badge.to_wire()] }));
+        assert!(why.contains(&list.to_wire()), "make_local refused: {why}");
+        let doc = &Documents::session(d, &f.consumer).unwrap().doc;
+        assert_eq!(
+            doc.get(copy).unwrap().children().len(),
+            held,
+            "the copy stays"
+        );
+        let vault = doc.vault().and_then(|v| doc.get(v));
+        assert!(
+            vault.is_some_and(|v| !v.children().is_empty()),
+            "nothing made local"
         );
     }
 

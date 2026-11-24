@@ -1592,6 +1592,63 @@ mod tests {
         assert!(held.paint().fills.is_empty() && held.credit().is_none());
     }
 
+    /// A placement into a list's copy, by `parent` or by `fill`, is refused
+    /// naming the list, and the copy is left as it was: the next regeneration
+    /// would make it again from the template and lose the placement.
+    ///
+    /// flip: `refuse_vault` without its `list::refuse_copy` loop → fails at
+    /// "icon refused".
+    #[test]
+    fn a_placement_into_a_list_copy_is_refused() {
+        let (mut app, mut engine, file, page, ..) = fixture("list-copy");
+        bell_set(&mut app);
+        let photo = coffee(&mut app);
+        searched(&mut app, &photo);
+        downloaded(&mut app, &photo);
+        let (e, a) = (&mut engine, &mut app);
+        let kind = json!({ "Artboard": { "size": { "width": 200, "height": 40 } } });
+        let args = json!({ "parent": page, "kind": kind, "name": "Row" });
+        let row = ok(e, a, "create_node", args)["created"][0].clone();
+        let rect = mastik_core::verbs::example("NodeKind").unwrap();
+        let args = json!({ "parent": row, "kind": rect, "name": "Photo" });
+        ok(e, a, "create_node", args);
+        let made = ok(e, a, "make_component", json!({ "nodes": [row] }));
+        let main = made["created"].get(0).cloned().unwrap_or(row);
+        let args = json!({ "main": main, "parent": page, "x": 300, "y": 0 });
+        let inst = ok(e, a, "create_instance", args)["created"][0].clone();
+        let args = json!({ "name": "People", "columns": ["Name"], "rows": [["Ana"], ["Ben"]] });
+        ok(e, a, "add_table", args);
+        let list = ok(
+            e,
+            a,
+            "make_list",
+            json!({ "node": inst, "table": "People" }),
+        );
+        let list = list["created"][0].as_str().unwrap().to_owned();
+        let doc = &Documents::session(a, &file).unwrap().doc;
+        let l = NodeId::from_wire(&list).unwrap();
+        let copy = doc.get(l).unwrap().list().unwrap().copies[0];
+        let inner = doc.get(copy).unwrap().children()[0];
+        let held = doc.get(copy).unwrap().children().len();
+
+        let args = json!({ "asset": "icon:font-awesome/bell/Solid", "parent": copy.to_wire() });
+        let icon = now(e, a, "place_asset", args);
+        let why = format!("{:?}", icon.content);
+        assert!(icon.is_error && why.contains(&list), "icon refused: {why}");
+        let args = json!({ "asset": "photo:unsplash/x1", "fill": [inner.to_wire()] });
+        let fill = now(e, a, "place_asset", args);
+        let why = format!("{:?}", fill.content);
+        assert!(fill.is_error && why.contains(&list), "fill refused: {why}");
+        let doc = &Documents::session(a, &file).unwrap().doc;
+        assert_eq!(
+            doc.get(copy).unwrap().children().len(),
+            held,
+            "no icon landed"
+        );
+        let inner = doc.get(inner).unwrap();
+        assert!(inner.paint().fills.is_empty() && inner.credit().is_none());
+    }
+
     /// A placement still downloading past the wait answers a pending id, keeps
     /// running, and `pending` answers what it made once it landed, once.
     ///
