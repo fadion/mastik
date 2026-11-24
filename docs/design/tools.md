@@ -275,10 +275,11 @@ and the second leaves focus mode.
 
 **A press that dismisses a floating thing is spent on it.** By door:
 
-- the context menu, the tab menu and the rail's members row call `ui::keep_escape` as they draw, so `ui::claim_popup_escape` takes the press out of the input at the top of the next frame; the context menu's and the tab menu's arms in `frame_body` close them on `ui::popup_escaped` (the context menu's submenu first);
+- the context menu, the tab menu, the rail's members row, a bound field's `--` variable list, its chip's field menu and a frame's *Mode* menu call `ui::keep_escape` as they draw, so `ui::claim_popup_escape` takes the press out of the input at the top of the next frame; the context menu's and the tab menu's arms in `frame_body` close them on `ui::popup_escaped` (the context menu's submenu first);
 - the top-bar dropdowns (`dropdown_padded`) and the five inspector and Export popovers call `ui::keep_popover_escape` as they draw; the claim leaves the press in the input for their fields, `frame_body`'s arm on `ui::popover_escaped` keeps it from the ladder, and they close themselves later in the frame;
 - the three modals are gated out of `input::resolve` and answer `should_close()`;
-- the colour picker is a rung of `escape`'s `else if` chain, which pays out one rung (an armed pick button is the rung above it, and an open menu of the picker's, such as the gradient's *Ends and mixing*, the rung between: that press closes only the menu, the next the picker).
+- the colour picker is a rung of `escape`'s `else if` chain, which pays out one rung (an armed pick button is the rung above it); an open menu of the picker's, such as the gradient's *Ends and mixing*, is an egui popup, so `ui::claim_popup_escape` spends that press before `escape` runs and the next one closes the picker;
+- a script run in flight stops on a press no popover took (`tend_script_run` asks `ui::popover_escaped`): one press closes an open popover, the next stops the run.
 
 The claim counts only what was drawn last frame: a flag whose panel was skipped claims nothing, so
 the press reaches the final arm, which clears the inspector's popover flags and `open_menu` and

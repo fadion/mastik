@@ -253,12 +253,14 @@ impl MastikApp {
 
     /// Each frame: `Escape` stops a run in flight, and one that has ended
     /// lands, unless a gesture is live or a modal is up, which may be showing
-    /// the document as it stands.
+    /// the document as it stands. An open popover takes the press first
+    /// (`ui::popover_escaped`), and the next one stops the run.
     pub(crate) fn tend_script_run(&mut self, ctx: &egui::Context) {
         if self.session.script_run.is_none() {
             return;
         }
         if !self.modal_is_up()
+            && !crate::ui::popover_escaped(ctx)
             && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
         {
             self.stop_script_run();
@@ -523,6 +525,36 @@ mod tests {
         assert_eq!(app.session.history.undo_depth(), depth, "no step");
         assert_eq!(app.session.doc.get(card).unwrap().name(), "Card");
         assert!(app.session.commit(rename(card, "Mine")), "the hold ends");
+    }
+
+    /// With a popover open, one Escape closes it and leaves a run in flight;
+    /// the next stops the run.
+    /// flip: `tend_script_run` not asking `popover_escaped` → fails at "the
+    /// popover's press leaves the run".
+    #[test]
+    fn a_popovers_escape_leaves_the_run() {
+        let (ctx, mut app, _) = with_card();
+        start(&mut app, "while true do end");
+        assert!(app.session.script_run.is_some(), "fixture: in flight");
+        // A popover open last frame asks for the press.
+        crate::ui::keep_popover_escape(&ctx);
+        pass(
+            &ctx,
+            &mut app,
+            vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+            egui::Modifiers::NONE,
+        );
+        assert!(
+            app.session.script_run.is_some(),
+            "the popover's press leaves the run"
+        );
+        pass(
+            &ctx,
+            &mut app,
+            vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+            egui::Modifiers::NONE,
+        );
+        assert!(app.session.script_run.is_none(), "the next stops it");
     }
 
     /// A count before `.` runs the line that many times when no run lands in

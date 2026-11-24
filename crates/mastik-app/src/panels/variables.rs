@@ -5595,6 +5595,12 @@ impl MastikApp {
         let Some((id, c, under)) = self.mode_menu else {
             return;
         };
+        // One Escape closes the menu alone, never the card it hangs from.
+        if ui::popup_escaped(ctx) {
+            self.mode_menu = None;
+            return;
+        }
+        ui::keep_escape(ctx);
         let doc = &self.session.doc;
         let Some(node) = doc.get(id) else {
             self.mode_menu = None;

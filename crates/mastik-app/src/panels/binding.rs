@@ -1216,12 +1216,14 @@ impl MastikApp {
         let list = matches_for(table, field, &c.query);
         let hidden = scoped_out(table, field, &c.query);
         c.highlight = c.highlight.min(list.len().saturating_sub(1));
-        let (down, up, enter, escape) = ctx.input(|i| {
+        // One Escape closes the list alone, never the popover hosting its field.
+        let escape = ui::popup_escaped(ctx);
+        ui::keep_escape(ctx);
+        let (down, up, enter) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::ArrowDown),
                 i.key_pressed(egui::Key::ArrowUp),
                 i.key_pressed(egui::Key::Enter),
-                i.key_pressed(egui::Key::Escape),
             )
         });
         if down && !list.is_empty() {
@@ -1430,6 +1432,7 @@ impl MastikApp {
             return;
         }
         if escape {
+            self.var_retype = None;
             self.session.clear_gesture_preview();
             return;
         }
@@ -1524,6 +1527,12 @@ impl MastikApp {
         let Some((key, at, under)) = self.field_menu else {
             return;
         };
+        // One Escape closes the menu alone, never the popover hosting its chip.
+        if ui::popup_escaped(ctx) {
+            self.field_menu = None;
+            return;
+        }
+        ui::keep_escape(ctx);
         let bound = self.field_var(key).is_some();
         let mut close = false;
         let rows = if bound { 3.0 } else { 2.0 };
@@ -1583,7 +1592,7 @@ impl MastikApp {
         let away = ctx.input(|i| {
             i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p))
         });
-        if close || away || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if close || away {
             self.field_menu = None;
         }
     }
@@ -2623,6 +2632,38 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// Inside a popover, one Escape closes a chip's field menu alone: the
+    /// menu asks for the press, so the popover hosting it is not given it.
+    /// flip: `field_menu_ui` not calling `keep_escape` → fails at "the menu
+    /// closes".
+    #[test]
+    fn one_escape_closes_the_field_menu_and_not_its_popover() {
+        let (ctx, mut app, rect, ..) = fixture();
+        app.field_menu = Some((
+            FieldKey::Radius { id: rect },
+            egui::pos2(500.0, 200.0),
+            egui::Rect::from_min_size(egui::pos2(480.0, 190.0), egui::vec2(120.0, 28.0)),
+        ));
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            crate::ui::claim_popup_escape(ui.ctx());
+            app.field_menu_ui(ui.ctx());
+            crate::ui::keep_popover_escape(ui.ctx());
+        });
+        assert!(app.field_menu.is_some(), "fixture: open");
+        let input = egui::RawInput {
+            events: vec![key(egui::Key::Escape)],
+            ..Default::default()
+        };
+        let mut popover = None;
+        let _ = ctx.run_ui(input, |ui| {
+            crate::ui::claim_popup_escape(ui.ctx());
+            app.field_menu_ui(ui.ctx());
+            popover = Some(crate::ui::popover_escaped(ui.ctx()));
+        });
+        assert!(app.field_menu.is_none(), "the menu closes");
+        assert_eq!(popover, Some(false), "the popover stays");
     }
 
     fn key(k: egui::Key) -> egui::Event {
