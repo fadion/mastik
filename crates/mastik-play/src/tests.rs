@@ -1878,6 +1878,50 @@ fn a_script_runs_on_the_copy_and_a_failed_one_rolls_back() {
     );
 }
 
+/// A runaway script in play stops at a step count, never at a time, so every
+/// shell and a take's replay stop it at the same point.
+///
+/// flip: `run_script_source` running under the held budget, whose clock stops
+/// it first → fails at "stopped by its steps".
+#[cfg(feature = "scripts")]
+#[test]
+fn a_runaway_script_in_play_stops_at_its_steps() {
+    let (mut fx, a, _, button) = two_screens(Transition::INSTANT);
+    let spin = fx.ids.mint_script();
+    fx.apply(vec![
+        Operation::AddScript {
+            script: mastik_core::Script {
+                id: spin,
+                name: "Spin".into(),
+                source: "local i = 0\nwhile true do i = i + 1 end".into(),
+            },
+            index: 0,
+        },
+        Operation::SetReactions {
+            id: button,
+            reactions: vec![],
+        },
+    ]);
+    fx.on(
+        button,
+        Trigger::Click,
+        vec![Action::RunScript { script: spin }],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 20.0, 20.0);
+    let said = match p.take_notices().as_slice() {
+        [Notice::Script { message, .. }] => message.clone(),
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        said.ends_with(&format!(
+            "Stopped after {} steps",
+            mastik_vm::PLAY_BUDGET.steps
+        )),
+        "stopped by its steps: {said}"
+    );
+}
+
 /// A script adding a row to a table in play makes the list over it again on
 /// the copy, so the new row shows; the document keeps its one row.
 ///

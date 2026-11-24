@@ -109,7 +109,13 @@ impl Player {
             dirty: Vec::new(),
             tables: Vec::new(),
         };
-        let run = mastik_vm::run_script(&mut host, &env, source);
+        // Steps and memory alone bound the run: a clock would make it depend
+        // on more than its inputs, and a take's replay diverge.
+        let leash = mastik_vm::Leash {
+            budget: mastik_vm::PLAY_BUDGET,
+            stop: None,
+        };
+        let run = mastik_vm::run_script_leashed(&mut host, &env, source, &leash);
         let dirty = std::mem::take(&mut host.dirty);
         let tables = std::mem::take(&mut host.tables);
         match run {

@@ -290,6 +290,7 @@ sandbox. What is left is an escape through a bug in Luau or `mlua`.
   | `WORKER_BUDGET`: Enter in the bar, a script, an `/ai` script, on a worker | 30 s | 6,000,000,000 | 64 MB |
   | `RUN_BUDGET`: an agent's `run_script`, holding the UI thread | 1 s | 200,000,000 | 64 MB |
   | `READ_BUDGET`: the bar's live read, every keystroke | 20 ms | 500,000 | 8 MB |
+  | `PLAY_BUDGET`: a prototype's *Run script* in play, which reads no clock (`play.md`) | none | 5,000,000 | 64 MB |
 
   A spent budget is `ErrorKind::Budget`, and the run is taken back (§7). A run on a worker no
   longer freezes the window, and the person stops it with `Escape`, so its time budget is only the

@@ -219,7 +219,9 @@ out both ends.
 - **Open URL** asks the shell (`Request::OpenUrl`) for `http` and `https` addresses only.
 - **Run script** runs the document script through `mastik-vm` on the copy, under a person's act
   only (the door's rule, checked again). The selection is empty, no labels, no input form — a
-  script whose header asks for input is not run, with a notice — and `print` goes to the log. The
+  script whose header asks for input is not run, with a notice — and `print` goes to the log. It
+  runs under `PLAY_BUDGET`, steps and memory with no clock, so the app, the exported page and a
+  take's replay stop a runaway at the same step. The
   copy and its resolve are snapshotted first and put back whole if the run fails. A run that
   wrote a table ends with `Player::follow_tables` over the tables it wrote: every chart over one
   brought onto its table, every list over one made again on the copy, as the editor follows a

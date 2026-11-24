@@ -58,6 +58,16 @@ pub const RUN_BUDGET: Budget = Budget {
     memory: 64 << 20,
 };
 
+/// The budget of a prototype's *Run script* in play: steps and memory alone, no
+/// clock, so the app, the exported page and a take's replay all stop a run at
+/// the same step. Five million steps take from about 50 ms (a bare loop) to
+/// about 1.3 s (a loop building strings) natively.
+pub const PLAY_BUDGET: Budget = Budget {
+    time: Duration::MAX,
+    steps: 5_000_000,
+    memory: 64 << 20,
+};
+
 /// The budget of a run on a worker, which a stop flag can end at any step: a
 /// line run with Enter, a script. Only a runaway the person leaves running
 /// meets it, so it is the held budget thirty times over, memory aside.

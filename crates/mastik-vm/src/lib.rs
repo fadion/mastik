@@ -37,7 +37,7 @@ pub use help::{
     syntax_error,
 };
 pub use props::set_by;
-pub use run::{Budget, READ_BUDGET, RUN_BUDGET, WORKER_BUDGET};
+pub use run::{Budget, PLAY_BUDGET, READ_BUDGET, RUN_BUDGET, WORKER_BUDGET};
 pub(crate) use sugar::invisible;
 pub use sugar::{Line, LineKind, Marks, desugar, marks, quoted};
 
