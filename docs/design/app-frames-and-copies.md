@@ -29,7 +29,9 @@ through the system clipboard), and the hand-kept lists of transient state. Part 
   background included, or a chart, which picks whole (`charts.md`). A nested frame's own fill is clickable like any layer's. An **empty** frame is
   clickable anywhere; a page frame that is already the selection stays draggable from anywhere inside
   it, over its layers too (`selected_frame_at`, asked before `pick_leaf`), so a selected frame is
-  moved without hunting for a bare patch of it. A click there still selects the layer.
+  moved without hunting for a bare patch of it, and over a layer painted beneath it (another
+  frame's child it overlaps); only a layer painted above it that is not its own takes the press.
+  A click there still selects the layer.
 - **One pick chain**: `canvas::pick_at_pointer` = tag, then `pick_leaf`, then the **edge**
   (`canvas::frame_edge_at`, occupied page frames only; `FRAME_EDGE_PICK_PX`, 8pt either side of the
   border). Used by the select click, the context menu, and `canvas::hover_target` (via

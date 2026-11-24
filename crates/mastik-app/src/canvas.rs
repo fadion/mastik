@@ -4884,11 +4884,13 @@ impl MastikApp {
         // A marquee picks frame contents, not the frames, plus loose layers; a
         // plain band's page frame held whole is picked itself, in place of its
         // contents. A Shift or Alt band acts on the contents, so it can still
-        // toggle or take off layers selected inside the frame.
-        let whole = match mode {
-            MarqueeMode::Replace => self.frames_held_whole(area, lasso),
-            MarqueeMode::Toggle | MarqueeMode::Subtract => Vec::new(),
-        };
+        // toggle or take off layers selected inside the frame, except on a
+        // frame held whole that is selected itself: that frame is what it
+        // toggles or takes off, never its layers beside it.
+        let mut whole = self.frames_held_whole(area, lasso);
+        if mode != MarqueeMode::Replace {
+            whole.retain(|f| base.contains(*f));
+        }
         let mut picked = whole.clone();
         let (doc, res) = (&self.session.doc, &self.session.resolved);
         for child in self.marquee_candidates() {
@@ -9615,17 +9617,24 @@ impl MastikApp {
     /// clickable. A frame inside another frame, a group or an instance is not
     /// skipped.
     pub(crate) fn pick_leaf(&self, world: Point) -> Option<NodeId> {
-        let doc = &self.session.doc;
+        self.leaf_of(&self.hits_at(world))
+    }
+
+    /// Every layer under `world`, topmost first ([`hit_test`]).
+    fn hits_at(&self, world: Point) -> Vec<NodeId> {
         hit_test(
             &self.session.resolved,
-            doc,
+            &self.session.doc,
             self.session.page,
             world,
             self.pick_slop(),
         )
-        .iter()
-        .copied()
-        .find(|id| {
+    }
+
+    /// [`Self::pick_leaf`] over hits already taken.
+    fn leaf_of(&self, hits: &[NodeId]) -> Option<NodeId> {
+        let doc = &self.session.doc;
+        hits.iter().copied().find(|id| {
             // A chart picks whole, its parts never: the frame is the leaf. A
             // list frame is what `hit_test` answers for a copy, so a list
             // standing on the page is kept too.
@@ -9663,13 +9672,21 @@ impl MastikApp {
     /// moves it, over its layers as over its empty parts, rather than grabbing a
     /// layer or starting a marquee. Not over a layer of another painted above
     /// it, which the pointer rings and the press grabs, nor in the corners a
-    /// rotated frame's world bounds hold beyond its box.
+    /// rotated frame's world bounds hold beyond its box. A layer painted
+    /// *under* the frame (another frame's child it overlaps) never wins.
     fn selected_frame_at(&self, world: Point) -> Option<NodeId> {
         let (doc, res) = (&self.session.doc, &self.session.resolved);
-        let leaf = self.pick_leaf(world);
+        let hits = self.hits_at(world);
+        let leaf = self.leaf_of(&hits);
+        let at = |id: NodeId| hits.iter().position(|h| *h == id);
+        // Topmost first: a leaf hit after the frame is painted beneath it.
+        let above = |l: NodeId, id: NodeId| match (at(l), at(id)) {
+            (Some(l), Some(f)) => l < f,
+            _ => true,
+        };
         self.session.selection.ids().iter().copied().find(|id| {
             self.is_occupied_frame(*id)
-                && leaf.is_none_or(|l| mastik_core::query::is_within(doc, l, *id))
+                && leaf.is_none_or(|l| mastik_core::query::is_within(doc, l, *id) || !above(l, *id))
                 && res
                     .world_transform(*id)
                     .zip(mastik_core::query::local_box(doc, res, *id))
@@ -24367,9 +24384,11 @@ mod marquee_selectability_tests {
 
     /// A lasso round a page frame's four corners takes the frame; an Alt band
     /// holding the frame whole takes off the layers selected inside it, and a
-    /// Shift band toggles them, rather than acting on the frame.
+    /// Shift band toggles them, rather than acting on the frame; with the frame
+    /// itself selected, both act on the frame.
     /// flip: `apply_marquee` taking frames whole in every mode → fails at "Alt
-    /// takes the layer off".
+    /// takes the layer off"; keeping no frame whole in those modes → fails at
+    /// "Alt takes the selected frame off".
     #[test]
     fn a_shift_or_alt_band_round_a_frame_acts_on_its_layers() {
         let ctx = egui::Context::default();
@@ -24408,6 +24427,28 @@ mod marquee_selectability_tests {
         assert!(
             !band(&mut app, MarqueeMode::Toggle).contains(&board),
             "Shift toggles the layers, not the frame"
+        );
+
+        // With the frame itself selected, the band acts on the frame.
+        let mut held = crate::session::Selection::default();
+        held.set(vec![board]);
+        let band = |app: &mut MastikApp, mode| {
+            app.apply_marquee(
+                Point::new(-10.0, -10.0),
+                Point::new(110.0, 110.0),
+                mode,
+                &held,
+                None,
+            );
+            app.session.selection.ids().to_vec()
+        };
+        assert!(
+            band(&mut app, MarqueeMode::Subtract).is_empty(),
+            "Alt takes the selected frame off"
+        );
+        assert!(
+            band(&mut app, MarqueeMode::Toggle).is_empty(),
+            "Shift toggles the selected frame, not its layers beside it"
         );
     }
 
@@ -24824,6 +24865,61 @@ mod frame_edge_tests {
             app.session.selection.ids(),
             [above],
             "the layer above is grabbed"
+        );
+    }
+
+    /// A drag pressed on a selected page frame's empty part, over a layer of
+    /// another frame painted beneath it, moves the selected frame.
+    /// flip: `selected_frame_at` without its paint-order test → fails at "the
+    /// selected frame keeps the press".
+    #[test]
+    fn a_drag_over_a_layer_beneath_a_selected_frame_keeps_the_frame() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, board, _) = fixture(&ctx);
+        let page = app.session.page;
+        let (under, hidden) = (app.session.ids.mint(), app.session.ids.mint());
+        assert!(app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: under,
+                parent: page,
+                index: 0,
+                kind: NodeKind::Artboard {
+                    size: Size::new(200.0, 200.0),
+                    corner_radii: mastik_core::kurbo::RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((-100.0, -100.0))),
+                name: None,
+            },
+            Operation::CreateNode {
+                id: hidden,
+                parent: under,
+                index: 0,
+                kind: NodeKind::Rect {
+                    size: Size::new(20.0, 20.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((110.0, 110.0))),
+                name: None,
+            },
+        ])));
+        assert_eq!(
+            app.pick_leaf(Point::new(20.0, 20.0)),
+            Some(hidden),
+            "fixture: the press lands over the layer beneath"
+        );
+        app.session.selection.set_one(board);
+        let rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        let screen = app.to_screen(Point::new(20.0, 20.0), rect, 1.0);
+        let _ = ctx.run_ui(Default::default(), |ui| {
+            app.begin_select_drag(ui, screen, rect, 1.0, &None, false);
+        });
+        assert_eq!(
+            app.session.selection.ids(),
+            [board],
+            "the selected frame keeps the press"
         );
     }
 
