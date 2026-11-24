@@ -202,6 +202,9 @@ pub struct Player {
     pub(crate) page: NodeId,
     pub(crate) screen: NodeId,
     pub(crate) history: Vec<Visit>,
+    /// The visits dropped off the history's front past [`MAX_HISTORY`]: with its
+    /// length, how deep the run has navigated ([`Player::depth`]).
+    pub(crate) trimmed: usize,
     pub(crate) overlays: Vec<Overlay>,
     pub(crate) values: BTreeMap<VarId, Value>,
     /// Scroll offsets by scrolling frame, each positive into the content.
@@ -216,7 +219,8 @@ pub struct Player {
     /// The variant main each instance play switched was switched to, carried
     /// across a re-clone.
     pub(crate) states: FxHashMap<NodeId, NodeId>,
-    /// The modes *Set mode* gave each page or frame, carried across a re-clone.
+    /// The modes *Set mode* gave each page or frame, one per collection it set
+    /// and no other, given again after a live edit or a re-clone.
     pub(crate) modes: FxHashMap<NodeId, Vec<mastik_core::variable::ModeId>>,
     /// The row play opened in each data set, opened again after a live edit:
     /// the edit's own regeneration, or a re-clone, puts every list back on row 1.
@@ -287,6 +291,7 @@ impl Player {
             page,
             screen: frame,
             history: Vec::new(),
+            trimmed: 0,
             overlays: Vec::new(),
             values: BTreeMap::new(),
             scroll: FxHashMap::default(),
@@ -815,8 +820,11 @@ impl Player {
             let Some(frame) = frame else { continue };
             for r in n.reactions() {
                 if let Trigger::After { ms } = r.value.trigger {
+                    // Floored as `rearm` floors: a row's *After* that writes its
+                    // own table makes the list again, and would otherwise fire
+                    // again at once, without time moving.
                     self.timers.push(Timer {
-                        due: self.now + f64::from(ms),
+                        due: self.now + f64::from(ms).max(MIN_LOOP_MS),
                         holder: id,
                         reaction: r.id,
                         frame,

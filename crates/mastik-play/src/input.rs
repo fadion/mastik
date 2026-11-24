@@ -120,6 +120,38 @@ pub(crate) struct While {
     pub(crate) area: Option<Rect>,
 }
 
+/// Hand each ending while's variable put-back (`ends` true at its index) to
+/// the first later while still going that wrote the same variable: that one
+/// saw the ending one's write as the value to put back, so it takes the older
+/// value instead, and the ending one leaves the variable alone. Without it, a
+/// hover that outlives the next one's start writes over that one's value.
+fn hand_over_values(whiles: &mut [While], ends: &[bool]) {
+    for i in 0..whiles.len() {
+        if !ends[i] {
+            continue;
+        }
+        let mut kept = Vec::new();
+        for u in std::mem::take(&mut whiles[i].undo) {
+            let Undo::Value(var, was) = &u else {
+                kept.push(u);
+                continue;
+            };
+            let later = (i + 1..whiles.len()).filter(|j| !ends[*j]).find_map(|j| {
+                let k = whiles[j]
+                    .undo
+                    .iter()
+                    .position(|v| matches!(v, Undo::Value(x, _) if x == var))?;
+                Some((j, k))
+            });
+            match later {
+                Some((j, k)) => whiles[j].undo[k] = Undo::Value(*var, was.clone()),
+                None => kept.push(u),
+            }
+        }
+        whiles[i].undo = kept;
+    }
+}
+
 /// What is under a point: the overlay it is in (or outside of), and the layers
 /// under it, deepest first and its frame last; empty outside the top overlay.
 struct Hit {
@@ -567,15 +599,20 @@ impl Player {
                 && (now.contains(&w.node)
                     || w.area.zip(pointer).is_some_and(|(a, p)| a.contains(p)))
         };
-        let ended: Vec<While> = self
-            .whiles
-            .iter()
-            .filter(|w| !w.press && !over(w))
-            .cloned()
-            .collect();
-        self.whiles.retain(|w| w.press || over(w));
+        let ends: Vec<bool> = self.whiles.iter().map(|w| !w.press && !over(w)).collect();
+        hand_over_values(&mut self.whiles, &ends);
+        let mut ended = Vec::new();
+        let mut kept = Vec::new();
+        for (w, end) in std::mem::take(&mut self.whiles).into_iter().zip(&ends) {
+            match end {
+                true => ended.push(w),
+                false => kept.push(w),
+            }
+        }
+        self.whiles = kept;
         self.hovered = now;
-        for w in ended {
+        // Newest first, as one while's own writes are put back.
+        for w in ended.into_iter().rev() {
             self.undo(w.undo);
         }
         for id in left {
@@ -720,7 +757,8 @@ impl Player {
             return false;
         };
         // A reaction's row write can make the holder's list again: each later
-        // reaction is found by its place on the holder at its place in the row.
+        // reaction is found by its place on the holder in its row, and none
+        // runs once the row is no longer drawn.
         let path = self.row_path(holder);
         let all: Vec<ItemId> = self
             .doc
@@ -731,7 +769,9 @@ impl Player {
         // makes lands on a detail screen already showing the row.
         self.open_row(holder);
         for (_, r) in picked {
-            let now = self.still(holder, path.as_ref());
+            let Some(now) = self.still(holder, path.as_ref()) else {
+                continue;
+            };
             let r = match (now == holder, all.iter().position(|x| *x == r)) {
                 (false, Some(i)) => self
                     .doc

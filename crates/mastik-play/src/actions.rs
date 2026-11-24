@@ -20,11 +20,12 @@ use mastik_core::{
 };
 
 /// Where a layer sits in a list's row, found again after the list is made
-/// again with new copies ([`Player::row_path`]).
+/// again with new copies ([`Player::row_path`]). The row is the table's, not
+/// the drawn place, which a filter or a sort moves.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RowPath {
     list: NodeId,
-    place: usize,
+    row: usize,
     steps: Vec<usize>,
 }
 
@@ -38,10 +39,16 @@ pub(crate) enum Undo {
     State(NodeId, NodeId),
     /// How many overlays were open before.
     Overlays(usize),
-    /// How long the history was before a navigation.
+    /// How deep the run had navigated before a navigation ([`Player::depth`]).
     Screen(usize),
-    /// A page's or frame's modes before a *Set mode*.
-    Modes(NodeId, Vec<ModeId>),
+    /// A *Set mode* of `set` on a page or frame: the mode of `set`'s collection
+    /// it held before, and what play had given it before ([`Player::modes`]).
+    Modes {
+        node: NodeId,
+        set: ModeId,
+        was: Option<ModeId>,
+        played: Option<Vec<ModeId>>,
+    },
 }
 
 impl Player {
@@ -75,8 +82,9 @@ impl Player {
     }
 
     /// Run `actions` on `holder` in turn. A write to a table a list draws makes
-    /// the list again with new copies, so a holder in a row is looked up at
-    /// its place in that row before each action.
+    /// the list again with new copies, so a holder in a row is looked up in
+    /// that row before each action; once the row is no longer drawn, the
+    /// actions left are skipped as `Missing`.
     fn run_actions(
         &mut self,
         holder: NodeId,
@@ -87,21 +95,30 @@ impl Player {
         let path = self.row_path(holder);
         let mut holder = holder;
         for k in actions {
-            holder = self.still(holder, path.as_ref());
+            let Some(now) = self.still(holder, path.as_ref()) else {
+                let notice = Notice::Missing {
+                    layer: holder,
+                    action: k.id,
+                };
+                self.notice_once(holder, k.id, notice);
+                continue;
+            };
+            holder = now;
             self.run_action(holder, trigger, k, undo);
         }
     }
 
-    /// Where `id` sits in a list's row: the list, the row's place among the
-    /// drawn rows, and the child index at each step down from the row to `id`.
-    /// `None` outside any row.
+    /// Where `id` sits in a list's row: the list, the table row the row shows,
+    /// and the child index at each step down from the row to `id`. `None`
+    /// outside any row.
     pub(crate) fn row_path(&self, id: NodeId) -> Option<RowPath> {
         let mut steps = Vec::new();
         let mut at = id;
         loop {
             if let Some((list, place)) = mastik_core::list::row_of(&self.doc, at) {
                 steps.reverse();
-                return Some(RowPath { list, place, steps });
+                let row = *mastik_core::list::shown(&self.doc, list).get(place)?;
+                return Some(RowPath { list, row, steps });
             }
             let parent = self.doc.get(at)?.parent()?;
             let i = self
@@ -115,22 +132,23 @@ impl Player {
         }
     }
 
-    /// `id` while it is there, else the layer at `path` in the list as it is
-    /// drawn now; `id` itself when neither is there.
-    pub(crate) fn still(&self, id: NodeId, path: Option<&RowPath>) -> NodeId {
-        if self.doc.get(id).is_some() {
-            return id;
-        }
-        let found = path.and_then(|p| {
-            let root = match p.place {
-                0 => mastik_core::list::template(&self.doc, p.list)?,
-                n => *self.doc.get(p.list)?.list()?.copies.get(n - 1)?,
-            };
-            p.steps
-                .iter()
-                .try_fold(root, |at, i| self.doc.get(at)?.children().get(*i).copied())
-        });
-        found.unwrap_or(id)
+    /// The layer at `path` in the list as it is drawn now, `None` once its row
+    /// is no longer drawn; `id` itself outside a row. The template keeps its id
+    /// while it comes to show another row, so `id` being there is not enough.
+    pub(crate) fn still(&self, id: NodeId, path: Option<&RowPath>) -> Option<NodeId> {
+        let Some(p) = path else {
+            return Some(id);
+        };
+        let place = mastik_core::list::shown(&self.doc, p.list)
+            .iter()
+            .position(|r| *r == p.row)?;
+        let root = match place {
+            0 => mastik_core::list::template(&self.doc, p.list)?,
+            n => *self.doc.get(p.list)?.list()?.copies.get(n - 1)?,
+        };
+        p.steps
+            .iter()
+            .try_fold(root, |at, i| self.doc.get(at)?.children().get(*i).copied())
     }
 
     /// The layer `raw` names when read from a reaction on `holder`, or `None`
@@ -174,7 +192,7 @@ impl Player {
                 let Some(to) = self.target(holder, k.id, *to, true) else {
                     return;
                 };
-                undo.push(Undo::Screen(self.history.len()));
+                undo.push(Undo::Screen(self.depth()));
                 self.navigate(to, *transition, *keep_scroll);
             }
             Action::Back => {
@@ -254,10 +272,15 @@ impl Player {
                 };
                 let new = match (change, old) {
                     (VarChange::Set { to }, old) => {
-                        match self
-                            .eval(holder, to, None)
-                            .and_then(|v| same_kind(v, &old, to))
-                        {
+                        // A text variable set from one cell takes the cell as
+                        // written: read as a number, `00731` would be refused.
+                        let text = matches!(old, Value::String(_))
+                            .then(|| self.as_written(to, None))
+                            .flatten();
+                        match self.eval(holder, to, None).and_then(|v| match text {
+                            Some(s) => Ok(Value::String(s)),
+                            None => same_kind(v, &old, to),
+                        }) {
                             Ok(v) => v,
                             Err(error) => {
                                 self.notice_once(
@@ -335,9 +358,7 @@ impl Player {
                     ModeScope::Everywhere => self.everywhere(*mode),
                     ModeScope::Screen => vec![self.screen],
                 };
-                for (id, was) in self.set_mode_on(&at, *mode) {
-                    undo.push(Undo::Modes(id, was));
-                }
+                undo.extend(self.set_mode_on(&at, *mode));
             }
             Action::OpenUrl { url } => {
                 let lower = url.trim().to_ascii_lowercase();
@@ -384,11 +405,38 @@ impl Player {
                     }
                 }
                 Undo::Screen(n) => {
-                    if self.history.len() > n {
+                    if self.depth() > n {
                         self.back();
                     }
                 }
-                Undo::Modes(id, was) => self.put_modes(vec![(id, was)]),
+                Undo::Modes {
+                    node,
+                    set,
+                    was,
+                    played,
+                } => {
+                    // Only the collection *Set mode* changed goes back, so an
+                    // edit to another meanwhile stays.
+                    let t = self.doc.variables();
+                    let back = self.doc.get(node).and_then(|n| {
+                        let have = n.modes();
+                        let mut modes: Vec<ModeId> = have
+                            .iter()
+                            .copied()
+                            .filter(|m| !mastik_core::variable::same_collection(t, *m, set))
+                            .collect();
+                        modes.extend(was);
+                        modes.sort();
+                        (modes != have).then_some(modes)
+                    });
+                    if let Some(modes) = back {
+                        self.put_modes(vec![(node, modes)]);
+                    }
+                    match played {
+                        Some(p) => self.modes.insert(node, p),
+                        None => self.modes.remove(&node),
+                    };
+                }
             }
         }
     }
@@ -427,41 +475,47 @@ impl Player {
     }
 
     /// Set `mode` on each node of `at` on the copy (a page's root or a frame)
-    /// in place of any mode of its collection there, in one commit. Answers
-    /// each node that changed with the modes it held before.
-    pub(crate) fn set_mode_on(
-        &mut self,
-        at: &[NodeId],
-        mode: ModeId,
-    ) -> Vec<(NodeId, Vec<ModeId>)> {
+    /// in place of any mode of its collection there, in one commit, and
+    /// remember it in [`Player::modes`] so a live edit's fresh copy gets it
+    /// again. Answers how to put back each node that changed.
+    pub(crate) fn set_mode_on(&mut self, at: &[NodeId], mode: ModeId) -> Vec<Undo> {
         let t = self.doc.variables();
         let mut put = Vec::new();
-        let mut was_all = Vec::new();
+        let mut undo = Vec::new();
         for &id in at {
             let Some(n) = self.doc.get(id) else { continue };
-            let was = n.modes().to_vec();
-            let mut modes: Vec<ModeId> = was
-                .iter()
-                .copied()
-                .filter(|m| !mastik_core::variable::same_collection(t, *m, mode))
-                .collect();
-            modes.push(mode);
-            modes.sort();
-            if modes != was {
+            let modes = with_modes(t, n.modes(), &[mode]);
+            if modes != n.modes() {
+                let was = n
+                    .modes()
+                    .iter()
+                    .copied()
+                    .find(|m| mastik_core::variable::same_collection(t, *m, mode));
                 put.push((id, modes));
-                was_all.push((id, was));
+                undo.push(Undo::Modes {
+                    node: id,
+                    set: mode,
+                    was,
+                    played: self.modes.get(&id).cloned(),
+                });
             }
         }
-        self.put_modes(put);
-        was_all
+        let taken = self.put_modes(put);
+        let t = self.doc.variables();
+        for id in &taken {
+            let played = self.modes.entry(*id).or_default();
+            *played = with_modes(t, played, &[mode]);
+        }
+        undo.retain(|u| matches!(u, Undo::Modes { node, .. } if taken.contains(node)));
+        undo
     }
 
-    /// Give each node of the copy exactly its modes, remembered so a live
-    /// edit's fresh copy gets them again: one commit and one refilter for all,
-    /// since each refilter makes again every list a filter reads.
-    pub(crate) fn put_modes(&mut self, all: Vec<(NodeId, Vec<ModeId>)>) {
+    /// Give each node of the copy exactly its modes: one commit and one
+    /// refilter for all, since each refilter makes again every list a filter
+    /// reads. Answers the nodes the copy took them on.
+    pub(crate) fn put_modes(&mut self, all: Vec<(NodeId, Vec<ModeId>)>) -> Vec<NodeId> {
         if all.is_empty() {
-            return;
+            return Vec::new();
         }
         let ops = all
             .iter()
@@ -485,11 +539,29 @@ impl Player {
                 .collect(),
         };
         if taken.is_empty() {
-            return;
+            return Vec::new();
         }
-        self.modes.extend(taken);
         // A filter's variable may read another value in the new mode.
         self.refilter(None);
+        taken.into_iter().map(|(id, _)| id).collect()
+    }
+
+    /// Each node of the copy whose modes no longer hold what *Set mode* gave
+    /// it ([`Player::modes`]), with its modes once given them again; the other
+    /// collections' modes stay as the node has them.
+    pub(crate) fn modes_owed(&self) -> Vec<(NodeId, Vec<ModeId>)> {
+        let t = self.doc.variables();
+        let mut owed: Vec<_> = self
+            .modes
+            .iter()
+            .filter_map(|(id, played)| {
+                let have = self.doc.get(*id)?.modes();
+                let want = with_modes(t, have, played);
+                (want != have).then_some((*id, want))
+            })
+            .collect();
+        owed.sort();
+        owed
     }
 
     // ── Moves ────────────────────────────────────────────────────────────────
@@ -508,8 +580,15 @@ impl Player {
         });
         if self.history.len() > crate::player::MAX_HISTORY {
             self.history.remove(0);
+            self.trimmed += 1;
         }
         self.show(to, transition, keep);
+    }
+
+    /// How deep the run has navigated: the history's length with the visits
+    /// trimmed off its front, so it still grows once the history is full.
+    pub(crate) fn depth(&self) -> usize {
+        self.trimmed + self.history.len()
     }
 
     /// Pop the history: the frame before, by the reverse of the transition that
@@ -928,6 +1007,26 @@ impl Player {
         let value = bool_value(&vs.props[prop].values, on)?;
         variant::switch_target(&self.doc, main, prop, &value)
     }
+}
+
+/// `have` with its mode of each of `put`'s collections replaced by `put`'s, in
+/// id order as a node keeps its modes.
+fn with_modes(
+    t: &mastik_core::variable::Variables,
+    have: &[ModeId],
+    put: &[ModeId],
+) -> Vec<ModeId> {
+    let mut modes: Vec<ModeId> = have
+        .iter()
+        .copied()
+        .filter(|m| {
+            !put.iter()
+                .any(|p| mastik_core::variable::same_collection(t, *m, *p))
+        })
+        .collect();
+    modes.extend_from_slice(put);
+    modes.sort();
+    modes
 }
 
 /// `v` when it is of `old`'s kind: a table's cell has its kind only in play, so

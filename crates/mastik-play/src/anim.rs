@@ -348,6 +348,11 @@ impl Smart {
             if tr.from.opacity != tr.to.opacity {
                 let o = tr.from.opacity + (tr.to.opacity - tr.from.opacity) * t as f32;
                 patch.opacity = Some(o.clamp(0.0, 1.0));
+                // One the end hides is drawn while it fades out, as its pair
+                // on the outgoing frame is not.
+                if !p.doc.shown_node(n) {
+                    patch.visible = Some(true);
+                }
             }
             let mut paint = tr.to.paint.clone();
             let mut painted = false;
@@ -395,7 +400,6 @@ impl Smart {
             {
                 patch.effects = Some(effects);
             }
-            let _ = n;
         }
         for id in &self.fade_in {
             if let Some(n) = p.doc.get(*id) {

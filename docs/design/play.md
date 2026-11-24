@@ -128,10 +128,15 @@ out both ends.
 - *Hover enter* runs once per layer the pointer enters, *On leave* once per layer it leaves (the
   player included); *while hovering* and *while pressed* record what their actions did and put it
   back, newest first, when the pointer leaves or the press ends: a variable's previous play value,
-  an instance's previous main, overlays opened, a navigation (one *Back*). A hover lasts while the
+  an instance's previous main, overlays opened, a navigation (one *Back*), a *Set mode*'s mode of
+  its collection. A hover lasts while the
   layer is under the pointer or the pointer stays where the layer was when it began
   (`While::area`), so a *while hovering* navigation or modal overlay, which takes the layer from
-  under the pointer, ends when the pointer moves off that place. *On leave* fires only
+  under the pointer, ends when the pointer moves off that place. Hovers that end together are put
+  back newest first, and one that ends while a later one that wrote the same variable goes on
+  hands its earlier value to that one instead of writing over it (`hand_over_values`): after a
+  scroll moves card B under a pointer still on card A's place, A's end leaves B's value, and B's
+  end puts back what A found. *On leave* fires only
   for a layer still in a shown frame — one that went with its frame is gone, not left — and not
   in a *Disabled* instance.
 - **A finger hovers nothing.** While the shell says the pointer is a finger (`Input::Touch(true)`),
@@ -187,7 +192,9 @@ out both ends.
   acts on the instance's own layer. A target not there — or not a frame where a frame is needed —
   is skipped with one `Missing` notice per action.
 - **Navigate** closes every overlay and pushes the history, which keeps the last 1000 visits
-  (`MAX_HISTORY`). The player keeps every screen's scroll
+  (`MAX_HISTORY`); a *while* trigger's navigation is recorded by how deep the run had gone
+  (`Player::depth`, which counts the visits trimmed), so it still comes back once the history is
+  full. The player keeps every screen's scroll
   offsets for the run; `Player::show` resets those of the frames inside the destination unless
   the action keeps scroll (`keep_scroll`), and *Back* to a screen keeps them when the navigation
   that left it did (`Visit::keep`). Navigating to the screen itself does nothing.
@@ -208,15 +215,19 @@ out both ends.
 - **Set variable** evaluates against the copy at the reaction's layer (play values included);
   increment applies to numbers and toggle to booleans, and anything else is skipped. A value of
   another kind than the variable's is skipped with an `Expression` notice: a table's cell has its
-  kind only in play, so the check is made here as well as in the field. A value that
+  kind only in play, so the check is made here as well as in the field. A string variable set
+  from one cell read alone takes the cell as written (`TableEnv::written`), as a row action's cell
+  does, so `00731` is not refused as a number. A value that
   does not change what the variable reads fires nothing.
 - **Set mode** commits `SetModes` on the copy in place of any mode of the same collection there:
   on every page root for *Everywhere*, so a frame that sets its own mode keeps it and a by-width
   collection is held at that mode; on the screen frame for *This screen*. A page holds no kit's
   mode, so *Everywhere* puts a kit's on each top-level frame instead, passing over one that pins
   a mode of that kit collection in the document (`Player::everywhere`). The player remembers
-  what it gave each node (`put_modes`), so a live edit puts it back, re-cloned or not; a *while* trigger
-  undoes it (`Undo::Modes`). A mode in neither the document's collections nor a kit's is skipped
+  the mode it gave each node in each collection it set, and no other (`Player::modes`), so a live
+  edit puts those back, re-cloned or not, while the edit's pick in any other collection shows
+  (`modes_owed`). A *while* trigger's end puts back that collection's mode and what the player
+  remembered before (`Undo::Modes`), so it claims no mode it has given up. A mode in neither the document's collections nor a kit's is skipped
   with `Missing`. Nothing animates. *Restart* and a new flow start from the document's own modes
   and the flow's starting modes, which play sets as *Everywhere* does before anything opens.
 - **Conditional** runs the first branch whose condition is true, else `otherwise`; a condition
@@ -267,10 +278,14 @@ out both ends.
   `TableFull`. A missing table is `Missing`. After each write, *When a table changes* reactions
   fire (*Triggers*). *Restart* puts every table back.
   A write makes its lists again with new copies, so the rest of the reaction, and the layer's
-  further reactions, run on the layer at the holder's place in its row (`Player::row_path`,
-  `Player::still`). A list made again in play takes up its new copies as a frame's opening does
-  (`take_up_copies`): their inputs and scroll effects are found, and in a shown frame their
-  *After* reactions start, so a looping row state goes on looping.
+  further reactions, run on the layer at the holder's place in the row drawing the same table row
+  (`Player::row_path`, `Player::still`); once a filter or a sort takes that row out of the list,
+  the actions left are skipped with `Missing` and the reactions left do not run, rather than land
+  on the row now drawn in its place. A list made again in play takes up its new copies as a frame's
+  opening does (`take_up_copies`): their inputs and scroll effects are found, and in a shown frame
+  their *After* reactions start, at least `MIN_LOOP_MS` out, so a looping row state goes on
+  looping and a row *After* that writes its own table lets time move. Every copy's *After* starts
+  again from then, one that already ran included.
 
 ## Inputs
 
@@ -379,7 +394,8 @@ or no scrolling frame above, means no effect (`effect_now`).
   when it starts and never again. A paired layer's transform (moved, turned the short way, scaled
   and sheared, each interpolated; a mirror at one end only is a scale through zero, not half a
   turn), box size, opacity (a side that hides the layer reads as 0, so one shown only at the end
-  fades in) and corner radii (a polygon's or star's one)
+  fades in, and one the end hides is drawn while it fades out) and corner radii (a polygon's or
+  star's one)
   interpolate; so do fills and strokes, brush by brush, when both ends have as many (and stroke
   widths; colours mix premultiplied), and effects when both stacks are the same kinds in the same order (shadows' offset,
   blur, spread and colour; layer and background blur radii). Two gradients of one kind move
@@ -407,8 +423,8 @@ or no scrolling frame above, means no effect (`effect_now`).
 `apply_edit(tx)` takes each transaction the editor commits. It is applied to the base copy (an
 `Err` there means the shell passed the wrong document and nothing changes), then to the played
 copy. Edits are absolute, so one the copy takes can write over play's own choices: after it, each
-node whose modes differ from what *Set mode* gave it is given them again, and the screen its play
-size (`put_play_back`). When the copy refuses it — play changed something the edit touches — the copy is cloned again
+node whose modes no longer hold what *Set mode* gave it is given those modes again, its other
+collections' modes as the edit left them, and the screen its play size (`put_play_back`). When the copy refuses it — play changed something the edit touches — the copy is cloned again
 from the base and play state carried across by id: the screen, history, overlays, play values,
 scroll offsets, each instance re-switched to the main play left it on, and the modes *Set mode*
 gave. Motions under way end; a drag's settle ends where it was going and its drops run. After any

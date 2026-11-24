@@ -540,6 +540,127 @@ fn leaving_a_hover_that_navigated_comes_back() {
     assert!(p.history().is_empty());
 }
 
+/// A *while hovering* navigation comes back though *Back*'s history is full,
+/// its oldest visit dropped as the hover navigates.
+///
+/// flip: `undo` comparing `Undo::Screen` with the history's length in place of
+/// `Player::depth` → fails at "back on A".
+#[test]
+fn a_hover_navigation_comes_back_from_a_full_history() {
+    let (mut fx, a, b, _) = two_screens(Transition::INSTANT);
+    let card = fx.rect(a, "Card", 100.0, 50.0, 40.0, 40.0);
+    fx.on(
+        card,
+        Trigger::HoverWhile,
+        vec![Action::Navigate {
+            to: b,
+            transition: Transition::INSTANT,
+            keep_scroll: false,
+        }],
+    );
+    let mut p = fx.play(a);
+    let visit = crate::player::Visit {
+        frame: b,
+        transition: Transition::INSTANT,
+        keep: false,
+    };
+    p.history = vec![visit; crate::player::MAX_HISTORY];
+    p.input(Input::PointerMove(Point::new(110.0, 60.0)));
+    assert_eq!(p.screen(), b, "fixture: there while hovering");
+    assert_eq!(
+        p.history().len(),
+        crate::player::MAX_HISTORY,
+        "fixture: full"
+    );
+    p.input(Input::PointerMove(Point::new(190.0, 95.0)));
+    assert_eq!(p.screen(), a, "back on A");
+}
+
+/// Leaving a *while hovering* puts its writes back newest first, so two writes
+/// to one variable end at its start; an overlay it opened stays while the
+/// pointer is on the layer's place and closes on leaving.
+///
+/// flip: `undo` putting back oldest first → fails at "back to its start";
+/// emptying its `Undo::Overlays` arm → fails at "the overlay closes".
+#[test]
+fn leaving_a_hover_puts_back_newest_first() {
+    let (mut fx, a, card, n) = one_card();
+    let menu = fx.frame("Menu", 900.0, 80.0, 40.0);
+    fx.on(
+        card,
+        Trigger::HoverWhile,
+        vec![
+            add(n, 1.0),
+            add(n, 1.0),
+            Action::OpenOverlay {
+                overlay: menu,
+                settings: OverlaySettings::default(),
+                transition: Transition::INSTANT,
+            },
+        ],
+    );
+    let mut p = fx.play(a);
+    p.input(Input::PointerMove(Point::new(20.0, 20.0)));
+    assert_eq!(number(&p, n), 2.0, "fixture: both ran");
+    assert_eq!(p.overlays(), vec![menu], "open while hovering");
+    p.input(Input::PointerMove(Point::new(25.0, 25.0)));
+    assert_eq!(p.overlays(), vec![menu], "still open on the card's place");
+    p.input(Input::PointerMove(Point::new(190.0, 95.0)));
+    assert_eq!(number(&p, n), 0.0, "back to its start");
+    assert!(p.values().iter().all(|r| !r.played), "no play value left");
+    assert!(p.overlays().is_empty(), "the overlay closes");
+}
+
+/// A scroll moves card B under a pointer still on card A's place: A's hover
+/// lives on there, B's begins, and when A's ends it leaves B's value alone;
+/// B's own end puts back what both found.
+///
+/// flip: `rehover` putting each ended while back without `hand_over_values`
+/// → fails at "B's value stays".
+#[test]
+fn an_older_hover_ending_leaves_the_newer_ones_value() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    fx.play_settings(
+        a,
+        LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            ..LayerPlay::default()
+        },
+    );
+    let first = fx.rect(a, "First", 10.0, 10.0, 100.0, 40.0);
+    let second = fx.rect(a, "Second", 10.0, 60.0, 100.0, 80.0);
+    fx.rect(a, "Long", 0.0, 150.0, 10.0, 400.0);
+    let shown = fx.var("Preview", VarKind::String, Cell::String("none".into()));
+    for (card, name) in [(first, "'A'"), (second, "'B'")] {
+        fx.on(
+            card,
+            Trigger::HoverWhile,
+            vec![Action::SetVariable {
+                var: shown,
+                change: VarChange::Set {
+                    to: Expr(name.into()),
+                },
+            }],
+        );
+    }
+    let mut p = fx.play(a);
+    let preview = |p: &Player| p.doc.resolve_var(p.screen(), shown);
+    let text = |s: &str| Some(Value::String(s.into()));
+    p.input(Input::PointerMove(Point::new(20.0, 20.0)));
+    assert_eq!(preview(&p), text("A"), "fixture: A hovered");
+    p.input(Input::Wheel {
+        at: Point::new(20.0, 20.0),
+        delta: Vec2::new(0.0, 50.0),
+    });
+    p.input(Input::PointerMove(Point::new(21.0, 21.0)));
+    assert_eq!(preview(&p), text("B"), "fixture: B under the pointer");
+    p.input(Input::PointerMove(Point::new(20.0, 70.0)));
+    assert_eq!(preview(&p), text("B"), "B's value stays");
+    p.input(Input::PointerMove(Point::new(150.0, 95.0)));
+    assert_eq!(preview(&p), text("none"), "both put back");
+}
+
 /// *Set variable* to a value of another kind is skipped with a notice; one that
 /// does not change what the variable reads fires no *variable changes*; a
 /// condition that is not true or false gives a notice and falls to otherwise.
@@ -1665,10 +1786,13 @@ fn smart_animate_carries_a_fading_layer_with_its_pair() {
     );
 }
 
-/// A fading layer whose opacity is bound fades from what it is drawn at, its
-/// variable's percentage, not the literal 0 its binding leaves.
+/// A bound opacity fades from what it is drawn at, its variable's percentage,
+/// not the literal 0 its binding leaves: a layer fading in, one fading out and
+/// a paired one alike; and a paired layer the end hides fades out, drawn.
 ///
-/// flip: `Smart::patch_in` fading by `Node::opacity` → fails at "from 60%".
+/// flip: `Smart::patch_in` fading in by `Node::opacity` → fails at "from 60%";
+/// `Player::look` reading `Node::opacity` → fails at "paired from 60%";
+/// `patch_in` leaving the hidden end undrawn → fails at "drawn while it fades".
 #[test]
 fn a_bound_opacity_fades_from_what_it_draws() {
     let mut fx = Fx::new();
@@ -1679,6 +1803,19 @@ fn a_bound_opacity_fades_from_what_it_draws() {
     let muted = fx.var("muted", VarKind::Number, Cell::Number(60.0));
     let bind = mastik_core::build::bind_opacity_ops(&fx.doc, badge, muted);
     fx.apply(bind);
+    let gone = fx.rect(a, "Gone", 40.0, 60.0, 20.0, 20.0);
+    let paired = fx.rect(a, "Pair", 80.0, 60.0, 20.0, 20.0);
+    let pair = fx.rect(b, "Pair", 80.0, 60.0, 20.0, 20.0);
+    for id in [gone, paired] {
+        let bind = mastik_core::build::bind_opacity_ops(&fx.doc, id, muted);
+        fx.apply(bind);
+    }
+    fx.rect(a, "Shut", 120.0, 60.0, 20.0, 20.0);
+    let shut = fx.rect(b, "Shut", 120.0, 60.0, 20.0, 20.0);
+    fx.apply(vec![Operation::SetVisible {
+        id: shut,
+        visible: false,
+    }]);
     let mut fade = linear(TransitionKind::SmartAnimate, 100);
     fade.direction = Direction::None;
     fx.on(
@@ -1694,13 +1831,20 @@ fn a_bound_opacity_fades_from_what_it_draws() {
     click(&mut p, 5.0, 5.0);
     p.tick(50.0);
     let s = p.scene();
-    let o = s
-        .patches
-        .iter()
-        .find(|x| x.node == badge)
-        .and_then(|x| x.opacity);
-    let o = o.expect("patched");
+    let patch = |id| s.patches.iter().find(|x| x.node == id);
+    let o = patch(badge).and_then(|x| x.opacity).expect("patched");
     assert!((o - 0.3).abs() < 1e-6, "from 60%: {o}");
+    let o = patch(gone).and_then(|x| x.opacity).expect("patched");
+    assert!((o - 0.3).abs() < 1e-6, "out from 60%: {o}");
+    let o = patch(pair).and_then(|x| x.opacity).expect("patched");
+    assert!((o - 0.8).abs() < 1e-6, "paired from 60%: {o}");
+    let shut = patch(shut).expect("patched");
+    assert!(
+        shut.opacity.is_some_and(|o| (o - 0.5).abs() < 1e-6),
+        "fades out: {:?}",
+        shut.opacity
+    );
+    assert_eq!(shut.visible, Some(true), "drawn while it fades");
 }
 
 /// Smart animate pairs an instance of one variant with an instance of another
@@ -2267,6 +2411,100 @@ fn a_runaway_script_in_play_stops_at_its_steps() {
     );
 }
 
+/// A loop of host work — layer writes over a 200-layer frame, or `play.vars`
+/// writes — spends the play budget's steps, though it takes few Luau steps,
+/// and is rolled back; a take's replay stops it at the same point.
+///
+/// flip: `PLAY_BUDGET.host` at 0 → fails at "both runs refused" (both finish).
+#[cfg(feature = "scripts")]
+#[test]
+fn host_work_in_a_play_script_spends_its_steps() {
+    let (mut fx, a, _, button) = two_screens(Transition::INSTANT);
+    let field = fx.frame("Field", 1000.0, 400.0, 400.0);
+    let dots: Vec<NodeId> = (0..200).map(|_| fx.ids.mint()).collect();
+    fx.apply(
+        dots.iter()
+            .enumerate()
+            .map(|(i, id)| Operation::CreateNode {
+                id: *id,
+                parent: field,
+                index: i,
+                kind: NodeKind::Rect {
+                    size: Size::new(2.0, 2.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((5.0, 5.0))),
+                name: Some("Dot".into()),
+            })
+            .collect(),
+    );
+    let count = fx.var("Count", VarKind::Number, Cell::Number(0.0));
+    let (sweep, tally) = (fx.ids.mint_script(), fx.ids.mint_script());
+    let script = |id, name: &str, source: &str| Operation::AddScript {
+        script: mastik_core::Script {
+            id,
+            name: name.into(),
+            source: source.into(),
+        },
+        index: 0,
+    };
+    fx.apply(vec![
+        script(sweep, "Sweep", "for i = 1, 100 do Field.children.x = i end"),
+        script(
+            tally,
+            "Tally",
+            "for i = 1, 100000 do play.vars.Count = i end",
+        ),
+        Operation::SetReactions {
+            id: button,
+            reactions: vec![],
+        },
+    ]);
+    fx.on(
+        button,
+        Trigger::Click,
+        vec![Action::RunScript { script: sweep }],
+    );
+    let other = fx.rect(a, "Other", 100.0, 10.0, 40.0, 40.0);
+    fx.on(
+        other,
+        Trigger::Click,
+        vec![Action::RunScript { script: tally }],
+    );
+    let stopped = format!("Stopped after {} steps", mastik_vm::PLAY_BUDGET.steps);
+    let mut p = fx.play(a);
+    p.record();
+    p.tick(16.0);
+    click(&mut p, 20.0, 20.0);
+    p.tick(16.0);
+    click(&mut p, 110.0, 20.0);
+    p.tick(16.0);
+    let said: Vec<String> = p
+        .take_notices()
+        .into_iter()
+        .map(|n| match n {
+            Notice::Script { message, .. } => message,
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(said.len(), 2, "both runs refused: {said:?}");
+    assert!(
+        said.iter().all(|m| m.ends_with(&stopped)),
+        "stopped by their steps: {said:?}"
+    );
+    let last = *dots.last().unwrap();
+    let x = |p: &Player| p.document().get(last).unwrap().transform().translation().x;
+    assert_eq!(x(&p), 5.0, "the sweep rolled back");
+    assert_eq!(number(&p, count), 0.0, "the tally rolled back");
+    let take = p.stop_recording().unwrap();
+    let mut replay = crate::Replay::new(&fx.doc, take, PLAYER).unwrap();
+    replay.finish();
+    let r = replay.player();
+    assert_eq!(r.log(), p.log(), "the replay stops at the same step");
+    assert_eq!(x(r), 5.0);
+}
+
 /// A script adding a row to a table in play makes the list over it again on
 /// the copy, so the new row shows; the document keeps its one row.
 ///
@@ -2333,11 +2571,12 @@ fn a_script_editing_a_table_redraws_the_list_over_it() {
 /// A script reads a variable's play value through `play.vars` and writes one
 /// as *Set variable* does: the write fires *When a variable changes*, and
 /// `play.go` shows its frame once the run ends. A failed run takes its play
-/// values back with the copy.
+/// values back with the copy and navigates nowhere.
 ///
 /// flip: `run_script_source` not calling `changed` for what the run wrote →
 /// fails at "the change fires"; `run_script_source` not restoring `values` on
-/// failure → fails at "taken back".
+/// failure → fails at "taken back"; navigating before it returns on failure →
+/// fails at "navigates nowhere".
 #[cfg(feature = "scripts")]
 #[test]
 fn a_script_reads_and_writes_play_values_and_navigates() {
@@ -2359,7 +2598,11 @@ fn a_script_reads_and_writes_play_values_and_navigates() {
             "Bump",
             "play.vars.Count = play.vars.Count + 1\nprint(play.vars.Count)\nplay.go(\"B\")",
         ),
-        script(bad, "Bad", "play.vars.Count = 100\nerror(\"boom\")"),
+        script(
+            bad,
+            "Bad",
+            "play.vars.Count = 100\nplay.go(\"B\")\nerror(\"boom\")",
+        ),
         Operation::SetReactions {
             id: button,
             reactions: vec![],
@@ -2400,6 +2643,7 @@ fn a_script_reads_and_writes_play_values_and_navigates() {
     ));
     assert_eq!(number(&p, count), 5.0, "taken back");
     assert_eq!(number(&p, seen), 1.0, "a failed run fires nothing");
+    assert_eq!(p.screen(), a, "a failed run navigates nowhere");
 
     click(&mut p, 20.0, 20.0);
     assert!(p.take_notices().is_empty());
@@ -2412,6 +2656,56 @@ fn a_script_reads_and_writes_play_values_and_navigates() {
     assert_eq!(number(&p, seen), 2.0, "the change fires");
     assert_eq!(p.screen(), b, "navigated once the run ended");
     assert_eq!(p.history(), vec![a]);
+}
+
+/// A *while hovering* script's `play.vars` write is put back on leaving, and a
+/// write of the wrong kind is refused at its line, the value unchanged.
+///
+/// flip: `run_script_source` not recording `Undo::Value` for what the run
+/// wrote → fails at "put back on leaving"; `value_of` taking any value →
+/// fails at "refused".
+#[cfg(feature = "scripts")]
+#[test]
+fn a_hover_script_write_comes_back_and_a_wrong_kind_is_refused() {
+    let (mut fx, a, card, _) = one_card();
+    let count = fx.var("Count", VarKind::Number, Cell::Number(0.0));
+    let (bump, wrong) = (fx.ids.mint_script(), fx.ids.mint_script());
+    let script = |id, name: &str, source: &str| Operation::AddScript {
+        script: mastik_core::Script {
+            id,
+            name: name.into(),
+            source: source.into(),
+        },
+        index: 0,
+    };
+    fx.apply(vec![
+        script(bump, "Bump", "play.vars.Count = play.vars.Count + 1"),
+        script(wrong, "Wrong", "play.vars.Count = \"x\""),
+    ]);
+    fx.on(
+        card,
+        Trigger::HoverWhile,
+        vec![Action::RunScript { script: bump }],
+    );
+    let other = fx.rect(a, "Other", 100.0, 10.0, 40.0, 40.0);
+    fx.on(
+        other,
+        Trigger::Click,
+        vec![Action::RunScript { script: wrong }],
+    );
+    let mut p = fx.play(a);
+    p.input(Input::PointerMove(Point::new(20.0, 20.0)));
+    assert_eq!(number(&p, count), 1.0, "fixture: written while hovering");
+    p.input(Input::PointerMove(Point::new(80.0, 80.0)));
+    assert_eq!(number(&p, count), 0.0, "put back on leaving");
+    assert!(p.take_notices().is_empty());
+
+    click(&mut p, 110.0, 20.0);
+    assert!(
+        matches!(p.take_notices().as_slice(), [Notice::Script { .. }]),
+        "refused"
+    );
+    assert_eq!(number(&p, count), 0.0);
 }
 
 /// A script fired inside a list's row reads that row through `play.row`, which
@@ -2677,27 +2971,63 @@ fn a_deleted_start_frame_or_flow_moves_the_start() {
 }
 
 /// An edit the copy takes cannot write over play's own choices: a page's modes
-/// edited keep the mode *Set mode* gave, and the screen resized keeps its
-/// play size.
+/// edited keep the mode *Set mode* gave, while a pick in another collection
+/// shows, and the screen resized keeps its play size.
 ///
 /// flip: `Player::put_play_back` not putting modes back → fails at "the played
-/// mode holds"; not refitting the screen → fails at "the play size holds".
+/// mode holds"; putting back the node's whole list → fails at "the other
+/// collection's pick shows"; not refitting the screen → fails at "the play
+/// size holds"; `follow` re-cloning every edit → fails at "taken, not re-cloned".
 #[test]
 fn a_clean_live_edit_keeps_set_modes_and_the_play_size() {
+    use mastik_core::variable::Collection;
     let mut fx = Fx::new();
     let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let c = fx.frame("C", 600.0, 200.0, 100.0);
+    let other = fx.rect(c, "Other", 10.0, 10.0, 40.0, 40.0);
     let (light, dark, n) = dark_mode(&mut fx);
+    let (brand_a, brand_b) = (fx.ids.mint_mode(), fx.ids.mint_mode());
+    let brand = fx.ids.mint_collection();
+    let sorted = |mut m: Vec<ModeId>| {
+        m.sort();
+        m
+    };
+    fx.apply(vec![
+        Operation::AddCollection {
+            collection: Collection {
+                id: brand,
+                name: "Brand".into(),
+                modes: vec![
+                    Mode {
+                        id: brand_a,
+                        name: "A".into(),
+                    },
+                    Mode {
+                        id: brand_b,
+                        name: "B".into(),
+                    },
+                ],
+                breakpoints: None,
+            },
+            index: 1,
+        },
+        Operation::SetModes {
+            id: fx.page,
+            modes: sorted(vec![light, brand_a]),
+        },
+    ]);
     let mut p = fx.play(a);
     let played = Size::new(400.0, 300.0);
     p.set_play_size(Some(played));
     p.input(Input::SetMode(dark));
     assert_eq!(number(&p, n), 2.0, "fixture: dark");
     let size = |p: &Player| p.document().get(a).and_then(|x| x.kind().box_size());
+    p.take_dirty();
 
     let tx = Transaction(vec![
         Operation::SetModes {
             id: fx.page,
-            modes: vec![light],
+            modes: sorted(vec![light, brand_b]),
         },
         Operation::SetGeometry {
             id: a,
@@ -2706,10 +3036,59 @@ fn a_clean_live_edit_keeps_set_modes_and_the_play_size() {
     ]);
     fx.doc.apply(&tx).unwrap();
     p.apply_edit(&tx).unwrap();
-    assert!(p.take_notices().is_empty(), "fixture: taken, not refused");
+    assert!(
+        !p.take_dirty().contains(&other),
+        "taken, not re-cloned: a re-clone dirties every layer"
+    );
     assert_eq!(number(&p, n), 2.0, "the played mode holds");
     assert_eq!(p.modes()[0].current, dark);
+    assert_eq!(
+        p.document().get(fx.page).unwrap().modes(),
+        sorted(vec![dark, brand_b]).as_slice(),
+        "the other collection's pick shows"
+    );
     assert_eq!(size(&p), Some(played), "the play size holds");
+}
+
+/// A *while hovering* *Set mode* gives the screen its mode while the pointer
+/// is on the layer and puts the saved one back on leaving; play then claims
+/// no mode, so a later live edit of the screen's modes shows.
+///
+/// flip: `undo` passing over `Undo::Modes` → fails at "the saved mode back";
+/// the arm keeping play's record of the mode → fails at "play claims no
+/// mode".
+#[test]
+fn a_hover_set_mode_comes_back_and_leaves_live_edits_alone() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let card = fx.rect(a, "Card", 10.0, 10.0, 50.0, 30.0);
+    let (light, dark, n) = dark_mode(&mut fx);
+    fx.apply(vec![Operation::SetModes {
+        id: a,
+        modes: vec![light],
+    }]);
+    fx.on(
+        card,
+        Trigger::HoverWhile,
+        vec![Action::SetMode {
+            mode: dark,
+            scope: ModeScope::Screen,
+        }],
+    );
+    let mut p = fx.play(a);
+    p.input(Input::PointerMove(Point::new(20.0, 20.0)));
+    assert_eq!(number(&p, n), 2.0, "dark while hovering");
+    p.input(Input::PointerMove(Point::new(150.0, 80.0)));
+    assert_eq!(number(&p, n), 1.0, "the saved mode back");
+    assert!(p.modes.is_empty(), "play claims no mode");
+
+    let tx = Transaction(vec![Operation::SetModes {
+        id: a,
+        modes: vec![dark],
+    }]);
+    fx.doc.apply(&tx).unwrap();
+    p.apply_edit(&tx).unwrap();
+    assert_eq!(number(&p, n), 2.0, "the edit shows");
 }
 
 /// A *Dark* mode added beside the first collection's light one, each variable
@@ -3700,6 +4079,62 @@ fn a_following_layer_keeps_to_its_range() {
     assert_eq!(p.moved(card), Vec2::new(-10.0, 0.0), "past the drawn point");
     up(&mut p, by);
     assert_eq!(p.moved(card), Vec2::ZERO, "returns");
+}
+
+/// A following layer let go where it rests drops at once: under *Stays* inside
+/// its range; under *Returns* once it is back, after the settle. Either way its
+/// *Drop (anywhere)* runs.
+///
+/// flip: `follow_release` not dropping when the layer is already where it
+/// rests → fails at "dropped at once".
+#[test]
+fn a_following_layer_drops_where_it_rests() {
+    use mastik_core::prototype::{DropAt, Follow, FollowRange, Release};
+    let setup = |release| {
+        let (mut fx, a, card, n) = one_card();
+        fx.play_settings(
+            card,
+            LayerPlay {
+                follow: Some(Follow {
+                    range: FollowRange::Parent,
+                    release,
+                    settle: Timing::Ease {
+                        curve: Easing::Linear,
+                        ms: 100,
+                    },
+                    ..Follow::default()
+                }),
+                ..LayerPlay::default()
+            },
+        );
+        fx.on(
+            card,
+            Trigger::Drop {
+                at: DropAt::Anywhere,
+            },
+            vec![add(n, 1.0)],
+        );
+        (fx.play(a), n)
+    };
+    let drag = |p: &mut Player| {
+        let at = Point::new(20.0, 20.0);
+        p.input(Input::PointerMove(at));
+        p.input(Input::PointerDown(at));
+        p.input(Input::PointerMove(at + Vec2::new(10.0, 0.0)));
+        p.tick(500.0);
+        p.input(Input::PointerMove(at + Vec2::new(20.0, 0.0)));
+        p.input(Input::PointerUp(at + Vec2::new(20.0, 0.0)));
+    };
+
+    let (mut p, n) = setup(Release::Stays);
+    drag(&mut p);
+    assert_eq!(number(&p, n), 1.0, "dropped at once");
+
+    let (mut p, n) = setup(Release::Returns);
+    drag(&mut p);
+    assert_eq!(number(&p, n), 0.0, "fixture: settling");
+    p.tick(500.0);
+    assert_eq!(number(&p, n), 1.0, "dropped once back");
 }
 
 /// A carousel 100 wide of four 100-wide cards, snapping to its children: a
@@ -4753,6 +5188,93 @@ fn a_row_reaction_goes_on_after_its_first_write() {
     assert_eq!(number(&p, n), 1.0, "the second reaction runs");
 }
 
+/// A row reaction whose first write filters its row out of the list skips the
+/// rest as `Missing`, never writing the row that now sits at its drawn place.
+///
+/// flip: `Player::still` finding the row by its drawn place, not its table row
+/// → fails at "the next row untouched".
+#[test]
+fn a_row_filtered_out_by_its_write_skips_the_rest() {
+    use mastik_core::chart::ColumnId;
+    use mastik_core::list::{Filter, List, Test, TestOp};
+    use mastik_core::prototype::{CellWrite, WhichRow};
+    let (mut fx, a, item, cart) = cart(&[["A", "1"], ["B", "1"], ["C", "1"]]);
+    let l = fx.doc.get(item).unwrap().parent().unwrap();
+    let filtered = List {
+        filter: Filter {
+            any: false,
+            tests: vec![Test {
+                column: ColumnId(1),
+                op: TestOp::Is,
+                value: Expr("1".into()),
+            }],
+        },
+        ..fx.doc.get(l).unwrap().list().unwrap().clone()
+    };
+    fx.apply(vec![Operation::SetList {
+        id: l,
+        list: Some(Box::new(filtered)),
+    }]);
+    let write = |column, to: &str| Action::EditRow {
+        table: cart,
+        row: WhichRow::This,
+        cells: vec![CellWrite {
+            column: ColumnId(column),
+            to: Expr(to.into()),
+        }],
+    };
+    fx.on(
+        item,
+        Trigger::Click,
+        vec![write(1, "'0'"), write(0, "'Done'")],
+    );
+    mastik_core::list::regenerate_outside_history(&mut fx.doc, &[l]);
+    let mut p = fx.play(a);
+    let rows = |p: &Player| p.document().data_set(cart).unwrap().table.rows.clone();
+    click(&mut p, 30.0, 60.0);
+    assert_eq!(rows(&p)[1], vec!["B".to_string(), "0".into()], "fixture");
+    assert_eq!(
+        rows(&p)[2],
+        vec!["C".to_string(), "1".into()],
+        "the next row untouched"
+    );
+    assert!(
+        matches!(p.take_notices().as_slice(), [Notice::Missing { .. }]),
+        "the rest skipped"
+    );
+}
+
+/// *Set variable* of a text variable from one cell that reads as a number
+/// takes the cell as written, leading zeros and all.
+///
+/// flip: the `VarChange::Set` arm not taking `as_written` → fails at "set as
+/// written" (refused as a number).
+#[test]
+fn a_text_variable_takes_a_numeric_cell_as_written() {
+    use mastik_core::chart::ColumnId;
+    use mastik_core::prototype::expr::{Ref, RowAt};
+    let (mut fx, a, item, cart) = cart(&[["00731", "1"]]);
+    let code = fx.var("Code", VarKind::String, Cell::String(String::new()));
+    fx.on(
+        item,
+        Trigger::Click,
+        vec![Action::SetVariable {
+            var: code,
+            change: VarChange::Set {
+                to: read(Ref::Cell(cart, RowAt::First, ColumnId(0))),
+            },
+        }],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 30.0, 20.0);
+    assert_eq!(
+        p.doc.resolve_var(p.screen(), code),
+        Some(Value::String("00731".into())),
+        "set as written"
+    );
+    assert_eq!(p.take_notices(), vec![]);
+}
+
 /// A list made again in play starts its new rows' *After* reactions, so a row
 /// whose state loops goes on looping after a write regenerates the list.
 ///
@@ -4844,6 +5366,49 @@ fn a_regenerated_row_keeps_looping() {
     assert_eq!(second(&p), Some(two), "a new row as the template shows");
     p.tick(100.0);
     assert_eq!(second(&p), Some(one), "the new row loops");
+}
+
+/// A row's *After 0* that writes its own table makes the list again each time
+/// it fires; the new rows' timers wait a frame, so one tick fires a handful,
+/// not the most a tick fires.
+///
+/// flip: `take_up_copies` arming at `now + ms` with no floor → fails at "a
+/// handful a tick".
+#[test]
+fn a_row_after_writing_its_table_lets_time_move() {
+    use mastik_core::chart::ColumnId;
+    use mastik_core::prototype::expr::Ref;
+    use mastik_core::prototype::{CellWrite, WhichRow};
+    let (mut fx, a, item, cart) = cart(&[["A", "0"], ["B", "0"], ["C", "0"]]);
+    fx.on(
+        item,
+        Trigger::After { ms: 0 },
+        vec![Action::EditRow {
+            table: cart,
+            row: WhichRow::This,
+            cells: vec![CellWrite {
+                column: ColumnId(1),
+                to: Expr(format!("{} + 1", read(Ref::Row(ColumnId(1))).0)),
+            }],
+        }],
+    );
+    let l = fx.doc.get(item).unwrap().parent().unwrap();
+    mastik_core::list::regenerate_outside_history(&mut fx.doc, &[l]);
+    let mut p = fx.play(a);
+    let fired = |p: &Player| -> f64 {
+        p.document()
+            .data_set(cart)
+            .unwrap()
+            .table
+            .rows
+            .iter()
+            .map(|r| r[1].parse::<f64>().unwrap())
+            .sum()
+    };
+    p.tick(16.0);
+    let once = fired(&p);
+    assert!(once >= 1.0, "fixture: the rows fire");
+    assert!(once <= 4.0, "a handful a tick: {once}");
 }
 
 /// *First row where…* finds its row by `{row.…}`; a row past the end skips the

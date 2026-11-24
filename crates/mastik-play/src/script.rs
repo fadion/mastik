@@ -357,7 +357,7 @@ impl Player {
                 .page(self.page)
                 .map(|p| p.play.transition)
                 .unwrap_or_default();
-            undo.push(Undo::Screen(self.history.len()));
+            undo.push(Undo::Screen(self.depth()));
             self.navigate(to, transition, false);
         }
     }

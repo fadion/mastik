@@ -66,10 +66,20 @@ impl Player {
         row: Option<(DataSetId, &[String])>,
     ) -> Result<String, ExprError> {
         let v = self.eval(holder, e, row)?;
-        let copied = e
-            .bare_ref()
-            .and_then(|r| self.with_tables(row, |env| env.written(&r).ok()?.map(str::to_owned)));
-        Ok(copied.unwrap_or_else(|| expr::format_value(&v)))
+        Ok(self
+            .as_written(e, row)
+            .unwrap_or_else(|| expr::format_value(&v)))
+    }
+
+    /// The cell `e` reads alone, as written in its table; `None` when `e` is
+    /// anything but one cell read.
+    pub(crate) fn as_written(
+        &self,
+        e: &Expr,
+        row: Option<(DataSetId, &[String])>,
+    ) -> Option<String> {
+        e.bare_ref()
+            .and_then(|r| self.with_tables(row, |env| env.written(&r).ok()?.map(str::to_owned)))
     }
 
     fn missing(&mut self, holder: NodeId, action: ItemId) {

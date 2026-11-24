@@ -95,22 +95,12 @@ impl Player {
     }
 
     /// After an edit the copy took, what the edit wrote over play's own choices
-    /// put back: each node's modes *Set mode* gave it, and the screen's play
-    /// size. Edits are absolute, so a `SetModes` or a resize of the screen
-    /// lands on the copy whole.
+    /// put back: the modes *Set mode* gave each node, in their collections
+    /// alone, and the screen's play size. Edits are absolute, so a `SetModes`
+    /// or a resize of the screen lands on the copy whole.
     fn put_play_back(&mut self) {
-        let mut undone: Vec<_> = self
-            .modes
-            .iter()
-            .filter(|(id, set)| {
-                self.doc
-                    .get(**id)
-                    .is_some_and(|n| n.modes() != set.as_slice())
-            })
-            .map(|(id, set)| (*id, set.clone()))
-            .collect();
-        undone.sort();
-        self.put_modes(undone);
+        let owed = self.modes_owed();
+        self.put_modes(owed);
         self.fit_screen(self.screen);
     }
 
@@ -134,10 +124,9 @@ impl Player {
                 self.states.insert(instance, main);
             }
         }
-        let mut modes: Vec<_> = self.modes.drain().collect();
-        modes.retain(|(id, _)| self.doc.get(*id).is_some());
-        modes.sort();
-        self.put_modes(modes);
+        self.modes.retain(|id, _| self.doc.get(*id).is_some());
+        let owed = self.modes_owed();
+        self.put_modes(owed);
         self.fit_screen(self.screen);
         // A settle the re-clone cuts short ends where it was going, and drops.
         for a in std::mem::take(&mut self.anims.moves) {
