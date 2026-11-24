@@ -15,7 +15,7 @@ use eframe::egui;
 use mastik_core::id::NodeId;
 use mastik_core::item::{ItemId, Keyed};
 use mastik_core::list::DataSetId;
-use mastik_core::prototype::expr::{Ref, Unread, table_kind};
+use mastik_core::prototype::expr::Ref;
 use mastik_core::prototype::{
     Action, Branch, CellWrite, DRAWN_POINT, Direction, DragPoint, DropAt, Easing, EffectEnds, Expr,
     Flow, Follow, FollowRange, Going, Input, LayerPlay, ModeScope, OverlayPosition,
@@ -1109,23 +1109,7 @@ fn rehomed(doc: &Document, from: NodeId, to: NodeId, r: &Reaction) -> Result<Rea
 
 // --- expressions ----------------------------------------------------------------
 
-/// What an expression field's names may read.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Reads {
-    /// Variables only: a list filter's value, read where no table is.
-    Vars,
-    /// Variables and tables, with the row action's table `{row.…}` reads.
-    Tables(Option<DataSetId>),
-}
-
-impl Reads {
-    fn row(self) -> Option<DataSetId> {
-        match self {
-            Reads::Vars => None,
-            Reads::Tables(row) => row,
-        }
-    }
-}
+pub(crate) use mastik_core::prototype::Reads;
 
 /// An expression as its field shows it: each variable and table read by name,
 /// a name that is gone left as its id.
@@ -1133,58 +1117,17 @@ pub(crate) fn expr_shown(doc: &Document, e: &Expr) -> String {
     mastik_core::prototype::expr_shown(doc, e, None)
 }
 
-/// What was typed into an expression field, as stored: each `{name}` written as
-/// the id of what it names. Refused, with the reason, when it does not read,
-/// names what no one has, or (for *Set variable*, `want`) comes to another
-/// kind; a table's cell has its kind only in play, so it is never refused for
-/// one. A refusal carries the byte range of the typed text it is about, when
-/// the expression names one.
+/// What was typed into an expression field, as stored
+/// ([`mastik_core::prototype::expr_stored`]), the refusal's reason starting with
+/// a capital as the field shows it.
 pub(crate) fn expr_stored(
     doc: &Document,
     text: &str,
     want: Option<VarKind>,
     reads: Reads,
 ) -> Result<Expr, (String, Option<std::ops::Range<usize>>)> {
-    let vars = doc.variables();
-    let var_id = |n: &str| vars.ids_named(n);
-    let var_name = |v: VarId| vars.expr_name(v);
-    let (e, error) = match reads {
-        Reads::Vars => Expr::from_names(text, &var_id),
-        Reads::Tables(row) => Expr::from_names_in(
-            text,
-            &mastik_core::prototype::expr::Names {
-                var_id: &var_id,
-                var_name: &var_name,
-                tables: doc.data_sets(),
-                row,
-            },
-        ),
-    };
-    if let Some(why) = error {
-        return Err((ui::upper_first(&why.to_string()), Some(why.at())));
-    }
-    if let Some(want) = want {
-        // `kind` reads the stored form, whose ranges are not the typed text's.
-        let got = e
-            .kind(&|r| match r {
-                Ref::Var(v) => vars.get(*v).map(|v| Some(v.kind)).ok_or(Unread::Missing),
-                r => table_kind(doc.data_sets(), reads.row(), r),
-            })
-            .map_err(|why| (ui::upper_first(&why.to_string()), None))?;
-        if let Some(got) = got
-            && got != want
-        {
-            return Err((
-                format!(
-                    "This comes to a {}, not a {}",
-                    kind_word(got),
-                    kind_word(want)
-                ),
-                None,
-            ));
-        }
-    }
-    Ok(e)
+    mastik_core::prototype::expr_stored(doc, text, want, reads)
+        .map_err(|(why, at)| (ui::upper_first(&why), at))
 }
 
 /// One row of the list `@` or `{` opens in an expression field.
@@ -1418,15 +1361,6 @@ fn picked(text: &str, row: &AtRow) -> String {
         (true, _) => format!("{head}{{{}}}", row.insert),
         (false, true) => format!("{head}{{{}", row.insert),
         (false, false) => format!("{head}@{}", row.insert),
-    }
-}
-
-fn kind_word(k: VarKind) -> &'static str {
-    match k {
-        VarKind::Number => "number",
-        VarKind::String => "string",
-        VarKind::Boolean => "boolean",
-        VarKind::Color => "colour",
     }
 }
 
@@ -7862,7 +7796,7 @@ impl MastikApp {
         }
         let read = flow_value_read(doc, var, &typed);
         if read.is_none() {
-            let why = format!("Not a {}", kind_word(kind));
+            let why = format!("Not a {}", kind.word());
             self.proto.draft = Some(ui::Draft::new(&ctx, key, typed).refuse(why));
         }
         read

@@ -1473,6 +1473,76 @@ pub fn expr_shown(doc: &Document, e: &Expr, row: Option<DataSetId>) -> String {
     })
 }
 
+/// What an expression's names may read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Reads {
+    /// Variables only: a list filter's value, read where no table is.
+    Vars,
+    /// Variables and tables, with the row action's table `{row.…}` reads.
+    Tables(Option<DataSetId>),
+}
+
+impl Reads {
+    /// The table `{row.…}` reads.
+    pub fn row(self) -> Option<DataSetId> {
+        match self {
+            Reads::Vars => None,
+            Reads::Tables(row) => row,
+        }
+    }
+}
+
+/// `text`, an expression written with names, as stored: each `{name}` written
+/// as the id of what it names. Refused, with the reason, when it does not read,
+/// names what `doc` has none of, or (for *Set variable*, `want`) comes to
+/// another kind; a table's cell has its kind only in play, so it is never
+/// refused for one. A refusal carries the byte range of `text` it is about,
+/// when the expression names one.
+pub fn expr_stored(
+    doc: &Document,
+    text: &str,
+    want: Option<crate::variable::VarKind>,
+    reads: Reads,
+) -> Result<Expr, (String, Option<std::ops::Range<usize>>)> {
+    let vars = doc.variables();
+    let var_id = |n: &str| vars.ids_named(n);
+    let var_name = |v: VarId| vars.expr_name(v);
+    let (e, error) = match reads {
+        Reads::Vars => Expr::from_names(text, &var_id),
+        Reads::Tables(row) => Expr::from_names_in(
+            text,
+            &expr::Names {
+                var_id: &var_id,
+                var_name: &var_name,
+                tables: doc.data_sets(),
+                row,
+            },
+        ),
+    };
+    if let Some(why) = error {
+        return Err((why.to_string(), Some(why.at())));
+    }
+    if let Some(want) = want {
+        // `kind` reads the stored form, whose ranges are not the typed text's.
+        let got = e
+            .kind(&|r| match r {
+                expr::Ref::Var(v) => vars
+                    .get(*v)
+                    .map(|v| Some(v.kind))
+                    .ok_or(expr::Unread::Missing),
+                r => expr::table_kind(doc.data_sets(), reads.row(), r),
+            })
+            .map_err(|why| (why.to_string(), None))?;
+        if let Some(got) = got
+            && got != want
+        {
+            let why = format!("This comes to a {}, not a {}", got.word(), want.word());
+            return Err((why, None));
+        }
+    }
+    Ok(e)
+}
+
 /// The layer `target` names when read from a reaction on `holder`. A reaction on
 /// a copy is its source's, so its target is first resolved in the source's world
 /// (down the link chain, for a nested instance), then mapped to the layer of

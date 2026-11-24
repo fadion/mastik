@@ -3092,7 +3092,7 @@ fn scope_popover(
     });
     ui::menu_sep(ui);
     let every = v.scope.is_none();
-    let every_label = format!("Every {} field", kind_word(v.kind));
+    let every_label = format!("Every {} field", v.kind.word());
     if popover_switch(ui, &every_label, every).clicked() {
         // Off leaves every box ticked to start from.
         let next = match every {
@@ -3407,8 +3407,8 @@ fn parse_cell(
         if target.kind != v.kind {
             return Err(format!(
                 "{name} is a {}, not a {}.",
-                kind_word(target.kind),
-                kind_word(v.kind)
+                target.kind.word(),
+                v.kind.word()
             ));
         }
         if table.would_loop(v.id, mode, target.id) {
@@ -3442,15 +3442,6 @@ fn parse_bool(s: &str) -> Option<bool> {
         "true" | "yes" | "on" | "1" => Some(true),
         "false" | "no" | "off" | "0" => Some(false),
         _ => None,
-    }
-}
-
-fn kind_word(k: VarKind) -> &'static str {
-    match k {
-        VarKind::Color => "colour",
-        VarKind::Number => "number",
-        VarKind::Boolean => "boolean",
-        VarKind::String => "string",
     }
 }
 

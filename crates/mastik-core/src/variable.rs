@@ -365,6 +365,18 @@ pub enum VarKind {
     String,
 }
 
+impl VarKind {
+    /// The kind as a sentence names it: *colour*, *number*, *boolean*, *string*.
+    pub fn word(self) -> &'static str {
+        match self {
+            VarKind::Color => "colour",
+            VarKind::Number => "number",
+            VarKind::Boolean => "boolean",
+            VarKind::String => "string",
+        }
+    }
+}
+
 /// One variable's value in one mode.
 ///
 /// Not `Copy` since the string kind (§15 D1069): a cell is cloned where it was

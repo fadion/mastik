@@ -7573,6 +7573,118 @@ fn set_reactions_reads_the_short_forms_and_refuses_an_unasked_script() {
     );
 }
 
+/// `set_reactions` stores an expression written with names in the id form, as the
+/// Prototype tab's field does, and refuses one that names nothing, does not read
+/// or comes to the variable's wrong kind; an expression read back naming a
+/// variable since deleted is written back as it was.
+///
+/// flip: `exprs_stored` not called from `set_reactions` → fails at "stored by
+/// id"; `exprs_stored` without its pass for a stored read of what is gone →
+/// the dangling write back is refused at its `run`.
+#[test]
+fn set_reactions_stores_names_by_id_and_refuses_what_does_not_read() {
+    use mastik_core::prototype::{Action, VarChange};
+    let (mut doc, mut ids, page) = blank();
+    let a = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame(100.0, 100.0) }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "add_variable",
+        json!({ "kind": "number", "name": "Count" }),
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "add_table",
+        json!({ "name": "Products", "columns": ["Name", "Price"], "rows": [["Linen", "12"]] }),
+    );
+    let count = doc.variables().ids_named("Count")[0];
+    let products = doc.data_sets()[0].id;
+    let write = |when: &str, to: &str| {
+        json!({ "nodes": [a.to_wire()], "reactions": [{ "trigger": "Click", "actions": [
+            { "Conditional": { "branches": [{ "when": when, "actions": [{ "SetVariable": {
+                "var": count.0.to_wire(), "change": { "Set": { "to": to } } } }] }] } },
+        ] }] })
+    };
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        write("{Count} < {Products.rows}", "{Count} + 1"),
+    );
+    let held = doc.get(a).unwrap().reactions().to_vec();
+    let Action::Conditional { branches, .. } = &held[0].actions[0].value else {
+        panic!("a conditional: {held:?}")
+    };
+    let c = count.0.to_wire();
+    let t = products.0.to_wire();
+    assert_eq!(
+        branches[0].when.0,
+        format!("{{{c}}} < {{{t}:rows}}"),
+        "stored by id"
+    );
+    assert!(
+        matches!(&branches[0].actions[0].value,
+            Action::SetVariable { change: VarChange::Set { to }, .. } if to.0 == format!("{{{c}}} + 1")),
+        "the nested Set variable stored by id: {:?}",
+        branches[0].actions
+    );
+
+    for (when, to, says) in [
+        ("{Nope} > 1", "1", "branches[0].when"),
+        ("true", "{Count} +", "actions[0].to"),
+        ("true", "\"ten\"", "not a number"),
+    ] {
+        let why = format!(
+            "{:?}",
+            answer(&doc, &mut ids, "set_reactions", write(when, to)).err()
+        );
+        assert!(
+            why.contains(says),
+            "{when} / {to} refused naming {says}: {why}"
+        );
+    }
+
+    let tree = json!({ "kind": frame(10.0, 10.0), "reactions": [{ "trigger": "Click",
+        "actions": [{ "SetVariable": { "var": c, "change": { "Set": { "to": "{Count} * 2" } } } }] }] });
+    let made = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": tree }),
+    )[0];
+    assert!(
+        matches!(&doc.get(made).unwrap().reactions()[0].actions[0].value,
+            Action::SetVariable { change: VarChange::Set { to }, .. } if to.0 == format!("{{{c}}} * 2")),
+        "insert_subtree stores a tree's reactions by id too"
+    );
+
+    let read = verbs::reactions_value(&held, &Default::default());
+    run(
+        &mut doc,
+        &mut ids,
+        "remove_variable",
+        json!({ "variable": c }),
+    );
+    assert!(doc.variables().get(count).is_none(), "the variable is gone");
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [a.to_wire()], "reactions": read }),
+    );
+    assert_eq!(
+        doc.get(a).unwrap().reactions(),
+        &held[..],
+        "a dangling read writes back as it was"
+    );
+}
+
 /// `get_tree` carries reactions and play settings in `set_reactions`' short
 /// forms, keeping the id of a layer a reaction targets; `insert_subtree` writes
 /// them back, a target inside the tree moved to its copy and one outside kept. A

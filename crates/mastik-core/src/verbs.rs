@@ -1482,6 +1482,10 @@ pub fn example(model: &str) -> Option<Value> {
                 "instance": "7e5b:12", "to": "7e5b:31", "transition": "SmartAnimate" } }] },
             { "trigger": "Click", "actions": [{ "OpenOverlay": { "overlay": "7e5b:52",
                 "settings": { "position": "BottomCentre" } } }] },
+            { "trigger": "Click", "actions": [{ "Conditional": {
+                "branches": [{ "when": "{Count} < 9", "actions": [{ "SetVariable": {
+                    "var": "7e5b:9", "change": { "Set": { "to": "{Count} + 1" } } } }] }],
+                "otherwise": ["Back"] } }] },
         ]),
         "LayerPlay" => serde_json::json!({ "scroll": "Vertical" }),
         "[Flow]" => serde_json::json!([{ "name": "Checkout", "start": "7e5b:40" }]),
@@ -6027,7 +6031,10 @@ pub static VERBS: &[Verb] = &[
             req(
                 "reactions",
                 ParamKind::Model("[Reaction]"),
-                "every reaction; an item without an `id` is new, and a transition left out is the page's",
+                "every reaction; an item without an `id` is new, and a transition left out is the page's. \
+                 An expression names a variable `{Count}`, a table `{Products.rows}`, `{Products.first.Price}` \
+                 (`first`, `last`, `opened`, a row number) or `{Products.Price.sum}` (`min`, `max`, `avg`), \
+                 and in a row action `{row.Price}`; text is quoted",
             ),
         ],
         run: |ctx, a| {
@@ -6035,10 +6042,15 @@ pub static VERBS: &[Verb] = &[
             for id in existing_layers(ctx, a)? {
                 let base = page_transition(ctx.doc, id);
                 let ids = &mut *ctx.ids;
-                let reactions: Vec<Keyed<crate::prototype::Reaction>> =
+                let mut reactions: Vec<Keyed<crate::prototype::Reaction>> =
                     keyed_arg(a, "reactions", "[Reaction]", |v| {
                         reactions_in(v, &base, &mut || ids.mint_item())
                     })?;
+                for (i, r) in reactions.iter_mut().enumerate() {
+                    let at = format!("reactions[{i}].actions");
+                    exprs_stored(ctx.doc, &mut r.value.actions, &at)
+                        .map_err(|why| a.invalid("reactions", why))?;
+                }
                 if let Some(twice) = crate::item::first_duplicate(&reactions) {
                     let why = format!("two reactions share the id `{}`", twice.0.to_wire());
                     return Err(a.invalid("reactions", why));
@@ -7549,8 +7561,12 @@ fn tree_reactions(
     let ids = &mut *ctx.ids;
     reactions_in(&mut v, &base, &mut || ids.mint_item()).map_err(refused)?;
     let v = settle::<Vec<Keyed<crate::prototype::Reaction>>>("[Reaction]", v).map_err(refused)?;
-    let read: Vec<Keyed<crate::prototype::Reaction>> =
+    let mut read: Vec<Keyed<crate::prototype::Reaction>> =
         serde_json::from_value(v).map_err(|e| refused(e.to_string()))?;
+    for (i, r) in read.iter_mut().enumerate() {
+        let at = format!("reactions[{i}].actions");
+        exprs_stored(ctx.doc, &mut r.value.actions, &at).map_err(|why| a.invalid("tree", why))?;
+    }
     if let Some(twice) = crate::item::first_duplicate(&read) {
         return Err(refused(format!(
             "two reactions share the id `{}`",
@@ -8385,6 +8401,98 @@ fn reactions_in(
         }
         if let Some(actions) = r.get_mut("actions") {
             actions_in(actions, &format!("[{i}].actions"), base, mint)?;
+        }
+    }
+    Ok(())
+}
+
+/// Each expression in `actions` (at `path`) written with names stored in the id
+/// form, as the Prototype tab's fields store it, and refused where a field
+/// would refuse it: one that does not read, names what `doc` has none of, or
+/// comes to the wrong kind. One in the stored form naming what is gone is left
+/// as written: a target may dangle, so a reaction sent back as read is never
+/// refused for it.
+fn exprs_stored(
+    doc: &Document,
+    actions: &mut [Keyed<crate::prototype::Action>],
+    path: &str,
+) -> Result<(), String> {
+    use crate::prototype::{Action, Reads, VarChange, WhichRow};
+    let store = |e: &mut crate::prototype::Expr,
+                 want: Option<VarKind>,
+                 reads: Reads,
+                 at: &str|
+     -> Result<(), String> {
+        use crate::prototype::expr::{Ref, Unread, table_kind};
+        let gone = |r: &Ref| match r {
+            Ref::Var(v) => doc.variables().get(*v).is_none(),
+            r => matches!(
+                table_kind(doc.data_sets(), reads.row(), r),
+                Err(Unread::Missing)
+            ),
+        };
+        if e.check().is_ok() && e.refs().iter().any(gone) {
+            return Ok(());
+        }
+        let text = std::mem::take(&mut e.0);
+        *e = crate::prototype::expr_stored(doc, &text, want, reads)
+            .map_err(|(why, _)| format!("at `{at}`: `{text}`: {why}"))?;
+        Ok(())
+    };
+    // A row action's cell left empty writes an empty cell, as the field's does.
+    let cells = |cells: &mut [crate::prototype::CellWrite], reads: Reads, at: &str| {
+        cells
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, c)| !c.to.0.trim().is_empty())
+            .try_for_each(|(i, c)| store(&mut c.to, None, reads, &format!("{at}.cells[{i}].to")))
+    };
+    let row = |row: &mut WhichRow, table, at: &str| match row {
+        WhichRow::FirstWhere { when } => store(
+            when,
+            Some(VarKind::Boolean),
+            Reads::Tables(Some(table)),
+            &format!("{at}.row.when"),
+        ),
+        _ => Ok(()),
+    };
+    for (j, k) in actions.iter_mut().enumerate() {
+        let at = format!("{path}[{j}]");
+        match &mut k.value {
+            Action::SetVariable {
+                var,
+                change: VarChange::Set { to },
+            } => {
+                let want = doc.variables().get(*var).map(|v| v.kind);
+                store(to, want, Reads::Tables(None), &format!("{at}.to"))?;
+            }
+            Action::Conditional {
+                branches,
+                otherwise,
+            } => {
+                for (b, branch) in branches.iter_mut().enumerate() {
+                    let here = format!("{at}.branches[{b}]");
+                    store(
+                        &mut branch.when,
+                        Some(VarKind::Boolean),
+                        Reads::Tables(None),
+                        &format!("{here}.when"),
+                    )?;
+                    exprs_stored(doc, &mut branch.actions, &format!("{here}.actions"))?;
+                }
+                exprs_stored(doc, otherwise, &format!("{at}.otherwise"))?;
+            }
+            Action::AddRow { cells: c, .. } => cells(c, Reads::Tables(None), &at)?,
+            Action::EditRow {
+                table,
+                row: r,
+                cells: c,
+            } => {
+                row(r, *table, &at)?;
+                cells(c, Reads::Tables(Some(*table)), &at)?;
+            }
+            Action::DeleteRow { table, row: r } => row(r, *table, &at)?,
+            _ => {}
         }
     }
     Ok(())
