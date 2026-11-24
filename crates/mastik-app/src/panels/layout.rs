@@ -1848,14 +1848,9 @@ impl MastikApp {
                 return;
             }
             if flowing.len() < subjects.len() {
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{} of these are out of the flow and keep their place.",
-                        subjects.len() - flowing.len()
-                    ))
-                    .size(ui::SMALL_PT)
-                    .color(theme::text::faint()),
-                );
+                let out = subjects.len() - flowing.len();
+                let said = format!("{out} of these are out of the flow and keep their place");
+                ui::selection_note(ui, &said);
             }
             app.item_rows(ui, &flowing);
         });

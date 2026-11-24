@@ -500,6 +500,46 @@ fn css_field(
     out
 }
 
+/// A track list's or the areas' head: the property's name carrying its override
+/// mark, how many it makes in the faint caption ink, and a header `+` when `add`
+/// gives it (live, tooltip); then the label gap, so the head sits with what it
+/// names. As tall as the `+`, not a control. Answers the mark's reset and the `+`.
+fn grid_head(
+    ui: &mut egui::Ui,
+    label: &str,
+    mark: Option<&OverrideMark>,
+    count: &str,
+    add: Option<(bool, &str)>,
+) -> (bool, bool) {
+    let w = ui.available_width();
+    let out = ui
+        .allocate_ui_with_layout(
+            egui::vec2(w, ui::HEAD_ACTION_W),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                let ink = theme::text::dim();
+                let hit =
+                    super::super::component::label_mark(ui, None, label, ui::SMALL_PT, ink, mark);
+                let mut added = false;
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some((live, tip)) = add {
+                        let (box_w, pt) = (ui::HEAD_ACTION_W, ui::HEAD_ACTION_GLYPH_PT);
+                        let b = ui::icon_button(ui, icon::PLUS, box_w, pt, false, live);
+                        added = b.on_hover_text(tip).clicked() && live;
+                    }
+                    let words = egui::RichText::new(count)
+                        .size(ui::CAPTION_PT)
+                        .color(theme::text::faint());
+                    ui.label(words);
+                });
+                (hit, added)
+            },
+        )
+        .inner;
+    ui.add_space(ui::SECTION_LABEL_GAP - ui.spacing().item_spacing.y);
+    out
+}
+
 /// Why the last text typed into a [`css_field`] was not applied, and what the
 /// field read when it was refused — `(shown, why)`.
 type Refused = (Option<String>, String);
@@ -643,15 +683,31 @@ impl MastikApp {
             self.commit_edit(tx);
         }
 
-        // --- the tracks ------------------------------------------------------------
-        self.track_list(ui, subjects, grids, false, full);
-        self.track_list(ui, subjects, grids, true, full);
-        self.area_map(ui, subjects, grids, full);
-        // A row pitch more, so the template — tracks and areas — reads as one
-        // section apart from the alignments under it.
-        ui.add_space(ui::CARD_ROW_GAP);
+        // Three folds, as the List card's: the template, the alignments, the
+        // spacing. Flex's rows are few enough to need none.
+        if self.card_fold(ui, "Grid tracks", "Tracks") {
+            self.track_list(ui, subjects, grids, false, full);
+            self.track_list(ui, subjects, grids, true, full);
+            self.area_map(ui, subjects, grids, full);
+        }
+        if self.card_fold(ui, "Grid alignment", "Alignment") {
+            self.grid_alignments(ui, subjects, grids, full);
+        }
+        if self.card_fold(ui, "Grid spacing", "Spacing") {
+            self.gap_row(ui, subjects, laid, true, true, full);
+            self.padding_rows(ui, subjects, laid, full);
+        }
+    }
 
-        // --- the alignments ---------------------------------------------------------
+    /// The Grid fold *Alignment*: `justify-content`, `justify-items`,
+    /// `align-items` and `align-content`, in that order.
+    fn grid_alignments(
+        &mut self,
+        ui: &mut egui::Ui,
+        subjects: &[NodeId],
+        grids: &[Grid],
+        full: f32,
+    ) {
         let content = |c: AlignContent| Glyph::Content(c);
         let mark = self.grid_mark(
             subjects,
@@ -761,10 +817,6 @@ impl MastikApp {
             self.session.name_step("Align content", icon::ALIGN_TOP);
             self.commit_edit(tx);
         }
-
-        // --- the gaps and the padding: columns first, both always live ------------
-        self.gap_row(ui, subjects, laid, true, true, full);
-        self.padding_rows(ui, subjects, laid, full);
     }
 
     /// One track list — `grid-template-columns`, or `-rows` when `rows`: a head with the property's name, how many tracks it makes
@@ -799,64 +851,44 @@ impl MastikApp {
         );
 
         // --- the head ----------------------------------------------------------
-        ui.horizontal(|ui| {
-            let hit = super::super::component::label_mark(
-                ui,
-                None,
-                if rows {
-                    "Grid template rows"
-                } else {
-                    "Grid template columns"
-                },
-                11.0,
-                theme::text::dim(),
-                mark.as_ref(),
-            );
-            self.reset_marked(hit, &mark);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                // The new track is `1fr`, which CSS refuses beside an automatic repeat.
-                let fits = grids.iter().any(|g| repeats_to_fit(&get(g)));
-                let add = ui::icon_button(ui, icon::PLUS, 20.0, 13.0, false, !fits).on_hover_text(
-                    match (fits, rows) {
-                        (true, _) => {
-                            "This list repeats to fit — type any other tracks into its CSS line"
-                        }
-                        (false, true) => "Add a row track",
-                        (false, false) => "Add a column track",
-                    },
-                );
-                if add.clicked() && !fits {
-                    let one = Track::Size(TrackSize::Breadth(TrackBreadth::Fr(1.0)));
-                    let tx = self.grid_tx(subjects, |g| {
-                        let mut l = get(g);
-                        l.push(one.clone());
-                        with_list(g, rows, &l);
-                    });
-                    self.session.name_step(
-                        if rows {
-                            "Add row track"
-                        } else {
-                            "Add column track"
-                        },
-                        icon::PLUS,
-                    );
-                    self.commit_edit(tx);
-                }
-                let n = track_count(&list);
-                ui.label(
-                    egui::RichText::new(match (agreed, n) {
-                        (false, _) => ui::MIXED_WORD.to_owned(),
-                        // The count depends on the container's size.
-                        (true, _) if repeats_to_fit(&list) => "repeats to fit".to_owned(),
-                        (true, 0) => "None".to_owned(),
-                        (true, 1) => "1 track".to_owned(),
-                        (true, n) => format!("{n} tracks"),
-                    })
-                    .size(ui::CAPTION_PT)
-                    .color(theme::text::faint()),
-                );
+        // The new track is `1fr`, which CSS refuses beside an automatic repeat.
+        let fits = grids.iter().any(|g| repeats_to_fit(&get(g)));
+        let tip = match (fits, rows) {
+            (true, _) => "This list repeats to fit — type any other tracks into its CSS line",
+            (false, true) => "Add a row track",
+            (false, false) => "Add a column track",
+        };
+        let count = match (agreed, track_count(&list)) {
+            (false, _) => ui::MIXED_WORD.to_owned(),
+            // The count depends on the container's size.
+            (true, _) if repeats_to_fit(&list) => "repeats to fit".to_owned(),
+            (true, 0) => "None".to_owned(),
+            (true, 1) => "1 track".to_owned(),
+            (true, n) => format!("{n} tracks"),
+        };
+        let label = match rows {
+            true => "Grid template rows",
+            false => "Grid template columns",
+        };
+        let (hit, add) = grid_head(ui, label, mark.as_ref(), &count, Some((!fits, tip)));
+        self.reset_marked(hit, &mark);
+        if add {
+            let one = Track::Size(TrackSize::Breadth(TrackBreadth::Fr(1.0)));
+            let tx = self.grid_tx(subjects, |g| {
+                let mut l = get(g);
+                l.push(one.clone());
+                with_list(g, rows, &l);
             });
-        });
+            self.session.name_step(
+                if rows {
+                    "Add row track"
+                } else {
+                    "Add column track"
+                },
+                icon::PLUS,
+            );
+            self.commit_edit(tx);
+        }
 
         // --- a row per entry --------------------------------------------------------
         if agreed {
@@ -955,24 +987,16 @@ impl MastikApp {
             }
         }
         if let Some(why) = refusal(ui, key, shown.as_deref()) {
-            ui.label(
-                egui::RichText::new(why)
-                    .size(ui::CAPTION_PT)
-                    .color(color::danger()),
-            );
+            ui::note_line(ui, icon::WARNING, color::danger(), &why, None);
         } else if grids.iter().zip(subjects).any(|(g, id)| {
             repeats_to_fit(&get(g)) && self.hugs_axis(*id, rows) && self.laid_once(*id, rows)
         }) {
             // Valid, with a consequence worth naming: CSS repeats once.
-            ui.label(
-                egui::RichText::new(if rows {
-                    "Fit content gives no height to fill — it repeats once"
-                } else {
-                    "Fit content gives no width to fill — it repeats once"
-                })
-                .size(ui::CAPTION_PT)
-                .color(color::warn()),
-            );
+            let said = match rows {
+                true => "Fit content gives no height to fill — it repeats once",
+                false => "Fit content gives no width to fill — it repeats once",
+            };
+            ui::note_line(ui, icon::WARNING, color::warn(), said, None);
         }
     }
 
@@ -1014,29 +1038,14 @@ impl MastikApp {
         );
 
         // --- the head ----------------------------------------------------------
-        ui.horizontal(|ui| {
-            let hit = super::super::component::label_mark(
-                ui,
-                None,
-                "Grid template areas",
-                11.0,
-                theme::text::dim(),
-                mark.as_ref(),
-            );
-            self.reset_marked(hit, &mark);
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(match (agreed, g.areas.len()) {
-                        (false, _) => ui::MIXED_WORD.to_owned(),
-                        (true, 0) => "None".to_owned(),
-                        (true, 1) => "1 area".to_owned(),
-                        (true, n) => format!("{n} areas"),
-                    })
-                    .size(ui::CAPTION_PT)
-                    .color(theme::text::faint()),
-                );
-            });
-        });
+        let count = match (agreed, g.areas.len()) {
+            (false, _) => ui::MIXED_WORD.to_owned(),
+            (true, 0) => "None".to_owned(),
+            (true, 1) => "1 area".to_owned(),
+            (true, n) => format!("{n} areas"),
+        };
+        let (hit, _) = grid_head(ui, "Grid template areas", mark.as_ref(), &count, None);
+        self.reset_marked(hit, &mark);
 
         // --- the map --------------------------------------------------------------
         let key = egui::Id::new(("grid-areas-css", subjects.first().copied()));
@@ -1053,24 +1062,17 @@ impl MastikApp {
             };
             match why {
                 Some(why) => {
-                    ui.label(
-                        egui::RichText::new(why)
-                            .size(ui::CAPTION_PT)
-                            .color(theme::text::faint()),
-                    );
+                    ui::selection_note(ui, why);
                 }
                 None => {
                     self.area_cells(ui, subjects, &g, laid.as_ref(), key, shown.as_deref(), full);
                     // The cells of a repeat to fit are this size's; say so, since
                     // the same areas sit on other cells at another size.
                     if repeats_to_fit(&g.columns) || repeats_to_fit(&g.rows) {
-                        ui.label(
-                            egui::RichText::new(
-                                "Drawn at the frame's current size — the repeat lays more or \
-                                 fewer tracks at another",
-                            )
-                            .size(ui::CAPTION_PT)
-                            .color(theme::text::faint()),
+                        ui::selection_note(
+                            ui,
+                            "Drawn at the frame's current size — the repeat lays more or \
+                             fewer tracks at another",
                         );
                     }
                 }
@@ -1101,11 +1103,7 @@ impl MastikApp {
             }
         }
         if let Some(why) = refusal(ui, key, shown.as_deref()) {
-            ui.label(
-                egui::RichText::new(why)
-                    .size(ui::CAPTION_PT)
-                    .color(color::danger()),
-            );
+            ui::note_line(ui, icon::WARNING, color::danger(), &why, None);
         }
     }
 
@@ -1732,7 +1730,7 @@ impl MastikApp {
                     ui,
                     Some(egui::vec2(LABEL_W, side)),
                     "Grid area",
-                    10.5,
+                    ui::CAPTION_PT,
                     theme::text::faint(),
                     mark.as_ref(),
                 );
@@ -1801,72 +1799,71 @@ impl MastikApp {
                 |v| format!("{} / {}", placement_css(v.start), placement_css(v.end)),
             );
             let mut refused = None;
-            let row = ui
-                .add_enabled_ui(!in_area, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = gap;
-                        let hit = super::super::component::label_mark(
-                            ui,
-                            Some(egui::vec2(LABEL_W, side)),
-                            label,
-                            10.5,
-                            theme::text::faint(),
-                            mark.as_ref(),
-                        );
-                        self.reset_marked(hit, &mark);
-                        let half = egui::vec2((full - LABEL_W - gap * 2.0) / 2.0, side);
-                        for is_start in [true, false] {
-                            let end = |l: GridLines| if is_start { l.start } else { l.end };
-                            let shown = shared(items, |i| end(lines(i))).map(placement_css);
-                            let key = egui::Id::new((
-                                "grid-item-line",
-                                rows,
-                                is_start,
-                                subjects.first().copied(),
-                            ));
-                            let tip = if is_start {
-                                "Where it starts — auto, a line (2, or -1 from the end), or span n"
-                            } else {
-                                "Where it ends — auto, a line (2, or -1 from the end), or span n"
-                            };
-                            if let Some(text) = css_field(ui, key, half, shown.as_deref(), tip) {
-                                match parse_placement(&text) {
-                                    Some(p) => {
-                                        let tx = self.item_tx(subjects, |i| {
-                                            let l = if rows {
-                                                &mut i.grid_row
-                                            } else {
-                                                &mut i.grid_column
-                                            };
-                                            if is_start {
-                                                l.start = p;
-                                            } else {
-                                                l.end = p;
-                                            }
-                                        });
-                                        self.session.name_step(label, tracks_glyph(rows));
-                                        self.commit_edit(tx);
-                                    }
-                                    // Said, not dropped: an unreadable line is never thrown
-                                    // away in silence.
-                                    None => refuse(
-                                        ui.ctx(),
-                                        key,
-                                        shown.as_deref(),
-                                        format!(
-                                            "\"{}\" is not a line — auto, 2, -1 or span 2",
-                                            text.trim()
-                                        ),
-                                    ),
+            let row = ui::disable_unless(ui, !in_area, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    let hit = super::super::component::label_mark(
+                        ui,
+                        Some(egui::vec2(LABEL_W, side)),
+                        label,
+                        ui::CAPTION_PT,
+                        theme::text::faint(),
+                        mark.as_ref(),
+                    );
+                    self.reset_marked(hit, &mark);
+                    let half = egui::vec2((full - LABEL_W - gap * 2.0) / 2.0, side);
+                    for is_start in [true, false] {
+                        let end = |l: GridLines| if is_start { l.start } else { l.end };
+                        let shown = shared(items, |i| end(lines(i))).map(placement_css);
+                        let key = egui::Id::new((
+                            "grid-item-line",
+                            rows,
+                            is_start,
+                            subjects.first().copied(),
+                        ));
+                        let tip = if is_start {
+                            "Where it starts — auto, a line (2, or -1 from the end), or span n"
+                        } else {
+                            "Where it ends — auto, a line (2, or -1 from the end), or span n"
+                        };
+                        if let Some(text) = css_field(ui, key, half, shown.as_deref(), tip) {
+                            match parse_placement(&text) {
+                                Some(p) => {
+                                    let tx = self.item_tx(subjects, |i| {
+                                        let l = if rows {
+                                            &mut i.grid_row
+                                        } else {
+                                            &mut i.grid_column
+                                        };
+                                        if is_start {
+                                            l.start = p;
+                                        } else {
+                                            l.end = p;
+                                        }
+                                    });
+                                    self.session.name_step(label, tracks_glyph(rows));
+                                    self.commit_edit(tx);
                                 }
-                            }
-                            if refused.is_none() {
-                                refused = refusal(ui, key, shown.as_deref());
+                                // Said, not dropped: an unreadable line is never thrown
+                                // away in silence.
+                                None => refuse(
+                                    ui.ctx(),
+                                    key,
+                                    shown.as_deref(),
+                                    format!(
+                                        "\"{}\" is not a line — auto, 2, -1 or span 2",
+                                        text.trim()
+                                    ),
+                                ),
                             }
                         }
-                    })
+                        if refused.is_none() {
+                            refused = refusal(ui, key, shown.as_deref());
+                        }
+                    }
                 })
-                .response;
+            })
+            .response;
             match by_area {
                 Some(name) => {
                     row.on_disabled_hover_text(format!(
@@ -1882,11 +1879,7 @@ impl MastikApp {
                 None => {}
             }
             if let Some(why) = refused {
-                ui.label(
-                    egui::RichText::new(why)
-                        .size(ui::CAPTION_PT)
-                        .color(color::danger()),
-                );
+                ui::note_line(ui, icon::WARNING, color::danger(), &why, None);
             }
         }
 
