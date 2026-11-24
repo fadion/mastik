@@ -1463,6 +1463,43 @@ fn row_short(row: &WhichRow) -> &'static str {
     }
 }
 
+/// Why variable `v` is shown disabled in a dropdown picking `current`:
+/// `taken`'s reason when it lists `v`, never for the row's own pick.
+fn taken_why(
+    v: VarId,
+    current: Option<VarId>,
+    taken: Option<(&[VarId], &'static str)>,
+) -> Option<&'static str> {
+    taken
+        .filter(|(list, _)| current != Some(v) && list.contains(&v))
+        .map(|(_, why)| why)
+}
+
+/// The name a committed `typed` renames to: trimmed, never empty, and only
+/// when it differs from `current`.
+fn new_name(typed: &str, current: &str) -> Option<String> {
+    let typed = typed.trim();
+    (!typed.is_empty() && typed != current).then(|| typed.to_string())
+}
+
+/// The collections a flow's starting-mode row may pick, the row's own `col`
+/// among them: a collection another of the flow's `modes` names is not offered
+/// twice, so a flow starts one mode per collection.
+fn free_collections<'a>(
+    t: &mastik_core::variable::Variables,
+    cols: &[Switchable<'a>],
+    modes: &[ModeId],
+    col: Option<&Switchable<'a>>,
+) -> Vec<Switchable<'a>> {
+    cols.iter()
+        .filter(|c| {
+            col.is_some_and(|x| x.owner == c.owner)
+                || !modes.iter().any(|m| t.owner_of(*m) == Some(c.owner))
+        })
+        .cloned()
+        .collect()
+}
+
 /// The collections *Set mode* and a flow's starting modes can switch: the
 /// document's with two modes or more, then each kit's.
 fn switchable_collections(doc: &Document) -> Vec<Switchable<'_>> {
@@ -6250,10 +6287,7 @@ impl MastikApp {
             }
             for (v, n) in &vars {
                 let on = current == Some(*v);
-                if let Some((list, why)) = taken
-                    && !on
-                    && list.contains(v)
-                {
+                if let Some(why) = taken_why(*v, current, taken) {
                     ui.add_enabled_ui(false, |ui| ui.selectable_label(false, n))
                         .inner
                         .on_disabled_hover_text(why);
@@ -7329,8 +7363,7 @@ impl MastikApp {
             resp = resp.on_hover_text(tip);
         }
         let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
-        let typed = typed.trim().to_string();
-        (!typed.is_empty() && typed != current).then_some(typed)
+        new_name(&typed, current)
     }
 
     /// The page's *Flows*: one row per flow, its name and its start frame; `+`
@@ -7589,16 +7622,7 @@ impl MastikApp {
                 let w = ui.available_width() - ui::CONTROL_H - COL;
                 let half = (w - COL) / 2.0;
                 ui.allocate_ui(egui::vec2(half, ui::CONTROL_H), |ui| {
-                    // A collection another starting mode names is not offered
-                    // twice: one mode per collection.
-                    let free: Vec<Switchable> = cols
-                        .iter()
-                        .filter(|c| {
-                            col.is_some_and(|x| x.owner == c.owner)
-                                || !f.modes.iter().any(|m| t.owner_of(*m) == Some(c.owner))
-                        })
-                        .cloned()
-                        .collect();
+                    let free = free_collections(t, &cols, &f.modes, col);
                     if let Some(c) =
                         collection_combo(ui, doc, ("flow-col", f.id, i), half, &free, col)
                         && let Some(m) = mode_not_read(doc, f.start, c)
@@ -9289,6 +9313,91 @@ mod tests {
         assert_eq!(masked, vec!["Flow 2"], "its place among the page's flows");
     }
 
+    /// A typed flow or snap point name commits trimmed, and neither an empty
+    /// nor an unchanged one renames.
+    /// flip: `new_name` without its `trim` → fails at "trimmed"; without its
+    /// empty test → fails at "blank".
+    #[test]
+    fn a_typed_name_is_trimmed_and_never_blank() {
+        assert_eq!(
+            new_name(" Rest ", "Old").as_deref(),
+            Some("Rest"),
+            "trimmed"
+        );
+        assert_eq!(new_name("   ", "Old"), None, "blank");
+        assert_eq!(new_name("Old ", "Old"), None, "unchanged");
+    }
+
+    /// A starting-value row's dropdown shows the variables another row sets
+    /// disabled, with the reason, but never its own pick.
+    /// flip: `taken_why` without its `current` test → fails at "its own pick".
+    #[test]
+    fn a_variable_another_row_sets_is_taken() {
+        let mut ids = mastik_core::IdSource::new(0x7A);
+        let (a, b, c) = (ids.mint_var(), ids.mint_var(), ids.mint_var());
+        let set = [a, b];
+        let taken = Some((&set[..], "Another row sets it"));
+        assert_eq!(
+            taken_why(b, Some(a), taken),
+            Some("Another row sets it"),
+            "taken"
+        );
+        assert_eq!(taken_why(a, Some(a), taken), None, "its own pick");
+        assert_eq!(taken_why(c, Some(a), taken), None, "free");
+        assert_eq!(taken_why(b, Some(a), None), None, "no list");
+    }
+
+    /// A flow's starting-mode row offers its own collection and those no other
+    /// row names: one mode per collection.
+    /// flip: `free_collections` keeping every collection → fails at "one mode
+    /// per collection".
+    #[test]
+    fn a_flow_starts_one_mode_per_collection() {
+        use mastik_core::variable::{Collection, Mode};
+        let mut ids = mastik_core::IdSource::new(0x7B);
+        let mut doc = mastik_core::Document::new(ids.mint());
+        let mut add = |doc: &mut mastik_core::Document, name: &str| {
+            let modes: Vec<Mode> = ["Light", "Dark"]
+                .iter()
+                .map(|n| Mode {
+                    id: ids.mint_mode(),
+                    name: (*n).into(),
+                })
+                .collect();
+            let first = modes[0].id;
+            doc.apply(&Transaction(vec![Operation::AddCollection {
+                collection: Collection {
+                    id: ids.mint_collection(),
+                    name: name.into(),
+                    modes,
+                    breakpoints: None,
+                },
+                index: 0,
+            }]))
+            .expect("the collection");
+            first
+        };
+        let theme = add(&mut doc, "Theme");
+        let _brand = add(&mut doc, "Brand");
+        let t = doc.variables();
+        let cols = t.switchable();
+        let names =
+            |free: Vec<Switchable<'_>>| free.into_iter().map(|c| c.name).collect::<Vec<_>>();
+        let theme_col = cols.iter().find(|c| c.name == "Theme");
+        let brand_col = cols.iter().find(|c| c.name == "Brand");
+        // The Theme row may stay on Theme or move to Brand; a Brand row may not
+        // move to Theme, which the other row names.
+        assert_eq!(
+            names(free_collections(t, &cols, &[theme], theme_col)).len(),
+            cols.len(),
+            "its own and the free ones"
+        );
+        assert!(
+            !names(free_collections(t, &cols, &[theme], brand_col)).contains(&"Theme".to_string()),
+            "one mode per collection"
+        );
+    }
+
     /// The Flows card's name field shows a flow's name masked by its place in
     /// private mode, as every other flow name is.
     /// flip: `flows_card` drawing `name_draft_field` in private mode → fails at
@@ -9710,7 +9819,132 @@ mod tests {
                 keep_scroll: false,
             },
         );
+        let ms = |app: &MastikApp| {
+            let n = app
+                .session
+                .doc
+                .get(app.session.selection.single().unwrap())
+                .unwrap();
+            match &n.reactions()[0].actions[0].value {
+                Action::Navigate { transition, .. } => match transition.timing {
+                    Timing::Ease { ms, .. } => f64::from(ms),
+                    Timing::Spring { .. } => panic!("fixture: an eased transition"),
+                },
+                _ => panic!("fixture: the navigate action"),
+            }
+        };
+        escape_then_enter(&ctx, &mut f, open, "300", &ms);
+    }
+
+    /// A number typed into *Increment*'s *By* is given up on `Escape` and
+    /// committed on `Enter`.
+    /// flip: the *Increment* arm's gate without `escaped` → fails at "Escape
+    /// gives it up".
+    #[test]
+    fn escape_abandons_a_typed_increment() {
+        use mastik_core::variable::{Cell, CollectionId, Mode, Variable};
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        let (mode, var) = (f.app.session.ids.mint_mode(), f.app.session.ids.mint_var());
+        assert!(f.app.session.commit(Transaction(vec![
+            Operation::AddMode {
+                collection: CollectionId::FIRST,
+                mode: Mode {
+                    id: mode,
+                    name: "Default".into(),
+                },
+                index: 0,
+                cells: vec![],
+            },
+            Operation::AddVariable {
+                var: Variable {
+                    id: var,
+                    name: "cartCount".into(),
+                    kind: VarKind::Number,
+                    cells: [(mode, Cell::Number(0.0))].into(),
+                    scope: None,
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            },
+        ])));
+        let open = one_action(
+            &mut f,
+            Action::SetVariable {
+                var,
+                change: VarChange::Increment { by: 7.25 },
+            },
+        );
+        let by = |app: &MastikApp| {
+            let n = app
+                .session
+                .doc
+                .get(app.session.selection.single().unwrap())
+                .unwrap();
+            match &n.reactions()[0].actions[0].value {
+                Action::SetVariable {
+                    change: VarChange::Increment { by },
+                    ..
+                } => *by,
+                other => panic!("fixture: an increment, not {other:?}"),
+            }
+        };
+        escape_then_enter(&ctx, &mut f, open, "7.25", &by);
+    }
+
+    /// A number typed into a *Manual* overlay's *X* is given up on `Escape` and
+    /// committed on `Enter`.
+    /// flip: `overlay_fields`' gate without `escaped` → fails at "Escape gives
+    /// it up".
+    #[test]
+    fn escape_abandons_a_typed_overlay_offset() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        let overlay = f.cart;
+        let open = one_action(
+            &mut f,
+            Action::OpenOverlay {
+                overlay,
+                settings: OverlaySettings {
+                    position: OverlayPosition::Manual { x: 37.0, y: 48.0 },
+                    ..OverlaySettings::default()
+                },
+                transition: Transition::default(),
+            },
+        );
+        let x = |app: &MastikApp| {
+            let n = app
+                .session
+                .doc
+                .get(app.session.selection.single().unwrap())
+                .unwrap();
+            match &n.reactions()[0].actions[0].value {
+                Action::OpenOverlay { settings, .. } => match settings.position {
+                    OverlayPosition::Manual { x, .. } => x,
+                    _ => panic!("fixture: a manual overlay"),
+                },
+                _ => panic!("fixture: the overlay action"),
+            }
+        };
+        escape_then_enter(&ctx, &mut f, open, "37", &x);
+    }
+
+    /// Opens action `open` in its popover, types `2000` over the field reading
+    /// `shown`, and asserts that `Escape` leaves `read`'s value as it was and
+    /// that typing again and `Enter` commits 2000.
+    fn escape_then_enter(
+        ctx: &egui::Context,
+        f: &mut F,
+        open: ActionAt,
+        shown: &str,
+        read: &dyn Fn(&MastikApp) -> f64,
+    ) {
+        let ctx = ctx.clone();
         f.app.session.selection.set_one(f.add);
+        let before = read(&f.app);
         f.app.proto.open = Some(open);
         let key = |key, modifiers| egui::Event::Key {
             key,
@@ -9743,16 +9977,6 @@ mod tests {
                 _ => None,
             })
         };
-        let ms = |app: &MastikApp| {
-            let n = app.session.doc.get(f.add).unwrap();
-            match &n.reactions()[0].actions[0].value {
-                Action::Navigate { transition, .. } => match transition.timing {
-                    Timing::Ease { ms, .. } => ms,
-                    Timing::Spring { .. } => panic!("fixture: an eased transition"),
-                },
-                _ => panic!("fixture: the navigate action"),
-            }
-        };
         let type_over = |app: &mut MastikApp, at: egui::Pos2| {
             let press = |pressed| egui::Event::PointerButton {
                 pos: at,
@@ -9774,7 +9998,7 @@ mod tests {
         for _ in 0..3 {
             out = frame(&mut f.app, vec![]);
         }
-        let at = field_at(&out, "300").expect("the popover's Duration reads 300");
+        let at = field_at(&out, shown).expect("fixture: the field reads its value");
         type_over(&mut f.app, at);
         let out = frame(&mut f.app, vec![]);
         assert!(field_at(&out, "2000").is_some(), "fixture: typed");
@@ -9783,21 +10007,21 @@ mod tests {
             vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
         );
         frame(&mut f.app, vec![]);
-        assert_eq!(ms(&f.app), 300, "Escape gives it up");
+        assert_eq!(read(&f.app), before, "Escape gives it up");
         // Escape also closed the popover.
         f.app.proto.open = Some(open);
         for _ in 0..3 {
             frame(&mut f.app, vec![]);
         }
         let out = frame(&mut f.app, vec![]);
-        let at = field_at(&out, "300").expect("the old duration is back");
+        let at = field_at(&out, shown).expect("the old value is back");
         type_over(&mut f.app, at);
         frame(
             &mut f.app,
             vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
         );
         frame(&mut f.app, vec![]);
-        assert_eq!(ms(&f.app), 2000, "Enter commits");
+        assert_eq!(read(&f.app), 2000.0, "Enter commits");
     }
 
     /// A *Conditional*'s first branch open in its popover, and a number variable
