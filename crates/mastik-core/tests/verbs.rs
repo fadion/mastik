@@ -7776,6 +7776,33 @@ fn copy_reactions_pastes_as_paste_interactions_does() {
     assert!(why.contains("snap point"), "{why}");
 }
 
+/// `copy_reactions` from a layer with no reactions is refused as nothing to
+/// do, rather than answered done with writes that change nothing.
+/// flip: `copy_reactions` without its empty check → fails at "refused".
+#[test]
+fn copy_reactions_from_a_layer_with_none_is_refused() {
+    let (mut doc, mut ids, page) = blank();
+    let [a, b] = [0, 1].map(|_| {
+        run(
+            &mut doc,
+            &mut ids,
+            "create_node",
+            json!({ "parent": page.to_wire(), "kind": frame(40.0, 40.0) }),
+        )[0]
+    });
+    let out = answer(
+        &doc,
+        &mut ids,
+        "copy_reactions",
+        json!({ "nodes": [b.to_wire()], "from": a.to_wire() }),
+    );
+    assert!(
+        matches!(out, Err(VerbError::Nothing(_))),
+        "refused: {:?}",
+        out.map(|d| d.tx)
+    );
+}
+
 /// `set_play_export` writes the HTML export's settings as the card keeps them,
 /// refusing a flow that is none (listing the flows) and an `opens` outside a
 /// non-empty `flows`.

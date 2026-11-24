@@ -6151,6 +6151,9 @@ pub static VERBS: &[Verb] = &[
                 .get(from)
                 .map(|n| n.reactions().iter().map(|k| k.value.clone()).collect())
                 .unwrap_or_default();
+            if copied.is_empty() {
+                return Err(VerbError::Nothing("the layer has no reactions to copy"));
+            }
             let mut ops = Vec::new();
             for id in existing_layers(ctx, a)? {
                 if id == from {
