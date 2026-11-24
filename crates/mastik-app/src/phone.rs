@@ -7,7 +7,7 @@
 //! listens otherwise, and dropping the share stops it.
 
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
@@ -17,6 +17,8 @@ const HEARTBEAT: Duration = Duration::from_secs(10);
 /// How long a phone that stopped listening stays in the list, greyed, waiting
 /// to wake before it is dropped.
 const FORGET: Duration = Duration::from_secs(60);
+/// How long a phone's browser waits before it reconnects a dropped stream.
+const RETRY_MS: u32 = 1000;
 /// The longest request head and body read; anything longer is refused.
 const MAX_HEAD: usize = 8 * 1024;
 const MAX_BODY: usize = 4 * 1024;
@@ -372,11 +374,14 @@ fn answer(mut stream: TcpStream, shared: &Mutex<Shared>, wake: &(dyn Fn() + Send
 }
 
 /// Open `id`'s stream of versions on `stream`, starting with the current one.
+/// `retry:` shortens the browser's reconnect wait (3–5 s by default) after a
+/// phone sleeps or its Wi-Fi blips.
 fn listen(mut stream: TcpStream, shared: &Mutex<Shared>, id: &str, agent: &str) {
     let mut s = lock(shared);
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-         Cache-Control: no-store\r\nConnection: keep-alive\r\n\r\ndata: {}\n\n",
+         Cache-Control: no-store\r\nConnection: keep-alive\r\n\r\n\
+         retry: {RETRY_MS}\n\ndata: {}\n\n",
         s.version
     );
     if stream.write_all(head.as_bytes()).is_err() {
@@ -432,17 +437,233 @@ pub(crate) fn allowed(ip: IpAddr) -> bool {
     }
 }
 
-/// This computer's address on its private network: the one its default route
-/// leaves from, read without sending anything. `None` off a network or on a
-/// public address only.
+/// This computer's address on its private network, as a phone on the same Wi-Fi
+/// reaches it. A VPN's tunnel often holds a private address and carries the
+/// routes too, so an address a Wi-Fi or Ethernet adapter holds wins over what the
+/// routes say. `None` off a network or on a public address only.
 fn local_ip() -> Option<IpAddr> {
+    let routed: Vec<Ipv4Addr> = ["10.255.255.255:9", "192.168.255.255:9", "172.31.255.255:9"]
+        .into_iter()
+        .filter_map(routed_from)
+        .collect();
+    choose_ip(&routed, &lan_addresses()).map(IpAddr::V4)
+}
+
+/// The private address the route to `to` leaves from, read without sending
+/// anything.
+fn routed_from(to: &str) -> Option<Ipv4Addr> {
     let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("10.255.255.255:9").ok()?;
-    let ip = socket.local_addr().ok()?.ip();
-    match ip {
-        IpAddr::V4(v) if v.is_private() => Some(ip),
+    socket.connect(to).ok()?;
+    match socket.local_addr().ok()?.ip() {
+        IpAddr::V4(v) if v.is_private() => Some(v),
         _ => None,
     }
+}
+
+/// The address to share on: the first `routed` address a LAN adapter holds, else
+/// a LAN adapter's first, else the first `routed` one (an adapter list that could
+/// not be read).
+fn choose_ip(routed: &[Ipv4Addr], lan: &[Ipv4Addr]) -> Option<Ipv4Addr> {
+    routed
+        .iter()
+        .find(|a| lan.contains(a))
+        .or_else(|| lan.first())
+        .or_else(|| routed.first())
+        .copied()
+}
+
+/// The private IPv4 addresses on Wi-Fi and Ethernet adapters that are up and
+/// have a gateway, leaving out tunnels and the virtual adapters of VPNs and VMs.
+#[cfg(windows)]
+fn lan_addresses() -> Vec<Ipv4Addr> {
+    use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
+    use windows_sys::Win32::NetworkManagement::IpHelper::{
+        GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
+        GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses, IF_TYPE_ETHERNET_CSMACD, IF_TYPE_IEEE80211,
+        IP_ADAPTER_ADDRESSES_LH,
+    };
+    use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
+    use windows_sys::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
+    let flags = GAA_FLAG_INCLUDE_GATEWAYS
+        | GAA_FLAG_SKIP_ANYCAST
+        | GAA_FLAG_SKIP_MULTICAST
+        | GAA_FLAG_SKIP_DNS_SERVER;
+    let mut size: u32 = 16 * 1024;
+    // `u64`s, so the list's structs are aligned.
+    let mut buf: Vec<u64> = Vec::new();
+    let mut read = false;
+    for _ in 0..3 {
+        buf = vec![0; (size as usize).div_ceil(8)];
+        // SAFETY: the buffer is live and holds at least `size` bytes.
+        let r = unsafe {
+            GetAdaptersAddresses(
+                u32::from(AF_INET),
+                flags,
+                std::ptr::null(),
+                buf.as_mut_ptr().cast(),
+                &mut size,
+            )
+        };
+        match r {
+            NO_ERROR => {
+                read = true;
+                break;
+            }
+            ERROR_BUFFER_OVERFLOW => continue,
+            _ => break,
+        }
+    }
+    let mut out = Vec::new();
+    if !read {
+        return out;
+    }
+    let mut at = buf.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
+    while !at.is_null() {
+        // SAFETY: `at` is the list's head or a `Next` within `buf`, which lives.
+        let a = unsafe { &*at };
+        // SAFETY: the description is a NUL-ended wide string in `buf`, or null.
+        let description = unsafe { wide(a.Description) };
+        if matches!(a.IfType, IF_TYPE_ETHERNET_CSMACD | IF_TYPE_IEEE80211)
+            && a.OperStatus == IfOperStatusUp
+            && !a.FirstGatewayAddress.is_null()
+            && !virtual_adapter(&description)
+        {
+            let mut u = a.FirstUnicastAddress;
+            while !u.is_null() {
+                // SAFETY: `u` is the adapter's first address or a `Next` in `buf`.
+                let ua = unsafe { &*u };
+                let sa = ua.Address.lpSockaddr;
+                // SAFETY: a non-null `lpSockaddr` points at a sockaddr in `buf`,
+                // a `SOCKADDR_IN` when its family is `AF_INET`.
+                if !sa.is_null() && unsafe { (*sa).sa_family } == AF_INET {
+                    // SAFETY: as above.
+                    let sin = unsafe { &*sa.cast::<SOCKADDR_IN>() };
+                    // SAFETY: every field of the address union is plain bytes.
+                    let ip = Ipv4Addr::from(unsafe { sin.sin_addr.S_un.S_addr }.to_ne_bytes());
+                    if ip.is_private() {
+                        out.push(ip);
+                    }
+                }
+                u = ua.Next;
+            }
+        }
+        at = a.Next;
+    }
+    out
+}
+
+/// A NUL-ended wide string as text; empty for null.
+///
+/// # Safety
+/// `p` is null or points at a NUL-ended UTF-16 string.
+#[cfg(windows)]
+unsafe fn wide(p: *const u16) -> String {
+    if p.is_null() {
+        return String::new();
+    }
+    let mut n = 0;
+    // SAFETY: the caller promises a NUL within the string.
+    while unsafe { *p.add(n) } != 0 {
+        n += 1;
+    }
+    // SAFETY: the `n` units before the NUL were just read.
+    String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, n) })
+}
+
+/// Whether a Windows adapter's description names a VPN's or a VM's virtual
+/// adapter, which can wear the Ethernet type (OpenVPN's TAP, Hyper-V's switch).
+#[cfg(any(windows, test))]
+fn virtual_adapter(description: &str) -> bool {
+    let d = description.to_lowercase();
+    [
+        "virtual",
+        "vpn",
+        "tap-",
+        "tunnel",
+        "hyper-v",
+        "vmware",
+        "virtualbox",
+        "wireguard",
+    ]
+    .iter()
+    .any(|w| d.contains(w))
+}
+
+/// The private IPv4 addresses on interfaces that are up and neither loopback nor
+/// point-to-point, leaving out tunnels and the bridges of VPNs, VMs and containers
+/// by name.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn lan_addresses() -> Vec<Ipv4Addr> {
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: the pointer is a live local, filled by the call.
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return Vec::new();
+    }
+    let has = |flags: libc::c_uint, f: libc::c_int| flags & f as libc::c_uint != 0;
+    let mut out = Vec::new();
+    let mut at = head;
+    while !at.is_null() {
+        // SAFETY: `at` is the list's head or an `ifa_next`, freed only below.
+        let ifa = unsafe { &*at };
+        let up = has(ifa.ifa_flags, libc::IFF_UP) && has(ifa.ifa_flags, libc::IFF_RUNNING);
+        let tunnel = has(ifa.ifa_flags, libc::IFF_LOOPBACK | libc::IFF_POINTOPOINT);
+        // SAFETY: a non-null `ifa_addr` points at a sockaddr in the list.
+        let v4 = !ifa.ifa_addr.is_null()
+            && i32::from(unsafe { (*ifa.ifa_addr).sa_family }) == libc::AF_INET;
+        if up && !tunnel && v4 {
+            // SAFETY: `ifa_name` is a NUL-ended name in the list.
+            let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }.to_string_lossy();
+            if !virtual_interface(&name) {
+                // SAFETY: an `AF_INET` sockaddr is a `sockaddr_in`.
+                let sin = unsafe { &*ifa.ifa_addr.cast::<libc::sockaddr_in>() };
+                let ip = Ipv4Addr::from(sin.sin_addr.s_addr.to_ne_bytes());
+                if ip.is_private() {
+                    out.push(ip);
+                }
+            }
+        }
+        at = ifa.ifa_next;
+    }
+    // SAFETY: `head` came from `getifaddrs` and is freed once.
+    unsafe { libc::freeifaddrs(head) };
+    out
+}
+
+/// Whether a Unix interface name is a tunnel's or a VPN's, VM's or container's
+/// bridge.
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+fn virtual_interface(name: &str) -> bool {
+    [
+        "docker",
+        "br-",
+        "veth",
+        "virbr",
+        "vmnet",
+        "vboxnet",
+        "bridge",
+        "utun",
+        "tun",
+        "tap",
+        "wg",
+        "ppp",
+        "ipsec",
+        "zt",
+        "tailscale",
+        "awdl",
+        "llw",
+        "lxc",
+        "lxd",
+        "podman",
+        "cni",
+    ]
+    .iter()
+    .any(|p| name.starts_with(p))
+}
+
+/// No adapter list on other platforms; the routes alone choose.
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+fn lan_addresses() -> Vec<Ipv4Addr> {
+    Vec::new()
 }
 
 /// A share's token: 128 random bits as 22 letters and digits, new each share,
@@ -825,7 +1046,7 @@ impl Sharing {
             // appears, and on every share, so the card keeps one size.
             true => {
                 "Scan with the phone's camera. It must be on the same Wi-Fi as this computer. \
-                 Windows may ask to let Mastik on private networks: allow it so the phone can \
+                 Windows may ask to let Mastik through its firewall: allow it so the phone can \
                  reach this computer."
             }
             false => "Scan with the phone's camera. It must be on the same Wi-Fi as this computer.",
@@ -879,8 +1100,9 @@ impl Sharing {
             let waited = self.started.is_some_and(|t| t.elapsed() >= UNREACHED);
             let note = match (cfg!(windows) && waited, waited) {
                 (true, _) => {
-                    "No phone yet. If the page won't open on the phone, allow Mastik on private \
-                     networks in Windows Security, then try again"
+                    // Windows joins a new Wi-Fi as Public, so the advice names both.
+                    "No phone yet. If the page won't open on the phone, allow Mastik through \
+                     Windows Firewall on this network, private or public, then try again"
                 }
                 (false, true) => {
                     "No phone yet. If the page won't open on the phone, check that both are on \
@@ -1026,9 +1248,9 @@ mod tests {
         assert!(other.starts_with("HTTP/1.1 404"), "another token: {other}");
     }
 
-    /// A phone that opens the stream hears the current version, then each one
-    /// published; its status names its screen; when the share stops it hears
-    /// `stop`.
+    /// A phone that opens the stream is told a short reconnect wait and hears the
+    /// current version, then each one published; its status names its screen;
+    /// when the share stops it hears `stop`.
     ///
     /// flip: `Share::publish` not sending to the streams → fails at "a line",
     /// the read timing out where the new version should be.
@@ -1057,6 +1279,20 @@ mod tests {
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
         let mut reader = BufReader::new(events);
+        let mut line = String::new();
+        while line != "\r\n" {
+            line.clear();
+            reader.read_line(&mut line).expect("a head line");
+        }
+        line.clear();
+        reader
+            .read_line(&mut line)
+            .expect("the stream's first line");
+        assert_eq!(
+            line,
+            format!("retry: {RETRY_MS}\n"),
+            "a short reconnect wait"
+        );
         let mut next_event = || loop {
             let mut line = String::new();
             reader.read_line(&mut line).expect("a line");
@@ -1448,5 +1684,45 @@ mod tests {
                 && masked.iter().any(|t| t.starts_with("Frame")),
             "masked: {masked:?}"
         );
+    }
+
+    /// The share's address is the Wi-Fi's when a VPN tunnel carries the routes,
+    /// the routed one when the adapters could not be read, and a routed address
+    /// a LAN adapter holds before another LAN address.
+    /// flip: `choose_ip` taking `routed.first()` first → fails at "the Wi-Fi".
+    #[test]
+    fn the_share_address_prefers_the_lan_over_a_tunnel() {
+        let tunnel = Ipv4Addr::new(10, 64, 0, 2);
+        let wifi = Ipv4Addr::new(192, 168, 1, 20);
+        let wsl = Ipv4Addr::new(172, 20, 0, 1);
+        assert_eq!(
+            choose_ip(&[tunnel, tunnel], &[wifi]),
+            Some(wifi),
+            "the Wi-Fi"
+        );
+        assert_eq!(choose_ip(&[tunnel], &[]), Some(tunnel), "no adapter list");
+        assert_eq!(
+            choose_ip(&[tunnel, wifi], &[wsl, wifi]),
+            Some(wifi),
+            "routed LAN"
+        );
+        assert_eq!(choose_ip(&[], &[]), None);
+    }
+
+    /// Tunnels and the virtual adapters of VPNs and VMs are told from a real
+    /// Wi-Fi or Ethernet adapter by name.
+    #[test]
+    fn virtual_adapters_are_told_by_name() {
+        assert!(virtual_adapter("TAP-Windows Adapter V9"));
+        assert!(virtual_adapter("Hyper-V Virtual Ethernet Adapter"));
+        assert!(virtual_adapter("WireGuard Tunnel"));
+        assert!(!virtual_adapter("Intel(R) Wi-Fi 6E AX211 160MHz"));
+        assert!(!virtual_adapter("Realtek PCIe GbE Family Controller"));
+        assert!(virtual_interface("utun3"));
+        assert!(virtual_interface("docker0"));
+        assert!(virtual_interface("wg0"));
+        assert!(!virtual_interface("en0"));
+        assert!(!virtual_interface("wlan0"));
+        assert!(!virtual_interface("eth0"));
     }
 }

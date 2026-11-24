@@ -95,11 +95,12 @@ keeps every key, Escape included (`Playing::take_keys` asks `text_edit_focused` 
   not use closes the card and keeps sharing; the next gives the keyboard back.
   Sharing starts only from the button, is never remembered, and stops when the player closes
   (*Stopped sharing — the player closed*) or from the card's *Stop sharing* (Danger).
-  - **The server** binds this computer's private-network address (the one its default route
-    leaves from; none on a public one, *Not on a network*) on a free port, and answers only
-    clients in the private, link-local or loopback ranges, under a fresh 128-bit token per
-    share: the page, `doc` (the current version), `events` (a stream of versions, a heartbeat
-    every 10 s) and `status` (a phone's screen). Hand-written on `std::net`: four fixed paths,
+  - **The server** binds this computer's private-network address (one a Wi-Fi or Ethernet
+    adapter with a gateway holds, preferring the one the routes leave from, so a VPN tunnel's
+    private address never wins; none on a public one, *Not on a network*) on a free port, and
+    answers only clients in the private, link-local or loopback ranges, under a fresh 128-bit
+    token per share: the page, `doc` (the current version), `events` (a stream of versions with
+    a 1 s `retry:`, a heartbeat every 10 s) and `status` (a phone's screen). Hand-written on `std::net`: four fixed paths,
     a bounded head and body, nothing else served.
   - **The page** is the HTML export's (`Parts::mirror`, `prune_mirror`): the flow playing, or
     its frame, with no bar or device frame, and no device unless the export's *On a phone* keeps
@@ -109,12 +110,15 @@ keeps every key, Escape included (`Playing::take_keys` asks `text_edit_focused` 
     once, for the scripts player where it is built), packs a new page and sends `reload`; the
     page is packed for nothing else. The reloaded page keeps the phone's id (`sessionStorage`), so it is
     still one phone. The phone toasts *Updated from Mastik*, and when sharing stops dims its last
-    frame under *Mastik stopped sharing*.
+    frame under *Mastik stopped sharing*. A dropped stream (a sleep, a Wi-Fi blip) reconnects by
+    itself; the page ends only on `stop`, on a dead token, or after ten failed reconnects while
+    it is in front.
   - **The firewall.** The first share on Windows raises the system's prompt for the app, which
     the card's help line names on Windows (*allow it so the phone can reach this computer*),
     every share, so the card keeps one size. A declined prompt cannot be seen from the app: a
     phone that never arrives is the sign, so after 20 s with none the empty list says to allow
-    Mastik on private networks in Windows Security (elsewhere, to check both are on one network).
+    Mastik through Windows Firewall on this network, private or public, since Windows joins a new
+    Wi-Fi as Public (elsewhere, to check both are on one network).
   - **The card**: the QR code (`qrcode`, painted dark on light in either theme), one line of help,
     the link with *Copy* (*Copied the link*), *Following* — up to four rows of a dot (lit while
     the phone listens, grey while it sleeps, gone after a minute), its browser at its coarsest

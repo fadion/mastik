@@ -1200,7 +1200,10 @@ const BOOT: &str = r##"(async () => {
       report();
       const reporting = setInterval(report, 500);
       const events = new EventSource("events?id=" + encodeURIComponent(id));
-      let lost = 0;
+      // A blip or a sleep only drops the stream, and EventSource reconnects by
+      // itself; the share has stopped on CLOSED (a dead token), on "stop", or
+      // when reconnects keep failing while the page is in front.
+      let failed = 0;
       const end = () => {
         if (ended) return;
         ended = true;
@@ -1209,11 +1212,11 @@ const BOOT: &str = r##"(async () => {
         document.body.classList.add("ended");
         toast("Mastik stopped sharing", Infinity);
       };
-      events.onopen = () => clearTimeout(lost);
+      events.onopen = () => { failed = 0; };
       events.onerror = () => {
-        clearTimeout(lost);
         if (events.readyState === EventSource.CLOSED) return end();
-        lost = setTimeout(() => { if (events.readyState !== EventSource.OPEN) end(); }, 3000);
+        if (document.hidden) return;
+        if (++failed >= 10) end();
       };
       events.onmessage = async e => {
         if (e.data === "stop") return end();

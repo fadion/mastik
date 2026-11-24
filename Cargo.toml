@@ -220,8 +220,15 @@ libc = "0.2"
 # **`Win32_Storage_FileSystem`, `Win32_System_IO` and `Win32_System_Pipes` are the
 # one window's** (`one_window.rs`): the named pipe a later launch hands its file
 # over, which std can connect to but not create.
+#
+# **`Win32_NetworkManagement_IpHelper`, `Win32_NetworkManagement_Ndis` and
+# `Win32_Networking_WinSock` are the phone share's** (`phone.rs`): the adapter list
+# that picks the Wi-Fi's address over a VPN tunnel's, which std cannot enumerate.
 windows-sys = { version = "0.52.0", features = [
   "Win32_Foundation",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
   "Win32_Security",
   "Win32_Security_Credentials",
   "Win32_Storage_FileSystem",
