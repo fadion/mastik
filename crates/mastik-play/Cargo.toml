@@ -21,5 +21,7 @@ scripts = ["dep:mastik-vm", "dep:serde_json"]
 mastik-core = { path = "../mastik-core" }
 rustc-hash.workspace = true
 thiserror.workspace = true
+# Backspace in a played input removes one grapheme, not one `char`.
+unicode-segmentation.workspace = true
 mastik-vm = { path = "../mastik-vm", optional = true }
 serde_json = { workspace = true, optional = true }

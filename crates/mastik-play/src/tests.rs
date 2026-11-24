@@ -536,9 +536,11 @@ fn a_timer_fires_at_its_time() {
     assert_eq!(p.scene().layers[1].opacity, 0.5, "started at its due");
 }
 
-/// Typing into an input text layer writes its variable, which the layer shows.
+/// Typing into an input text layer writes its variable, which the layer shows;
+/// Backspace removes the last grapheme.
 ///
-/// flip: `Player::prepare` not binding the layer's content → fails at "bound".
+/// flip: `Player::prepare` not binding the layer's content → fails at "bound";
+/// Backspace popping one `char` → fails at "one grapheme removed".
 #[test]
 fn typing_writes_the_inputs_variable() {
     let mut fx = Fx::new();
@@ -575,6 +577,17 @@ fn typing_writes_the_inputs_variable() {
     assert_eq!(
         p.doc.resolve_var(a, name),
         Some(Value::String("Ada".into()))
+    );
+    // Backspace takes a whole grapheme: the thumb with its skin tone.
+    p.input(Input::Text("👍🏽".into()));
+    p.input(Input::Key {
+        key: "Backspace".into(),
+        shift: false,
+    });
+    assert_eq!(
+        p.doc.resolve_var(a, name),
+        Some(Value::String("Ada".into())),
+        "one grapheme removed"
     );
     assert!(p.input(Input::Key {
         key: "Escape".into(),

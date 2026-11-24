@@ -9,6 +9,7 @@ use mastik_core::prototype::{self, Going, Pin, ScrollAxis, Side, Trigger};
 use mastik_core::variable::{ModeId, Value, VarId};
 use mastik_core::variant::{self, Interaction};
 use mastik_core::{ItemId, NodeId, NodeKind, subtree_nodes};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// How far, in screen units, a press moves before it is a drag.
 const DRAG_SLOP: f64 = 4.0;
@@ -608,7 +609,8 @@ impl Player {
             match key {
                 "Escape" | "Enter" => self.set_focus(None),
                 "Backspace" => self.edit_text(field, |s| {
-                    s.pop();
+                    let last = s.grapheme_indices(true).next_back().map(|(i, _)| i);
+                    s.truncate(last.unwrap_or(0));
                 }),
                 _ => {}
             }
