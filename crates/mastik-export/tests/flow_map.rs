@@ -264,6 +264,49 @@ fn no_flow_no_map() {
     assert!(flow_map(&doc, &res).is_none());
 }
 
+/// A flow whose start is gone, and one whose frames are all on another page,
+/// get their words pages and no map page, and the other flows keep theirs.
+///
+/// flip: `flow_map_of` failing on a flow with nothing on its page → fails at
+/// "one dangling flow loses the map".
+#[test]
+fn a_flow_with_nothing_on_its_page_keeps_the_others() {
+    let (mut doc, [.., help], _) = shop();
+    let mut ids = IdSource::new(0x77);
+    let page = doc.pages().first().expect("the page");
+    let (page_id, mut flows) = (page.id, page.flows.clone());
+    for (name, start) in [("Gone", ids.mint()), ("Elsewhere", help)] {
+        flows.push(Keyed::new(
+            ids.mint_item(),
+            Flow {
+                name: name.into(),
+                start,
+                modes: Vec::new(),
+                values: vec![],
+            },
+        ));
+    }
+    doc.apply(&Transaction(vec![Operation::SetFlows {
+        id: page_id,
+        flows,
+    }]))
+    .expect("the flows");
+    assert_eq!(plans(&doc).len(), 3);
+    let res = Resolved::rebuild(&doc);
+    let pdf = flow_map(&doc, &res).expect("one dangling flow loses the map");
+    let read = mastik_export::pdf_in::import(pdf).expect("it reads back");
+    let upright: Vec<bool> = read
+        .pages
+        .iter()
+        .map(|p| p.size.width < p.size.height)
+        .collect();
+    assert_eq!(
+        upright,
+        vec![false, true, true, true],
+        "Checkout's map and words, then a words page each"
+    );
+}
+
 /// A control character in a name the map writes is left out, so the page
 /// still parses and the flow map is made.
 ///

@@ -243,7 +243,9 @@ map*, `mastik export --flow-map`): a PDF giving each flow (`flow_map_of` and `pl
 flows picked, every flow when none is) a page of its frames as they sit on
 the canvas, drawn by the PDF export's path, with an arrow from each layer that moves the screen
 and a numbered badge on each layer with a reaction, then pages writing those reactions out in
-words, for review and sign-off.
+words, for review and sign-off. A flow with no frame on its page, its start gone or on another
+page, gets its words pages alone; it never costs the other flows their pages. The file fails
+only when there is no flow or the converter refuses a page, and the app and the CLI say which.
 
 ## The mirrored page
 

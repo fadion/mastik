@@ -119,7 +119,13 @@ pub fn flow_map_of(doc: &Document, res: &Resolved, only: &[FlowRef]) -> Option<V
     let mut outline = krilla::outline::Outline::new();
     let mut index = 0;
     for plan in &plans {
-        let mut svgs = vec![(map_svg(doc, res, plan)?, plan.frames.clone())];
+        let here = on_its_page(doc, plan);
+        let mut svgs = Vec::new();
+        // A flow with nothing on its page, its start gone or every frame on
+        // another, has only its words: flows may dangle, and play skips them.
+        if let Some(extent) = crate::extent(res, &here) {
+            svgs.push((map_svg(doc, res, plan, &here, extent)?, plan.frames.clone()));
+        }
         for words in words_pages(doc, plan) {
             svgs.push((words, Vec::new()));
         }
@@ -531,17 +537,25 @@ fn number(n: f64) -> String {
 
 // ── Pages ───────────────────────────────────────────────────────────────────
 
-/// The map page of `plan` as SVG: its frames on its page as the PDF export
-/// draws them, framed with a margin and a title band, with the connectors and
-/// badges over them.
-fn map_svg(doc: &Document, res: &Resolved, plan: &FlowPlan) -> Option<String> {
-    let here: Vec<NodeId> = plan
-        .frames
+/// The frames of `plan` on its own page, which its map page draws.
+fn on_its_page(doc: &Document, plan: &FlowPlan) -> Vec<NodeId> {
+    plan.frames
         .iter()
         .copied()
         .filter(|f| doc.page_of(*f) == Some(plan.page))
-        .collect();
-    let extent = crate::extent(res, &here)?;
+        .collect()
+}
+
+/// The map page of `plan` as SVG: `here`, its frames on its page, as the PDF
+/// export draws them, framed on their `extent` with a margin and a title band,
+/// with the connectors and badges over them.
+fn map_svg(
+    doc: &Document,
+    res: &Resolved,
+    plan: &FlowPlan,
+    here: &[NodeId],
+    extent: Rect,
+) -> Option<String> {
     let side = extent.width().max(extent.height());
     let margin = (side * 0.04).max(40.0);
     let unit = (side / 600.0).max(1.0);
@@ -554,7 +568,7 @@ fn map_svg(doc: &Document, res: &Resolved, plan: &FlowPlan) -> Option<String> {
     let svg = crate::svg::svg_linking(
         doc,
         res,
-        &here,
+        here,
         Default::default(),
         ExportText::Live,
         Some(view),
@@ -579,7 +593,7 @@ fn map_svg(doc: &Document, res: &Resolved, plan: &FlowPlan) -> Option<String> {
     );
     let rect = |id: NodeId| layer_rect(res, doc, id);
     // Each frame outlined and named above, as the canvas names it.
-    for &frame in &here {
+    for &frame in here {
         let Some(r) = rect(frame) else { continue };
         let name = doc.get(frame).map_or("", |n| n.name());
         let _ = write!(
@@ -597,7 +611,7 @@ fn map_svg(doc: &Document, res: &Resolved, plan: &FlowPlan) -> Option<String> {
             escape(name)
         );
     }
-    for &frame in &here {
+    for &frame in here {
         for (layer, overlay, to) in moves(doc, frame) {
             let (Some(from), Some(target)) = (rect(layer), rect(to)) else {
                 continue;
@@ -665,6 +679,9 @@ fn nearest(r: Rect, p: Point) -> Point {
 /// order, each with its numbered reactions, wrapped to the page.
 fn words_pages(doc: &Document, plan: &FlowPlan) -> Vec<String> {
     let mut lines: Vec<(bool, String)> = vec![(true, plan.name.clone())];
+    if plan.frames.is_empty() {
+        lines.push((false, "Its start frame is missing.".into()));
+    }
     for &frame in &plan.frames {
         let name = doc.get(frame).map_or("", |n| n.name());
         let mut head = name.to_owned();

@@ -1663,8 +1663,14 @@ fn run_export(e: &OneOff) -> Result<(), String> {
             mastik_export::icon::encode(format, &entries).unwrap_or_default()
         }
         ExportFormat::Prototype => prototype_html(&doc, file)?.into_bytes(),
-        ExportFormat::FlowMap => mastik_export::flow_map::flow_map(&doc, &res)
-            .ok_or_else(|| format!("{file}: no page has a flow to map"))?,
+        ExportFormat::FlowMap => {
+            mastik_export::flow_map::flow_map(&doc, &res).ok_or_else(|| {
+                match mastik_export::flow_map::plans(&doc).is_empty() {
+                    true => format!("{file}: no page has a flow to map"),
+                    false => format!("cannot convert {file} to a flow map"),
+                }
+            })?
+        }
     };
 
     std::fs::write(&out_path, data)

@@ -3305,7 +3305,10 @@ impl MastikApp {
             }
             let written = match made {
                 Some(bytes) => std::fs::write(&path, bytes).map_err(|e| e.to_string()),
-                None => Err("the document has no flows".to_string()),
+                None if mastik_export::flow_map::plans_of(&doc, &flows).is_empty() => {
+                    Err("the document has no flows".to_string())
+                }
+                None => Err("the flow map could not be made".to_string()),
             };
             Delivered {
                 asker,
