@@ -1145,6 +1145,158 @@ mod tests {
         }
     }
 
+    /// Read file `csv` for `then`, as the app does, and wait for it to land.
+    fn read_into(
+        app: &mut MastikApp,
+        name: &str,
+        csv: &str,
+        then: impl FnOnce(PathBuf) -> crate::chart_import::Then,
+    ) {
+        let dir = std::env::temp_dir().join(format!("mastik-read-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        std::fs::write(&path, csv).unwrap();
+        app.start_chart_read(
+            name,
+            crate::chart_import::Source::File(path.clone()),
+            mastik_core::chart::table_io::Format::Csv,
+            vec![Some(true)],
+            then(path),
+        );
+        app.settle_chart_read();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A relink to a file without a filled column drops that fill and says so;
+    /// relinking a set never linked is *Link table*; *Choose file…* on a list
+    /// moves it onto a new set in one *List data* step, its fill kept by name.
+    /// flip: `replace_data_set_table` not counting `lost` → fails at "lost its
+    /// column"; reading `first_link` as false → fails at "Link table";
+    /// `move_list_to_new_set` keeping the old set → fails at "the new set".
+    #[test]
+    fn a_relink_counts_a_lost_fill_and_a_first_link_is_link_table() {
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let (l, set) = listed(&mut app, inst, &["A", "B"]);
+        assert!(
+            !app.session
+                .doc
+                .get(l)
+                .unwrap()
+                .list()
+                .unwrap()
+                .fill
+                .is_empty(),
+            "fixture: title fills Title"
+        );
+        let depth = app.session.history.undo_depth();
+        read_into(&mut app, "lost.csv", "note\nx\ny\n", |path| {
+            crate::chart_import::Then::DataSet {
+                set,
+                path: path.to_string_lossy().into_owned(),
+                relink: true,
+            }
+        });
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
+        assert!(
+            app.session
+                .doc
+                .get(l)
+                .unwrap()
+                .list()
+                .unwrap()
+                .fill
+                .is_empty(),
+            "the fill goes with its column"
+        );
+        let said = app.session.status().text.clone();
+        assert!(
+            said.ends_with("\u{b7} 1 fill lost its column"),
+            "lost its column: {said}"
+        );
+
+        // A set made here, never linked: its first file links it.
+        let main = mastik_core::component::main_of(&app.session.doc, inst).unwrap();
+        let page = app.session.doc.first_page().to_wire();
+        let other = verb(
+            &mut app,
+            "create_instance",
+            json!({ "main": main.to_wire(), "parent": page, "x": -3000, "y": 0 }),
+        )[0];
+        let fresh = DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "Table 1".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "title".into(),
+                }],
+                rows: vec![vec!["A".into()]],
+            },
+            source: None,
+            pictures: Vec::new(),
+        };
+        let fresh_id = fresh.id;
+        let (tx, l2) = list::make(
+            &app.session.doc,
+            &app.session.resolved,
+            &mut app.session.ids,
+            other,
+            Source::New(fresh),
+        )
+        .unwrap();
+        assert!(app.commit_edit(tx));
+        read_into(&mut app, "first.csv", "title\nC\n", |path| {
+            crate::chart_import::Then::DataSet {
+                set: fresh_id,
+                path: path.to_string_lossy().into_owned(),
+                relink: true,
+            }
+        });
+        let label = app
+            .session
+            .history
+            .done()
+            .last()
+            .unwrap()
+            .note
+            .label
+            .clone();
+        assert_eq!(label, "Link table", "Link table");
+
+        let depth = app.session.history.undo_depth();
+        read_into(&mut app, "moved.csv", "x,title\n1,D\n2,E\n", |path| {
+            crate::chart_import::Then::ListData {
+                list: l2,
+                path,
+                linkable: true,
+            }
+        });
+        assert_eq!(
+            app.session.history.undo_depth(),
+            depth + 1,
+            "one List data step"
+        );
+        let doc = &app.session.doc;
+        let moved = doc.get(l2).unwrap().list().unwrap();
+        assert_ne!(moved.data, fresh_id, "the new set");
+        let new_set = doc
+            .data_set(moved.data)
+            .expect("the new set is in the document");
+        let title = new_set
+            .table
+            .columns
+            .iter()
+            .find(|c| c.name == "title")
+            .unwrap()
+            .id;
+        assert_eq!(
+            moved.fill.first().map(|f| f.column),
+            Some(title),
+            "its fill kept by name"
+        );
+    }
+
     /// A refused value typed into a filter test does not move onto the test
     /// taking its place when a test above it is removed.
     /// flip: the remove button keeping the draft → fails at "not moved".
