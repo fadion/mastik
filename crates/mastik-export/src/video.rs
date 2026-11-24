@@ -163,6 +163,9 @@ pub const MAX_FPS: u32 = 60;
 /// highest levels and a GIF viewer both stop well short of a canvas export's
 /// size.
 pub const MAX_SIDE: u32 = 4096;
+/// The longest and shortest side of an MP4 frame, in pixels: OpenH264 refuses
+/// to encode a frame past 3840 × 2160, either way round.
+const MP4_SIDES: (u32, u32) = (3840, 2160);
 /// The most 16-pixel macroblocks an MP4 frame holds: H.264's frame size limit
 /// at levels 5.1 and 5.2 (4096 × 2304), the highest OpenH264 writes. A larger
 /// frame is still labelled 5.1, and a decoder that keeps to it refuses it.
@@ -337,14 +340,22 @@ fn draw(
 
 /// `options.scale` lowered so the frame of a screen of `size`, with its bezel
 /// when `options.device`, is at most [`MAX_SIDE`] pixels a side and, as an
-/// MP4, at most [`MAX_MACROBLOCKS`] and [`MAX_MACROBLOCK_RATE`] at its fps.
+/// MP4, within [`MP4_SIDES`], [`MAX_MACROBLOCKS`] and [`MAX_MACROBLOCK_RATE`]
+/// at its fps.
 fn scale_for(options: &Options, size: mastik_core::kurbo::Size) -> f64 {
     let bezel = match options.device {
         true => 2.0 * BEZEL,
         false => 0.0,
     };
     let (w, h) = (size.width + bezel, size.height + bezel);
-    let mut scale = options.scale.min(f64::from(MAX_SIDE) / w.max(h));
+    let (long, short) = match options.format {
+        Format::Mp4 => MP4_SIDES,
+        Format::Gif => (MAX_SIDE, MAX_SIDE),
+    };
+    let mut scale = options
+        .scale
+        .min(f64::from(long) / w.max(h))
+        .min(f64::from(short) / w.min(h));
     let most = match options.format {
         Format::Mp4 => MAX_MACROBLOCKS.min(MAX_MACROBLOCK_RATE / options.fps.max(1)),
         Format::Gif => u32::MAX,
@@ -354,7 +365,7 @@ fn scale_for(options: &Options, size: mastik_core::kurbo::Size) -> f64 {
     let fits = |s: f64| {
         let frame = framed_px(size, s, options.device);
         let blocks = u64::from(frame.0.div_ceil(16)) * u64::from(frame.1.div_ceil(16));
-        frame.0.max(frame.1) <= MAX_SIDE && blocks <= u64::from(most)
+        frame.0.max(frame.1) <= long && frame.0.min(frame.1) <= short && blocks <= u64::from(most)
     };
     for _ in 0..64 {
         if fits(scale) {
@@ -635,11 +646,11 @@ mod tests {
     }
 
     /// An MP4 of a desktop, a tablet or a square screen at 3×, with or without
-    /// the device frame, keeps to H.264's largest frame and its rate at 60 fps;
-    /// a GIF keeps only to the side.
+    /// the device frame, keeps to OpenH264's sides, H.264's largest frame and
+    /// its rate at 60 fps; a GIF keeps only to the side.
     ///
     /// flip: `scale_for` capping only the screen's side → fails at "the
-    /// macroblocks".
+    /// macroblocks"; without `MP4_SIDES` → fails at "the sides".
     #[test]
     fn an_mp4_frame_keeps_to_the_level() {
         use mastik_core::kurbo::Size;
@@ -662,9 +673,16 @@ mod tests {
                         blocks <= MAX_MACROBLOCKS && blocks * fps <= MAX_MACROBLOCK_RATE,
                         "the macroblocks of {frame:?} at {fps}"
                     );
-                    assert!(frame.0.max(frame.1) <= MAX_SIDE, "the side, bezel and all");
+                    let (long, short) = (frame.0.max(frame.1), frame.0.min(frame.1));
                     assert!(
-                        blocks > MAX_MACROBLOCKS.min(MAX_MACROBLOCK_RATE / fps) * 9 / 10,
+                        long <= MP4_SIDES.0 && short <= MP4_SIDES.1,
+                        "the sides, bezel and all: {frame:?}"
+                    );
+                    // Lowered only as far as the tighter of the two caps asks.
+                    let at_sides = long + 4 >= MP4_SIDES.0 || short + 4 >= MP4_SIDES.1;
+                    assert!(
+                        at_sides
+                            || blocks > MAX_MACROBLOCKS.min(MAX_MACROBLOCK_RATE / fps) * 9 / 10,
                         "no smaller than it needs to be: {frame:?}"
                     );
                 }

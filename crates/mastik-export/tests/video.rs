@@ -7,7 +7,9 @@ use mastik_core::{
     Brush, Document, Fill, IdSource, Keyed, NodeId, NodeKind, Operation, Transaction,
     keyed_by_position,
 };
-use mastik_export::video::{Format, Options, VideoError, frame_count, video};
+use mastik_export::video::{
+    Format, Options, VideoError, frame_count, frame_size, screen_size, video,
+};
 use mastik_play::{Input, Start, Take};
 
 /// The replay's own actor.
@@ -261,4 +263,55 @@ fn a_video_can_be_stopped() {
         done < 2
     });
     assert!(matches!(out, Err(VideoError::Cancelled)));
+}
+
+/// The size the export card shows (`frame_size`) is the size of the frames the
+/// written file holds: GIF and MP4, with and without the device, for a screen
+/// of odd pixel sizes and one whose scale the side cap lowers.
+///
+/// flip: `frame_size` without its MP4 even cut → fails at the MP4 arm of the
+/// odd screen; `scale_for` without `MP4_SIDES` → fails at "a video", OpenH264
+/// refusing the 4096-wide frame.
+#[test]
+fn the_card_size_is_the_written_frame_size() {
+    for (size, scale) in [(Size::new(41.0, 31.0), 1.0), (Size::new(2000.0, 31.0), 3.0)] {
+        let mut ids = IdSource::new(0x7E57);
+        let page = ids.mint();
+        let mut doc = Document::new(page);
+        let a = sized_frame(&mut doc, &mut ids, page, 0.0, size, [255, 0, 0]);
+        let take = Take {
+            start: Start::Frame(a),
+            inputs: Vec::new(),
+            length: 100.0,
+        };
+        let screen = screen_size(&doc, &take, ACTOR).expect("a screen");
+        for format in [Format::Gif, Format::Mp4] {
+            for device in [false, true] {
+                let options = Options {
+                    scale,
+                    device,
+                    ..options(format)
+                };
+                let shown = frame_size(&options, screen);
+                let file = video(&doc, &take, ACTOR, &options, &mut |_, _| true).expect("a video");
+                let written = match format {
+                    Format::Gif => {
+                        let (s, _) = gif_frames(&file)[0];
+                        (u32::from(s.0), u32::from(s.1))
+                    }
+                    Format::Mp4 => {
+                        let n = file.len() as u64;
+                        let reader = mp4::Mp4Reader::read_header(std::io::Cursor::new(file), n)
+                            .expect("it reads back");
+                        let track = reader.tracks().get(&1).expect("a video track");
+                        (u32::from(track.width()), u32::from(track.height()))
+                    }
+                };
+                assert_eq!(
+                    shown, written,
+                    "{size:?} at {scale}, {format:?}, device {device}"
+                );
+            }
+        }
+    }
 }

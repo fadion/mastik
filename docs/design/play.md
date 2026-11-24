@@ -455,7 +455,8 @@ by frame for a video reaches exactly the state the run had at each time.
 a fresh copy at a fixed rate (1 to 60 frames a second), a frame at every frame time from the start
 to the take's length, each drawn by `VelloCpuRenderer::render_play_to_rgba` over white at one
 scale for the whole video: the options' scale, lowered for the first screen so its frame, bezel
-included, is at most 4096 pixels a side and, as an MP4, at most H.264's largest frame (36,864
+included, is at most 4096 pixels a side and, as an MP4, within 3840 × 2160 either way round
+(OpenH264 refuses a larger frame) and at most H.264's largest frame (36,864
 macroblocks, and level 5.2's macroblocks a second at the frame rate), since OpenH264 labels a
 larger one 5.1 anyway and a decoder that keeps to the level refuses it (`frame_size`, which the
 export card shows). Every frame is cut or padded to the first one's size. With `clicks`, a ring
