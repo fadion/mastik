@@ -96,7 +96,8 @@ otherwise the player returns over the canvas).
   - **The card**: the QR code (`qrcode`, painted dark on light in either theme), one line of help,
     the link with *Copy* (*Copied the link*), *Following* — up to four rows of a dot (lit while
     the phone listens, grey while it sleeps, gone after a minute), its browser at its coarsest
-    (*Android · Chrome*) and its frame, folding into `ui::more_row`, *No phone yet* when empty,
+    (*Android · Chrome*) and its frame (the page reports the frame's name; private mode draws
+    the played document's screen of that name masked, `screen_shown`), folding into `ui::more_row`, *No phone yet* when empty,
     the list one height whatever it holds — and *Stop sharing*. A share that cannot start shows
     its reason as an empty note with *Try again*.
 - **The mode chip**: while the play width picks another mode of the collection picked by width

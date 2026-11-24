@@ -1506,7 +1506,7 @@ impl crate::app::MastikApp {
                     .layout(egui::Layout::top_down(egui::Align::Min)),
                 |ui| match p.sharing.as_ref().filter(|s| s.open) {
                     Some(s) => {
-                        card_act = s.card(ui).map(|a| match a {
+                        card_act = s.card(ui, p.player.document()).map(|a| match a {
                             crate::phone::CardAct::Retry => BarAct::ShareRetry,
                             crate::phone::CardAct::Stop => BarAct::ShareStop,
                             crate::phone::CardAct::Copied => BarAct::ShareCopied,

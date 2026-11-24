@@ -718,8 +718,9 @@ impl Sharing {
     }
 
     /// The card in the player's side column, `ui`'s width: the code, the link,
-    /// the phones following and *Stop sharing*; or why it cannot share.
-    pub(crate) fn card(&self, ui: &mut egui::Ui) -> Option<CardAct> {
+    /// the phones following and *Stop sharing*; or why it cannot share. `doc` is
+    /// the played document, whose screens the phones name.
+    pub(crate) fn card(&self, ui: &mut egui::Ui, doc: &Document) -> Option<CardAct> {
         let mut act = None;
         let w = ui.available_width();
         ui.spacing_mut().item_spacing.y = 8.0;
@@ -841,7 +842,7 @@ impl Sharing {
             LISTED
         };
         for p in phones.iter().take(shown) {
-            phone_row(&mut rows, w, row_h, p);
+            phone_row(&mut rows, w, row_h, p, doc);
         }
         if phones.len() > LISTED {
             ui::more_row(&mut rows, row_h, &format!("+{}", phones.len() - shown));
@@ -859,9 +860,25 @@ impl Sharing {
     }
 }
 
+/// A phone's reported frame name as drawn. The page reports the name alone, so
+/// private mode finds the screen of that name in the played `doc` and draws
+/// its masked name, or *Frame* when none has it.
+fn screen_shown<'a>(doc: &'a Document, screen: &'a str) -> std::borrow::Cow<'a, str> {
+    if !crate::private::on() {
+        return std::borrow::Cow::Borrowed(screen);
+    }
+    doc.page_ids()
+        .filter_map(|p| doc.get(p))
+        .flat_map(|p| p.children().iter().copied())
+        .find(|&id| doc.get(id).is_some_and(|n| n.name() == screen))
+        .map_or(std::borrow::Cow::Borrowed("Frame"), |id| {
+            crate::private::layer(doc, id)
+        })
+}
+
 /// One phone in the card's list: a dot (lit while it listens, grey while it
 /// sleeps), its browser and the frame it shows.
-fn phone_row(ui: &mut egui::Ui, w: f32, h: f32, p: &Phone) {
+fn phone_row(ui: &mut egui::Ui, w: f32, h: f32, p: &Phone, doc: &Document) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let dot = match p.live {
@@ -883,7 +900,7 @@ fn phone_row(ui: &mut egui::Ui, w: f32, h: f32, p: &Phone) {
     let room = rect.right() - (rect.left() + 14.0 + name_w + 8.0);
     if room > 16.0 && !p.screen.is_empty() {
         let mut job = egui::text::LayoutJob::simple_singleline(
-            p.screen.clone(),
+            screen_shown(doc, &p.screen).into_owned(),
             egui::FontId::proportional(ui::SMALL_PT),
             theme::text::dim(),
         );
@@ -1141,6 +1158,65 @@ mod tests {
         assert_eq!(
             (req.path.as_str(), req.query.as_str(), req.agent.as_str()),
             ("/t/events", "id=a", "X")
+        );
+    }
+
+    /// In private mode a phone's row draws the screen it reports masked, as the
+    /// player's own card does.
+    /// flip: `screen_shown` passing the reported name through → fails at "masked".
+    #[test]
+    fn a_phone_row_masks_its_screen_in_private_mode() {
+        use mastik_core::kurbo::Size;
+        use mastik_core::{IdSource, NodeKind, Operation, Transaction};
+        let mut ids = IdSource::new(0x9A0);
+        let root = ids.mint();
+        let frame = ids.mint();
+        let mut doc = Document::new(root);
+        doc.apply(&Transaction(vec![Operation::CreateNode {
+            id: frame,
+            parent: root,
+            index: 0,
+            kind: NodeKind::Artboard {
+                size: Size::new(400.0, 800.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: Some("Zqx pricing".into()),
+        }]))
+        .expect("a screen");
+        let phone = Phone {
+            id: "p1".into(),
+            name: "Android · Chrome".into(),
+            screen: "Zqx pricing".into(),
+            live: true,
+            seen: Instant::now(),
+        };
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let drawn = || {
+            let out = ctx.run_ui(Default::default(), |ui| {
+                phone_row(ui, 320.0, ui::MENU_ROW_H, &phone, &doc);
+            });
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(
+            drawn().iter().any(|t| t == "Zqx pricing"),
+            "control: the name"
+        );
+        crate::private::set(true);
+        let masked = drawn();
+        crate::private::set(false);
+        assert!(
+            !masked.iter().any(|t| t.contains("Zqx"))
+                && masked.iter().any(|t| t.starts_with("Frame")),
+            "masked: {masked:?}"
         );
     }
 }
