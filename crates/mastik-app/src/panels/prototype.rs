@@ -120,10 +120,12 @@ pub(crate) struct ActionDrag {
 /// What a typed field of prototype mode is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum DraftKey {
-    /// A conditional's branch condition, *Set variable*'s value (branch 0), or a
-    /// row action's *Where* (`usize::MAX`). A branch's removal drops its action's
-    /// draft, which would otherwise move to the branch taking its place.
+    /// *Set variable*'s value (0), or a row action's *Where* (`usize::MAX`).
     Expr(ItemId, usize),
+    /// A conditional's branch condition, by its action and [`branch_mark`]: not
+    /// by place, so a branch removed, restored or reordered never hands its
+    /// draft to another.
+    Branch(ItemId, u64),
     /// A row action's cell, by its column.
     Cell(ItemId, mastik_core::chart::ColumnId),
     /// *Open link*'s address.
@@ -1461,6 +1463,18 @@ fn row_short(row: &WhichRow) -> &'static str {
         WhichRow::Opened => "Opened row",
         WhichRow::FirstWhere { .. } => "First where…",
     }
+}
+
+/// Branch `i` of `branches` told apart from the others without its place: its
+/// stored condition, and which of the branches with that condition it is.
+fn branch_mark(branches: &[Branch], i: usize) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let when = &branches[i].when;
+    let nth = branches[..i].iter().filter(|b| b.when == *when).count();
+    let mut h = rustc_hash::FxHasher::default();
+    when.0.hash(&mut h);
+    nth.hash(&mut h);
+    h.finish()
 }
 
 /// Why variable `v` is shown disabled in a dropdown picking `current`:
@@ -5358,7 +5372,7 @@ impl MastikApp {
                             };
                             if let Some(e) = self.expr_field(
                                 ui,
-                                DraftKey::Expr(k.id, i),
+                                DraftKey::Branch(k.id, branch_mark(branches, i)),
                                 &b.when,
                                 fw,
                                 ExprWant::Kind(Some(VarKind::Boolean)),
@@ -5380,14 +5394,6 @@ impl MastikApp {
                 if let Some(i) = drop {
                     next_branches.remove(i);
                     changed = true;
-                    if self
-                        .proto
-                        .draft
-                        .as_ref()
-                        .is_some_and(|d| matches!(d.key, DraftKey::Expr(a, _) if a == k.id))
-                    {
-                        self.proto.draft = None;
-                    }
                 }
                 if crate::settings::text_button(ui, "Add else if", FieldButton::Off)
                     .on_hover_text("Add a branch tried when the ones above are not")
@@ -10315,10 +10321,10 @@ mod tests {
         );
     }
 
-    /// A refused branch condition does not move to the branch that takes its place
-    /// when a branch above it is removed.
-    /// flip: the Conditional arm not dropping its draft on a branch's removal →
-    /// fails at "not moved".
+    /// A refused branch condition stays with its branch when a branch above it
+    /// is removed and when the removal is undone, never moving to another.
+    /// flip: `branch_mark` answering the branch's place → fails at "the third
+    /// keeps its own".
     #[test]
     fn a_refused_branch_draft_stays_with_its_branch() {
         let ctx = egui::Context::default();
@@ -10337,10 +10343,9 @@ mod tests {
         );
         f.app.session.selection.set_one(f.add);
         f.app.proto.open = Some(open);
-        f.app.proto.draft = Some(
-            ui::Draft::new(&ctx, DraftKey::Expr(open.action, 1), "zz(".into())
-                .refuse("Not read".into()),
-        );
+        let marked = [branch("1 == 1"), branch("2 == 2"), branch("3 == 3")];
+        let key = DraftKey::Branch(open.action, branch_mark(&marked, 1));
+        f.app.proto.draft = Some(ui::Draft::new(&ctx, key, "zz(".into()).refuse("Not read".into()));
         let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
             let input = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -10399,7 +10404,21 @@ mod tests {
             panic!("fixture: the conditional");
         };
         assert_eq!(branches.len(), 2, "fixture: the first branch removed");
-        assert!(at(&out, "zz(").is_empty(), "not moved");
+        assert_eq!(at(&out, "zz(").len(), 1, "it stays with its branch");
+        assert_eq!(at(&out, "3 == 3").len(), 1, "the third keeps its own");
+
+        // Undo brings the first branch back: the draft stays where it was.
+        assert!(f.app.session.undo(), "fixture: undone");
+        let mut out = frame(&mut f.app, vec![]);
+        for _ in 0..3 {
+            out = frame(&mut f.app, vec![]);
+        }
+        assert_eq!(at(&out, "zz(").len(), 1, "still with its branch");
+        assert_eq!(
+            (at(&out, "1 == 1").len(), at(&out, "3 == 3").len()),
+            (1, 1),
+            "the others keep their own"
+        );
     }
 
     /// An *Add row* whose table is gone says the table is missing, not that it
