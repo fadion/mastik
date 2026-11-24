@@ -360,7 +360,7 @@ impl Player {
                 if !trigger.is_a_persons_act() {
                     return;
                 }
-                self.run_script(holder, k.id, *script);
+                self.run_script(holder, k.id, *script, undo);
             }
             Action::AddRow { table, at, cells } => self.add_row(holder, k.id, *table, *at, cells),
             Action::EditRow { table, row, cells } => {

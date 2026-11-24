@@ -58,6 +58,26 @@ pub trait Host {
     /// Commit `tx` now (the host propagates what components owe and applies); later
     /// reads see it.
     fn commit(&mut self, tx: mastik_core::Transaction) -> Result<(), String>;
+    /// The play state a playing prototype's *Run script* reaches as `play`;
+    /// `None` anywhere else, where `play` raises.
+    fn play(&mut self) -> Option<&mut dyn Play> {
+        None
+    }
+}
+
+/// What `play` reaches in a script a playing prototype runs. A variable is
+/// named as an expression names it; a value is a number, a string, a boolean,
+/// or a colour as `"#rrggbb"`.
+pub trait Play {
+    /// What variable `name` reads where the reaction fired, its play value first.
+    fn var(&self, name: &str) -> Result<serde_json::Value, String>;
+    /// Give variable `name` the play value `value`, as *Set variable* does.
+    fn set_var(&mut self, name: &str, value: serde_json::Value) -> Result<(), String>;
+    /// The cells of the row the reaction fired in, by column, when it fired
+    /// inside a list over a table.
+    fn row(&self) -> Option<Vec<(String, String)>>;
+    /// Show the frame `frame` names once the run ends.
+    fn go(&mut self, frame: &str) -> Result<(), String>;
 }
 
 /// What a run sees besides the document: the selection, the leap labels bound

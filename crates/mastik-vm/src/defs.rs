@@ -56,7 +56,12 @@ const API_GLOBALS: &[&str] = &[
     "percent",
     "random",
     "tables",
+    "play",
 ];
+
+/// `play`'s Luau type, for the definitions and the hover.
+pub(crate) const PLAY_TYPE: &str =
+    "{ vars: { [string]: any }, row: { [string]: string }?, go: (frame: string) -> () }";
 
 /// Whether lexeme `i` of `lexemes` is one of Mastik's names.
 fn is_api(src: &str, lexemes: &[lex::Lexeme], i: usize) -> bool {
@@ -219,6 +224,7 @@ pub fn definitions() -> String {
             "parent" | "prev" | "next" => "Layers?",
             "param" => "{ [string]: any }",
             "tables" => "{ [string]: any }",
+            "play" => PLAY_TYPE,
             _ => continue,
         };
         comment(&mut out, "", doc);

@@ -1157,7 +1157,9 @@ impl Player {
         }
     }
 
-    fn changed(&mut self, var: VarId) {
+    /// What follows a change to what `var` reads: inputs showing it, lists
+    /// filtering on it, and *variable changes* reactions in the shown frames.
+    pub(crate) fn changed(&mut self, var: VarId) {
         self.sync_inputs(var);
         self.refilter(Some(var));
         let mut fire = Vec::new();

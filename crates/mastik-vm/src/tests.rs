@@ -2455,6 +2455,30 @@ fn prototype_properties_read_as_their_verbs_take_them() {
     assert_eq!(out.copied.as_deref(), Some("1"));
 }
 
+/// `play` is bound only where the host has play state: elsewhere it raises at
+/// its line. Its members and, after `play.vars.`, the variables complete.
+/// flip: the run binding `play` without asking `Host::play` → fails at "raises
+/// outside play".
+#[test]
+fn play_is_there_only_in_play_and_completes() {
+    let mut h = TestHost::new();
+    h.make("add_variable", json!({ "kind": "number", "name": "Count" }));
+    let labels = FxHashMap::default();
+    let e = env(&[], &labels);
+    let err = run_script(&mut h, &e, "local n = 1\nreturn play.vars.Count").unwrap_err();
+    assert!(
+        err.message.contains("playing prototype"),
+        "raises outside play: {}",
+        err.message
+    );
+    assert_eq!(err.line, Some(2));
+    let first = |c: Completion| c.rows.first().map(|r| r.label.clone());
+    let c = complete_script(&h.doc, h.page, "print(play.v", 12);
+    assert_eq!(first(c).as_deref(), Some("vars"));
+    let c = complete_script(&h.doc, h.page, "print(play.vars.Co", 18);
+    assert_eq!(first(c).as_deref(), Some("Count"));
+}
+
 /// A run that fails part-way writes no table, and a write names what is wrong.
 #[test]
 fn tables_refuses_and_a_failed_run_writes_nothing() {

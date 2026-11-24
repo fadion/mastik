@@ -409,8 +409,9 @@ fn verb_argument(doc: &Document, line: &str, start: usize, word: &str) -> Option
 
 /// Completion for a whole script with the cursor at byte `cursor`, as the
 /// editor offers it: no rows inside a string or a comment, or where a new name
-/// is being declared; after `.` a property, a header input after `param.` and a
-/// member after a library's name; after `:` a method; else the script's own
+/// is being declared; after `.` a property, a header input after `param.`, a
+/// member after a library's name or `play.`, and a variable after `play.vars.`;
+/// after `:` a method; else the script's own
 /// names, the language's, the verbs, Luau's and the page's layers. No leap
 /// labels, which last a session, and no verb sugar, which is the bar's.
 pub fn complete_script(doc: &Document, page: NodeId, source: &str, cursor: usize) -> Completion {
@@ -504,6 +505,22 @@ pub fn complete_script(doc: &Document, page: NodeId, source: &str, cursor: usize
             )
         }
         Some(".") if owner == Some("tables") => table_names(doc, word),
+        Some(".") if owner == Some("play") => rank(
+            Section::Names,
+            word,
+            crate::run::play::MEMBERS
+                .iter()
+                .map(|(n, d)| (*n, (*d).to_owned())),
+        ),
+        Some(".")
+            if owner == Some("vars")
+                && before
+                    .len()
+                    .checked_sub(4)
+                    .is_some_and(|i| text(before[i]) == "play") =>
+        {
+            variable_names(doc, word)
+        }
         Some(".") if owner.is_some_and(|o| crate::run::STDLIB.contains(&o)) => {
             let lib = owner.unwrap_or_default();
             rank(

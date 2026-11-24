@@ -2330,6 +2330,150 @@ fn a_script_editing_a_table_redraws_the_list_over_it() {
     assert_eq!(rows(&p), 2, "kept through a re-clone");
 }
 
+/// A script reads a variable's play value through `play.vars` and writes one
+/// as *Set variable* does: the write fires *When a variable changes*, and
+/// `play.go` shows its frame once the run ends. A failed run takes its play
+/// values back with the copy.
+///
+/// flip: `run_script_source` not calling `changed` for what the run wrote →
+/// fails at "the change fires"; `run_script_source` not restoring `values` on
+/// failure → fails at "taken back".
+#[cfg(feature = "scripts")]
+#[test]
+fn a_script_reads_and_writes_play_values_and_navigates() {
+    let (mut fx, a, b, button) = two_screens(Transition::INSTANT);
+    let count = fx.var("Count", VarKind::Number, Cell::Number(0.0));
+    let seen = fx.var("Seen", VarKind::Number, Cell::Number(0.0));
+    let (bump, bad) = (fx.ids.mint_script(), fx.ids.mint_script());
+    let script = |id, name: &str, source: &str| Operation::AddScript {
+        script: mastik_core::Script {
+            id,
+            name: name.into(),
+            source: source.into(),
+        },
+        index: 0,
+    };
+    fx.apply(vec![
+        script(
+            bump,
+            "Bump",
+            "play.vars.Count = play.vars.Count + 1\nprint(play.vars.Count)\nplay.go(\"B\")",
+        ),
+        script(bad, "Bad", "play.vars.Count = 100\nerror(\"boom\")"),
+        Operation::SetReactions {
+            id: button,
+            reactions: vec![],
+        },
+    ]);
+    fx.on(
+        button,
+        Trigger::Click,
+        vec![Action::RunScript { script: bump }],
+    );
+    let other = fx.rect(a, "Other", 100.0, 10.0, 40.0, 40.0);
+    fx.on(
+        other,
+        Trigger::Click,
+        vec![Action::RunScript { script: bad }],
+    );
+    let watcher = fx.rect(a, "Watcher", 150.0, 60.0, 10.0, 10.0);
+    fx.on(
+        watcher,
+        Trigger::VariableChanges { var: count },
+        vec![Action::SetVariable {
+            var: seen,
+            change: VarChange::Increment { by: 1.0 },
+        }],
+    );
+    let mut p = fx.play(a);
+    p.set_value(count, Value::Number(5.0)).unwrap();
+    assert_eq!(
+        number(&p, seen),
+        1.0,
+        "fixture: the state card's write fires"
+    );
+
+    click(&mut p, 110.0, 20.0);
+    assert!(matches!(
+        p.take_notices().as_slice(),
+        [Notice::Script { .. }]
+    ));
+    assert_eq!(number(&p, count), 5.0, "taken back");
+    assert_eq!(number(&p, seen), 1.0, "a failed run fires nothing");
+
+    click(&mut p, 20.0, 20.0);
+    assert!(p.take_notices().is_empty());
+    assert_eq!(
+        p.log().last().map(String::as_str),
+        Some("6"),
+        "the play value read"
+    );
+    assert_eq!(number(&p, count), 6.0, "written as a play value");
+    assert_eq!(number(&p, seen), 2.0, "the change fires");
+    assert_eq!(p.screen(), b, "navigated once the run ended");
+    assert_eq!(p.history(), vec![a]);
+}
+
+/// A script fired inside a list's row reads that row through `play.row`, which
+/// is nil outside any row.
+///
+/// flip: `Player::row_cells` reading the table's first row for every copy →
+/// fails at "the second row".
+#[cfg(feature = "scripts")]
+#[test]
+fn a_script_in_a_row_reads_its_row() {
+    let (mut fx, a, item, _) = cart(&[["Shirt", "1"], ["Socks", "3"]]);
+    let picked = fx.var("Picked", VarKind::String, Cell::String(String::new()));
+    let pick = fx.ids.mint_script();
+    fx.apply(vec![Operation::AddScript {
+        script: mastik_core::Script {
+            id: pick,
+            name: "Pick".into(),
+            source: "play.vars.Picked = play.row.Name .. \" x\" .. play.row.Qty".into(),
+        },
+        index: 0,
+    }]);
+    fx.on(
+        item,
+        Trigger::Click,
+        vec![Action::RunScript { script: pick }],
+    );
+    // The rows made again, so each copy carries the reaction.
+    let l = fx.doc.get(item).unwrap().parent().unwrap();
+    mastik_core::list::regenerate_outside_history(&mut fx.doc, &[l]);
+    let mut p = fx.play(a);
+    // Rows at y 10 and 48.
+    click(&mut p, 30.0, 60.0);
+    assert!(p.take_notices().is_empty());
+    assert_eq!(
+        p.doc.resolve_var(p.screen(), picked),
+        Some(Value::String("Socks x3".into())),
+        "the second row"
+    );
+    let outside = fx.ids.mint_script();
+    fx.apply(vec![Operation::AddScript {
+        script: mastik_core::Script {
+            id: outside,
+            name: "Outside".into(),
+            source: "print(play.row == nil)".into(),
+        },
+        index: 0,
+    }]);
+    let button = fx.rect(a, "Button", 150.0, 350.0, 40.0, 40.0);
+    fx.on(
+        button,
+        Trigger::Click,
+        vec![Action::RunScript { script: outside }],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 160.0, 360.0);
+    assert_eq!(
+        p.log().last().map(String::as_str),
+        Some("true"),
+        "no row outside a list"
+    );
+}
+
 // ── Live update ─────────────────────────────────────────────────────────────
 
 /// An edit the copy takes keeps play where it is; one it refuses re-clones and

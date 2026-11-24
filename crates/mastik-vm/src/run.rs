@@ -38,6 +38,7 @@ use serde_json::{Map, json};
 use crate::props::{self, PropType, Val};
 use crate::{ErrorKind, Host, Outcome, VmError, describe, format_number};
 
+pub(crate) mod play;
 mod tables;
 
 /// How long, how many interrupt steps and how much memory an evaluation may take.
@@ -644,6 +645,10 @@ pub(crate) const NAMES: &[(&str, &str)] = &[
         "tables",
         "The document's tables by name: `tables.People[3].Name`, `:add`, `:set`, `:remove`",
     ),
+    (
+        "play",
+        "In a script a playing prototype runs: `play.vars.Count` reads and writes a play value, `play.row.Name` the row it fired in, `play.go(\"Frame\")` shows a frame",
+    ),
     ("percent", "`percent(50)` is the size `50%`"),
     (
         "random",
@@ -1120,6 +1125,7 @@ pub(crate) fn run(
             let percent = lua.create_function(|lua, n: f64| lua.create_any_userdata(Percent(n)))?;
             let params = params_table(&lua, scope, env)?;
             let tables = tables::install(&lua, scope, state)?;
+            let play = play::install(&lua, scope, state)?;
 
             let cache = lua.create_table()?;
             let env_meta = lua.create_table()?;
@@ -1133,6 +1139,18 @@ pub(crate) fn run(
                     if name == "tables" {
                         cache.raw_set("tables", tables.clone())?;
                         return Ok(Value::Table(tables.clone()));
+                    }
+                    if name == "play" {
+                        if st.borrow_mut().host.play().is_none() {
+                            return Err(raise_at(
+                                lua,
+                                "`play` is there only in a script a playing prototype runs",
+                                Some("play"),
+                                None,
+                            ));
+                        }
+                        cache.raw_set("play", play.clone())?;
+                        return Ok(Value::Table(play.clone()));
                     }
                     let (v, keep) =
                         resolve(lua, st, env, &name, &call_verb, &print, &percent, &params)?;

@@ -446,6 +446,7 @@ fn name_type(name: &str) -> Option<&'static str> {
         "sel" | "selection" | "children" => Some("Layers"),
         "parent" | "prev" | "next" => Some("Layers?"),
         "random" => Some("(seed: number | string) -> Random"),
+        "play" => Some(crate::defs::PLAY_TYPE),
         _ => None,
     }
 }

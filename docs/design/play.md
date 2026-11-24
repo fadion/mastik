@@ -224,10 +224,23 @@ out both ends.
 - **Open URL** asks the shell (`Request::OpenUrl`) for `http` and `https` addresses only.
 - **Run script** runs the document script through `mastik-vm` on the copy, under a person's act
   only (the door's rule, checked again). The selection is empty, no labels, no input form — a
-  script whose header asks for input is not run, with a notice — and `print` goes to the log. It
-  runs under `PLAY_BUDGET`, steps and memory with no clock, so the app, the exported page and a
-  take's replay stop a runaway at the same step. The
-  copy and its resolve are snapshotted first and put back whole if the run fails. A run that
+  script whose header asks for input is not run, with a notice — and `print` goes to the log.
+  The run's host answers `Host::play`, so the script reaches the play state as `play`
+  (`script.rs`, `PlayHost`): `play.vars.Name` reads what the variable reads at the reaction's
+  layer, its play value first, and `play.vars.Name = v` gives it a play value as *Set variable*
+  does, a variable named as an expression names it and a value of another kind refused at its
+  line; the write is seen by the run's later reads at once. Once the run ends, each variable it
+  wrote whose reading changed has *Set variable*'s follow-up (`Player::changed`: inputs, filters,
+  *When a variable changes*), and a *while* trigger's end puts its value back (`Undo::Value`).
+  `play.row` is the row the reaction fired in, its cells by column name, when the holder sits in
+  a list over a table (`list::row_at`, as *This row* finds it), read-only and nil elsewhere.
+  `play.go("Frame")` names a top-level frame of the current page (or a frame by id), and the
+  player navigates there after the run with the page's transition, as *Navigate* would, the last
+  call winning. The exported page's scripts player runs the same `Player`, so it reaches the same
+  `play`. A run goes under `PLAY_BUDGET`, steps and memory with no clock, so the app, the
+  exported page and a take's replay stop a runaway at the same step. The copy, its resolve and
+  the play values are snapshotted first and put back whole if the run fails, which then fires no
+  change and navigates nowhere. A run that
   wrote a table ends with `Player::follow_tables` over the tables it wrote: every chart over one
   brought onto its table, every list over one made again on the copy, as the editor follows a
   table edit, and each list's template hidden or shown as it now draws rows or none (`lists.md`,

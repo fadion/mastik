@@ -99,7 +99,9 @@ The environment's `__index` (`run::resolve`) answers an unknown name in this ord
 5. `print` (to the bar's result or the editor's output), `percent`, `random` (§8), `math`
    without `random` and `randomseed`, `table` without the deprecated `foreach`, `foreachi` and
    `getn`, `param` (a script's inputs, §10), `tables` (the document's tables, `lists.md`
-   *Verbs*; answered before `run::resolve`, ahead of every name here), and the allowlist `string`, `ipairs`,
+   *Verbs*; answered before `run::resolve`, ahead of every name here), `play` (likewise, and only
+   in a script a playing prototype runs, `play.md` *Run script*; anywhere else it raises at its
+   line, `Host::play` being `None`), and the allowlist `string`, `ipairs`,
    `pairs`, `select`, `tonumber`, `tostring`, `type`, `assert`, `error`. A name off the allowlist
    (`os`, `debug`, `require`, `load`, `pcall`, `setmetatable`…) is an unknown name.
 6. **A layer name** on the current page, matched exactly. Two or more raise, naming the count and
@@ -504,7 +506,8 @@ hung `ui::MENU_GAP` under the word being completed (over it with no room below),
 rows (`command::completion_rows`). It offers the script's own names (*This script*: its `local`s,
 functions, parameters and loop variables, and after `param.` the header's inputs), the language's
 names, the verbs, *Luau* (the keywords and the permitted library, and a library's members after
-`math.`, `string.` or `table.`), and the page's layers; properties after `.` and methods after `:`.
+`math.`, `string.` or `table.`, `play`'s members after `play.` and the variables after
+`play.vars.`), and the page's layers; properties after `.` and methods after `:`.
 A row's side note is its one-line doc; the library's members' and the permitted globals' come from
 `run::LIB_DOCS`, a line and a signature for each `LIBRARY` member and `STDLIB` function, held to
 those lists by `every_library_member_has_a_help_line`. Inside a choice parameter's quotes it offers
