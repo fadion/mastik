@@ -46,6 +46,10 @@ pub struct Row {
     /// what it most likely meant.
     pub dim: bool,
     pub suggestion: Option<String>,
+    /// What a pick writes over the range and the `.` before it, in place of
+    /// `label`: a member name Luau cannot spell after a dot, as
+    /// `["Pending orders"]`.
+    pub member: Option<String>,
 }
 
 /// What to offer at a cursor: the range a pick replaces, and the rows.
@@ -120,6 +124,19 @@ fn table_names(doc: &Document, word: &str) -> Vec<Row> {
             (d.name.as_str(), size)
         }),
     )
+}
+
+/// `rows` as names after a `.` (`tables.`, `play.vars.`): one Luau cannot spell
+/// there is written bracketed and quoted over the dot ([`Row::member`]).
+fn members(rows: Vec<Row>) -> Vec<Row> {
+    rows.into_iter()
+        .map(|mut r| {
+            if !crate::lex::is_name(&r.label) {
+                r.member = Some(format!("[{}]", crate::quoted(&r.label)));
+            }
+            r
+        })
+        .collect()
 }
 
 /// `n` and `one`, plural past one: "12 rows", "1 column".
@@ -242,6 +259,7 @@ fn ranked<'a>(
                     matched,
                     dim: false,
                     suggestion: None,
+                    member: None,
                 },
             ))
         })
@@ -284,7 +302,7 @@ pub fn complete(
     }
     let before = line[..start].chars().next_back();
     let rows = match before {
-        Some('.') if word_before(&line[..start - 1]) == "tables" => table_names(doc, word),
+        Some('.') if word_before(&line[..start - 1]) == "tables" => members(table_names(doc, word)),
         Some('.') if !line[..start].ends_with("..") => properties(word),
         Some(':') => rank(
             Section::Properties,
@@ -358,6 +376,7 @@ fn properties(word: &str) -> Vec<Row> {
                 matched: Vec::new(),
                 dim: true,
                 suggestion: Some(meant),
+                member: None,
             },
         );
     }
@@ -508,7 +527,7 @@ pub fn complete_script(doc: &Document, page: NodeId, source: &str, cursor: usize
                     .map(|i| (i.name.as_str(), format!("input · {}", i.ty.spelled()))),
             )
         }
-        Some(".") if owner == Some("tables") => table_names(doc, word),
+        Some(".") if owner == Some("tables") => members(table_names(doc, word)),
         Some(".") if owner == Some("play") => rank(
             Section::Names,
             word,
@@ -523,7 +542,7 @@ pub fn complete_script(doc: &Document, page: NodeId, source: &str, cursor: usize
                     .checked_sub(4)
                     .is_some_and(|i| text(before[i]) == "play") =>
         {
-            variable_names(doc, word)
+            members(variable_names(doc, word))
         }
         Some(".") if owner.is_some_and(|o| crate::run::STDLIB.contains(&o)) => {
             let lib = owner.unwrap_or_default();

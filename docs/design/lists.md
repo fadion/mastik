@@ -499,7 +499,9 @@ MCP's Phase 3 (`mcp.md`), each acting as its door in the app.
   table the run has already written through `tables` is refused, since the run's end would write
   over it. A live read writes nothing, and a linked table refuses the first write.
 - **Command Mode completes table names** after `tables.`, in the bar and the script editor, and
-  for a verb's `table` argument, each with its size (*12 rows · 4 columns*).
+  for a verb's `table` argument, each with its size (*12 rows · 4 columns*). After `tables.` (and
+  `play.vars.`), a name Luau cannot spell after a dot, *Pending orders*, is picked as
+  `tables["Pending orders"]`, written over the dot (`Row::member`).
 
 ## On the canvas and in the layers tree
 

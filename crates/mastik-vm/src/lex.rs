@@ -44,6 +44,11 @@ pub(crate) fn ident_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
+/// Whether Luau can spell `s` as a bare name: after a `.`, or as a global.
+pub(crate) fn is_name(s: &str) -> bool {
+    s.starts_with(ident_start) && s.chars().all(ident_char) && !KEYWORDS.contains(&s)
+}
+
 /// The lexemes of `src`, whitespace left out.
 pub(crate) fn lex(src: &str) -> Vec<Lexeme> {
     let b = src.as_bytes();

@@ -2939,6 +2939,7 @@ pub(crate) mod tests {
             matched: Vec::new(),
             dim: false,
             suggestion: None,
+            member: None,
         };
         let out = ctx.run_ui(Default::default(), |ui| {
             ui.set_width(360.0);

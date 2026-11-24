@@ -100,11 +100,20 @@ impl Suggester {
         i: usize,
     ) -> Option<usize> {
         let row = c.rows.get(i)?;
-        let r = c.replace.clone();
+        let mut r = c.replace.clone();
         if r.end > text.len() {
             return None;
         }
-        let insert = insert_of(row);
+        // A member written bracketed takes the place of its dot too.
+        let insert = match &row.member {
+            Some(m) => {
+                if text.get(..r.start).is_some_and(|t| t.ends_with('.')) {
+                    r.start -= 1;
+                }
+                m.as_str()
+            }
+            None => insert_of(row),
+        };
         text.replace_range(r.clone(), insert);
         self.highlight = 0;
         self.state = Suggest::Off;
@@ -147,5 +156,54 @@ fn insert_of(row: &mastik_vm::Row) -> &str {
     match (&row.suggestion, row.dim) {
         (Some(s), true) => s,
         _ => &row.label,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A table whose name Luau cannot spell after a dot is picked bracketed over
+    /// the dot; a plain name is picked as it is.
+    /// flip: `complete`'s `members` setting no `member` → fails at "bracketed
+    /// over the dot" with the bare name; `accept` leaving the dot → the same
+    /// assertion, with `tables.[…]`.
+    #[test]
+    fn a_spaced_table_name_is_picked_bracketed() {
+        let mut ids = mastik_core::IdSource::new(0x7E5B);
+        let page = ids.mint();
+        let mut doc = mastik_core::Document::new(page);
+        for name in ["Pending orders", "People"] {
+            let set = mastik_core::list::DataSet {
+                id: ids.mint_data_set(),
+                name: name.into(),
+                table: Default::default(),
+                source: None,
+                pictures: Vec::new(),
+            };
+            let id = set.id;
+            doc.apply(&mastik_core::Transaction(vec![
+                mastik_core::Operation::SetDataSet {
+                    id,
+                    set: Some(Box::new(set)),
+                },
+            ]))
+            .expect("a table");
+        }
+        let source = "local t = tables.Pe";
+        let c = mastik_vm::complete_script(&doc, page, source, source.len());
+        let pick = |label: &str| {
+            let i = c.rows.iter().position(|r| r.label == label).unwrap();
+            let mut text = source.to_owned();
+            let at = Suggester::default().accept(&mut text, &c, i);
+            (text, at)
+        };
+        let (text, at) = pick("Pending orders");
+        assert_eq!(
+            text, "local t = tables[\"Pending orders\"]",
+            "bracketed over the dot"
+        );
+        assert_eq!(at, Some(text.len()), "the caret after it");
+        assert_eq!(pick("People").0, "local t = tables.People");
     }
 }

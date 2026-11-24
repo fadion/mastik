@@ -264,11 +264,7 @@ pub(crate) fn layer_names(doc: &Document, page: NodeId) -> Vec<String> {
         let Some(name) = doc.get(id).map(|n| n.name()) else {
             continue;
         };
-        if name.starts_with(lex::ident_start)
-            && name.chars().all(lex::ident_char)
-            && !lex::KEYWORDS.contains(&name)
-            && !out.iter().any(|n| n == name)
-        {
+        if lex::is_name(name) && !out.iter().any(|n| n == name) {
             out.push(name.to_owned());
         }
     }
