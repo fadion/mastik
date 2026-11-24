@@ -439,6 +439,18 @@ impl List {
         }
     }
 
+    /// This list without the fills, filter tests and sort keys on a column
+    /// `table` lacks. A deleted column's id can be minted again for a new
+    /// column, which none of them should read; until then each reads nothing.
+    pub fn on_columns_of(&self, table: &Table) -> List {
+        let has = |c: ColumnId| table.column(c).is_some();
+        let mut list = self.clone();
+        list.fill.retain(|f| has(f.column));
+        list.filter.tests.retain(|t| has(t.column));
+        list.sort.retain(|k| has(k.column));
+        list
+    }
+
     /// Whether this description may be stored on `id`.
     pub fn validate(&self, id: NodeId) -> Result<(), ListRule> {
         let mut seen = FxHashSet::default();
@@ -653,10 +665,50 @@ pub fn lists(doc: &Document) -> Vec<NodeId> {
     out
 }
 
+/// The `SetList` ops that follow variant set `set`'s property `old` being
+/// renamed to `new`, or deleted when `new` is `None`: a variant fill names its
+/// property, so each list whose template is an instance of the set has its
+/// fill on `old` renamed or dropped.
+pub fn variant_prop_ops(
+    doc: &Document,
+    set: NodeId,
+    old: &str,
+    new: Option<&str>,
+) -> Vec<Operation> {
+    let mut ops = Vec::new();
+    for id in lists(doc) {
+        let Some(list) = doc.get(id).and_then(|n| n.list()) else {
+            continue;
+        };
+        let in_set = template(doc, id)
+            .and_then(|t| crate::component::main_of(doc, t))
+            .and_then(|m| crate::variant::set_of(doc, m))
+            == Some(set);
+        let on_old = |f: &Fill| matches!(&f.target, Target::Variant(n) if n == old);
+        if !in_set || !list.fill.iter().any(on_old) {
+            continue;
+        }
+        let mut next = list.clone();
+        match new {
+            Some(new) => next.fill.iter_mut().filter(|f| on_old(f)).for_each(|f| {
+                f.target = Target::Variant(new.to_owned());
+            }),
+            None => next.fill.retain(|f| !on_old(f)),
+        }
+        ops.push(Operation::SetList {
+            id,
+            list: Some(Box::new(next)),
+        });
+    }
+    ops
+}
+
 /// The lists an applied transaction `tx` left out of date: its description or
 /// its data set written, or a layer of its template changed (`dirty`, the
 /// transaction's outcome) — a main's edit reaches the template through the
-/// propagation, so it counts too.
+/// propagation, so it counts too. Also a list filling a variant property whose
+/// template's set gained a variant or changed its properties, and a list whose
+/// filter reads a variable moved, itself or an ancestor, into another frame.
 pub fn touched(doc: &Document, tx: &Transaction, dirty: &DirtySet) -> Vec<NodeId> {
     let all = lists(doc);
     if all.is_empty() {
@@ -713,6 +765,43 @@ pub fn touched(doc: &Document, tx: &Transaction, dirty: &DirtySet) -> Vec<NodeId
                 break;
             }
             at = p;
+        }
+    }
+    // A variant set given a variant, a value or a property: a row naming it
+    // may switch, though no layer under the list changed. And a layer moved:
+    // a list under it may now be in another mode.
+    let variant_sets: FxHashSet<NodeId> = dirty
+        .0
+        .iter()
+        .flat_map(|d| [Some(*d), doc.get(*d).and_then(|n| n.parent)])
+        .flatten()
+        .collect();
+    let moved: FxHashSet<NodeId> =
+        tx.0.iter()
+            .filter_map(|op| match op {
+                Operation::Reparent { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+    for l in &all {
+        let Some(x) = doc.get(*l).and_then(|n| n.list()) else {
+            continue;
+        };
+        let by_variant = x
+            .fill
+            .iter()
+            .any(|f| matches!(f.target, Target::Variant(_)))
+            && template(doc, *l)
+                .and_then(|t| crate::component::main_of(doc, t))
+                .and_then(|m| crate::variant::set_of(doc, m))
+                .is_some_and(|s| variant_sets.contains(&s));
+        let by_mode = !moved.is_empty()
+            && !x.rows.is_one_row()
+            && !x.filter_vars().is_empty()
+            && std::iter::successors(Some(*l), |a| doc.get(*a).and_then(|n| n.parent))
+                .any(|a| moved.contains(&a));
+        if by_variant || by_mode {
+            out.insert(*l);
         }
     }
     let mut out: Vec<NodeId> = out
@@ -1171,19 +1260,13 @@ pub fn regenerate<E>(
         .collect();
     let (tx, made) = crate::build::insert_subtrees(doc, ids, &placements, kurbo::Vec2::ZERO);
     let mut ops = tx.0;
-    // A fill on a column the set no longer has is dropped here, whichever door
-    // removed the column, so a later column minted under its id fills nothing.
+    // What reads a column the set no longer has is dropped here, whichever door
+    // removed the column, so a later column minted under its id is read by none.
     ops.push(Operation::SetList {
         id,
         list: Some(Box::new(List {
             copies: made.clone(),
-            fill: list
-                .fill
-                .iter()
-                .filter(|f| set.table.column(f.column).is_some())
-                .cloned()
-                .collect(),
-            ..list.clone()
+            ..list.on_columns_of(&set.table)
         })),
     });
     step(doc, ids, ops)?;
@@ -1350,8 +1433,8 @@ pub fn chart_follow_ops(doc: &Document, tx: &Transaction, dirty: &DirtySet) -> V
 
 /// The ops of `tx` that [`regenerate_in_history`] reads beside the dirty set: a
 /// list's description, a data set, a chart's description, and a variable's
-/// value or a mode in force (which a list filter may read), taken before `tx`
-/// moves into the history.
+/// value, a mode in force or a move (which a list filter may read), taken
+/// before `tx` moves into the history.
 pub fn follow_ops(tx: &Transaction) -> Transaction {
     Transaction(
         tx.0.iter()
@@ -1368,6 +1451,7 @@ pub fn follow_ops(tx: &Transaction) -> Transaction {
                         | Operation::SetModes { .. }
                         | Operation::SetQueries { .. }
                         | Operation::SetBreakpoints { .. }
+                        | Operation::Reparent { .. }
                 )
             })
             .cloned()

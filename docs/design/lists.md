@@ -52,7 +52,9 @@ template, the list's description, its data set or a variable its filter reads ch
   Both are described under *Filter and sort*.
 - **`fill: Vec<Fill { target, column }>`** — which column fills which property.
   `Target::Prop(ItemId)` names a text, boolean or image component property of the template's main;
-  `Target::Variant(name)` a variant property of its set. Columns are named by `ColumnId`.
+  `Target::Variant(name)` a variant property of its set; renaming or deleting the property
+  renames or drops the fills naming it in the same step (`list::variant_prop_ops`). Columns are
+  named by `ColumnId`.
 - **`copies`** — the copies the last regeneration made, in the order their rows are drawn; written only by
   `list::regenerate`.
 - **`opened`** — the row an `Opened` list shows: 0 in the document, set on the played copy.
@@ -145,8 +147,10 @@ list's description as it drops a misplaced one.
 - **A value naming no `{…}` is literal text**, so `2024-01` and `12` mean what they say; one naming
   any is an expression in the stored id form (`list::test_value`), and one that does not evaluate
   reads as empty, which passes.
-- **A test whose column the table lacks is kept and passes every row**; the card says so under
-  the test.
+- **A test whose column the table lacks passes every row**, and a sort key on one is skipped; the
+  card says so under the test. The regeneration that follows the column's removal drops both, as
+  it drops fills (`List::on_columns_of`), since a column added later can be minted under the
+  freed id and would otherwise be read in its place.
 - **Sort** compares by `list::sort_order` over `list::cell_order`: a number column by value, text
   ignoring case, empty cells last whichever way it runs; stable, so equal rows keep table order.
   The data window's *Sort ascending* / *descending* sorts by the same function
@@ -174,6 +178,9 @@ list's description as it drops a misplaced one.
   dirtied, a main's edit reaching the template through the propagation included, and, when it
   carries a `SetVariable`, `SetVariableCell`, `RemoveVariable`, `RemoveMode`, `SetModes`,
   `SetQueries` or `SetBreakpoints`, every list not in a one-row mode whose filter reads a variable.
+  Also a list filling a variant property whose template's set it dirtied, itself or a variant
+  (a variant or value added: a row naming it switches), and a list with such a filter that a
+  `Reparent` moved, itself or an ancestor, since the mode in force at its frame may differ.
   A filter checked again when a value it reads changes is a redraw of the list, not a constraint
   (`non-goals.md`, *Constraints or reactivity*).
 - **In the app the rows are made inside the edit's undo step.** `EditorSession::commit_inner`
@@ -201,7 +208,7 @@ list's description as it drops a misplaced one.
   row switched to.
 - **Each step joins the edit's step.** Dropping the join leaves the rows as undo steps of their
   own (`tests/lists.rs · a_list_repeats_its_template_per_row_and_undoes_whole`).
-- **`follow_ops` keeps the variable and mode ops.** `touched` sees only what it is handed, so
+- **`follow_ops` keeps the variable, mode and `Reparent` ops.** `touched` sees only what it is handed, so
   dropping them leaves a filtered list on its old rows after a variable edit
   (`tests/lists.rs · a_filter_follows_the_variable_it_reads`).
 - **A copy is edited only by regeneration.** The canvas picks a copy as its list and the layers
@@ -368,10 +375,12 @@ the window is *Data tables* (below).
   where they are fixed. *Import…* relinks the
   data set (*The linked file*). A linked set's grid is read-only with *Edited in products.csv —
   unlink to edit here*, as a chart's.
-- **Each edit is one step, *Edit table***: a `SetDataSet`, a fill whose column is gone
-  dropped, every list over the set regenerated and every chart over it brought onto the table.
-  `list::regenerate` drops such a fill too, whichever door removed the column, so a column
-  minted later under the freed id fills nothing.
+- **Each edit is one step, *Edit table***: a `SetDataSet`, a fill, filter test or sort key whose
+  column is gone dropped, every list over the set regenerated and every chart over it brought
+  onto the table. `list::regenerate` drops them too, whichever door removed the column, so a
+  column minted later under the freed id is read by none of them. `edit_table` mints an added
+  column past the ids the table had before the call, since its deletes and adds land in one
+  step.
 - **It follows the selection**: selecting another list alone moves it to that list's data set; it
   closes when the data set is gone.
 

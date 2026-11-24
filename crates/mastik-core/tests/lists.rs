@@ -433,14 +433,15 @@ fn a_verb_on_a_copy_is_refused() {
     call(&mut doc, &mut ids, in_template).expect("the template's layer runs");
 }
 
-/// A column named after a variant property switches each row to the variant
-/// its cell names, and a cell naming no variant takes the default variant's
-/// value, however many times the list was made before.
-/// flip: `regenerate` skipping the variant pass → fails at "switches"; an
-/// unmatched cell keeping the captured variant → fails at "the default variant".
-#[test]
-fn a_variant_column_switches_each_row() {
-    let (mut doc, mut ids, page) = blank();
+/// A set of two variants, *Paid* and *Due* of its one property, and a list over
+/// an instance of *Paid* whose column of the property's name reads Due, Paid,
+/// Nope, committed in `history`; answers the mains, the set and the list.
+fn variant_list(
+    doc: &mut Document,
+    ids: &mut IdSource,
+    history: &mut History,
+) -> (Vec<NodeId>, NodeId, NodeId) {
+    let page = doc.first_page();
     let frame = serde_json::to_value(NodeKind::Artboard {
         size: Size::new(100.0, 40.0),
         corner_radii: Default::default(),
@@ -450,31 +451,31 @@ fn a_variant_column_switches_each_row() {
     let mut mains = Vec::new();
     for name in ["Paid", "Due"] {
         let m = run(
-            &mut doc,
-            &mut ids,
+            doc,
+            ids,
             "create_node",
             json!({ "parent": page.to_wire(), "kind": frame, "name": name }),
         )[0];
         run(
-            &mut doc,
-            &mut ids,
+            doc,
+            ids,
             "make_component",
             json!({ "nodes": [m.to_wire()] }),
         );
         mains.push(m);
     }
     let set = run(
-        &mut doc,
-        &mut ids,
+        doc,
+        ids,
         "combine_as_variants",
         json!({ "nodes": mains.iter().map(|m| m.to_wire()).collect::<Vec<_>>() }),
     )[0];
     let prop = doc.get(set).unwrap().set().unwrap().props[0].clone();
     let value_of = |m: NodeId, doc: &Document| doc.get(m).unwrap().variant()[0].clone();
-    let (paid, due) = (value_of(mains[0], &doc), value_of(mains[1], &doc));
+    let (paid, due) = (value_of(mains[0], doc), value_of(mains[1], doc));
     let inst = run(
-        &mut doc,
-        &mut ids,
+        doc,
+        ids,
         "create_instance",
         json!({ "main": mains[0].to_wire(), "parent": page.to_wire(), "x": 400, "y": 0 }),
     )[0];
@@ -491,19 +492,33 @@ fn a_variant_column_switches_each_row() {
         source: None,
         pictures: Vec::new(),
     };
-    let res = Resolved::rebuild(&doc);
-    let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(data)).unwrap();
-    let mut history = History::default();
-    commit(&mut history, &mut doc, &mut ids, tx);
-    let rows: Vec<NodeId> = std::iter::once(inst)
+    let res = Resolved::rebuild(doc);
+    let (tx, l) = list::make(doc, &res, ids, inst, Source::New(data)).unwrap();
+    commit(history, doc, ids, tx);
+    (mains, set, l)
+}
+
+/// The main each row of list `l` is an instance of, the template first.
+fn row_mains(doc: &Document, l: NodeId) -> Vec<Option<NodeId>> {
+    std::iter::once(list::template(doc, l).unwrap())
         .chain(doc.get(l).unwrap().list().unwrap().copies.clone())
-        .collect();
-    let shown: Vec<Option<NodeId>> = rows
-        .iter()
-        .map(|r| mastik_core::component::main_of(&doc, *r))
-        .collect();
+        .map(|r| mastik_core::component::main_of(doc, r))
+        .collect()
+}
+
+/// A column named after a variant property switches each row to the variant
+/// its cell names, and a cell naming no variant takes the default variant's
+/// value, however many times the list was made before.
+/// flip: `regenerate` skipping the variant pass → fails at "switches"; an
+/// unmatched cell keeping the captured variant → fails at "the default variant".
+#[test]
+fn a_variant_column_switches_each_row() {
+    let (mut doc, mut ids, _) = blank();
+    let mut history = History::default();
+    let (mains, set, l) = variant_list(&mut doc, &mut ids, &mut history);
+    let prop = doc.get(set).unwrap().set().unwrap().props[0].clone();
     assert_eq!(
-        shown,
+        row_mains(&doc, l),
         [Some(mains[1]), Some(mains[0]), Some(mains[0])],
         "each row switches to the variant its cell names"
     );
@@ -527,6 +542,79 @@ fn a_variant_column_switches_each_row() {
         Some(mains[0]),
         "the default variant"
     );
+}
+
+/// Run verb `name` and commit it as the app does, the lists it left out of
+/// date made again in the same step; answers what it made.
+fn edit(
+    history: &mut History,
+    doc: &mut Document,
+    ids: &mut IdSource,
+    name: &str,
+    args: Value,
+) -> Vec<NodeId> {
+    let res = Resolved::rebuild(doc);
+    let Done { tx, created, .. } = verbs::call(
+        &mut Ctx {
+            doc,
+            res: &res,
+            ids,
+            images: None,
+            contrast: None,
+        },
+        name,
+        &args,
+    )
+    .unwrap_or_else(|e| panic!("{name}: {e}"));
+    commit(history, doc, ids, tx);
+    created
+}
+
+/// Renaming a variant property renames the list fill naming it, so the rows
+/// keep their variants through the next regeneration.
+/// flip: `rename_property` without `list::variant_prop_ops` → fails at "the
+/// fill follows".
+#[test]
+fn renaming_a_variant_property_keeps_the_list_filling_it() {
+    let (mut doc, mut ids, _) = blank();
+    let mut h = History::default();
+    let (mains, set, l) = variant_list(&mut doc, &mut ids, &mut h);
+    let old = doc.get(set).unwrap().set().unwrap().props[0].name.clone();
+    let args = json!({ "node": set.to_wire(), "property": old, "name": "State" });
+    edit(&mut h, &mut doc, &mut ids, "rename_variant_property", args);
+    let fill = &doc.get(l).unwrap().list().unwrap().fill;
+    assert_eq!(
+        fill[0].target,
+        list::Target::Variant("State".into()),
+        "the fill follows"
+    );
+    regenerate_again(&mut h, &mut doc, &mut ids, l);
+    assert_eq!(
+        row_mains(&doc, l),
+        [Some(mains[1]), Some(mains[0]), Some(mains[0])]
+    );
+}
+
+/// A variant added to the template's set switches the row whose cell names it
+/// in the same step, though no layer under the list changed.
+/// flip: `touched` without its `by_variant` arm → fails at "switches at once".
+#[test]
+fn a_variant_added_to_the_set_switches_its_row_at_once() {
+    let (mut doc, mut ids, _) = blank();
+    let mut h = History::default();
+    let (_, set, l) = variant_list(&mut doc, &mut ids, &mut h);
+    let prop = doc.get(set).unwrap().set().unwrap().props[0].name.clone();
+    let args = json!({ "node": set.to_wire(), "property": prop, "value": "Nope" });
+    edit(&mut h, &mut doc, &mut ids, "add_variant_value", args);
+    let new = edit(
+        &mut h,
+        &mut doc,
+        &mut ids,
+        "add_variant",
+        json!({ "node": set.to_wire() }),
+    )[0];
+    assert_eq!(doc.get(new).unwrap().variant(), ["Nope"], "the fixture");
+    assert_eq!(row_mains(&doc, l)[2], Some(new), "switches at once");
 }
 
 /// A list refuses a layer that is not an instance, and one inside a main.

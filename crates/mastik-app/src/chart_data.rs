@@ -571,7 +571,8 @@ impl MastikApp {
     }
 
     /// Write `table` as data set `set`'s, one undo step *Edit table*: every
-    /// list over it is made again, a fill whose column is gone dropped.
+    /// list over it is made again, a fill, filter test or sort key whose column
+    /// is gone dropped.
     pub(crate) fn commit_data_table(
         &mut self,
         set: mastik_core::list::DataSetId,
@@ -593,16 +594,11 @@ impl MastikApp {
             {
                 self.list_row_moved = Some((l, n, moved));
             }
-            let fill: Vec<_> = x
-                .fill
-                .iter()
-                .filter(|f| table.index_of(f.column).is_some())
-                .cloned()
-                .collect();
-            if fill != x.fill {
+            let kept = x.on_columns_of(&table);
+            if kept != x {
                 ops.push(Operation::SetList {
                     id: l,
-                    list: Some(Box::new(mastik_core::list::List { fill, ..x })),
+                    list: Some(Box::new(kept)),
                 });
             }
         }

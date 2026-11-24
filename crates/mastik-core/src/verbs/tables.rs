@@ -429,7 +429,9 @@ pub(super) fn edit_table(ctx: &mut Ctx<'_>, a: &Args<'_>) -> Result<Done, VerbEr
                 return Err(a.invalid("columns", format!("At most {MAX_COLUMNS} columns")));
             }
             let name = t.free_column_name(name.trim(), None);
-            let id = t.next_column_id();
+            // Past the ids the table had before the call too: a column deleted
+            // in it is still read by the lists until they regenerate.
+            let id = ColumnId(t.next_column_id().0.max(set.table.next_column_id().0));
             t.columns.push(Column { id, name });
             t.rows.iter_mut().for_each(|r| r.push(String::new()));
         }

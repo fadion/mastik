@@ -641,3 +641,75 @@ fn set_chart_data_writes_names_apart() {
     run(&mut h, &mut doc, &mut ids, "set_chart_data", args);
     assert_eq!(column_names(&doc, set), ["A", "A 2"]);
 }
+
+/// A list over People, its `Name` filled from `fill`, filtered on Age at most
+/// 35 and sorted by Age descending; answers the list.
+fn filtered_list(
+    h: &mut History,
+    doc: &mut Document,
+    ids: &mut IdSource,
+    page: NodeId,
+    fill: &str,
+) -> NodeId {
+    let inst = row_instance(h, doc, ids, page);
+    people(
+        h,
+        doc,
+        ids,
+        json!([["Ana", "31"], ["Ben", "40"], ["Cy", "22"]]),
+    );
+    let l = made(
+        h,
+        doc,
+        ids,
+        "make_list",
+        json!({ "node": inst.to_wire(), "table": "People", "fill": { "Name": fill } }),
+    );
+    let args = json!({
+        "node": l.to_wire(),
+        "filter": { "tests": [{ "column": "Age", "op": "at most", "value": "35" }] },
+        "sort": [{ "column": "Age", "descending": true }],
+    });
+    run(h, doc, ids, "set_list", args);
+    l
+}
+
+/// Deleting a column drops the filter tests and sort keys reading it, so a
+/// column added later under the freed id is read by neither.
+/// flip: `List::on_columns_of` keeping the filter tests → fails at "the test
+/// is dropped".
+#[test]
+fn a_deleted_column_takes_its_filter_and_sort_along() {
+    let (mut doc, mut ids, page) = blank();
+    let mut h = History::default();
+    let l = filtered_list(&mut h, &mut doc, &mut ids, page, "Name");
+    assert_eq!(titles(&doc, l), ["Ana", "Cy"]);
+    let args = json!({ "table": "People", "columns": { "delete": ["Age"] } });
+    run(&mut h, &mut doc, &mut ids, "edit_table", args);
+    let args = json!({ "table": "People", "columns": { "add": ["Notes"] } });
+    run(&mut h, &mut doc, &mut ids, "edit_table", args);
+    let list = doc.get(l).unwrap().list().unwrap();
+    assert!(list.filter.tests.is_empty(), "the test is dropped");
+    assert!(list.sort.is_empty(), "the sort key is dropped");
+    assert_eq!(titles(&doc, l), ["Ana", "Ben", "Cy"]);
+}
+
+/// `edit_table` deleting a column and adding one in the same call mints the
+/// new column past the deleted one's id, so the fill on the deleted column is
+/// dropped rather than reading the new one.
+/// flip: `edit_table` minting with `t.next_column_id()` alone → fails at "a
+/// new id".
+#[test]
+fn edit_table_never_hands_a_deleted_id_to_a_column_added_with_it() {
+    let (mut doc, mut ids, page) = blank();
+    let mut h = History::default();
+    let l = filtered_list(&mut h, &mut doc, &mut ids, page, "Age");
+    let set = doc.data_sets()[0].id;
+    let age = doc.data_set(set).unwrap().table.columns[1].id;
+    let args = json!({ "table": "People", "columns": { "delete": ["Age"], "add": ["Notes"] } });
+    run(&mut h, &mut doc, &mut ids, "edit_table", args);
+    let notes = doc.data_set(set).unwrap().table.columns[1].id;
+    assert_ne!(notes, age, "a new id");
+    let list = doc.get(l).unwrap().list().unwrap();
+    assert!(list.fill.is_empty(), "the fill on Age is dropped");
+}

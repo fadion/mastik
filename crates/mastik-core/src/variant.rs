@@ -1202,7 +1202,8 @@ fn fresh(name: &str) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// Rename `set`'s property `prop`. `None` for an empty name or one taken.
+/// Rename `set`'s property `prop`, and the list fills naming it
+/// ([`crate::list::variant_prop_ops`]). `None` for an empty name or one taken.
 pub fn rename_property(
     doc: &Document,
     set: NodeId,
@@ -1221,8 +1222,10 @@ pub fn rename_property(
     if clash {
         return None;
     }
-    next.props.get_mut(prop)?.name = name;
-    Some(edit_set(doc, set, next, |v| v.to_vec()))
+    let old = std::mem::replace(&mut next.props.get_mut(prop)?.name, name.clone());
+    let mut tx = edit_set(doc, set, next, |v| v.to_vec());
+    tx.0.extend(crate::list::variant_prop_ops(doc, set, &old, Some(&name)));
+    Some(tx)
 }
 
 /// Rename value `value` of property `prop`, in the set and in every variant
@@ -1308,21 +1311,24 @@ pub fn next_property_name(set: &VariantSet) -> String {
         .expect("an unbounded range")
 }
 
-/// Remove property `prop` from the set and from every variant. Refused for the
-/// last one: a set with no properties has no way to tell its variants apart.
+/// Remove property `prop` from the set and from every variant, and the list
+/// fills naming it. Refused for the last one: a set with no properties has no
+/// way to tell its variants apart.
 pub fn delete_property(doc: &Document, set: NodeId, prop: usize) -> Option<Transaction> {
     let mut next = doc.get(set)?.set.clone()?;
     if next.props.len() < 2 || prop >= next.props.len() {
         return None;
     }
-    next.props.remove(prop);
-    Some(edit_set(doc, set, next, |v| {
+    let old = next.props.remove(prop).name;
+    let mut tx = edit_set(doc, set, next, |v| {
         let mut v = v.to_vec();
         if prop < v.len() {
             v.remove(prop);
         }
         v
-    }))
+    });
+    tx.0.extend(crate::list::variant_prop_ops(doc, set, &old, None));
+    Some(tx)
 }
 
 /// Move value `from` of property `prop` to position `to`.
