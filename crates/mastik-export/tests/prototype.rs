@@ -534,10 +534,33 @@ fn the_page_calls_only_what_the_player_exports() {
         "measures",
         "rebase",
         "screen_name",
+        "focused",
+        "type_text",
     ] {
         assert!(called.contains(&owed), "the page calls {owed}");
     }
     assert!(html.contains("requestAnimationFrame"), "ticks by frame");
+}
+
+/// A phone's keyboard has an editable element to come up for: the page carries
+/// the hidden textarea and takes text from its input and composition events.
+#[test]
+fn the_page_takes_text_from_a_phones_keyboard() {
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let html = Parts::of(
+        &f.doc,
+        Player {
+            wasm: WASM,
+            glue: GLUE,
+        },
+    )
+    .expect("parts")
+    .html();
+    assert!(html.contains("<textarea id=\"typing\""), "the textarea");
+    for listened in ["\"beforeinput\"", "\"compositionend\"", "typing.focus("] {
+        assert!(html.contains(listened), "the page uses {listened}");
+    }
 }
 
 /// The arguments inside the bracket `s` opens with, split at the commas outside

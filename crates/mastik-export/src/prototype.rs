@@ -783,6 +783,8 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 #screen, #hints { position: absolute; display: block; }
 #screen { background: #fff; touch-action: none; }
 #hints { pointer-events: none; }
+#typing { position: fixed; left: 0; top: 0; width: 1px; height: 1px; padding: 0; border: 0;
+  opacity: 0; resize: none; font-size: 16px; pointer-events: none; }
 #bar { flex: none; display: flex; align-items: center; gap: 6px; height: 40px;
   padding: 0 12px; background: #252527; border-top: 1px solid #333336; }
 #bar[hidden] { display: none; }
@@ -812,6 +814,8 @@ const BODY: &str = "<div id=\"main\"><main id=\"stage\"><div id=\"room\">\
 <canvas id=\"screen\" width=\"1\" height=\"1\"></canvas>\
 <canvas id=\"hints\" width=\"1\" height=\"1\"></canvas></div></main>\
 <aside id=\"inspect\" hidden></aside></div>\n\
+<textarea id=\"typing\" aria-hidden=\"true\" tabindex=\"-1\" autocomplete=\"off\" \
+autocorrect=\"off\" autocapitalize=\"off\" spellcheck=\"false\"></textarea>\n\
 <nav id=\"bar\" hidden><span id=\"name\"></span><select id=\"flows\" hidden \
 aria-label=\"Flow\"></select><button id=\"restart\" type=\"button\">Restart</button>\
 <button id=\"hint-switch\" type=\"button\" aria-pressed=\"false\" hidden>Hotspots</button>\
@@ -1097,9 +1101,39 @@ const BOOT: &str = r##"(async () => {
       canvas.style.cursor = player.over_hotspot(x, y) ? "pointer" : "";
       after();
     });
+    // A canvas raises no on-screen keyboard: while a field has play's focus, the
+    // hidden textarea holds the browser's, inside the tap so a phone allows it.
+    const typing = $("typing");
+    const followFocus = () => {
+      const typingHere = document.activeElement === typing;
+      if (player.focused() && !typingHere) typing.focus({ preventScroll: true });
+      else if (!player.focused() && typingHere) typing.blur();
+    };
     canvas.addEventListener("pointerup", e => {
       if (e.button !== 0 || inspecting) return;
       player.pointer_up(...local(e));
+      followFocus();
+      after();
+    });
+    // Text arrives as input events, whole once a composition ends (IME, and a
+    // phone keyboard that composes); the textarea is kept empty.
+    typing.addEventListener("beforeinput", e => {
+      if (e.inputType === "insertCompositionText") return;
+      e.preventDefault();
+      if (e.inputType === "insertText" || e.inputType === "insertReplacementText") {
+        if (e.data) player.type_text(e.data);
+      } else if (e.inputType === "deleteContentBackward") {
+        player.key("Backspace", false);
+      } else if (e.inputType === "insertLineBreak" || e.inputType === "insertParagraph") {
+        player.key("Enter", false);
+      }
+      followFocus();
+      after();
+    });
+    typing.addEventListener("compositionend", e => {
+      if (e.data) player.type_text(e.data);
+      typing.value = "";
+      followFocus();
       after();
     });
     canvas.addEventListener("pointercancel", () => { player.pointer_leave(); after(); });
@@ -1121,7 +1155,17 @@ const BOOT: &str = r##"(async () => {
         if (e.key === "Escape") { picked = ""; showPanel(); after(); }
         return;
       }
+      if (e.target === typing) {
+        // A character comes as `beforeinput`; a named key is play's, never the
+        // textarea's.
+        if ([...e.key].length === 1 || e.key === "Unidentified" || e.key === "Process") return;
+        e.preventDefault();
+        player.key(e.key, e.shiftKey);
+        followFocus();
+        return after();
+      }
       if (player.key(e.key, e.shiftKey)) e.preventDefault();
+      followFocus();
       after();
     });
     addEventListener("resize", wake);

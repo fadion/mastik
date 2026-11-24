@@ -15,11 +15,10 @@ mod shell;
 mod wasi;
 
 use mastik_core::kurbo::{Point, Rect, Size};
-use mastik_core::measure;
 use mastik_core::peniko::Color;
 use mastik_core::prototype::FlowRef;
-use mastik_core::{Document, NodeId, subtree_nodes};
-use mastik_play::{Input, Notice, Request, Scene, Start};
+use mastik_core::{Document, NodeId};
+use mastik_play::{Input, Request, Scene, Start};
 use mastik_render::{ImageStore, VelloCpuRenderer, VelloGpuRenderer, Viewport};
 use shell::Placement;
 use wasm_bindgen::prelude::*;
@@ -28,6 +27,11 @@ use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 /// The actor the page's player mints ids from. Any value serves: the engine
 /// reserves every id the document already holds under it.
 const ACTOR: u64 = 0x6d61_7374_696b_7765;
+
+/// The 2D canvas's limits: Chrome's and Firefox's longest side, and Mobile
+/// Safari's largest area, past which the canvas stays blank.
+const CANVAS_SIDE: u32 = 32_767;
+const CANVAS_AREA: f64 = 16_777_216.0;
 
 /// Panics reach the browser's console; std's own hook writes to a stderr the page
 /// does not have. A panic core catches is reported too, as on the desktop.
@@ -258,14 +262,19 @@ impl Player {
         let p = shell::place(scaling, scene.size, Size::new(room_w, room_h), device);
         self.placed = Some(p);
         let changed = !self.play.take_dirty().is_empty();
-        let vp = mastik_render::play::viewport(&scene, p.scale * dpr.max(0.1));
+        let (side, area) = match &self.backend {
+            Backend::Gpu(gpu) => (gpu.device.limits().max_texture_dimension_2d, f64::INFINITY),
+            Backend::Cpu(..) => (CANVAS_SIDE, CANVAS_AREA),
+        };
+        let scale = shell::draw_scale(scene.size, p.scale * dpr.max(0.1), side, area);
+        let vp = mastik_render::play::viewport(&scene, scale);
         let same = !changed
             && self
                 .drawn
                 .as_ref()
                 .is_some_and(|(s, px)| *s == scene && *px == vp.pixel_size);
         if !same {
-            self.draw(&scene, &vp, p.scale * dpr.max(0.1))?;
+            self.draw(&scene, &vp, scale)?;
         }
         let flash = f64::from(scene.hint_flash.unwrap_or(0.0));
         self.drawn = Some((scene, vp.pixel_size));
@@ -333,6 +342,18 @@ impl Player {
         }
     }
 
+    /// Whether a text field has play's focus, so the page holds the browser's
+    /// focus in its hidden textarea and a phone shows its keyboard.
+    pub fn focused(&self) -> bool {
+        self.play.focused().is_some()
+    }
+
+    /// `text` typed into the focused field, from the page's textarea (a phone's
+    /// keyboard, a finished composition). Whether a field took it.
+    pub fn type_text(&mut self, text: &str) -> bool {
+        self.play.focused().is_some() && self.play.input(Input::Text(text.into()))
+    }
+
     /// The places the person can act on, `[x, y, w, h]` each, in CSS pixels from
     /// the canvas's top-left.
     pub fn hotspots(&self) -> Vec<f64> {
@@ -371,28 +392,7 @@ impl Player {
         self.play
             .take_notices()
             .into_iter()
-            .map(|n| match n {
-                Notice::ScriptsOff => "!Scripts do not run in an exported prototype".into(),
-                Notice::Script { name, message } => format!("Script {name} failed: {message}"),
-                Notice::ScriptNeedsInput { name } => {
-                    format!("Script {name} asks for input, which an action cannot give")
-                }
-                Notice::Loop => "Reactions set each other off too deep; the chain was cut".into(),
-                Notice::Missing { .. } => "An action's target is not there; it was skipped".into(),
-                Notice::Expression { error, .. } => format!("An expression failed: {error}"),
-                Notice::Fallback(f) => format!("Play fell back: {f:?}"),
-                Notice::ScrollFrameGone { .. } => {
-                    "A scroll trigger watches a frame that is gone; it never fires".into()
-                }
-                Notice::TableFull { table, .. } => {
-                    let n = mastik_core::chart::MAX_ROWS;
-                    format!(
-                        "Skipped Add row: {table} holds {},{:03} rows, the most a table can",
-                        n / 1000,
-                        n % 1000
-                    )
-                }
-            })
+            .map(shell::notice_text)
             .collect()
     }
 
@@ -409,18 +409,11 @@ impl Player {
         let Some(top) = scene.layers.last() else {
             return String::new();
         };
-        let doc = self.play.document();
-        let hidden = |id: NodeId| doc.get(id).is_none_or(|n| !n.visible());
-        let mut hit = None;
-        for id in subtree_nodes(doc, &[top.frame]) {
-            let shown = !std::iter::successors(Some(id), |n| doc.get(*n)?.parent())
-                .take_while(|n| *n != top.frame)
-                .any(hidden);
-            if shown && self.screen_rect(id).is_some_and(|r| r.contains(at)) {
-                hit = Some(id);
-            }
-        }
-        hit.map(NodeId::to_wire).unwrap_or_default()
+        shell::topmost(self.play.document(), top.frame, at, |id| {
+            self.screen_rect(id)
+        })
+        .map(NodeId::to_wire)
+        .unwrap_or_default()
     }
 
     /// `id`'s box, `[x, y, w, h]` in CSS pixels from the canvas; empty when the
@@ -466,18 +459,7 @@ impl Player {
         else {
             return Vec::new();
         };
-        let s = self.scale();
-        measure::between(ra, rb)
-            .into_iter()
-            .map(|m| {
-                let axis = match m.axis {
-                    measure::Axis::Horizontal => "h",
-                    measure::Axis::Vertical => "v",
-                };
-                let label = measure::label(m.distance());
-                format!("{axis}|{}|{}|{}|{label}", m.at * s, m.from * s, m.to * s)
-            })
-            .collect()
+        shell::measure_lines(ra, rb, self.scale())
     }
 }
 
@@ -602,8 +584,13 @@ impl Gpu {
             .request_adapter(&wgpu::RequestAdapterOptions::default())
             .await
             .ok()?;
+        // The adapter's own limits, so a tall screen draws sharp past the
+        // default 8192 where the hardware allows; `frame` caps the rest.
         let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
+            .request_device(&wgpu::DeviceDescriptor {
+                required_limits: adapter.limits(),
+                ..wgpu::DeviceDescriptor::default()
+            })
             .await
             .ok()?;
         let renderer = VelloGpuRenderer::new(&device).ok()?;

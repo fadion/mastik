@@ -1,12 +1,14 @@
 //! The page's arithmetic, apart from the browser so it builds and is tested on the
 //! desktop (`mastik-export`'s `tests/web_shell.rs` includes this file): where the
 //! screen goes under a *Scaling*, how a pointer maps back into screen space, how
-//! a browser key is named the way a key trigger names it, and where play opens.
+//! a browser key is named the way a key trigger names it, where play opens, what
+//! a notice says, and inspect mode's pick and measures.
 
-use mastik_core::kurbo::{Point, Size, Vec2};
+use mastik_core::kurbo::{Point, Rect, Size, Vec2};
+use mastik_core::measure;
 use mastik_core::prototype::{FlowRef, Scaling};
-use mastik_core::{Document, NodeId, NodeKind};
-use mastik_play::Start;
+use mastik_core::{Document, NodeId, NodeKind, subtree_nodes};
+use mastik_play::{Notice, Start};
 
 /// Every flow in the document, in page order, with its name.
 pub fn flows(doc: &Document) -> Vec<(FlowRef, String)> {
@@ -197,6 +199,91 @@ pub fn key_name(key: &str) -> Option<String> {
     Some(named.into())
 }
 
+/// What play's notice says, a sentence; a first character `!` marks one the
+/// viewer is shown, the rest go to the console.
+pub fn notice_text(n: Notice) -> String {
+    match n {
+        Notice::ScriptsOff => "!Scripts do not run in an exported prototype".into(),
+        Notice::Script { name, message } => format!("Script {name} failed: {message}"),
+        Notice::ScriptNeedsInput { name } => {
+            format!("Script {name} asks for input, which an action cannot give")
+        }
+        Notice::Loop => "Reactions set each other off too deep; the chain was cut".into(),
+        Notice::Missing { .. } => "An action's target is not there; it was skipped".into(),
+        Notice::Expression { error, .. } => format!("An expression failed: {error}"),
+        Notice::Fallback(f) => format!("Play fell back: {f:?}"),
+        Notice::ScrollFrameGone { .. } => {
+            "A scroll trigger watches a frame that is gone; it never fires".into()
+        }
+        Notice::TableFull { table, .. } => {
+            let n = mastik_core::chart::MAX_ROWS;
+            format!(
+                "Skipped Add row: {table} holds {},{:03} rows, the most a table can",
+                n / 1000,
+                n % 1000
+            )
+        }
+    }
+}
+
+/// The topmost layer of `frame` (the frame itself under its children) whose box,
+/// by `rect`, holds `at`, leaving out a layer hidden itself or under a hidden
+/// parent: inspect mode's pick.
+pub fn topmost(
+    doc: &Document,
+    frame: NodeId,
+    at: Point,
+    rect: impl Fn(NodeId) -> Option<Rect>,
+) -> Option<NodeId> {
+    let hidden = |id: NodeId| doc.get(id).is_none_or(|n| !n.visible());
+    let mut hit = None;
+    for id in subtree_nodes(doc, &[frame]) {
+        let shown = !std::iter::successors(Some(id), |n| doc.get(*n)?.parent())
+            .take_while(|n| *n != frame)
+            .any(hidden);
+        if shown && rect(id).is_some_and(|r| r.contains(at)) {
+            hit = Some(id);
+        }
+    }
+    hit
+}
+
+/// The distances between boxes `a` and `b` as the canvas's `Alt` measure quotes
+/// them, at `scale` CSS pixels per screen unit: each `"h"` or `"v"` (the line's
+/// direction), where it sits, where it runs from and to, and its label, joined
+/// by `|`.
+pub fn measure_lines(a: Rect, b: Rect, scale: f64) -> Vec<String> {
+    measure::between(a, b)
+        .into_iter()
+        .map(|m| {
+            let axis = match m.axis {
+                measure::Axis::Horizontal => "h",
+                measure::Axis::Vertical => "v",
+            };
+            let label = measure::label(m.distance());
+            format!(
+                "{axis}|{}|{}|{}|{label}",
+                m.at * scale,
+                m.from * scale,
+                m.to * scale
+            )
+        })
+        .collect()
+}
+
+/// The device pixels per screen unit to draw a `screen` at: `scale`, lowered so
+/// neither side of the drawing passes `side` pixels (WebGPU's texture limit) and
+/// its area stays within `area` (Mobile Safari's canvas cap). Lowering costs only
+/// sharpness; past either limit the canvas draws nothing at all.
+pub fn draw_scale(screen: Size, scale: f64, side: u32, area: f64) -> f64 {
+    let (w, h) = (screen.width.max(1.0), screen.height.max(1.0));
+    let side = f64::from(side);
+    scale
+        .min(side / w)
+        .min(side / h)
+        .min((area / (w * h)).sqrt())
+}
+
 /// The text a DOM key types into a focused field: one printable character, or
 /// `None` for a named key (`"Enter"`, `"Backspace"`).
 pub fn typed(key: &str) -> Option<&str> {
@@ -308,6 +395,24 @@ mod tests {
         for dom in ["Shift", "Control", "Dead", "Unidentified", "é", "F0", "Fn"] {
             assert_eq!(key_name(dom), None, "{dom:?}");
         }
+    }
+
+    /// A tall screen at a high density draws within the limits: a 1440 × 5000
+    /// page at 2× keeps its side within 8192 and its area within the cap, while a
+    /// phone screen keeps its full scale.
+    /// flip: `draw_scale` returning `scale` → fails at "within the side".
+    #[test]
+    fn a_tall_screen_draws_within_the_limits() {
+        let tall = Size::new(1440.0, 5000.0);
+        let s = draw_scale(tall, 2.0, 8192, f64::INFINITY);
+        assert!((tall.height * s).round() <= 8192.0, "within the side");
+        assert!(s > 1.6, "lowered no more than it must: {s}");
+        let s = draw_scale(tall, 2.0, 32_767, 16_777_216.0);
+        assert!(
+            tall.width * s * tall.height * s <= 16_777_216.0,
+            "within the area"
+        );
+        assert_eq!(draw_scale(PHONE, 3.0, 8192, 16_777_216.0), 3.0, "a phone");
     }
 
     /// One printable character types; a named key does not.

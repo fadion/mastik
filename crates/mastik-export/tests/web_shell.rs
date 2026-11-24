@@ -5,10 +5,10 @@
 #[path = "../../mastik-web/src/shell.rs"]
 mod shell;
 
-use mastik_core::kurbo::{Affine, RoundedRectRadii, Size};
+use mastik_core::kurbo::{Affine, Point, Rect, RoundedRectRadii, Size};
 use mastik_core::prototype::{Flow, FlowRef, PlayExport};
 use mastik_core::{Document, IdSource, Keyed, NodeId, NodeKind, Operation, Transaction};
-use mastik_play::Start;
+use mastik_play::{Notice, Start};
 
 /// A frame (`frame`), else a group, first under `parent`.
 fn layer(id: NodeId, parent: NodeId, frame: bool) -> Operation {
@@ -171,4 +171,102 @@ fn with_no_flow_play_opens_on_the_first_pages_first_frame() {
         Some((Start::Frame(o.home), None)),
         "the first page's first frame"
     );
+}
+
+/// Inspect mode picks the topmost shown layer under the point: the last in
+/// paint order whose box holds it, never one hidden or under a hidden parent,
+/// the frame itself under its children, and nothing outside every box.
+///
+/// flip: `topmost` dropping the hidden-ancestor walk → fails at "under a hidden
+/// parent".
+#[test]
+fn inspect_picks_the_topmost_shown_layer() {
+    let o = opened(false);
+    let mut doc = o.doc;
+    let mut ids = IdSource::new(0x0F);
+    let [a, b, c] = [ids.mint(), ids.mint(), ids.mint()];
+    let child = |id, parent, index| Operation::CreateNode {
+        id,
+        parent,
+        index,
+        kind: NodeKind::Group,
+        transform: Some(Affine::IDENTITY),
+        name: None,
+    };
+    doc.apply(&Transaction(vec![
+        child(a, o.home, 0),
+        child(b, o.home, 1),
+        child(c, b, 0),
+    ]))
+    .expect("children");
+    let rect = |id: NodeId| {
+        let inside = [o.home, a, b, c].contains(&id);
+        inside.then(|| Rect::new(0.0, 0.0, 50.0, 50.0))
+    };
+    let at = Point::new(10.0, 10.0);
+    assert_eq!(
+        shell::topmost(&doc, o.home, at, rect),
+        Some(c),
+        "the topmost"
+    );
+    assert_eq!(
+        shell::topmost(&doc, o.home, Point::new(90.0, 90.0), rect),
+        None,
+        "outside every box"
+    );
+    doc.apply(&Transaction(vec![Operation::SetVisible {
+        id: b,
+        visible: false,
+    }]))
+    .expect("hide");
+    assert_eq!(
+        shell::topmost(&doc, o.home, at, rect),
+        Some(a),
+        "under a hidden parent"
+    );
+    let only_frame = |id: NodeId| (id == o.home).then(|| Rect::new(0.0, 0.0, 50.0, 50.0));
+    assert_eq!(
+        shell::topmost(&doc, o.home, at, only_frame),
+        Some(o.home),
+        "the frame itself"
+    );
+}
+
+/// A full table's notice quotes the row cap with its thousands comma, and only
+/// the scripts notice is the viewer's.
+#[test]
+fn notices_read_as_the_viewer_or_the_console_sees_them() {
+    let mut ids = IdSource::new(0x10);
+    let full = shell::notice_text(Notice::TableFull {
+        layer: ids.mint(),
+        action: ids.mint_item(),
+        table: "Orders".into(),
+    });
+    let n = mastik_core::chart::MAX_ROWS;
+    assert_eq!(
+        full,
+        format!(
+            "Skipped Add row: Orders holds {},{:03} rows, the most a table can",
+            n / 1000,
+            n % 1000
+        )
+    );
+    assert!(
+        shell::notice_text(Notice::ScriptsOff).starts_with('!'),
+        "shown"
+    );
+    assert!(
+        !shell::notice_text(Notice::Loop).starts_with('!'),
+        "the console's"
+    );
+}
+
+/// Two boxes side by side measure their gap as a horizontal line, scaled to CSS
+/// pixels, labelled in screen units.
+#[test]
+fn measures_are_scaled_lines_with_screen_labels() {
+    let a = Rect::new(0.0, 0.0, 10.0, 10.0);
+    let b = Rect::new(30.0, 0.0, 40.0, 10.0);
+    let lines = shell::measure_lines(a, b, 2.0);
+    assert!(lines.contains(&"h|10|20|60|20".to_string()), "{lines:?}");
 }

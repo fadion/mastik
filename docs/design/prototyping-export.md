@@ -75,7 +75,16 @@ renderer, so the page draws what the editor draws.
   forces the CPU renderer.
 - vello draws into an `Rgba8Unorm` storage texture, copied onto the canvas with wgpu's
   `TextureBlitter`: a canvas texture cannot be a storage target. The canvas takes a format
-  that is not `-srgb`, since vello's output is already sRGB-encoded.
+  that is not `-srgb`, since vello's output is already sRGB-encoded. The device asks for the
+  adapter's own limits, and each frame's draw scale is lowered (`shell::draw_scale`) so neither
+  side passes the device's largest texture, and on the CPU renderer neither side passes 32,767
+  pixels and the area stays within Mobile Safari's 16.7 M: past either limit the canvas draws
+  nothing, and a lower scale costs only sharpness.
+- **Typing.** A canvas raises no on-screen keyboard, so while a text field has play's focus
+  (`Player::focused`) the page holds the browser's focus in a hidden `<textarea>`, focused
+  inside the tap that focused the field. Characters arrive as its `beforeinput`, and a
+  composition (an IME, a phone keyboard that composes) whole at `compositionend`
+  (`Player::type_text`); named keys go to `Player::key`, and the textarea stays empty.
 
 ### What holds
 
@@ -233,8 +242,9 @@ canvas, the drawing and the page around them.
   file, the layer as it stands (`PlanOptions::rows_unfilled`): a file or page per row would
   render the whole table into the page, and again on every measure of the export card. Boxes
   are read off the played copy's layout, moved by scroll offsets; a sticky or fixed child is boxed where it would scroll to.
-- The page's arithmetic (`shell.rs`: placing, the pointer's and wheel's mapping, key names,
-  and where play opens) builds on the desktop too, and `mastik-export`'s `tests/web_shell.rs`
+- The page's arithmetic (`shell.rs`: placing, the draw scale, the pointer's and wheel's
+  mapping, key names, where play opens, notices' words, and inspect mode's pick and measures)
+  builds on the desktop too, and `mastik-export`'s `tests/web_shell.rs`
   includes and tests it; `tests/prototype.rs` checks the page's script calls only what the
   player exports, with as many arguments as each takes, and reads `frame`'s answer by the slots
   `frame` fills.
