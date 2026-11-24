@@ -54,6 +54,7 @@ enum Row {
     NearDuplicates,
     OffScale,
     Detached,
+    Dangling,
     UnusedComponents,
     UnusedVariables,
     UnusedStyles,
@@ -61,11 +62,12 @@ enum Row {
 }
 
 impl Row {
-    const ALL: [Row; 8] = [
+    const ALL: [Row; 9] = [
         Row::RawMatch,
         Row::NearDuplicates,
         Row::OffScale,
         Row::Detached,
+        Row::Dangling,
         Row::UnusedComponents,
         Row::UnusedVariables,
         Row::UnusedStyles,
@@ -78,6 +80,8 @@ impl Row {
             Row::NearDuplicates => icon::PALETTE,
             Row::OffScale => icon::RULER,
             Row::Detached => icon::LINK_BREAK,
+            // The Prototype tab marks an action whose target is gone with it.
+            Row::Dangling => icon::WARNING,
             Row::UnusedComponents => icon::HEXAGON,
             Row::UnusedVariables => icon::BRACKETS_CURLY,
             Row::UnusedStyles => icon::STACK,
@@ -105,6 +109,10 @@ impl Row {
                 "layer detached from a component",
                 "layers detached from a component",
             ),
+            Row::Dangling => both(
+                "layer whose prototype names something gone",
+                "layers whose prototypes name something gone",
+            ),
             Row::UnusedComponents => both(
                 "main component with no instances",
                 "main components with no instances",
@@ -126,6 +134,9 @@ impl Row {
             }
             Row::OffScale => "Gaps, padding and corner radii not on a multiple of the scale's step",
             Row::Detached => "Counts layers detached since this was recorded",
+            Row::Dangling => {
+                "Reactions, scroll effects and inputs naming a layer, variable, script, mode or table that was deleted. Play skips them."
+            }
             Row::UnusedComponents => "Main components no instance shows, here or on any page",
             Row::UnusedVariables => "This document's variables no layer, style or alias reads",
             Row::UnusedStyles => "This document's styles no layer uses",
@@ -183,6 +194,7 @@ impl SystemHealth {
             Row::NearDuplicates => h.near_duplicates.count,
             Row::OffScale => h.off_scale.count,
             Row::Detached => h.detached.count,
+            Row::Dangling => h.dangling.count,
             Row::UnusedComponents => h.unused_components.count,
             Row::UnusedVariables => h.unused_variables.len(),
             Row::UnusedStyles => h.unused_styles.len(),
@@ -199,7 +211,7 @@ impl SystemHealth {
                 _ => "Select",
             },
             Row::NearDuplicates => "Review",
-            Row::OffScale | Row::Detached | Row::UnusedComponents => "Select",
+            Row::OffScale | Row::Detached | Row::Dangling | Row::UnusedComponents => "Select",
             Row::UnusedVariables | Row::UnusedStyles => "Show",
             Row::Kits => "Open",
         }
@@ -351,6 +363,10 @@ impl MastikApp {
             Row::Detached => {
                 let ids = h.detached.ids.clone();
                 self.select_counted(c, ids, "no component");
+            }
+            Row::Dangling => {
+                let ids = h.dangling.ids.clone();
+                self.select_counted(c, ids, "a missing target");
             }
             Row::UnusedComponents => {
                 let ids = h.unused_components.ids.clone();

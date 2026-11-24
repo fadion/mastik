@@ -120,7 +120,9 @@ page's flows and play settings, so the inverse of a removal brings them back.
 **Targets dangle by design.** Neither the door nor the loader checks that an action's target, a
 flow's start, a scroll effect's frame, an input's variable, a *Set mode*'s mode, a named
 script, or a row action's or *When a table changes*' table or column exists. Play skips a missing one, and undo of
-the delete mends it. A target has nothing to draw, so keeping it costs nothing. An input's
+the delete mends it. A target has nothing to draw, so keeping it costs nothing. The review
+says where one dangles (`review::dangling_targets`, *System health*'s row), as a report and
+never a refusal. An input's
 variable counts as a target here, not as a binding, which the loader does refuse when dangling
 (§5.3f).
 

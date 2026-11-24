@@ -1,9 +1,10 @@
 //! `review`: the design checks `check_layout` leaves out, over the shown layers
 //! under a page or some layers: layers overlapping, text on a busy ground,
 //! spacing off its rhythm or off the scale, raw values where a variable or a
-//! style fits, near-duplicate colours, radii that nearly agree, and low
-//! contrast. Each check is a function of its own over a [`Scope`], so the MCP
-//! `review` read and `mastik check review` run the same ones. [`health`] reads
+//! style fits, near-duplicate colours, radii that nearly agree, low contrast,
+//! and prototype targets that are gone. Each check is a function of its own
+//! over a [`Scope`], so the MCP `review` read and `mastik check review` run the
+//! same ones. [`health`] reads
 //! some of them beside its coverage count, for the *System health* card, MCP's
 //! `health` and `mastik check health` alike.
 
@@ -153,6 +154,7 @@ pub fn review(scope: &Scope<'_>, options: Options) -> Vec<Finding> {
     out.extend(near_duplicate_colours(scope));
     out.extend(radii(scope));
     out.extend(low_contrast(scope, options.level));
+    out.extend(dangling_targets(scope));
     out
 }
 
@@ -927,6 +929,154 @@ pub fn low_contrast(scope: &Scope<'_>, level: contrast::Level) -> Vec<Finding> {
     out
 }
 
+/// What the prototype on layer `id` names that the document no longer holds,
+/// each kind once, in the order met: its reactions' layers, variables, scripts,
+/// modes, tables and columns, a scroll effect's frame and an input's variable.
+/// The targets are read through the model's own enumerations (`layer_targets`,
+/// `prototype::refs`, `modes_set`, `Action::tables`), so a new action kind
+/// that names something is checked once it is enumerated there.
+fn gone_targets(doc: &Document, id: NodeId) -> Vec<&'static str> {
+    use mastik_core::prototype::{self, Action, Expr, expr::Ref};
+    let Some(n) = doc.get(id) else {
+        return Vec::new();
+    };
+    let mut gone: Vec<&'static str> = Vec::new();
+    let mut say = |what: &'static str| {
+        if !gone.contains(&what) {
+            gone.push(what);
+        }
+    };
+    let layer_gone = |t: NodeId| doc.get(prototype::resolve_target(doc, id, t)).is_none();
+    let column_gone = |table: mastik_core::list::DataSetId, c: mastik_core::chart::ColumnId| {
+        doc.data_set(table)
+            .is_some_and(|d| d.table.index_of(c).is_none())
+    };
+    // The columns an action's own cells and expressions read; `row` is the
+    // table `{row.…}` reads.
+    fn columns(
+        a: &Action,
+        out: &mut Vec<(mastik_core::list::DataSetId, mastik_core::chart::ColumnId)>,
+    ) {
+        let row = a.table();
+        let cells: &[prototype::CellWrite] = match a {
+            Action::AddRow { cells, .. } | Action::EditRow { cells, .. } => cells,
+            _ => &[],
+        };
+        if let Some(t) = row {
+            out.extend(cells.iter().map(|c| (t, c.column)));
+        }
+        let exprs: Vec<&Expr> = a.exprs();
+        for r in exprs.iter().flat_map(|e| e.refs()) {
+            match r {
+                Ref::Cell(t, _, c) | Ref::Total(t, c, _) => out.push((t, c)),
+                Ref::Row(c) => out.extend(row.map(|t| (t, c))),
+                Ref::Var(_) | Ref::Rows(_) => {}
+            }
+        }
+        for k in a.nested() {
+            columns(&k.value, out);
+        }
+    }
+    let reactions = n.reactions();
+    for r in reactions {
+        let trigger = &r.value.trigger;
+        if trigger.layer_target().is_some_and(layer_gone) {
+            say("a frame");
+        }
+        if trigger.table().is_some_and(|t| doc.data_set(t).is_none()) {
+            say("a table");
+        }
+        for k in &r.value.actions {
+            let a = &k.value;
+            if a.layer_targets().into_iter().any(layer_gone) {
+                say("a layer");
+            }
+            if a.tables().into_iter().any(|t| doc.data_set(t).is_none()) {
+                say("a table");
+            }
+            let mut read = Vec::new();
+            columns(a, &mut read);
+            if read.into_iter().any(|(t, c)| column_gone(t, c)) {
+                say("a column");
+            }
+        }
+    }
+    let vars = doc.variables();
+    let (used, scripts) = prototype::refs(reactions);
+    if used.iter().any(|v| vars.get(*v).is_none()) {
+        say("a variable");
+    }
+    if scripts.iter().any(|s| doc.script(*s).is_none()) {
+        say("a script");
+    }
+    let mode_gone = |m: &mastik_core::ModeId| {
+        vars.collection_of_mode(*m).is_none() && vars.kit_mode_of(*m).is_none()
+    };
+    if prototype::modes_set(reactions).iter().any(mode_gone) {
+        say("a mode");
+    }
+    let play = n.play();
+    if play.layer_target().is_some_and(layer_gone) {
+        say("a frame");
+    }
+    if play
+        .input
+        .as_ref()
+        .is_some_and(|i| vars.get(i.var).is_none())
+    {
+        say("a variable");
+    }
+    gone
+}
+
+/// `dangling_target`: a layer whose prototype names a layer, variable, script,
+/// mode, table or column that is gone, and a page flow whose start frame is.
+/// Targets dangle by design, so undo mends them, and play skips what needs
+/// one; this says where. A copy's reactions are its main's, said there.
+pub fn dangling_targets(scope: &Scope<'_>) -> Vec<Finding> {
+    let doc = scope.doc;
+    let mut out = Vec::new();
+    for &id in &scope.layers {
+        if let Some(page) = doc.page(id) {
+            for f in &page.flows {
+                let start = f.value.start;
+                let is_frame = doc
+                    .get(start)
+                    .is_some_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }));
+                if !is_frame {
+                    out.push(Finding::new(
+                        "dangling_target",
+                        vec![id],
+                        format!(
+                            "The flow “{}” starts at a frame that is gone, so it cannot play.",
+                            f.value.name
+                        ),
+                    ));
+                }
+            }
+            continue;
+        }
+        if is_copy(doc, id) {
+            continue;
+        }
+        let gone = gone_targets(doc, id);
+        let said = match gone.as_slice() {
+            [] => continue,
+            [one] => format!("{one} that is gone; play skips what needs it"),
+            [rest @ .., last] => format!(
+                "{} and {last} that are gone; play skips what needs them",
+                rest.join(", ")
+            ),
+        };
+        out.push(Finding::new(
+            "dangling_target",
+            vec![id],
+            format!("Its prototype names {said}."),
+        ));
+    }
+    out
+}
+
 /// How many uses of one kind are bound to the system, of how many, and the
 /// layers holding the raw ones.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1002,6 +1152,9 @@ pub struct Health {
     /// Main components in the scope with no instance anywhere; a component
     /// set counts once, when none of its variants has one.
     pub unused_components: Tidy,
+    /// Layers whose prototype names something gone ([`dangling_targets`]); a
+    /// flow's start is said by the review alone, a page being no layer to select.
+    pub dangling: Tidy,
     /// The document's own variables nothing reads, whatever the scope.
     pub unused_variables: Vec<mastik_core::VarId>,
     /// The document's own styles no layer takes, whatever the scope.
@@ -1034,6 +1187,7 @@ impl Health {
             + self.off_scale.count
             + self.detached.count
             + self.unused_components.count
+            + self.dangling.count
             + self.unused_variables.len()
             + self.unused_styles.len()
     }
@@ -1062,6 +1216,7 @@ impl Health {
             "near_duplicates": tidy(&self.near_duplicates),
             "off_scale": tidy(&self.off_scale),
             "detached": tidy(&self.detached),
+            "dangling": tidy(&self.dangling),
             "unused": {
                 "components": tidy(&self.unused_components),
                 "variables": self.unused_variables.iter().map(|v| var_name(*v)).collect::<Vec<_>>(),
@@ -1087,6 +1242,7 @@ impl Health {
         out.push_str(&format!("near_dup   {}\n", self.near_duplicates.count));
         out.push_str(&format!("off_scale  {}\n", self.off_scale.count));
         out.push_str(&format!("detached   {}\n", self.detached.count));
+        out.push_str(&format!("dangling   {}\n", self.dangling.count));
         out.push_str(&format!(
             "unused     components {}  variables {}  styles {}\n",
             self.unused_components.count,
@@ -1252,6 +1408,13 @@ pub fn health(scope: &Scope<'_>, step: f64) -> Health {
     };
 
     h.unused_components = Tidy::of(unused_components(scope));
+    h.dangling = Tidy::of(
+        dangling_targets(scope)
+            .into_iter()
+            .flat_map(|f| f.ids)
+            .filter(|id| !doc.is_page(*id))
+            .collect(),
+    );
     h.unused_variables = mastik_core::tokens::unused_variables(doc);
     h.unused_styles = mastik_core::style::unused(doc);
     h.checked = scope.own().count();
@@ -1557,6 +1720,94 @@ mod tests {
         let json = h.to_json(&doc);
         assert_eq!(json["detached"]["count"], 1);
         assert_eq!(json["unused"]["variables"], json!(["Idle"]));
+    }
+
+    /// A reaction whose frame, variable and script were deleted is said once
+    /// for its layer, naming each kind; a flow whose start was deleted is said
+    /// on its page; a reaction whose targets are all there is not. `health`
+    /// counts the layer, not the page.
+    ///
+    /// flip: `gone_targets` not reading `prototype::refs` → fails at "the
+    /// variable and the script"; `dangling_targets` passing over pages → fails
+    /// at "the flow".
+    #[test]
+    fn dangling_prototype_targets_are_said() {
+        let mut ids = IdSource::new(0xda9);
+        let page = ids.mint();
+        let mut doc = Document::new(page);
+        let p = page.to_wire();
+        let mut run = |doc: &mut Document, steps: Vec<Value>| {
+            let made = mastik_core::verbs::run_script(
+                doc,
+                &mut ids,
+                mastik_core::verbs::Lent::default(),
+                &Value::Array(steps.clone()),
+            )
+            .expect("the fixture builds");
+            steps
+                .iter()
+                .zip(made)
+                .filter_map(|(s, m)| Some((s["as"].as_str()?.to_owned(), m.first()?.clone())))
+                .collect::<std::collections::HashMap<String, String>>()
+        };
+        let l = run(
+            &mut doc,
+            vec![
+                layer(&p, "a", 0.0, 0.0, frame(200.0, 200.0, "#ffffff")),
+                layer(&p, "b", 300.0, 0.0, frame(200.0, 200.0, "#ffffff")),
+                layer(&p, "c", 600.0, 0.0, frame(200.0, 200.0, "#ffffff")),
+                layer("@a", "button", 10.0, 10.0, rect(40.0, 40.0, "#000000", 0.0)),
+                layer("@a", "fine", 60.0, 10.0, rect(40.0, 40.0, "#000000", 0.0)),
+                json!({ "verb": "add_variable", "args": { "kind": "boolean", "name": "On" },
+                    "as": "on" }),
+                json!({ "verb": "add_script", "args": { "name": "Go", "source": "print(1)" },
+                    "as": "go" }),
+            ],
+        );
+        let reactions = json!([{ "trigger": "click", "actions": [
+            { "navigate": { "to": l["b"] } },
+            { "SetVariable": { "var": l["on"], "change": "Toggle" } },
+            { "RunScript": { "script": l["go"] } },
+        ] }]);
+        run(
+            &mut doc,
+            vec![
+                json!({ "verb": "set_reactions", "args": { "nodes": [l["button"]],
+                    "reactions": reactions } }),
+                json!({ "verb": "set_reactions", "args": { "nodes": [l["fine"]],
+                    "reactions": [{ "trigger": "click", "actions": [
+                        { "navigate": { "to": l["c"] } }] }] } }),
+                json!({ "verb": "set_flows", "args": { "page": p,
+                    "flows": [{ "name": "Main", "start": l["b"] }] } }),
+                json!({ "verb": "delete_node", "args": { "nodes": [l["b"]] } }),
+                json!({ "verb": "remove_variable", "args": { "variable": l["on"] } }),
+                json!({ "verb": "remove_script", "args": { "script": l["go"] } }),
+            ],
+        );
+        let res = Resolved::rebuild(&doc);
+        let scope = Scope::new(&doc, &res, &[page]);
+        let found: Vec<Finding> = review(&scope, Options::default())
+            .into_iter()
+            .filter(|f| f.code == "dangling_target")
+            .collect();
+        let button = NodeId::from_wire(&l["button"]).unwrap();
+        let on_button: Vec<&Finding> = found.iter().filter(|f| f.ids == vec![button]).collect();
+        assert_eq!(on_button.len(), 1, "one finding for the layer: {found:?}");
+        assert_eq!(
+            on_button[0].message,
+            "Its prototype names a layer, a variable and a script that are gone; play skips what needs them.",
+            "the variable and the script"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|f| f.ids == vec![page] && f.message.contains("“Main”")),
+            "the flow: {found:?}"
+        );
+        assert_eq!(found.len(), 2, "the layer whose target is there: {found:?}");
+        let h = health(&scope, 4.0);
+        assert_eq!(h.dangling.ids, vec![button], "the layer, not the page");
+        assert_eq!(h.to_json(&doc)["dangling"]["count"], 1);
     }
 
     /// A component set none of whose variants is shown counts once, as the set;

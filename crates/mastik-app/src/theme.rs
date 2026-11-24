@@ -1097,8 +1097,8 @@ pub mod icon {
     /// Select a known set of layers: *Select all*, *Select all instances*, every
     /// *Select N layers*, a variant clash's *Select it*.
     pub const SELECTION_ALL: &str = "\u{e746}";
-    /// A variant clash — two variants on one combination (§15 D982): a
-    /// warning glyph, in neutral ink, no new hue.
+    /// Something wrong that is left standing: a variant clash (two variants on
+    /// one combination), in neutral ink, and a prototype target that is gone.
     pub const WARNING: &str = "\u{e4e0}";
     /// A variable made or set — *Extract into variable…*, *New variable*, a
     /// variable's value — and code: *Copy as CSS*, the code exports.

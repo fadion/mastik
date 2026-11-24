@@ -1335,7 +1335,7 @@ the fix, or selects the layers. Its numbers are `review::health`'s, which MCP's 
     variable, and every non-zero corner of a rectangle or frame, through its corner variable.
   - Percentages are rounded down, so 99.6% never reads as all of it. `review::overall` is the
     coverage pass alone, for a summary read more often than the card is open.
-- **To tidy**, eight rows:
+- **To tidy**, nine rows:
 
   | Row | Reads | Button |
   | --- | --- | --- |
@@ -1343,6 +1343,7 @@ the fix, or selects the layers. Its numbers are `review::health`'s, which MCP's 
   | Near-identical colours | `near_duplicates`: `near_duplicate_colours`' groups | *Review*, Colour review on the selection when the card reads *Selection*, else on every page, which closes this card |
   | Off the 4-unit scale | `off_scale`: layers with their own unbound gap, padding or radius off the step, plus `spacing`'s hand-placed `off_scale` gaps | *Select* |
   | Detached | `detached`: layers with `Node::detached_from` (`components.md`, *The verbs*) | *Select* |
+  | Prototypes naming something gone | `dangling`: the layers `dangling_targets` finds, copies left out; a flow's missing start is the review's alone, a page being nothing to select. The row wears `icon::WARNING`, the Prototype tab's mark for a missing target | *Select* |
   | Main components with no instances | `unused_components`: mains in scope with no instance anywhere, a set counted once when no variant has one; vault mains skipped | *Select* |
   | Variables nothing uses | `tokens::unused_variables`, document-wide whatever the scope | *Show*: the browser's *Unused* on its Variables tab |
   | Unused styles | `style::unused`, document-wide | *Show*: *Unused* on its Styles tab (`MastikApp::open_unused`) |
@@ -1363,7 +1364,7 @@ the fix, or selects the layers. Its numbers are `review::health`'s, which MCP's 
   every page.
 - **Bound to the system.** An eyebrow with *N% of M uses*, then three `ui::meter_readout` rows,
   *Paint*, *Type*, *Spacing and radii*, each *bound of total*; a click selects the raw layers.
-- **To tidy.** An eyebrow with *k of 8* (rows with something to report), then every row, always,
+- **To tidy.** An eyebrow with *k of 9* (rows with something to report), then every row, always,
   so the card keeps one height: glyph, count, sentence, button. A row at zero is off, its glyph and sentence in `text::off()`, shows its zero
   in `color::saved()` and has no button. Each row's hover says what it counts; a live row stays
   lit while the pointer is over its button.
