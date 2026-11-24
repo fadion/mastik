@@ -3417,6 +3417,147 @@ fn a_flow_starts_at_its_modes_and_the_card_lists_kits() {
     assert_eq!(number(&p, n), 2.0, "a restart starts the flow dark again");
 }
 
+/// A frame snapping to its children rests each one at its start, centre or end
+/// as its alignment says, the frame's inset kept at both ends, every point held
+/// within the scroll; snapping by pages rests every frame's width and at the end.
+///
+/// flip: *End* resting a child's end at the frame's edge (`b - size`) → fails at
+/// "end"; *Pages* without its last point at the end → fails at "pages".
+#[test]
+fn snap_points_follow_the_alignment_and_the_pages() {
+    use mastik_core::prototype::SnapAlign;
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 100.0, 100.0);
+    for (x, w) in [
+        (10.0, 40.0),
+        (60.0, 20.0),
+        (90.0, 60.0),
+        (160.0, 40.0),
+        (210.0, 40.0),
+    ] {
+        fx.rect(a, "Card", x, 0.0, w, 100.0);
+    }
+    let points = |fx: &mut Fx, snap, snap_align| {
+        fx.play_settings(
+            a,
+            LayerPlay {
+                scroll: ScrollAxis::Horizontal,
+                snap,
+                snap_align,
+                ..LayerPlay::default()
+            },
+        );
+        fx.play(a).snap_points(a, true)
+    };
+    assert_eq!(
+        points(&mut fx, Snap::Children, SnapAlign::Start),
+        [0.0, 50.0, 80.0, 150.0],
+        "start"
+    );
+    assert_eq!(
+        points(&mut fx, Snap::Children, SnapAlign::Centre),
+        [0.0, 20.0, 70.0, 130.0, 150.0],
+        "centre"
+    );
+    assert_eq!(
+        points(&mut fx, Snap::Children, SnapAlign::End),
+        [0.0, 60.0, 110.0, 150.0],
+        "end"
+    );
+    assert_eq!(
+        points(&mut fx, Snap::Pages, SnapAlign::Start),
+        [0.0, 100.0, 150.0],
+        "pages"
+    );
+}
+
+/// A following layer is held to its range with a third of the overshoot as
+/// give: its parent's box, an empty span when it is wider than its parent,
+/// or its outermost points; let go, it stays held back into range, or returns.
+///
+/// flip: `GIVE` at 1.0 → fails at "a third past the parent".
+#[test]
+fn a_following_layer_keeps_to_its_range() {
+    use mastik_core::prototype::{DragPoint, Follow, FollowRange, Release};
+    let setup = |w: f64, range, release, points: Vec<(f64, f64)>| {
+        let mut fx = Fx::new();
+        let a = fx.frame("A", 0.0, 200.0, 100.0);
+        let card = fx.rect(a, "Card", 10.0, 10.0, w, 30.0);
+        let points = points
+            .into_iter()
+            .map(|(x, y)| {
+                Keyed::new(
+                    fx.ids.mint_item(),
+                    DragPoint {
+                        name: "P".into(),
+                        x,
+                        y,
+                    },
+                )
+            })
+            .collect();
+        fx.play_settings(
+            card,
+            LayerPlay {
+                follow: Some(Follow {
+                    range,
+                    release,
+                    settle: Timing::Ease {
+                        curve: Easing::Linear,
+                        ms: 100,
+                    },
+                    points,
+                    ..Follow::default()
+                }),
+                ..LayerPlay::default()
+            },
+        );
+        (fx.play(a), card)
+    };
+    let drag = |p: &mut Player, by: Vec2| {
+        let at = Point::new(20.0, 20.0);
+        p.input(Input::PointerMove(at));
+        p.input(Input::PointerDown(at));
+        p.input(Input::PointerMove(at + by * 0.5));
+        p.tick(500.0);
+        p.input(Input::PointerMove(at + by));
+    };
+    let up = |p: &mut Player, by: Vec2| {
+        p.input(Input::PointerUp(Point::new(20.0, 20.0) + by));
+        p.tick(500.0);
+    };
+
+    // Its parent's box: x from -10 to 140.
+    let (mut p, card) = setup(50.0, FollowRange::Parent, Release::Stays, vec![]);
+    let by = Vec2::new(200.0, 0.0);
+    drag(&mut p, by);
+    assert_eq!(
+        p.moved(card),
+        Vec2::new(160.0, 0.0),
+        "a third past the parent"
+    );
+    up(&mut p, by);
+    assert_eq!(p.moved(card), Vec2::new(140.0, 0.0), "held back into range");
+
+    // Wider than its parent: nowhere to go, but the give.
+    let (mut p, card) = setup(300.0, FollowRange::Parent, Release::Stays, vec![]);
+    drag(&mut p, Vec2::new(30.0, 0.0));
+    assert_eq!(p.moved(card), Vec2::new(10.0, 0.0), "an empty span");
+
+    // Between its outermost points, the drawn place among them.
+    let (mut p, card) = setup(
+        50.0,
+        FollowRange::Points,
+        Release::Returns,
+        vec![(60.0, 0.0)],
+    );
+    let by = Vec2::new(-30.0, 0.0);
+    drag(&mut p, by);
+    assert_eq!(p.moved(card), Vec2::new(-10.0, 0.0), "past the drawn point");
+    up(&mut p, by);
+    assert_eq!(p.moved(card), Vec2::ZERO, "returns");
+}
+
 /// A carousel 100 wide of four 100-wide cards, snapping to its children: a
 /// wheel gesture moves one card, and a short quick drag one card.
 ///
