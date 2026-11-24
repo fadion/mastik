@@ -1188,11 +1188,13 @@ pub fn make(
     Ok((tx, frame))
 }
 
-/// *Detach list*: the description dropped from each of `ids`, its copies kept
-/// as plain instances.
+/// *Detach list*: the description dropped from each of `ids`, once each, its
+/// copies kept as plain instances.
 pub fn detach(doc: &Document, ids: &[NodeId]) -> Transaction {
+    let mut seen = rustc_hash::FxHashSet::default();
     Transaction(
         ids.iter()
+            .filter(|id| seen.insert(**id))
             .filter(|id| doc.get(**id).is_some_and(|n| n.list().is_some()))
             .map(|id| Operation::SetList {
                 id: *id,
