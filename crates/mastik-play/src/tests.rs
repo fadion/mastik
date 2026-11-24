@@ -3210,6 +3210,151 @@ fn a_cart_adds_edits_and_totals_rows_in_play() {
     assert!(p.tables().is_empty());
 }
 
+/// A row's reaction goes on after its first write makes the list again: a
+/// second *Edit row* on *This row* writes the same row, and a second reaction
+/// on the layer still runs.
+///
+/// flip: `run_actions` not looking its holder up again (`Player::still`) →
+/// fails at "nothing skipped"; `fire` not doing so → fails at "the second
+/// reaction runs".
+#[test]
+fn a_row_reaction_goes_on_after_its_first_write() {
+    use mastik_core::chart::ColumnId;
+    use mastik_core::prototype::expr::Ref;
+    use mastik_core::prototype::{CellWrite, WhichRow};
+    let (mut fx, a, item, cart) = cart(&[["Shirt", "1"], ["Hat", "1"]]);
+    let n = fx.var("n", VarKind::Number, Cell::Number(0.0));
+    fx.on(
+        item,
+        Trigger::Click,
+        vec![
+            Action::EditRow {
+                table: cart,
+                row: WhichRow::This,
+                cells: vec![CellWrite {
+                    column: ColumnId(1),
+                    to: Expr(format!("{} + 1", read(Ref::Row(ColumnId(1))).0)),
+                }],
+            },
+            Action::EditRow {
+                table: cart,
+                row: WhichRow::This,
+                cells: vec![CellWrite {
+                    column: ColumnId(0),
+                    to: Expr("'Done'".into()),
+                }],
+            },
+        ],
+    );
+    fx.on(item, Trigger::Click, vec![add(n, 1.0)]);
+    let l = fx.doc.get(item).unwrap().parent().unwrap();
+    mastik_core::list::regenerate_outside_history(&mut fx.doc, &[l]);
+    let mut p = fx.play(a);
+    let rows = |p: &Player| p.document().data_set(cart).unwrap().table.rows.clone();
+    click(&mut p, 30.0, 60.0);
+    assert_eq!(p.take_notices(), vec![], "nothing skipped");
+    assert_eq!(
+        rows(&p)[1],
+        vec!["Done".to_string(), "2".into()],
+        "both cells written"
+    );
+    assert_eq!(rows(&p)[0], vec!["Shirt".to_string(), "1".into()]);
+    assert_eq!(number(&p, n), 1.0, "the second reaction runs");
+}
+
+/// A list made again in play starts its new rows' *After* reactions, so a row
+/// whose state loops goes on looping after a write regenerates the list.
+///
+/// flip: `regenerate_list` not calling `take_up_copies` → fails at "the new
+/// row loops".
+#[test]
+fn a_regenerated_row_keeps_looping() {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    use mastik_core::list::{DataSet, Source};
+    use mastik_core::prototype::{CellWrite, RowEnd};
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 400.0);
+    let set = fx.frame("Row", 600.0, 400.0, 30.0);
+    let one = fx.node(set, "One", frame_kind(180.0, 30.0), (0.0, 0.0));
+    let two = fx.node(set, "Two", frame_kind(180.0, 30.0), (200.0, 0.0));
+    let mut ops: Vec<Operation> = [one, two]
+        .iter()
+        .map(|id| Operation::SetComponent {
+            id: *id,
+            component: true,
+        })
+        .collect();
+    ops.push(Operation::SetVariantSet {
+        id: set,
+        set: Some(VariantSet {
+            props: vec![VariantProp::new("Look", vec!["One".into(), "Two".into()])],
+        }),
+    });
+    for (id, v) in [(one, "One"), (two, "Two")] {
+        ops.push(Operation::SetVariant {
+            id,
+            values: vec![v.into()],
+        });
+    }
+    fx.apply(ops);
+    for (from, to) in [(one, two), (two, one)] {
+        fx.on(
+            from,
+            Trigger::After { ms: 100 },
+            vec![Action::ChangeState {
+                instance: from,
+                to,
+                transition: Transition::INSTANT,
+            }],
+        );
+    }
+    let item = row_instance(&mut fx, one, a);
+    let data = DataSet {
+        id: fx.ids.mint_data_set(),
+        name: "Cards".into(),
+        table: Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "Name".into(),
+            }],
+            rows: vec![vec!["1".into()], vec!["2".into()]],
+        },
+        source: None,
+        pictures: Vec::new(),
+    };
+    let cards = data.id;
+    let l = listed(&mut fx, item, Source::New(data));
+    let more = fx.rect(a, "More", 150.0, 350.0, 40.0, 40.0);
+    fx.on(
+        more,
+        Trigger::Click,
+        vec![Action::AddRow {
+            table: cards,
+            at: RowEnd::End,
+            cells: vec![CellWrite {
+                column: ColumnId(0),
+                to: Expr("'3'".into()),
+            }],
+        }],
+    );
+    let mut p = fx.play(a);
+    let second = |p: &Player| {
+        let copy = p.document().get(l).unwrap().list().unwrap().copies[0];
+        p.document().get(copy).unwrap().link()
+    };
+    p.tick(100.0);
+    assert_eq!(second(&p), Some(two), "fixture: the row loops");
+    click(&mut p, 160.0, 360.0);
+    assert_eq!(
+        p.document().get(l).unwrap().list().unwrap().copies.len(),
+        2,
+        "fixture: the list made again"
+    );
+    assert_eq!(second(&p), Some(two), "a new row as the template shows");
+    p.tick(100.0);
+    assert_eq!(second(&p), Some(one), "the new row loops");
+}
+
 /// *First row where…* finds its row by `{row.…}`; a row past the end skips the
 /// action with a notice; *This row* outside a list over the table is missing;
 /// a full table refuses *Add row* once, by name.

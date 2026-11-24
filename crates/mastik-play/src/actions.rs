@@ -19,6 +19,15 @@ use mastik_core::{
     ItemId, Keyed, NodeId, NodeKind, Operation, Transaction, subtree_nodes, variant,
 };
 
+/// Where a layer sits in a list's row, found again after the list is made
+/// again with new copies ([`Player::row_path`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct RowPath {
+    list: NodeId,
+    place: usize,
+    steps: Vec<usize>,
+}
+
 /// What an action under a *while* trigger did, so ending the hover or the press
 /// can put it back.
 #[derive(Clone, Debug, PartialEq)]
@@ -65,6 +74,9 @@ impl Player {
         self.depth -= 1;
     }
 
+    /// Run `actions` on `holder` in turn. A write to a table a list draws makes
+    /// the list again with new copies, so a holder in a row is looked up at
+    /// its place in that row before each action.
     fn run_actions(
         &mut self,
         holder: NodeId,
@@ -72,9 +84,53 @@ impl Player {
         actions: &[Keyed<Action>],
         undo: &mut Vec<Undo>,
     ) {
+        let path = self.row_path(holder);
+        let mut holder = holder;
         for k in actions {
+            holder = self.still(holder, path.as_ref());
             self.run_action(holder, trigger, k, undo);
         }
+    }
+
+    /// Where `id` sits in a list's row: the list, the row's place among the
+    /// drawn rows, and the child index at each step down from the row to `id`.
+    /// `None` outside any row.
+    pub(crate) fn row_path(&self, id: NodeId) -> Option<RowPath> {
+        let mut steps = Vec::new();
+        let mut at = id;
+        loop {
+            if let Some((list, place)) = mastik_core::list::row_of(&self.doc, at) {
+                steps.reverse();
+                return Some(RowPath { list, place, steps });
+            }
+            let parent = self.doc.get(at)?.parent()?;
+            let i = self
+                .doc
+                .get(parent)?
+                .children()
+                .iter()
+                .position(|c| *c == at)?;
+            steps.push(i);
+            at = parent;
+        }
+    }
+
+    /// `id` while it is there, else the layer at `path` in the list as it is
+    /// drawn now; `id` itself when neither is there.
+    pub(crate) fn still(&self, id: NodeId, path: Option<&RowPath>) -> NodeId {
+        if self.doc.get(id).is_some() {
+            return id;
+        }
+        let found = path.and_then(|p| {
+            let root = match p.place {
+                0 => mastik_core::list::template(&self.doc, p.list)?,
+                n => *self.doc.get(p.list)?.list()?.copies.get(n - 1)?,
+            };
+            p.steps
+                .iter()
+                .try_fold(root, |at, i| self.doc.get(at)?.children().get(*i).copied())
+        });
+        found.unwrap_or(id)
     }
 
     /// The layer `raw` names when read from a reaction on `holder`, or `None`

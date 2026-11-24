@@ -745,6 +745,48 @@ impl Player {
         });
         let settled = self.res.settle(&mut self.doc);
         self.dirty.extend(settled.0);
+        self.take_up_copies(l);
+    }
+
+    /// List `l`'s copies, just made again, taken up as `prepare` and a frame's
+    /// opening take up a layer: what pointed into the old copies dropped, and
+    /// the new ones' inputs and scroll effects found and, in a shown frame,
+    /// their *After* reactions started, so a looping row state goes on looping.
+    fn take_up_copies(&mut self, l: NodeId) {
+        let doc = &self.doc;
+        self.timers.retain(|t| doc.get(t.holder).is_some());
+        self.inputs.retain(|(id, _)| doc.get(*id).is_some());
+        self.effects.retain(|id| doc.get(*id).is_some());
+        let copies = doc
+            .get(l)
+            .and_then(|n| n.list())
+            .map(|x| x.copies.clone())
+            .unwrap_or_default();
+        let frame = self.frame_of(l).filter(|f| self.shown().contains(f));
+        for id in subtree_nodes(&self.doc, &copies) {
+            let Some(n) = self.doc.get(id) else { continue };
+            if let Some(input) = n.play().input.clone() {
+                self.inputs.push((id, input));
+            }
+            if n.play().scroll_effect.is_some() {
+                self.effects.push(id);
+            }
+            let Some(frame) = frame else { continue };
+            for r in n.reactions() {
+                if let Trigger::After { ms } = r.value.trigger {
+                    self.timers.push(Timer {
+                        due: self.now + f64::from(ms),
+                        holder: id,
+                        reaction: r.id,
+                        frame,
+                    });
+                }
+            }
+        }
+        self.inputs.sort_by_key(|(id, _)| *id);
+        self.inputs.dedup_by_key(|(id, _)| *id);
+        self.effects.sort();
+        self.effects.dedup();
     }
 
     /// Every list whose filter reads `var` (any variable, for `None`: a mode
@@ -959,14 +1001,18 @@ impl Player {
     // ── Opening and closing frames ───────────────────────────────────────────
 
     /// A frame has opened: its *frame opens* reactions run and its timers start.
+    /// A timer a list's new copy already started (`take_up_copies`, as play
+    /// sets its starting modes) is not started twice.
     pub(crate) fn on_open(&mut self, frame: NodeId) {
         let nodes = subtree_nodes(&self.doc, &[frame]);
         let mut opens = Vec::new();
         for id in nodes {
             let Some(n) = self.doc.get(id) else { continue };
             for r in n.reactions() {
+                let timed = |t: &Timer| t.holder == id && t.reaction == r.id;
                 match r.value.trigger {
                     Trigger::FrameOpens => opens.push((id, r.id)),
+                    Trigger::After { .. } if self.timers.iter().any(timed) => {}
                     Trigger::After { ms } => self.timers.push(Timer {
                         due: self.now + f64::from(ms),
                         holder: id,

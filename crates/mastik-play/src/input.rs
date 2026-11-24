@@ -678,13 +678,31 @@ impl Player {
     pub(crate) fn fire(&mut self, chain: &[NodeId], want: &dyn Fn(&Trigger) -> bool) -> bool {
         let picked = self.picked(chain, want);
         let used = !picked.is_empty();
+        let Some(&(holder, _)) = picked.first() else {
+            return false;
+        };
+        // A reaction's row write can make the holder's list again: each later
+        // reaction is found by its place on the holder at its place in the row.
+        let path = self.row_path(holder);
+        let all: Vec<ItemId> = self
+            .doc
+            .get(holder)
+            .map(|n| n.reactions().iter().map(|r| r.id).collect())
+            .unwrap_or_default();
         // A row of a list is opened before its actions run, so a navigation it
         // makes lands on a detail screen already showing the row.
-        if let Some((id, _)) = picked.first() {
-            self.open_row(*id);
-        }
-        for (id, r) in picked {
-            self.run_reaction(id, r, None);
+        self.open_row(holder);
+        for (_, r) in picked {
+            let now = self.still(holder, path.as_ref());
+            let r = match (now == holder, all.iter().position(|x| *x == r)) {
+                (false, Some(i)) => self
+                    .doc
+                    .get(now)
+                    .and_then(|n| n.reactions().get(i))
+                    .map_or(r, |x| x.id),
+                _ => r,
+            };
+            self.run_reaction(now, r, None);
         }
         used
     }

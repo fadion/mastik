@@ -236,6 +236,11 @@ out both ends.
   silently, as an empty table does. *Add row* on a table at the row limit is skipped with
   `TableFull`. A missing table is `Missing`. After each write, *When a table changes* reactions
   fire (*Triggers*). *Restart* puts every table back.
+  A write makes its lists again with new copies, so the rest of the reaction, and the layer's
+  further reactions, run on the layer at the holder's place in its row (`Player::row_path`,
+  `Player::still`). A list made again in play takes up its new copies as a frame's opening does
+  (`take_up_copies`): their inputs and scroll effects are found, and in a shown frame their
+  *After* reactions start, so a looping row state goes on looping.
 
 ## Inputs
 
