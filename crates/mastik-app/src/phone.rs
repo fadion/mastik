@@ -571,7 +571,7 @@ struct Built {
 
 #[cfg(test)]
 thread_local! {
-    /// How many pages [`build`] packed on this thread.
+    /// How many pages `build` packed on this thread.
     static PACKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
