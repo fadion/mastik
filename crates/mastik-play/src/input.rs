@@ -4,7 +4,7 @@
 use crate::actions::Undo;
 use crate::player::{Notice, Player};
 use crate::scene::Hotspot;
-use mastik_core::kurbo::{Point, Size, Vec2};
+use mastik_core::kurbo::{Point, Rect, Size, Vec2};
 use mastik_core::prototype::{self, Going, Pin, ScrollAxis, Side, Trigger};
 use mastik_core::variable::{ModeId, Value, VarId};
 use mastik_core::variant::{self, Interaction};
@@ -114,6 +114,10 @@ pub(crate) struct While {
     pub(crate) node: NodeId,
     pub(crate) press: bool,
     pub(crate) undo: Vec<Undo>,
+    /// For *while hovering*, where the layer was on the screen when it began:
+    /// the hover lasts while the pointer stays there, even once what the
+    /// reaction did (a navigation, a modal overlay) takes the layer from under it.
+    pub(crate) area: Option<Rect>,
 }
 
 /// What is under a point: the overlay it is in (or outside of), and the layers
@@ -234,6 +238,18 @@ impl Player {
             overlay: None,
             chain: self.chain(self.screen, p),
         }
+    }
+
+    /// Where `id` is on the screen now, in the space [`Self::hit`] reads a point
+    /// in: its box moved by the scrolls above it, in the screen or an overlay.
+    fn screen_area(&self, id: NodeId) -> Option<Rect> {
+        let frame = self.frame_of(id)?;
+        let at = self
+            .overlays
+            .iter()
+            .find(|o| o.frame == frame)
+            .map_or(Vec2::ZERO, |o| self.overlay_at(o).to_vec2());
+        Some(self.rect(id)? + self.drawn_shift(id) - self.origin(frame).to_vec2() + at)
     }
 
     /// The layers of `frame` under `q` (in the frame's own screen space), deepest
@@ -542,18 +558,27 @@ impl Player {
             .copied()
             .filter(|id| !self.hovered.contains(id))
             .collect();
+        // A *while hovering* ends once its layer is not under the pointer and
+        // the pointer has left where the layer was when it began: what the
+        // reaction did may have taken the layer from under a pointer still there.
+        let pointer = self.pointer.filter(|_| !self.touch);
+        let over = |w: &While| {
+            !w.press
+                && (now.contains(&w.node)
+                    || w.area.zip(pointer).is_some_and(|(a, p)| a.contains(p)))
+        };
+        let ended: Vec<While> = self
+            .whiles
+            .iter()
+            .filter(|w| !w.press && !over(w))
+            .cloned()
+            .collect();
+        self.whiles.retain(|w| w.press || over(w));
         self.hovered = now;
+        for w in ended {
+            self.undo(w.undo);
+        }
         for id in left {
-            let ended: Vec<_> = self
-                .whiles
-                .iter()
-                .filter(|w| !w.press && w.node == id)
-                .cloned()
-                .collect();
-            self.whiles.retain(|w| w.press || w.node != id);
-            for w in ended {
-                self.undo(w.undo);
-            }
             if self.auto.contains_key(&id) {
                 self.rest(id);
             }
@@ -581,12 +606,14 @@ impl Player {
                 match r.value.trigger {
                     Trigger::HoverEnter => self.run_reaction(id, r.id, None),
                     Trigger::HoverWhile => {
+                        let area = self.screen_area(id);
                         let mut undo = Vec::new();
                         self.run_reaction(id, r.id, Some(&mut undo));
                         self.whiles.push(While {
                             node: id,
                             press: false,
                             undo,
+                            area,
                         });
                     }
                     _ => {}
@@ -898,6 +925,7 @@ impl Player {
                     node: id,
                     press,
                     undo,
+                    area: None,
                 });
             }
             return true;

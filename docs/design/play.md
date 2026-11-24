@@ -128,7 +128,10 @@ out both ends.
 - *Hover enter* runs once per layer the pointer enters, *On leave* once per layer it leaves (the
   player included); *while hovering* and *while pressed* record what their actions did and put it
   back, newest first, when the pointer leaves or the press ends: a variable's previous play value,
-  an instance's previous main, overlays opened, a navigation (one *Back*). *On leave* fires only
+  an instance's previous main, overlays opened, a navigation (one *Back*). A hover lasts while the
+  layer is under the pointer or the pointer stays where the layer was when it began
+  (`While::area`), so a *while hovering* navigation or modal overlay, which takes the layer from
+  under the pointer, ends when the pointer moves off that place. *On leave* fires only
   for a layer still in a shown frame — one that went with its frame is gone, not left — and not
   in a *Disabled* instance.
 - **A finger hovers nothing.** While the shell says the pointer is a finger (`Input::Touch(true)`),

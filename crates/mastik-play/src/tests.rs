@@ -473,6 +473,73 @@ fn leaving_a_hover_undoes_it() {
     assert!(p.values().iter().all(|r| !r.played), "no play value left");
 }
 
+/// *While pressing* opens an overlay and changes an instance's state while the
+/// press lasts, and release puts both back.
+///
+/// flip: `undo` emptying its `Undo::Overlays` arm → fails at "the overlay
+/// closes"; its `Undo::State` arm → fails at "the state goes back".
+#[test]
+fn releasing_a_press_undoes_it() {
+    let (mut fx, a, instance, [rest, _, pressed]) = button_set();
+    let menu = fx.frame("Menu", 900.0, 80.0, 40.0);
+    let peek = fx.rect(a, "Peek", 120.0, 50.0, 40.0, 40.0);
+    fx.on(
+        peek,
+        Trigger::PressWhile,
+        vec![
+            Action::OpenOverlay {
+                overlay: menu,
+                settings: OverlaySettings::default(),
+                transition: Transition::INSTANT,
+            },
+            Action::ChangeState {
+                instance,
+                to: pressed,
+                transition: Transition::INSTANT,
+            },
+        ],
+    );
+    let mut p = fx.play(a);
+    let link = |p: &Player| p.doc.get(instance).unwrap().link();
+    let at = Point::new(130.0, 60.0);
+    p.input(Input::PointerMove(at));
+    p.input(Input::PointerDown(at));
+    assert_eq!(p.overlays(), vec![menu], "open while pressed");
+    assert_eq!(link(&p), Some(pressed));
+    p.input(Input::PointerUp(at));
+    assert!(p.overlays().is_empty(), "the overlay closes");
+    assert_eq!(link(&p), Some(rest), "the state goes back");
+}
+
+/// *While hovering* navigates while the pointer stays where the layer was, and
+/// leaving that place comes back to the screen with nothing left in the history.
+///
+/// flip: `undo` emptying its `Undo::Screen` arm, or `rehover` ending a while
+/// only for a layer it saw leave (the navigation took the card from under the
+/// pointer before the while was kept) → fails at "back on A".
+#[test]
+fn leaving_a_hover_that_navigated_comes_back() {
+    let (mut fx, a, b, _) = two_screens(Transition::INSTANT);
+    let card = fx.rect(a, "Card", 100.0, 50.0, 40.0, 40.0);
+    fx.on(
+        card,
+        Trigger::HoverWhile,
+        vec![Action::Navigate {
+            to: b,
+            transition: Transition::INSTANT,
+            keep_scroll: false,
+        }],
+    );
+    let mut p = fx.play(a);
+    p.input(Input::PointerMove(Point::new(110.0, 60.0)));
+    assert_eq!(p.screen(), b, "there while hovering");
+    p.input(Input::PointerMove(Point::new(120.0, 70.0)));
+    assert_eq!(p.screen(), b, "still there where the card was");
+    p.input(Input::PointerMove(Point::new(190.0, 95.0)));
+    assert_eq!(p.screen(), a, "back on A");
+    assert!(p.history().is_empty());
+}
+
 /// A key trigger fires on its key, Shift-ed or not as written.
 ///
 /// flip: `Player::key` ignoring `shift` → fails at "the Shift-ed key is not
