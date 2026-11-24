@@ -465,28 +465,20 @@ impl History {
             .iter()
             .position(|s| s.serial == serial)
             .ok_or(RevertError::NoStep)?;
-        let step = &self.undo[at].tx;
+        let replay = self.replay(doc, at);
+        // A table the step puts back goes where the replay puts it: the index it
+        // recorded counts tables a later step may have removed or added.
+        let step = match &replay {
+            Ok((_, replayed)) => tables_placed_as(&self.undo[at].tx, doc, replayed),
+            Err(()) => self.undo[at].tx.clone(),
+        };
         let mut reverted = doc.clone();
-        reverted.apply_restoring(step).map_err(RevertError::Op)?;
-        let mut replayed = doc.clone();
-        let mut forward = Vec::new();
-        for later in self.undo[at + 1..].iter().rev() {
-            let out = replayed
-                .apply_restoring(&later.tx)
-                .map_err(|_| self.tangled(at))?;
-            forward.push(out.inverse);
-        }
-        replayed
-            .apply_restoring(step)
-            .map_err(|_| self.tangled(at))?;
-        let unwound = replayed.clone();
-        for tx in forward.iter().rev() {
-            replayed.apply_restoring(tx).map_err(|_| self.tangled(at))?;
-        }
+        reverted.apply_restoring(&step).map_err(RevertError::Op)?;
+        let (unwound, replayed) = replay.map_err(|()| self.tangled(at))?;
         if replayed != reverted {
             return Err(self.tangled(at));
         }
-        let mut tx = step.clone();
+        let mut tx = step;
         tx.0.extend(carried_pictures(&[&unwound, doc], &reverted));
         let outcome = doc.apply_restoring(&tx).map_err(RevertError::Op)?;
         self.note_restored(&tx);
@@ -531,6 +523,27 @@ impl History {
             self.join_last(joined);
         }
         (joined, separate)
+    }
+
+    /// [`Self::revert`]'s replay of the step at `at` on a copy of `doc`: the later
+    /// steps undone, this one, then the later ones redone. Answers the document
+    /// with only the later steps undone and this one taken back (`unwound`), and
+    /// the replay's end; `Err` when a step no longer applies.
+    fn replay(&self, doc: &Document, at: usize) -> Result<(Document, Document), ()> {
+        let mut replayed = doc.clone();
+        let mut forward = Vec::new();
+        for later in self.undo[at + 1..].iter().rev() {
+            let out = replayed.apply_restoring(&later.tx).map_err(|_| ())?;
+            forward.push(out.inverse);
+        }
+        replayed
+            .apply_restoring(&self.undo[at].tx)
+            .map_err(|_| ())?;
+        let unwound = replayed.clone();
+        for tx in forward.iter().rev() {
+            replayed.apply_restoring(tx).map_err(|_| ())?;
+        }
+        Ok((unwound, replayed))
     }
 
     /// [`RevertError::Tangled`] for the step at `at`, naming the latest later step
@@ -716,6 +729,41 @@ fn carried_pictures(sources: &[&Document], reverted: &Document) -> Vec<Operation
     gone.into_iter()
         .filter(|op| matches!(op, Operation::AddImage { id, .. } if !unused.contains(id)))
         .collect()
+}
+
+/// `tx` applied to `doc` with each table it puts back (`InsertDataSet`) placed
+/// as `replayed` orders the tables: just after the last table there when it
+/// lands that `replayed` holds before it. Its recorded index counted the tables
+/// of its own time, which later steps may have removed or added.
+fn tables_placed_as(tx: &Transaction, doc: &Document, replayed: &Document) -> Transaction {
+    let order: Vec<_> = replayed.data_sets().iter().map(|s| s.id).collect();
+    let mut present: Vec<_> = doc.data_sets().iter().map(|s| s.id).collect();
+    let ops = tx.0.iter().map(|op| match op {
+        Operation::InsertDataSet { set, index } => {
+            let index = match order.iter().position(|id| *id == set.id) {
+                Some(at) => present
+                    .iter()
+                    .rposition(|id| order[..at].contains(id))
+                    .map_or(0, |i| i + 1),
+                None => (*index).min(present.len()),
+            };
+            present.insert(index, set.id);
+            Operation::InsertDataSet {
+                set: set.clone(),
+                index,
+            }
+        }
+        Operation::SetDataSet { id, set } => {
+            match set {
+                None => present.retain(|p| p != id),
+                Some(_) if !present.contains(id) => present.push(*id),
+                Some(_) => {}
+            }
+            op.clone()
+        }
+        _ => op.clone(),
+    });
+    Transaction(ops.collect())
 }
 
 #[cfg(test)]

@@ -35,7 +35,8 @@ template, the list's description, its data set or a variable its filter reads ch
 - **`SetDataSet { id, set }`** adds, replaces or (with `None`) removes one whole data set, refused
   when the set's id is not `id` or `DataSet::validate` refuses it (`OpError::BadList`). A
   removal inverts to `InsertDataSet { set, index }`, which puts the set back at its place, so
-  undoing *Delete table* keeps the tables' order.
+  undoing *Delete table* keeps the tables' order. A revert under later steps (`History::revert`)
+  places the set where its replay puts it, since `index` counted the tables of its own time.
 
 ### The list (`list::List`)
 

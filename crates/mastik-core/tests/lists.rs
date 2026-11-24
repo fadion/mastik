@@ -7,7 +7,7 @@ use mastik_core::kurbo::Size;
 use mastik_core::list::{self, DataSet, Rows, Source};
 use mastik_core::verbs::{self, Ctx, Done};
 use mastik_core::{
-    Document, History, IdSource, NodeId, NodeKind, Operation, Resolved, Transaction,
+    Document, History, IdSource, NodeId, NodeKind, Operation, Resolved, StepNote, Transaction,
 };
 use serde_json::{Value, json};
 
@@ -844,6 +844,60 @@ fn undoing_a_data_set_removal_restores_its_place() {
     assert_eq!(ids_now(&doc), order, "back at its place");
     history.redo(&mut doc).unwrap();
     assert_eq!(ids_now(&doc), order[1..], "redo removes it again");
+}
+
+/// Tables `[A, B, C]`: deletes table `doomed`, then table `then` (or adds a new
+/// table when `then` is `None`), then reverts the first deletion. Answers the
+/// tables after the revert, or its refusal, and the three tables' ids.
+fn revert_a_table_deletion(
+    doomed: usize,
+    then: Option<usize>,
+) -> (Result<Vec<list::DataSetId>, String>, Vec<list::DataSetId>) {
+    let (mut doc, mut ids, _) = blank();
+    let sets: Vec<DataSet> = (0..3).map(|_| data(&mut ids, &[("A", "1")])).collect();
+    let order: Vec<_> = sets.iter().map(|s| s.id).collect();
+    let put = |s: DataSet| Operation::SetDataSet {
+        id: s.id,
+        set: Some(Box::new(s)),
+    };
+    let delete = |id| Transaction(vec![Operation::SetDataSet { id, set: None }]);
+    let mut history = History::default();
+    let add = Transaction(sets.into_iter().map(put).collect());
+    commit(&mut history, &mut doc, &mut ids, add);
+    commit(&mut history, &mut doc, &mut ids, delete(order[doomed]));
+    let first = history.last_serial();
+    let later = match then {
+        Some(i) => delete(order[i]),
+        None => Transaction(vec![put(data(&mut ids, &[("A", "1")]))]),
+    };
+    commit(&mut history, &mut doc, &mut ids, later);
+    let now = history
+        .revert(&mut doc, first, StepNote::default())
+        .map(|_| doc.data_sets().iter().map(|d| d.id).collect())
+        .map_err(|e| e.to_string());
+    (now, order)
+}
+
+/// Reverting an earlier table deletion under a later step puts the table back
+/// where the replay puts it: when the later step removed a table before it (its
+/// recorded index now past the end), when it removed the table between, and
+/// when it added a table, which the replay redoes into the old index.
+/// flip: `History::revert` applying the step's recorded `InsertDataSet` index
+/// (`tables_placed_as` skipped) → fails at "past the end".
+#[test]
+fn reverting_a_table_deletion_under_a_later_one_puts_it_back() {
+    let (now, o) = revert_a_table_deletion(2, Some(0));
+    assert_eq!(now, Ok(vec![o[1], o[2]]), "past the end");
+    let (now, o) = revert_a_table_deletion(1, Some(0));
+    assert_eq!(now, Ok(vec![o[1], o[2]]), "between");
+    let (now, o) = revert_a_table_deletion(2, None);
+    let now = now.expect("a later table");
+    assert_eq!(now.len(), 4, "the later table stays");
+    assert_eq!(
+        [now[0], now[1], now[3]],
+        [o[0], o[1], o[2]],
+        "after the later table, as the replay redoes it"
+    );
 }
 
 /// A picture `n` (its bytes `[n]`) added to the document; answers its id.
