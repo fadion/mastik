@@ -706,6 +706,22 @@ fn filled_tip(column: &str, set: &str) -> String {
     format!("Filled from {column} in {set}, as every row is: edit it in the table")
 }
 
+/// Where an image property's *Replace…* lands: the one layer it drives on the
+/// one instance selected, and the index of that layer's image fill. `None`
+/// for several instances or several layers, since the file lands on one.
+pub(crate) fn image_replace_target(
+    doc: &mastik_core::Document,
+    roots: &[NodeId],
+    p: &variant::Property,
+) -> Option<(NodeId, usize)> {
+    let [root] = roots else { return None };
+    let [layer] = variant::counterparts(doc, *root, p)[..] else {
+        return None;
+    };
+    let (i, _) = doc.get(layer).and_then(variant::image_of)?;
+    Some((layer, i))
+}
+
 /// Why layer `id`'s field of `kind` cannot be edited: it is a layer of a list's
 /// template that a filled property drives, so the next regeneration would write
 /// the row's cell back over the edit. The canvas text session, the Text card's
@@ -2372,8 +2388,8 @@ impl MastikApp {
                         let w = ui.available_width();
                         let mut pick = None;
                         let mut replace = false;
-                        let one_layer =
-                            roots.len() == 1 && variant::counterparts(doc, first, p).len() == 1;
+                        let target = image_replace_target(doc, roots, p);
+                        let one_layer = target.is_some();
                         let face = match thumb {
                             Some(_) => ui::swatch_face_text(&shown),
                             None => ui::glyph_and_text(icon::IMAGE, &shown),
@@ -2419,11 +2435,8 @@ impl MastikApp {
                                 &PropValue::Image(id),
                             )));
                         }
-                        if replace
-                            && let Some(c) = variant::counterparts(doc, first, p).first().copied()
-                            && let Some((i, _)) = doc.get(c).and_then(variant::image_of)
-                        {
-                            replace_picture = Some((c, i));
+                        if replace {
+                            replace_picture = target;
                         }
                     });
                 }

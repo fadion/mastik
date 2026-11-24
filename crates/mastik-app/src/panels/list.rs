@@ -1822,63 +1822,7 @@ mod tests {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx);
         let mut app = MastikApp::headless(&ctx);
-        let png = crate::app::rgba_to_png(&[200; 16], (2, 2)).unwrap();
-        let (main_pic, _) =
-            crate::app::read_picture(png.clone(), Some("png".into()), None).unwrap();
-        let page = app.session.doc.first_page().to_wire();
-        let size = mastik_core::kurbo::Size::new(20.0, 20.0);
-        let frame = serde_json::to_value(NodeKind::Artboard {
-            size,
-            corner_radii: Default::default(),
-            corner_smoothing: 0.0,
-        })
-        .unwrap();
-        let rect = serde_json::to_value(NodeKind::Rect {
-            size,
-            corner_radii: Default::default(),
-            corner_smoothing: 0.0,
-        })
-        .unwrap();
-        let main = verb(
-            &mut app,
-            "create_node",
-            json!({ "parent": page, "kind": frame, "name": "Card", "x": -4000 }),
-        )[0];
-        let thumb = verb(
-            &mut app,
-            "create_node",
-            json!({ "parent": main.to_wire(), "kind": rect }),
-        )[0];
-        let fill = mastik_core::Fill {
-            brush: mastik_core::BrushSource::Literal(mastik_core::image_brush(main_pic.id.clone())),
-            visible: true,
-        };
-        let item = app.session.ids.mint_item();
-        assert!(app.session.commit(mastik_core::Transaction(vec![
-            mastik_core::Operation::AddImage {
-                id: main_pic.id.clone(),
-                entry: main_pic.entry.clone(),
-            },
-            mastik_core::Operation::SetFills {
-                id: thumb,
-                fills: vec![mastik_core::Keyed::new(item, fill)],
-            },
-        ])));
-        verb(
-            &mut app,
-            "make_component",
-            json!({ "nodes": [main.to_wire()] }),
-        );
-        verb(
-            &mut app,
-            "define_property",
-            json!({ "node": thumb.to_wire(), "kind": "image", "name": "Photo" }),
-        );
-        let inst = verb(
-            &mut app,
-            "create_instance",
-            json!({ "main": main.to_wire(), "parent": page, "x": -3500, "y": 0 }),
-        )[0];
+        let inst = with_photo(&mut app);
         let dir = std::env::temp_dir().join(format!("mastik-make-list-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let other = crate::app::rgba_to_png(&[10; 16], (2, 2)).unwrap();
@@ -1916,6 +1860,200 @@ mod tests {
         assert_eq!(made.data, data, "the list reads the table");
         let set = doc.data_set(data).unwrap();
         assert!(set.picture(doc, "ada.png").is_some(), "read beside");
+    }
+
+    /// *List fill* pointing the template's image property at a column of a
+    /// linked set reads the pictures it names in the same step, and a later fill
+    /// edit that points nothing new at a picture column reads none again.
+    /// flip: `commit_list_fill` without its `retain` of new columns → fails at
+    /// "nothing read again".
+    #[test]
+    fn a_list_fill_reads_only_the_picture_columns_it_newly_points_at() {
+        use mastik_core::chart::DataLink;
+        use mastik_core::list::{List, Rows, Target};
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let inst = with_photo(&mut app);
+        let dir = std::env::temp_dir().join(format!("mastik-list-fill-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ada = crate::app::rgba_to_png(&[10; 16], (2, 2)).unwrap();
+        std::fs::write(dir.join("ada.png"), ada).unwrap();
+        // Named apart from the property, so the list starts with no fill.
+        let set = DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "People".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "pic".into(),
+                }],
+                rows: vec![vec!["ada.png".into()]],
+            },
+            source: Some(DataLink {
+                path: dir.join("people.csv").to_string_lossy().into_owned(),
+                size: 0,
+                modified: 0,
+                header: None,
+            }),
+            pictures: Vec::new(),
+        };
+        let data = set.id;
+        let (tx, l) = list::make(
+            &app.session.doc,
+            &app.session.resolved,
+            &mut app.session.ids,
+            inst,
+            Source::New(set),
+        )
+        .unwrap();
+        assert!(app.commit_edit(tx));
+        let now: List = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        assert!(now.fill.is_empty(), "fixture: no fill yet");
+        let photo = mastik_core::variant::instance_properties(&app.session.doc, inst)
+            .iter()
+            .find(|p| p.name == "Photo")
+            .map(|p| p.id)
+            .expect("fixture: the image property");
+        let images = |app: &MastikApp| app.session.doc.images().count();
+        let (depth, before) = (app.session.history.undo_depth(), images(&app));
+        let filled = List {
+            fill: vec![list::Fill {
+                target: Target::Prop(photo),
+                column: ColumnId(0),
+            }],
+            ..now
+        };
+        app.commit_list_fill(l, filled.clone());
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
+        let doc = &app.session.doc;
+        let set = doc.data_set(data).unwrap();
+        assert_eq!(set.pictures.len(), 1, "the pair");
+        assert!(set.picture(doc, "ada.png").is_some(), "read beside");
+        assert_eq!(images(&app), before + 1, "one picture added");
+
+        // The file changes on disk; a fill edit naming no new picture column
+        // must not read it in again.
+        let other = crate::app::rgba_to_png(&[90; 16], (2, 2)).unwrap();
+        std::fs::write(dir.join("ada.png"), other).unwrap();
+        let next = List {
+            rows: Rows::First(1),
+            ..filled
+        };
+        app.commit_list_fill(l, next);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(images(&app), before + 1, "nothing read again");
+    }
+
+    /// An image property's *Replace…* lands on the one layer it drives and that
+    /// layer's image fill, not its first fill; with two instances selected it
+    /// has nowhere to land.
+    /// flip: `image_replace_target` answering fill 0 → fails at "its image
+    /// fill"; without its one-root gate → fails at "two instances".
+    #[test]
+    fn an_image_propertys_replace_lands_on_its_layers_image_fill() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let inst = with_photo(&mut app);
+        let main = mastik_core::component::main_of(&app.session.doc, inst).unwrap();
+        let thumb = app.session.doc.get(main).unwrap().children()[0];
+        // A solid fill under the picture, so the image fill is the second.
+        let mut fills = app.session.doc.get(thumb).unwrap().paint().fills.to_vec();
+        let solid = mastik_core::Fill {
+            brush: mastik_core::BrushSource::Literal(mastik_core::Brush::Solid(
+                mastik_core::peniko::Color::BLACK,
+            )),
+            visible: true,
+        };
+        fills.insert(
+            0,
+            mastik_core::Keyed::new(app.session.ids.mint_item(), solid),
+        );
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::SetFills { id: thumb, fills }
+        ])));
+        let page = app.session.doc.first_page().to_wire();
+        let other = verb(
+            &mut app,
+            "create_instance",
+            json!({ "main": main.to_wire(), "parent": page, "x": -3000, "y": 0 }),
+        )[0];
+        let doc = &app.session.doc;
+        let photo = mastik_core::variant::instance_properties(doc, inst)
+            .into_iter()
+            .find(|p| p.name == "Photo")
+            .expect("fixture: the image property");
+        let copy = mastik_core::variant::counterparts(doc, inst, &photo);
+        assert_eq!(copy.len(), 1, "fixture: one layer");
+        assert_eq!(
+            crate::panels::variants::image_replace_target(doc, &[inst], &photo),
+            Some((copy[0], 1)),
+            "its image fill"
+        );
+        assert_eq!(
+            crate::panels::variants::image_replace_target(doc, &[inst, other], &photo),
+            None,
+            "two instances"
+        );
+    }
+
+    /// A main *Card* whose rect *thumb* shows a picture through an image
+    /// property *Photo*, and an instance of it on the page; answers the instance.
+    fn with_photo(app: &mut MastikApp) -> NodeId {
+        let png = crate::app::rgba_to_png(&[200; 16], (2, 2)).unwrap();
+        let (main_pic, _) =
+            crate::app::read_picture(png.clone(), Some("png".into()), None).unwrap();
+        let page = app.session.doc.first_page().to_wire();
+        let size = mastik_core::kurbo::Size::new(20.0, 20.0);
+        let frame = serde_json::to_value(NodeKind::Artboard {
+            size,
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        })
+        .unwrap();
+        let rect = serde_json::to_value(NodeKind::Rect {
+            size,
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        })
+        .unwrap();
+        let main = verb(
+            app,
+            "create_node",
+            json!({ "parent": page, "kind": frame, "name": "Card", "x": -4000 }),
+        )[0];
+        let thumb = verb(
+            app,
+            "create_node",
+            json!({ "parent": main.to_wire(), "kind": rect }),
+        )[0];
+        let fill = mastik_core::Fill {
+            brush: mastik_core::BrushSource::Literal(mastik_core::image_brush(main_pic.id.clone())),
+            visible: true,
+        };
+        let item = app.session.ids.mint_item();
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::AddImage {
+                id: main_pic.id.clone(),
+                entry: main_pic.entry.clone(),
+            },
+            mastik_core::Operation::SetFills {
+                id: thumb,
+                fills: vec![mastik_core::Keyed::new(item, fill)],
+            },
+        ])));
+        verb(app, "make_component", json!({ "nodes": [main.to_wire()] }));
+        verb(
+            app,
+            "define_property",
+            json!({ "node": thumb.to_wire(), "kind": "image", "name": "Photo" }),
+        );
+        verb(
+            app,
+            "create_instance",
+            json!({ "main": main.to_wire(), "parent": page, "x": -3500, "y": 0 }),
+        )[0]
     }
 
     /// Pictures beside a data file are read only under a local absolute folder:
