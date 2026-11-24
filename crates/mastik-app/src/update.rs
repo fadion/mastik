@@ -412,55 +412,26 @@ impl Updater {
     }
 }
 
-/// **The top bar's update chip**: a top-bar pill at [`crate::ui::TOOLBAR_H`] — a
-/// clockwise arrow and the state's [`UpdateState::label`] in capitals — or nothing at all for
-/// a state with no label. Only a staged update is a button
-/// ([`crate::ui::button_face`], `Off`), and then it is the restart; a download in
-/// flight wears the same ground and is no tab stop. Returns whether it was
-/// clicked so; the caller applies.
+/// **The top bar's update chip**: a [`crate::ui::toolbar_pill`] — the download
+/// arrow and the state's [`UpdateState::label`] — or nothing at all for a state
+/// with no label. Only a staged update is live, and then it is the restart; a
+/// download in flight is the pill disabled. Returns whether it was clicked so;
+/// the caller applies.
 ///
 /// Both screens draw it, in the `right_to_left` cluster beside Settings, so an
 /// update staged while the library is open is offered there too.
 pub(crate) fn chip(ui: &mut egui::Ui, state: &UpdateState) -> bool {
-    use crate::theme::{self, color, icon};
-    use crate::ui::{self, FieldButton, Scale};
+    use crate::theme::icon;
+    use crate::ui::{self, FieldButton};
     let Some(label) = state.label() else {
         return false;
     };
     let actionable = state.is_actionable();
-    let galley = |ui: &egui::Ui, color| {
-        let mut job = egui::text::LayoutJob::default();
-        job.append(
-            icon::ARROW_CIRCLE_DOWN,
-            0.0,
-            egui::TextFormat::simple(theme::icon_font(Scale::Toolbar.glyph_pt()), color),
-        );
-        job.append(
-            &label,
-            5.0,
-            egui::TextFormat::simple(egui::FontId::proportional(Scale::Toolbar.text_pt()), color),
-        );
-        ui.fonts_mut(|f| f.layout_job(job))
+    let face = match actionable {
+        true => FieldButton::Off,
+        false => FieldButton::Disabled,
     };
-    let w = galley(ui, color::text()).size().x + ui::FIELD_PAD_X * 2.0;
-    let size = egui::vec2(w, ui::TOOLBAR_H);
-    let (rect, resp, fg) = if actionable {
-        ui::button_face(ui, size, FieldButton::Off)
-    } else {
-        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::hover());
-        let r = egui::CornerRadius::same(ui::BUTTON_R);
-        let p = ui.painter();
-        p.rect_filled(rect, r, color::field());
-        p.rect_stroke(
-            rect,
-            r,
-            egui::Stroke::new(1.0, color::field_border()),
-            egui::StrokeKind::Inside,
-        );
-        (rect, resp, theme::text::muted())
-    };
-    let g = galley(ui, fg);
-    ui.painter().galley(rect.center() - g.size() / 2.0, g, fg);
+    let resp = ui::toolbar_pill(ui, icon::ARROW_CIRCLE_DOWN, &label, face);
     let resp = match state {
         UpdateState::Ready { version } => {
             resp.on_hover_text(format!("Restart Mastik to install version {version}"))
@@ -516,6 +487,50 @@ fn spawn_check(live: &Live) {
 mod tests {
     //! Plain backticks: a `cfg(test)` module is checked by nothing (§15 D319).
     use super::*;
+
+    /// The update chip lays its glyph and words out as the top bar's other
+    /// pills do, staged or downloading.
+    /// flip: `chip` laying out its own face, words centred → fails at "as a pill".
+    #[test]
+    fn the_update_chip_is_a_toolbar_pill() {
+        use crate::ui::FieldButton;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let texts = |draw: &mut dyn FnMut(&mut egui::Ui)| {
+            let mut shapes = Vec::new();
+            for _ in 0..2 {
+                shapes = ctx.run_ui(Default::default(), |ui| draw(ui)).shapes;
+            }
+            shapes
+                .iter()
+                .filter_map(|cs| match &cs.shape {
+                    egui::Shape::Text(t) => Some((t.galley.text().to_owned(), t.pos)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let downloading = UpdateState::Downloading {
+            version: "9.9.9".into(),
+            pct: 40,
+        };
+        let ready = UpdateState::Ready {
+            version: "9.9.9".into(),
+        };
+        for (state, face) in [
+            (&ready, FieldButton::Off),
+            (&downloading, FieldButton::Disabled),
+        ] {
+            let label = state.label().expect("fixture: a labelled state");
+            let chip = texts(&mut |ui| {
+                chip(ui, state);
+            });
+            let pill = texts(&mut |ui| {
+                crate::ui::toolbar_pill(ui, crate::theme::icon::ARROW_CIRCLE_DOWN, &label, face);
+            });
+            assert!(!chip.is_empty(), "fixture: the chip drew");
+            assert_eq!(chip, pill, "as a pill: {label}");
+        }
+    }
 
     #[test]
     fn the_opt_out_takes_only_the_spellings_that_mean_it() {
