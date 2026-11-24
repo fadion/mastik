@@ -115,14 +115,18 @@ pub(crate) struct ActionDrag {
 /// What a typed field of prototype mode is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum DraftKey {
-    /// A conditional's branch condition, or *Set variable*'s value (branch 0).
+    /// A conditional's branch condition, *Set variable*'s value (branch 0), or a
+    /// row action's *Where* (`usize::MAX`). A branch's removal drops its action's
+    /// draft, which would otherwise move to the branch taking its place.
     Expr(ItemId, usize),
+    /// A row action's cell, by its column.
+    Cell(ItemId, mastik_core::chart::ColumnId),
     /// *Open link*'s address.
     Url(ItemId),
     /// A flow's name.
     FlowName(ItemId),
-    /// A flow's starting value, by its place in the flow's list.
-    FlowValue(ItemId, usize),
+    /// A flow's starting value, by the variable it sets.
+    FlowValue(ItemId, VarId),
     /// A snap point's name: the layer, and the point (`None` where it is drawn).
     PointName(NodeId, Option<ItemId>),
     /// A list filter test's value: the list frame, and the test's place.
@@ -5521,6 +5525,14 @@ impl MastikApp {
                 if let Some(i) = drop {
                     next_branches.remove(i);
                     changed = true;
+                    if self
+                        .proto
+                        .draft
+                        .as_ref()
+                        .is_some_and(|d| matches!(d.key, DraftKey::Expr(a, _) if a == k.id))
+                    {
+                        self.proto.draft = None;
+                    }
                 }
                 if crate::settings::text_button(ui, "Add else if", FieldButton::Off)
                     .on_hover_text("Add a branch tried when the ones above are not")
@@ -5817,13 +5829,13 @@ impl MastikApp {
         };
         if at.is_some() {
             // *Add row*: every column, an empty field an empty cell.
-            for (i, (col, name)) in columns.iter().enumerate() {
+            for (col, name) in &columns {
                 let now = cells
                     .iter()
                     .find(|c| c.column == *col)
                     .map_or_else(Expr::default, |c| c.to.clone());
                 ui::labelled(ui, name, |ui| {
-                    let key = DraftKey::Expr(k.id, i);
+                    let key = DraftKey::Cell(k.id, *col);
                     let reads = Reads::Tables(None);
                     if let Some(e) = self.expr_field(ui, key, &now, w, ExprWant::OrEmpty, reads) {
                         let mut c: Vec<CellWrite> =
@@ -5855,7 +5867,7 @@ impl MastikApp {
             ui::labelled(ui, name, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = COL;
-                    let key = DraftKey::Expr(k.id, i);
+                    let key = DraftKey::Cell(k.id, c.column);
                     let want = ExprWant::Kind(None);
                     let reads = Reads::Tables(Some(table));
                     if let Some(e) = self.expr_field(ui, key, &c.to, fw, want, reads) {
@@ -7606,7 +7618,7 @@ impl MastikApp {
                                 next = Some((with_values(values), "Change starting value"));
                             }
                         }
-                        if let Some(c) = app.flow_value_field(ui, f.id, i, *var, cell, half) {
+                        if let Some(c) = app.flow_value_field(ui, f.id, *var, cell, half) {
                             let mut values = f.values.clone();
                             values[i].1 = c;
                             next = Some((with_values(values), "Change starting value"));
@@ -7772,7 +7784,6 @@ impl MastikApp {
         &mut self,
         ui: &mut egui::Ui,
         flow: ItemId,
-        index: usize,
         var: VarId,
         cell: &Cell,
         w: f32,
@@ -7795,7 +7806,7 @@ impl MastikApp {
                 doc.variables().get(*v).map_or("?", |x| x.name.as_str())
             ),
         };
-        let key = DraftKey::FlowValue(flow, index);
+        let key = DraftKey::FlowValue(flow, var);
         let ctx = ui.ctx().clone();
         let live = ui::Draft::live(&mut self.proto.draft, &ctx, key);
         let refused = live.as_ref().and_then(|d| d.refused.clone());
@@ -9882,6 +9893,93 @@ mod tests {
             Some(Cell::Number(2.0)),
             "first mode"
         );
+    }
+
+    /// A refused branch condition does not move to the branch that takes its place
+    /// when a branch above it is removed.
+    /// flip: the Conditional arm not dropping its draft on a branch's removal →
+    /// fails at "not moved".
+    #[test]
+    fn a_refused_branch_draft_stays_with_its_branch() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        let branch = |w: &str| Branch {
+            when: Expr(w.into()),
+            actions: Vec::new(),
+        };
+        let open = one_action(
+            &mut f,
+            Action::Conditional {
+                branches: vec![branch("1 == 1"), branch("2 == 2"), branch("3 == 3")],
+                otherwise: Vec::new(),
+            },
+        );
+        f.app.session.selection.set_one(f.add);
+        f.app.proto.open = Some(open);
+        f.app.proto.draft = Some(
+            ui::Draft::new(&ctx, DraftKey::Expr(open.action, 1), "zz(".into())
+                .refuse("Not read".into()),
+        );
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 2400.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                ui.set_max_width(280.0);
+                app.inspector_ui(ui)
+            })
+        };
+        let at = |out: &egui::FullOutput, text: &str| -> Vec<egui::Pos2> {
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == text => {
+                        Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let mut out = frame(&mut f.app, vec![]);
+        for _ in 0..3 {
+            out = frame(&mut f.app, vec![]);
+        }
+        assert_eq!(at(&out, "zz(").len(), 1, "fixture: the refused draft shows");
+        // The popover's × buttons below its *If* label: one per branch.
+        let first = at(&out, "IF")[0];
+        let mut xs: Vec<egui::Pos2> = at(&out, icon::X)
+            .into_iter()
+            .filter(|p| p.x > first.x && p.y > first.y)
+            .collect();
+        xs.sort_by(|a, b| a.y.total_cmp(&b.y));
+        assert_eq!(xs.len(), 3, "fixture: a remove per branch");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: xs[0],
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        frame(
+            &mut f.app,
+            vec![egui::Event::PointerMoved(xs[0]), press(true)],
+        );
+        frame(&mut f.app, vec![press(false)]);
+        let mut out = frame(&mut f.app, vec![]);
+        for _ in 0..3 {
+            out = frame(&mut f.app, vec![]);
+        }
+        let n = f.app.session.doc.get(f.add).unwrap();
+        let Action::Conditional { branches, .. } = &n.reactions()[0].actions[0].value else {
+            panic!("fixture: the conditional");
+        };
+        assert_eq!(branches.len(), 2, "fixture: the first branch removed");
+        assert!(at(&out, "zz(").is_empty(), "not moved");
     }
 
     /// Prototype mode is remembered by the library for the document, as the
