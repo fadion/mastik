@@ -11193,8 +11193,10 @@ impl MastikApp {
         self.draw_component_chrome(painter, rect, ppp);
 
         self.draw_grid_tracks(painter, rect, ppp);
-        self.draw_spacing_bands(painter, rect, ppp);
-        self.draw_loose_spacing(painter, rect, ppp);
+        // A dialog or popup over the canvas keeps the pointer from these.
+        let over = resp.contains_pointer();
+        self.draw_spacing_bands(painter, rect, ppp, over);
+        self.draw_loose_spacing(painter, rect, ppp, over);
         self.draw_repeat_gaps(painter, rect, ppp);
         self.draw_shape_handles(painter, rect, ppp);
         self.draw_warp(painter, rect, ppp);

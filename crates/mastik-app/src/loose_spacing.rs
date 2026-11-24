@@ -294,13 +294,20 @@ impl MastikApp {
     /// every gap band faint, the one under the pointer strong with its pill, and
     /// the hovered layer's centre dot. Dragging a gap, its axis's bands strong and
     /// the value beside the pointer; reordering, the layer as a ghost under the
-    /// pointer while the run previews where it lands.
-    pub(crate) fn draw_loose_spacing(&self, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
+    /// pointer while the run previews where it lands. At rest, nothing lights
+    /// unless `over` says the canvas itself holds the pointer, not a dialog over it.
+    pub(crate) fn draw_loose_spacing(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        ppp: f32,
+        over: bool,
+    ) {
         if self.mode != crate::input::Mode::Normal || self.chrome_hidden() {
             return;
         }
         let dragging = matches!(self.drag, Drag::LooseGap { .. } | Drag::LooseReorder { .. });
-        if !dragging && !self.drag.is_none() {
+        if !dragging && (!self.drag.is_none() || !over) {
             return;
         }
         let Some(pointer) = painter.ctx().input(|i| i.pointer.latest_pos()) else {

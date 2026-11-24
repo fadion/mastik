@@ -807,13 +807,20 @@ impl MastikApp {
     /// are already drawn by its track lines, so only its padding is added — the
     /// band under the pointer strong with its pill; while dragging only the
     /// bands being written, strong, and the label beside the pointer. A bound
-    /// band's label shows on hover, its variable as a capsule.
-    pub(crate) fn draw_spacing_bands(&self, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
+    /// band's label shows on hover, its variable as a capsule. Nothing lights
+    /// unless `over` says the canvas itself holds the pointer, not a dialog over it.
+    pub(crate) fn draw_spacing_bands(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        ppp: f32,
+        over: bool,
+    ) {
         if self.mode != crate::input::Mode::Normal {
             return;
         }
         let dragging = matches!(self.drag, Drag::Spacing { .. });
-        if !dragging && (!matches!(self.drag, Drag::None) || self.chrome_hidden()) {
+        if !dragging && (!matches!(self.drag, Drag::None) || self.chrome_hidden() || !over) {
             return;
         }
         let Some(pointer) = painter.ctx().input(|i| i.pointer.latest_pos()) else {
@@ -1144,6 +1151,60 @@ mod canvas_tests {
             .display()
             .unwrap()
             .spacing()
+    }
+
+    /// **A window over the canvas keeps its bands dark**: the pointer on the
+    /// row's first gap lights the bands, and the same pointer over a foreground
+    /// area covering the canvas, as a dialog does, lights none.
+    /// flip: `draw_spacing_bands` ignoring `over` → fails at "covered".
+    #[test]
+    fn a_window_over_the_canvas_keeps_the_bands_dark() {
+        let ctx = egui::Context::default();
+        let (mut app, _row) = app_with_a_row(&ctx);
+        let at = app.to_screen(Point::new(65.0, 35.0), RECT, 1.0);
+        let lit = |out: &egui::FullOutput| {
+            out.shapes
+                .iter()
+                .filter(|s| match &s.shape {
+                    egui::Shape::Path(p) => {
+                        p.fill == crate::theme::color::GRID_GAP
+                            || p.fill == crate::theme::color::SPACING_STRONG
+                    }
+                    _ => false,
+                })
+                .count()
+        };
+        let run = |app: &mut MastikApp, covered: bool| {
+            let time = ctx.input(|i| i.time) + 0.1;
+            ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(RECT),
+                    time: Some(time),
+                    events: vec![egui::Event::PointerMoved(at)],
+                    ..Default::default()
+                },
+                |ui| {
+                    app.canvas_ui(ui);
+                    if covered {
+                        egui::Area::new(egui::Id::new("over-the-canvas"))
+                            .order(egui::Order::Foreground)
+                            .fixed_pos(egui::Pos2::ZERO)
+                            .show(ui.ctx(), |ui| {
+                                ui.allocate_exact_size(RECT.size(), egui::Sense::hover());
+                            });
+                    }
+                },
+            )
+        };
+        let mut out = run(&mut app, false);
+        for _ in 0..3 {
+            out = run(&mut app, false);
+        }
+        assert!(lit(&out) > 0, "fixture: the gap under the pointer lights");
+        for _ in 0..4 {
+            out = run(&mut app, true);
+        }
+        assert_eq!(lit(&out), 0, "covered");
     }
 
     /// **Dragging a gap band writes the gap, one undo step**: the band
