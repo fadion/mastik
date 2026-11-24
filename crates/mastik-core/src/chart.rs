@@ -1324,8 +1324,9 @@ impl Chart {
     /// dropped. When no column that draws (a series, or a Sankey's value)
     /// survives the move or the edit, the mapping is guessed, so a chart moved
     /// onto an unrelated table draws it; on the set it reads, a mapping that
-    /// drew nothing already stays as it is. The link is dropped, since the data
-    /// set holds its own.
+    /// drew nothing already stays as it is, unless the table offered nothing to
+    /// draw before the edit. The link is dropped, since the data set holds its
+    /// own.
     pub fn reading(&self, data: crate::list::DataSetId, table: &Table) -> Chart {
         let old = &self.table;
         let same = self.data == Some(data);
@@ -1356,9 +1357,14 @@ impl Chart {
             value: m.value.and_then(onto),
         };
         // On the set it reads, a mapping drawing nothing before the edit is the
-        // person's own choice, not a loss to make up for.
+        // person's own choice, not a loss to make up for, unless the table then
+        // offered nothing to draw: then the guess had nothing to find.
         let drew = !m.series.is_empty() || m.value.is_some();
-        if mapping.series.is_empty() && mapping.value.is_none() && (drew || !same) {
+        let offered = || {
+            let g = Mapping::guess(self.kind, old);
+            !g.series.is_empty() || g.value.is_some()
+        };
+        if mapping.series.is_empty() && mapping.value.is_none() && (drew || !same || !offered()) {
             mapping = Mapping::guess(self.kind, table);
         }
         let mut styles: Vec<SeriesStyle> = Vec::new();

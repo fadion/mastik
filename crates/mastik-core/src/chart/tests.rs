@@ -1105,3 +1105,22 @@ fn an_edit_of_its_set_keeps_a_chart_with_no_series() {
     let moved = chart.reading(set_id(2), &edited);
     assert!(!moved.mapping.series.is_empty(), "guessed on another set");
 }
+
+/// A chart on a set with no number column draws nothing, and once an edit of
+/// the set writes numbers, its mapping is guessed again.
+/// flip: `Chart::reading` without the `offered` check → fails at "guessed once
+/// numbers arrive".
+#[test]
+fn a_chart_whose_set_offered_nothing_guesses_once_numbers_arrive() {
+    let blank = set_table(&[(0, "Month"), (1, "Sales")], &["Jan", ""]);
+    let chart = Chart::sample(ChartKind::Column).reading(set_id(1), &blank);
+    assert!(chart.mapping.series.is_empty(), "fixture: nothing to draw");
+    let mut filled = blank.clone();
+    filled.rows[0][1] = "5".into();
+    let after = chart.reading(set_id(1), &filled);
+    assert_eq!(
+        after.mapping.series,
+        vec![ColumnId(1)],
+        "guessed once numbers arrive"
+    );
+}
