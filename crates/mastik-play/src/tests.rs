@@ -734,7 +734,9 @@ fn a_clicked_field_shows_focus_over_hover() {
 /// the history; a click outside closes it.
 ///
 /// flip: `run_action`'s `Back` popping the history even with an overlay open →
-/// fails at "and leaves the screen".
+/// fails at "and leaves the screen"; `pointer_down` going on after closing the
+/// overlay → fails at "the close was the click's use" (the hit outside an
+/// overlay holds no layer, so nothing beneath could react either way).
 #[test]
 fn an_overlay_opens_closes_and_backs_out() {
     let mut fx = Fx::new();
@@ -767,6 +769,17 @@ fn an_overlay_opens_closes_and_backs_out() {
             keep_scroll: false,
         }],
     );
+    // A layer on B under the point the outside click lands on.
+    let fired = fx.var("fired", VarKind::Boolean, Cell::Boolean(false));
+    let under = fx.rect(b, "Under", 160.0, 60.0, 40.0, 40.0);
+    fx.on(
+        under,
+        Trigger::Click,
+        vec![Action::SetVariable {
+            var: fired,
+            change: VarChange::Toggle,
+        }],
+    );
     let mut p = fx.play(a);
     click(&mut p, 10.0, 10.0);
     click(&mut p, 10.0, 10.0);
@@ -778,11 +791,210 @@ fn an_overlay_opens_closes_and_backs_out() {
     click(&mut p, 55.0, 30.0);
     assert!(p.overlays().is_empty(), "back closes the overlay");
     assert_eq!(p.screen(), b, "and leaves the screen");
+    click(&mut p, 190.0, 90.0);
+    assert_eq!(
+        p.doc.resolve_var(b, fired),
+        Some(Value::Boolean(true)),
+        "fixture: the layer under the outside point reacts"
+    );
     click(&mut p, 10.0, 10.0);
     // Outside the overlay: it closes, and the click goes no further.
     click(&mut p, 190.0, 90.0);
     assert!(p.overlays().is_empty(), "a click outside closes it");
     assert_eq!(p.screen(), b);
+    assert_eq!(p.scene().hint_flash, None, "the close was the click's use");
+    assert_eq!(
+        p.doc.resolve_var(b, fired),
+        Some(Value::Boolean(true)),
+        "the layer beneath did not react"
+    );
+}
+
+/// An overlay set not to close on an outside click stays open, and the click
+/// reaches nothing beneath it; a layer inside it still reacts.
+///
+/// flip: `pointer_down` closing the top overlay whatever `close_outside` says →
+/// fails at "stays open". Going on past a kept-open overlay instead of
+/// returning changes only whether the hints flash, which nothing pins.
+#[test]
+fn an_overlay_kept_open_takes_an_outside_click() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let menu = fx.frame("Menu", 300.0, 100.0, 50.0);
+    let fired = fx.var("fired", VarKind::Boolean, Cell::Boolean(false));
+    let open = fx.rect(a, "Open", 0.0, 0.0, 40.0, 40.0);
+    fx.on(
+        open,
+        Trigger::Click,
+        vec![Action::OpenOverlay {
+            overlay: menu,
+            settings: OverlaySettings {
+                close_outside: false,
+                ..OverlaySettings::default()
+            },
+            transition: Transition::INSTANT,
+        }],
+    );
+    let under = fx.rect(a, "Under", 160.0, 60.0, 40.0, 40.0);
+    fx.on(
+        under,
+        Trigger::Click,
+        vec![Action::SetVariable {
+            var: fired,
+            change: VarChange::Toggle,
+        }],
+    );
+    let close = fx.rect(menu, "Close", 0.0, 0.0, 20.0, 20.0);
+    fx.on(
+        close,
+        Trigger::Click,
+        vec![Action::CloseOverlay {
+            transition: Transition::INSTANT,
+        }],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 10.0, 10.0);
+    assert_eq!(p.overlays(), vec![menu], "fixture: open");
+    click(&mut p, 190.0, 90.0);
+    assert_eq!(p.overlays(), vec![menu], "stays open");
+    assert_eq!(
+        p.doc.resolve_var(a, fired),
+        Some(Value::Boolean(false)),
+        "the layer beneath did not react"
+    );
+    // Close sits at the centred overlay's top-left.
+    click(&mut p, 55.0, 30.0);
+    assert!(p.overlays().is_empty(), "*Close overlay* closes it");
+}
+
+/// *Swap overlay* from a layer inside the top overlay replaces it, the new one
+/// placed by the layer's corner as drawn before the swap; *Navigate* with an
+/// overlay open closes it.
+///
+/// flip: `run_action`'s `SwapOverlay` reading the anchor after the pop → fails
+/// at "by the button that swapped it"; `show` not closing the overlays → fails
+/// at "navigating closes the overlay".
+#[test]
+fn swap_overlay_replaces_the_top_and_navigating_closes_it() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let b = fx.frame("B", 300.0, 200.0, 100.0);
+    let menu = fx.frame("Menu", 600.0, 60.0, 40.0);
+    let more = fx.frame("More", 800.0, 50.0, 30.0);
+    let manual = OverlaySettings {
+        position: OverlayPosition::Manual { x: 0.0, y: 24.0 },
+        ..OverlaySettings::default()
+    };
+    let open = fx.rect(a, "Open", 120.0, 30.0, 40.0, 20.0);
+    fx.on(
+        open,
+        Trigger::Click,
+        vec![Action::OpenOverlay {
+            overlay: menu,
+            settings: manual,
+            transition: Transition::INSTANT,
+        }],
+    );
+    let next = fx.rect(menu, "Next", 10.0, 0.0, 20.0, 20.0);
+    fx.on(
+        next,
+        Trigger::Click,
+        vec![Action::SwapOverlay {
+            overlay: more,
+            settings: manual,
+            transition: Transition::INSTANT,
+        }],
+    );
+    let go = fx.rect(more, "Go", 0.0, 0.0, 20.0, 20.0);
+    fx.on(
+        go,
+        Trigger::Click,
+        vec![Action::Navigate {
+            to: b,
+            transition: Transition::INSTANT,
+            keep_scroll: false,
+        }],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 130.0, 40.0);
+    assert_eq!(p.overlays(), vec![menu], "fixture: open");
+    let top = p.scene().layers.last().cloned().unwrap();
+    assert_eq!(top.at, Point::new(120.0, 54.0), "fixture: by its button");
+    // Next is at (130, 54) as drawn.
+    click(&mut p, 135.0, 60.0);
+    assert_eq!(p.overlays(), vec![more], "swapped");
+    let top = p.scene().layers.last().cloned().unwrap();
+    assert_eq!(
+        top.at,
+        Point::new(130.0, 78.0),
+        "by the button that swapped it"
+    );
+    click(&mut p, 135.0, 85.0);
+    assert_eq!(p.screen(), b, "fixture: navigated");
+    assert!(p.overlays().is_empty(), "navigating closes the overlay");
+}
+
+/// *Close overlay* plays its own transition, and *Back* the reverse of the one
+/// the overlay opened with: the closing overlay is drawn fading for the span.
+///
+/// flip: `close_top` ignoring the transition it is given → fails at "closes by
+/// its own dissolve"; closing at once when given none → fails at "back reverses
+/// the opening dissolve".
+#[test]
+fn closing_an_overlay_plays_its_transition() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let menu = fx.frame("Menu", 300.0, 100.0, 50.0);
+    let open = |transition| Action::OpenOverlay {
+        overlay: menu,
+        settings: OverlaySettings::default(),
+        transition,
+    };
+    let instant = fx.rect(a, "Instant", 0.0, 0.0, 20.0, 20.0);
+    fx.on(instant, Trigger::Click, vec![open(Transition::INSTANT)]);
+    let fading = fx.rect(a, "Fading", 0.0, 80.0, 20.0, 20.0);
+    fx.on(
+        fading,
+        Trigger::Click,
+        vec![open(linear(TransitionKind::Dissolve, 100))],
+    );
+    let close = fx.rect(menu, "Close", 0.0, 0.0, 20.0, 20.0);
+    fx.on(
+        close,
+        Trigger::Click,
+        vec![Action::CloseOverlay {
+            transition: linear(TransitionKind::Dissolve, 100),
+        }],
+    );
+    let back = fx.rect(menu, "Back", 80.0, 0.0, 20.0, 20.0);
+    fx.on(back, Trigger::Click, vec![Action::Back]);
+    let menu_opacity = |p: &Player| {
+        p.scene()
+            .layers
+            .iter()
+            .find(|l| l.frame == menu)
+            .map(|l| l.opacity)
+    };
+    let mut p = fx.play(a);
+    click(&mut p, 10.0, 10.0);
+    assert_eq!(menu_opacity(&p), Some(1.0), "fixture: opened at once");
+    // Close sits at the centred overlay's top-left.
+    click(&mut p, 55.0, 30.0);
+    assert!(p.overlays().is_empty());
+    p.tick(50.0);
+    let half = menu_opacity(&p).expect("closes by its own dissolve");
+    assert!(half > 0.0 && half < 1.0, "half way: {half}");
+    p.tick(100.0);
+    assert_eq!(menu_opacity(&p), None, "gone at the end");
+
+    click(&mut p, 10.0, 90.0);
+    p.tick(200.0);
+    assert_eq!(menu_opacity(&p), Some(1.0), "fixture: faded in");
+    click(&mut p, 135.0, 30.0);
+    assert!(p.overlays().is_empty(), "back closes it");
+    p.tick(50.0);
+    let half = menu_opacity(&p).expect("back reverses the opening dissolve");
+    assert!(half > 0.0 && half < 1.0, "half way: {half}");
 }
 
 /// A manual overlay sits at its offset from the layer that opens it, and one
@@ -2472,11 +2684,15 @@ fn navigate_keeps_scroll_when_asked() {
 }
 
 /// *Set mode* switches what a variable reads for the run, everywhere or on the
-/// screen alone, and the state card's row follows; the document is untouched
-/// and a restart starts from the saved modes.
+/// screen alone, and the state card's row follows; a frame pinning its own
+/// mode keeps it, the document is untouched, a restart starts from the saved
+/// modes, and a mode that is not there is said once.
 ///
 /// flip: `Player::set_mode_on` filtering by the wrong collection (keeping the
-/// old mode beside the new) → fails at "reads the dark column".
+/// old mode beside the new) → fails at "reads the dark column"; `run_action`'s
+/// `SetMode` setting *This screen* everywhere → fails at "set on the screen";
+/// `restart` putting the played modes back → fails at "a restart reads
+/// the saved modes".
 #[test]
 fn set_mode_switches_what_variables_read() {
     let mut fx = Fx::new();
@@ -2505,6 +2721,12 @@ fn set_mode_switches_what_variables_read() {
             description: String::new(),
         },
     }]);
+    let b = fx.frame("B", 300.0, 200.0, 100.0);
+    let pinned = fx.frame("Pinned", 600.0, 200.0, 100.0);
+    fx.apply(vec![Operation::SetModes {
+        id: pinned,
+        modes: vec![light],
+    }]);
     let card = fx.rect(a, "Card", 10.0, 10.0, 50.0, 30.0);
     fx.on(
         card,
@@ -2514,6 +2736,48 @@ fn set_mode_switches_what_variables_read() {
             scope: ModeScope::Everywhere,
         }],
     );
+    let here = fx.rect(a, "Here", 100.0, 10.0, 30.0, 30.0);
+    fx.on(
+        here,
+        Trigger::Click,
+        vec![Action::SetMode {
+            mode: dark,
+            scope: ModeScope::Screen,
+        }],
+    );
+    let go = fx.rect(a, "Go", 100.0, 60.0, 30.0, 30.0);
+    fx.on(
+        go,
+        Trigger::Click,
+        vec![Action::Navigate {
+            to: b,
+            transition: Transition::INSTANT,
+            keep_scroll: false,
+        }],
+    );
+    let gone = fx.ids.mint_mode();
+    let bad = fx.rect(a, "Bad", 150.0, 10.0, 30.0, 30.0);
+    fx.on(
+        bad,
+        Trigger::Click,
+        vec![Action::SetMode {
+            mode: gone,
+            scope: ModeScope::Everywhere,
+        }],
+    );
+
+    // This screen.
+    let mut p = fx.play(a);
+    click(&mut p, 110.0, 20.0);
+    assert_eq!(number(&p, n), 2.0, "the screen reads dark");
+    assert_eq!(p.modes()[0].current, dark);
+    assert!(p.modes()[0].screen_sets, "set on the screen");
+    click(&mut p, 110.0, 70.0);
+    assert_eq!(p.screen(), b, "fixture: navigated");
+    assert_eq!(number(&p, n), 1.0, "B reads the saved mode");
+    assert!(!p.modes()[0].screen_sets);
+
+    // Everywhere.
     let mut p = fx.play(a);
     assert_eq!(number(&p, n), 1.0);
     assert_eq!(p.modes()[0].current, light);
@@ -2522,14 +2786,34 @@ fn set_mode_switches_what_variables_read() {
     assert_eq!(p.modes()[0].current, dark, "the card follows");
     assert!(!p.modes()[0].screen_sets, "set on the page, not the screen");
     assert_eq!(
+        p.doc.resolve_var(pinned, n),
+        Some(Value::Number(1.0)),
+        "a frame's own pin keeps it"
+    );
+    assert_eq!(
         fx.doc.resolve_var(a, n),
         Some(Value::Number(1.0)),
         "the document is untouched"
     );
-    p.input(Input::SetMode(light));
-    assert_eq!(number(&p, n), 1.0, "a pick from the card");
     p.restart();
     assert_eq!(number(&p, n), 1.0, "a restart reads the saved modes");
+    click(&mut p, 20.0, 20.0);
+    p.input(Input::SetMode(light));
+    assert_eq!(number(&p, n), 1.0, "a pick from the card");
+
+    // A mode that is not there.
+    let _ = p.take_notices();
+    click(&mut p, 160.0, 20.0);
+    click(&mut p, 160.0, 20.0);
+    assert_eq!(number(&p, n), 1.0, "nothing set");
+    assert_eq!(
+        p.take_notices(),
+        vec![Notice::Missing {
+            layer: bad,
+            action: fx.doc.get(bad).unwrap().reactions()[0].value.actions[0].id,
+        }],
+        "said once"
+    );
 }
 
 /// A flow's starting mode is set everywhere as play starts, again on a
