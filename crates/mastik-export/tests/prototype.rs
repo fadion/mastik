@@ -421,6 +421,132 @@ fn the_page_calls_only_what_the_player_exports() {
     assert!(html.contains("requestAnimationFrame"), "ticks by frame");
 }
 
+/// The arguments inside the bracket `s` opens with, split at the commas outside
+/// any inner bracket (and, for JavaScript, string); `angle` counts `<>` as
+/// brackets, for a Rust parameter list.
+fn arguments(s: &str, angle: bool) -> Vec<&str> {
+    let (mut depth, mut from, mut quote, mut escaped) = (0usize, 1, None, false);
+    let mut out = Vec::new();
+    for (i, c) in s.char_indices() {
+        if let Some(q) = quote {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                _ if c == q => quote = None,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' | '`' if !angle => quote = Some(c),
+            '(' | '[' | '{' => depth += 1,
+            '<' if angle => depth += 1,
+            '>' if angle => depth -= 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    out.push(&s[from..i]);
+                    break;
+                }
+            }
+            ',' if depth == 1 => {
+                out.push(&s[from..i]);
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.into_iter()
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .collect()
+}
+
+/// The page passes each player function as many arguments as it takes, and
+/// reads `frame`'s answer by the slots `frame` fills, in their order.
+///
+/// flip: a slot inserted before `moving` in `Player::frame`'s answer → fails at
+/// "frame's slots"; a fifth parameter on `start` → fails at "as many arguments".
+#[test]
+fn the_page_calls_the_player_with_its_arity_and_reads_frames_slots() {
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let html = Parts::of(
+        &f.doc,
+        Player {
+            wasm: WASM,
+            glue: GLUE,
+        },
+    )
+    .expect("parts")
+    .html();
+    let lib = include_str!("../../mastik-web/src/lib.rs");
+    let takes = |name: &str| {
+        let at = [format!("pub fn {name}("), format!("pub async fn {name}(")]
+            .iter()
+            .find_map(|head| lib.find(head.as_str()).map(|at| at + head.len() - 1))
+            .unwrap_or_else(|| panic!("the player exports {name}"));
+        arguments(&lib[at..], true)
+            .into_iter()
+            .filter(|p| !p.ends_with("self"))
+            .count()
+    };
+    let mut checked = Vec::new();
+    for object in ["player.", "wasm_bindgen."] {
+        for call in html.split(object).skip(1) {
+            let name: String = call
+                .chars()
+                .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                .collect();
+            if name.is_empty() || !call[name.len()..].starts_with('(') {
+                continue;
+            }
+            let given = arguments(&call[name.len()..], false);
+            // A spread's count is the array's, which a text cannot read.
+            if given.iter().any(|a| a.starts_with("...")) {
+                continue;
+            }
+            assert_eq!(
+                given.len(),
+                takes(&name),
+                "the page calls {object}{name} with as many arguments as it takes"
+            );
+            checked.push(name);
+        }
+    }
+    for owed in ["start", "add_font", "frame", "layer_at"] {
+        assert!(checked.iter().any(|c| c == owed), "checked {owed}");
+    }
+
+    let body = &lib[lib.find("pub fn frame(").expect("frame")..];
+    let body = &body[body.find("Ok(vec![").expect("frame's answer") + "Ok(vec!".len()..];
+    assert_eq!(
+        arguments(body, false),
+        [
+            "p.scale",
+            "p.stage.width",
+            "p.stage.height",
+            "p.at.x",
+            "p.at.y",
+            "p.screen.width",
+            "p.screen.height",
+            "p.bezel",
+            "p.radius",
+            "f64::from(u8::from(self.play.is_moving()))",
+            "flash",
+        ],
+        "frame's slots"
+    );
+    for read in [
+        "const [, sw, sh, x, y, w, h, b, r] = p;",
+        "p.slice(1, 9)",
+        "if (p[9])",
+        "drawHints(p[10])",
+    ] {
+        assert!(html.contains(read), "the page reads frame's slots: {read}");
+    }
+}
+
 /// Inspect mode's data goes in: every layer's CSS as *Copy as CSS* writes it, and
 /// the files a layer's export settings write, rendered, under the layer's id.
 ///
