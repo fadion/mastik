@@ -1865,9 +1865,14 @@ fn export_all(
     // `write_export`'s, a separate implementation of the same walk.
     let replaced = write_planned(&written)?;
     let report = export_all_report(written.len(), replaced, skipped, &dir);
-    let report = match missing.len() {
+    let refused = panels::refused_count(&doc, &missing);
+    let report = match missing.len() - refused {
         0 => report,
         n => format!("{report} ({} not found)", ui::count(n, "picture")),
+    };
+    let report = match refused {
+        0 => report,
+        n => format!("{report} ({} not read)", ui::count(n, "picture")),
     };
     Ok(match overflowing.len() {
         0 => report,
@@ -3844,8 +3849,11 @@ mod tests {
     /// `--all` reads the pictures beside a linked table for a per-row export,
     /// and counts a cell naming none once, though two settings' files read it.
     ///
+    /// A file there but refused is reported as not read.
+    ///
     /// flip: `export_all` not calling `with_row_pictures` → fails at "found
-    /// beside the table"; summing each file's count → fails at "counted once".
+    /// beside the table"; summing each file's count → fails at "counted once";
+    /// not asking `refused_count` → fails at "not read, not missing".
     #[test]
     fn export_all_reads_the_pictures_beside_a_linked_table() {
         use mastik_core::chart::{Column, DataLink, Table};
@@ -3951,6 +3959,13 @@ mod tests {
         assert!(
             missing.ends_with("(1 picture not found)"),
             "a cell naming no file is counted once, though two files read it: {missing}"
+        );
+        // There, but no picture the read takes.
+        std::fs::write(dir.join("broken.png"), b"not a picture").unwrap();
+        let refused = run("broken.png");
+        assert!(
+            refused.ends_with("(1 picture not read)") && !refused.contains("not found"),
+            "a file there but refused is not read, not missing: {refused}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

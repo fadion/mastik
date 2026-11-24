@@ -3890,6 +3890,30 @@ impl ExportFlags {
     }
 }
 
+/// How many of the `missing` picture cells (data set, row, column) name a file
+/// that is there but was refused, so a report says *not read* for them and *not
+/// found* for the rest; the app's export and the CLI's `--all` both ask.
+pub(crate) fn refused_count(
+    doc: &mastik_core::Document,
+    missing: &[(
+        mastik_core::list::DataSetId,
+        usize,
+        mastik_core::chart::ColumnId,
+    )],
+) -> usize {
+    missing
+        .iter()
+        .filter(|(d, row, col)| {
+            doc.data_set(*d).is_some_and(|set| {
+                set.table
+                    .index_of(*col)
+                    .and_then(|i| set.table.rows.get(*row)?.get(i))
+                    .is_some_and(|cell| crate::list_data::refused_picture(set, cell).is_some())
+            })
+        })
+        .count()
+}
+
 /// Whether `file` draws a table's rows: one row's file, or a *One PDF* holding
 /// a page per row.
 pub(crate) fn draws_rows(file: &PlannedFile) -> bool {
@@ -4011,17 +4035,7 @@ fn deliver(
             None => skipped += 1,
         }
     }
-    let refused = missing
-        .iter()
-        .filter(|(d, row, col)| {
-            doc.data_set(*d).is_some_and(|set| {
-                set.table
-                    .index_of(*col)
-                    .and_then(|i| set.table.rows.get(*row)?.get(i))
-                    .is_some_and(|cell| crate::list_data::refused_picture(set, cell).is_some())
-            })
-        })
-        .count();
+    let refused = refused_count(doc, &missing);
     let mut out = Delivered {
         skipped,
         missing_pictures: missing.len() - refused,
