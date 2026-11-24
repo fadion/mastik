@@ -424,7 +424,9 @@ pub const INSPECT_CSS_MAX: usize = 32 * 1024;
 
 /// Each layer's CSS as *Copy as CSS* writes it ([`crate::code::css_of`]), for
 /// every layer on `doc`'s pages but the pages themselves, in document order. A
-/// layer whose CSS is longer than [`INSPECT_CSS_MAX`] is left out.
+/// layer whose CSS is longer than [`INSPECT_CSS_MAX`] is kept empty, so the page
+/// tells it from a layer with none, or one play made (a list's row), which are
+/// left out.
 pub fn inspect_css(doc: &Document, res: &Resolved) -> Vec<(NodeId, String)> {
     let pages: Vec<NodeId> = doc.page_ids().collect();
     let layers = mastik_core::subtree_nodes(doc, &pages);
@@ -433,7 +435,11 @@ pub fn inspect_css(doc: &Document, res: &Resolved) -> Vec<(NodeId, String)> {
         .filter(|id| !pages.contains(id))
         .filter_map(|id| {
             let css = crate::code::css_of(doc, res, &[id]);
-            (!css.is_empty() && css.len() <= INSPECT_CSS_MAX).then_some((id, css))
+            match css.len() {
+                0 => None,
+                n if n > INSPECT_CSS_MAX => Some((id, String::new())),
+                _ => Some((id, css)),
+            }
         })
         .collect()
 }
@@ -1019,8 +1025,11 @@ const BOOT: &str = r##"(async () => {
           () => toast("Copied the CSS"), () => toast("The browser refused the clipboard")));
         head.append(copy);
         el("pre", css);
-      } else {
+      } else if (css === "") {
         el("p", "Too long to carry in the file; copy it from Mastik.");
+      } else {
+        // A layer with no CSS, or one play made (a list's row).
+        el("p", "No CSS for this layer here; inspect it in Mastik.");
       }
       const files = parts.files.get(picked) || [];
       el("h3", "Export");

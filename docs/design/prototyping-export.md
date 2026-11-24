@@ -237,7 +237,9 @@ canvas, the drawing and the page around them.
   *Annotation* head, its line breaks kept; none when it has none), its CSS as *Copy as CSS* writes it with a *Copy*
   button, and the files its export settings write, to download. The page has no exporter, so
   both are made when the file is: `prototype::inspect_css` for every layer (a layer whose CSS
-  is over 32 KB is left out, and the panel says to copy it from Mastik) and
+  is over 32 KB is packed empty, and the panel says to copy it from Mastik; a layer the file
+  holds no CSS for, having none or made in play like a list's row, says to inspect it in
+  Mastik) and
   `prototype::inspect_files`, rendered through `plan`. A *One file per row* setting gives one
   file, the layer as it stands (`PlanOptions::rows_unfilled`): a file or page per row would
   render the whole table into the page, and again on every measure of the export card. Boxes

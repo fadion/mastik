@@ -745,6 +745,76 @@ fn inspect_carries_each_layers_css_and_export_files() {
     assert_eq!(&file.bytes[..8], b"\x89PNG\r\n\x1a\n");
 }
 
+/// A layer whose CSS is past the limit is packed empty, so the page tells "too
+/// long" from a layer it holds no CSS for (one play made, a list's row), and
+/// says each its own way.
+///
+/// flip: `inspect_css` leaving out a too-long layer → fails at "packed empty".
+#[test]
+fn inspect_tells_too_long_css_from_none() {
+    use mastik_core::kurbo::{Affine, RoundedRectRadii, Size};
+    use mastik_core::{IdSource, NodeKind};
+    let mut ids = IdSource::new(0x1C55);
+    let page = ids.mint();
+    let mut doc = mastik_core::Document::new(page);
+    let frame = ids.mint();
+    let mut ops = vec![Operation::CreateNode {
+        id: frame,
+        parent: page,
+        index: 0,
+        kind: NodeKind::Artboard {
+            size: Size::new(400.0, 4000.0),
+            corner_radii: RoundedRectRadii::default(),
+            corner_smoothing: 0.0,
+        },
+        transform: Some(Affine::IDENTITY),
+        name: Some("Long".into()),
+    }];
+    for i in 0..600 {
+        ops.push(Operation::CreateNode {
+            id: ids.mint(),
+            parent: frame,
+            index: i,
+            kind: NodeKind::Rect {
+                size: Size::new(40.0, 4.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((0.0, i as f64 * 6.0))),
+            name: Some(format!("Row {i}")),
+        });
+    }
+    doc.apply(&Transaction(ops)).expect("a long frame");
+    let res = mastik_core::Resolved::settled(&mut doc);
+    assert!(
+        mastik_export::code::css_of(&doc, &res, &[frame]).len()
+            > mastik_export::prototype::INSPECT_CSS_MAX,
+        "fixture: the frame's CSS is past the limit"
+    );
+    let css = mastik_export::prototype::inspect_css(&doc, &res);
+    let long = css
+        .iter()
+        .find(|(id, _)| *id == frame)
+        .map(|(_, c)| c.as_str());
+    assert_eq!(long, Some(""), "packed empty");
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let html = Parts::of(
+        &f.doc,
+        Player {
+            wasm: WASM,
+            glue: GLUE,
+        },
+    )
+    .expect("parts")
+    .html();
+    assert!(html.contains("Too long to carry"), "the too-long sentence");
+    assert!(
+        html.contains("No CSS for this layer here"),
+        "the none sentence"
+    );
+}
+
 /// A *One file per row* setting offers inspect mode the layer's one file as it
 /// stands, a file per setting whatever the table's length, *One PDF* included.
 ///
