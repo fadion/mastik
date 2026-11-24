@@ -622,7 +622,9 @@ pub mod icon {
     pub const OUTLINE_VIEW: &str = "\u{f040}";
     pub const TRIANGLE: &str = "\u{e4b0}"; // the polygon tool — it starts as one
     pub const STAR: &str = "\u{e46a}";
-    pub const PLAY: &str = "\u{e3d0}"; // present mode
+    /// Playing: present mode, *Play prototype*, a flow (its canvas chip and the
+    /// export card's rows) and a table edited in play.
+    pub const PLAY: &str = "\u{e3d0}";
     pub const ASTERISK: &str = "\u{e0aa}"; // a star's point count
     pub const ANGLE: &str = "\u{e7bc}"; // a stroke's mitre limit
     /// A star's inner ratio: a star with its inner radius drawn to a dot.
@@ -1365,7 +1367,8 @@ pub mod icon {
     pub const CONDITIONAL: &str = "\u{f08f}";
     /// The player's *Record a take*: a ring round a filled dot.
     pub const RECORD: &str = "\u{f090}";
-    /// The player's *Play on a phone*: a handset with its speaker slot. Not
+    /// A device a prototype plays on: a handset with its speaker slot. The
+    /// player's *Play on a phone* and the page's *Device* dropdown. Not
     /// [`DEVICES`], which is picking a mode by width.
     pub const PHONE: &str = "\u{f091}";
     /// Turning a prototype's device on its side: an upright handset with a

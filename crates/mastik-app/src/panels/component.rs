@@ -1192,7 +1192,7 @@ fn rounded_outline(r: egui::Rect, radius: f32) -> Vec<egui::Pos2> {
 }
 
 /// The inspector card that shows the field `op` writes, by title, or `None` for a
-/// field no card header owns (the identity card's name and visibility, a path's
+/// field no card header owns (the identity card's name, visibility and annotation, a path's
 /// or boolean's shape, the text's content and rail, the mask flag, the fill rule).
 /// Wildcard-free on the operation, so a new field operation is placed here by
 /// whoever adds it.
@@ -1202,7 +1202,6 @@ fn card_of(op: &Operation) -> Option<&'static str> {
     match op {
         // A width's or a height's binding is the W or H field's.
         O::SetTransform { .. } | O::SetPivot { .. } | O::SetSizeVars { .. } => Some("Transform"),
-        O::SetNote { .. } => Some("Annotation"),
         // A content's or a family's binding is the Type card's Content or family
         // row.
         O::SetTextVars { .. } => Some("Type"),
@@ -1248,7 +1247,9 @@ fn card_of(op: &Operation) -> Option<&'static str> {
         | O::SetParagraphStyle { .. }
         | O::SetBlockStyle { .. }
         | O::SetTypeStyle { .. } => Some("Type"),
+        // The annotation is the identity card's last row.
         O::SetName { .. }
+        | O::SetNote { .. }
         | O::SetVisible { .. }
         | O::SetVisibleVar { .. }
         | O::SetMask { .. }

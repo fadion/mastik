@@ -840,17 +840,23 @@ pub(crate) fn find(list: &[Keyed<Action>], id: ItemId) -> Option<&Keyed<Action>>
         if k.id == id {
             return Some(k);
         }
-        match &k.value {
-            Action::Conditional {
-                branches,
-                otherwise,
-            } => branches
-                .iter()
-                .find_map(|b| find(&b.actions, id))
-                .or_else(|| find(otherwise, id)),
-            _ => None,
-        }
+        k.value
+            .nested()
+            .find_map(|n| find(std::slice::from_ref(n), id))
     })
+}
+
+/// The action lists nested in `action`, in [`Action::nested`]'s order, to
+/// change: a conditional's branches, then its *else*.
+fn nested_lists_mut(action: &mut Action) -> impl Iterator<Item = &mut Vec<Keyed<Action>>> {
+    let (branches, otherwise): (&mut [Branch], Option<&mut Vec<Keyed<Action>>>) = match action {
+        Action::Conditional {
+            branches,
+            otherwise,
+        } => (branches, Some(otherwise)),
+        _ => (&mut [], None),
+    };
+    branches.iter_mut().map(|b| &mut b.actions).chain(otherwise)
 }
 
 /// [`find`], to change it.
@@ -859,17 +865,8 @@ pub(crate) fn find_mut(list: &mut [Keyed<Action>], id: ItemId) -> Option<&mut Ke
         if k.id == id {
             return Some(k);
         }
-        if let Action::Conditional {
-            branches,
-            otherwise,
-        } = &mut k.value
-        {
-            for b in branches.iter_mut() {
-                if let Some(hit) = find_mut(&mut b.actions, id) {
-                    return Some(hit);
-                }
-            }
-            if let Some(hit) = find_mut(otherwise, id) {
+        for l in nested_lists_mut(&mut k.value) {
+            if let Some(hit) = find_mut(l, id) {
                 return Some(hit);
             }
         }
@@ -932,25 +929,18 @@ pub(crate) fn backdrop_held(
     doc: &mastik_core::Document,
     tx: &Transaction,
 ) -> Option<(NodeId, ItemId, mastik_core::peniko::Color)> {
-    fn walk(list: &[Keyed<Action>], out: &mut Vec<(ItemId, mastik_core::peniko::Color)>) {
+    fn walk<'a>(
+        list: impl IntoIterator<Item = &'a Keyed<Action>>,
+        out: &mut Vec<(ItemId, mastik_core::peniko::Color)>,
+    ) {
         for k in list {
-            match &k.value {
-                Action::OpenOverlay { settings, .. } | Action::SwapOverlay { settings, .. } => {
-                    if let Some(c) = settings.backdrop {
-                        out.push((k.id, c));
-                    }
-                }
-                Action::Conditional {
-                    branches,
-                    otherwise,
-                } => {
-                    for b in branches {
-                        walk(&b.actions, out);
-                    }
-                    walk(otherwise, out);
-                }
-                _ => {}
+            if let Action::OpenOverlay { settings, .. } | Action::SwapOverlay { settings, .. } =
+                &k.value
+                && let Some(c) = settings.backdrop
+            {
+                out.push((k.id, c));
             }
+            walk(k.value.nested(), out);
         }
     }
     tx.0.iter().find_map(|op| {
@@ -996,13 +986,8 @@ pub(crate) fn remove(list: &mut Vec<Keyed<Action>>, id: ItemId) -> bool {
         list.remove(i);
         return true;
     }
-    list.iter_mut().any(|k| match &mut k.value {
-        Action::Conditional {
-            branches,
-            otherwise,
-        } => branches.iter_mut().any(|b| remove(&mut b.actions, id)) || remove(otherwise, id),
-        _ => false,
-    })
+    list.iter_mut()
+        .any(|k| nested_lists_mut(&mut k.value).any(|l| remove(l, id)))
 }
 
 /// Move the action `id` to `to` within its own list, `to` counted among the
@@ -1014,16 +999,8 @@ pub(crate) fn move_to(list: &mut Vec<Keyed<Action>>, id: ItemId, to: usize) -> b
         list.insert(to, k);
         return i != to;
     }
-    list.iter_mut().any(|k| match &mut k.value {
-        Action::Conditional {
-            branches,
-            otherwise,
-        } => {
-            branches.iter_mut().any(|b| move_to(&mut b.actions, id, to))
-                || move_to(otherwise, id, to)
-        }
-        _ => false,
-    })
+    list.iter_mut()
+        .any(|k| nested_lists_mut(&mut k.value).any(|l| move_to(l, id, to)))
 }
 
 /// The pointer, where the canvas's own layer is the one on top: over a card or
@@ -1038,26 +1015,14 @@ fn canvas_pointer(ui: &egui::Ui) -> Option<egui::Pos2> {
 }
 
 /// A copy of `list` with every item id (nested ones included) minted afresh, for
-/// *Duplicate*: the door refuses a repeated id.
+/// *Duplicate* and *Paste interactions*: the door refuses a repeated id.
 fn fresh_ids(list: &[Keyed<Action>], mint: &mut impl FnMut() -> ItemId) -> Vec<Keyed<Action>> {
     list.iter()
         .map(|k| {
-            let value = match &k.value {
-                Action::Conditional {
-                    branches,
-                    otherwise,
-                } => Action::Conditional {
-                    branches: branches
-                        .iter()
-                        .map(|b| Branch {
-                            when: b.when.clone(),
-                            actions: fresh_ids(&b.actions, mint),
-                        })
-                        .collect(),
-                    otherwise: fresh_ids(otherwise, mint),
-                },
-                other => other.clone(),
-            };
+            let mut value = k.value.clone();
+            for l in nested_lists_mut(&mut value) {
+                *l = fresh_ids(l, mint);
+            }
             Keyed::new(mint(), value)
         })
         .collect()
@@ -1196,7 +1161,7 @@ pub(crate) fn expr_stored(
         ),
     };
     if let Some(why) = error {
-        return Err((capitalised(&why.to_string()), Some(why.at())));
+        return Err((ui::upper_first(&why.to_string()), Some(why.at())));
     }
     if let Some(want) = want {
         // `kind` reads the stored form, whose ranges are not the typed text's.
@@ -1205,7 +1170,7 @@ pub(crate) fn expr_stored(
                 Ref::Var(v) => vars.get(*v).map(|v| Some(v.kind)).ok_or(Unread::Missing),
                 r => table_kind(doc.data_sets(), reads.row(), r),
             })
-            .map_err(|why| (capitalised(&why.to_string()), None))?;
+            .map_err(|why| (ui::upper_first(&why.to_string()), None))?;
         if let Some(got) = got
             && got != want
         {
@@ -1465,14 +1430,6 @@ fn kind_word(k: VarKind) -> &'static str {
     }
 }
 
-fn capitalised(s: &str) -> String {
-    let mut c = s.chars();
-    match c.next() {
-        Some(f) => f.to_uppercase().chain(c).collect(),
-        None => String::new(),
-    }
-}
-
 /// Whether `url` is an address *Open link* takes: `http` or `https`.
 pub(crate) fn is_link(url: &str) -> bool {
     let u = url.trim().to_ascii_lowercase();
@@ -1505,6 +1462,24 @@ pub(crate) fn screens(doc: &Document) -> Vec<(NodeId, Vec<NodeId>)> {
 pub(crate) fn is_frame(doc: &Document, id: NodeId) -> bool {
     doc.get(id)
         .is_some_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }))
+}
+
+/// The frames a flow on `page` can start on, in page order with the mains
+/// last: a main is a component, not a screen, so `+` never starts on one while
+/// a screen is there.
+fn flow_starts(doc: &Document, page: NodeId) -> Vec<NodeId> {
+    let mut frames: Vec<NodeId> = doc
+        .get(page)
+        .map(|r| {
+            r.children()
+                .iter()
+                .copied()
+                .filter(|c| is_frame(doc, *c))
+                .collect()
+        })
+        .unwrap_or_default();
+    frames.sort_by_key(|f| doc.get(*f).is_some_and(|n| n.component()));
+    frames
 }
 
 /// The top-level frame `id` is in (itself, for one), or `None` on open canvas.
@@ -1847,6 +1822,64 @@ fn free_flow_name(flows: &[Keyed<Flow>]) -> String {
     format!("Flow {n}")
 }
 
+/// A flow's starting value for `var` read from `typed` as the variable's kind
+/// reads: a finite number, the text as typed, exactly `true` or `false`, a
+/// colour (its typed alpha kept), or `{name}` for another variable of the same
+/// kind. `None` when it does not read.
+fn flow_value_read(doc: &Document, var: VarId, typed: &str) -> Option<Cell> {
+    let vars = doc.variables();
+    let kind = vars.get(var)?.kind;
+    let t = typed.trim();
+    let alias = t
+        .strip_prefix('{')
+        .and_then(|r| r.strip_suffix('}'))
+        .and_then(|n| match vars.ids_named(n)[..] {
+            [one] => vars.get(one),
+            _ => None,
+        })
+        .filter(|v| v.kind == kind && v.id != var)
+        .map(|v| Cell::Alias(v.id));
+    alias.or(match kind {
+        VarKind::Number => t
+            .parse::<f64>()
+            .ok()
+            .filter(|n| n.is_finite())
+            .map(Cell::Number),
+        VarKind::String => Some(Cell::String(typed.to_string())),
+        VarKind::Boolean => match t {
+            "true" => Some(Cell::Boolean(true)),
+            "false" => Some(Cell::Boolean(false)),
+            _ => None,
+        },
+        VarKind::Color => crate::colour_text::parse(t).map(|c| Cell::Color(c.color(1.0))),
+    })
+}
+
+/// The page card's turn button: disabled without a known device, since a
+/// screen with no device has no orientation; lit while turned. Its state and
+/// tooltip.
+fn turn_button(play: &PagePlay) -> (FieldButton, &'static str) {
+    match (play.can_turn(), play.landscape) {
+        (false, _) => (FieldButton::Disabled, "Pick a device to turn"),
+        (true, true) => (FieldButton::On, "Turn to portrait"),
+        (true, false) => (FieldButton::Off, "Turn to landscape"),
+    }
+}
+
+/// Whether play lays the screen out other than as drawn: a device lays it out
+/// at its size under every scaling, and *Responsive* at the player's.
+fn lays_out_screen(play: &PagePlay) -> bool {
+    play.can_turn() || play.scaling == Scaling::Responsive
+}
+
+/// The mode of collection `c` a flow starting on `start` picks when it takes
+/// the collection: the first the frame does not read now, so the pick changes
+/// something.
+fn mode_not_read(doc: &Document, start: NodeId, c: &Switchable<'_>) -> Option<ModeId> {
+    let now = doc.mode_of_at(start, c.owner);
+    c.modes.iter().find(|m| Some(m.0) != now).map(|m| m.0)
+}
+
 /// *Set variable*'s first value: the variable itself, which reads and changes
 /// nothing until it is typed over. An empty one would refuse the export.
 fn keeps(var: VarId) -> Expr {
@@ -2076,46 +2109,36 @@ pub(crate) fn action_refusal(
 
 /// The connectors of one action list of reaction `reaction` on `holder`; a
 /// nested (`conditional`) list's are dotted.
-fn layer_links(
+fn layer_links<'a>(
     doc: &Document,
     holder: NodeId,
     reaction: ItemId,
-    list: &[Keyed<Action>],
+    list: impl IntoIterator<Item = &'a Keyed<Action>>,
     conditional: bool,
     out: &mut Vec<Link>,
 ) {
     for k in list {
-        match &k.value {
-            Action::Navigate { to: t, .. }
-            | Action::OpenOverlay { overlay: t, .. }
-            | Action::SwapOverlay { overlay: t, .. } => {
-                let line = match k.value {
-                    _ if conditional => LinkLine::Dotted,
-                    Action::Navigate { .. } => LinkLine::Solid,
-                    _ => LinkLine::Dashed,
-                };
-                out.push(Link {
-                    from: holder,
-                    to: mastik_core::prototype::resolve_target(doc, holder, *t),
-                    line,
-                    at: ActionAt {
-                        node: holder,
-                        reaction,
-                        action: k.id,
-                    },
-                });
-            }
-            Action::Conditional {
-                branches,
-                otherwise,
-            } => {
-                for b in branches {
-                    layer_links(doc, holder, reaction, &b.actions, true, out);
-                }
-                layer_links(doc, holder, reaction, otherwise, true, out);
-            }
-            _ => {}
+        if let Action::Navigate { to: t, .. }
+        | Action::OpenOverlay { overlay: t, .. }
+        | Action::SwapOverlay { overlay: t, .. } = &k.value
+        {
+            let line = match k.value {
+                _ if conditional => LinkLine::Dotted,
+                Action::Navigate { .. } => LinkLine::Solid,
+                _ => LinkLine::Dashed,
+            };
+            out.push(Link {
+                from: holder,
+                to: mastik_core::prototype::resolve_target(doc, holder, *t),
+                line,
+                at: ActionAt {
+                    node: holder,
+                    reaction,
+                    action: k.id,
+                },
+            });
         }
+        layer_links(doc, holder, reaction, k.value.nested(), true, out);
     }
 }
 
@@ -2145,12 +2168,17 @@ pub(crate) enum LinkLine {
 pub(crate) fn links_on(doc: &Document, page: NodeId) -> Vec<Link> {
     let mut out = Vec::new();
     for id in descendants(doc, page) {
-        let Some(n) = doc.get(id) else { continue };
-        for r in n.reactions() {
-            layer_links(doc, id, r.id, &r.actions, false, &mut out);
-        }
+        links_from(doc, id, &mut out);
     }
     out
+}
+
+/// The connectors leaving layer `id` itself, pushed onto `out`.
+fn links_from(doc: &Document, id: NodeId, out: &mut Vec<Link>) {
+    let Some(n) = doc.get(id) else { return };
+    for r in n.reactions() {
+        layer_links(doc, id, r.id, &r.actions, false, out);
+    }
 }
 
 /// How far from a connector's line a press still takes it: wider than its ink,
@@ -2166,17 +2194,7 @@ fn polyline_distance(pts: &[egui::Pos2], p: egui::Pos2) -> f32 {
         [a] => a.distance(p),
         _ => pts
             .windows(2)
-            .map(|w| {
-                let (a, b) = (w[0], w[1]);
-                let ab = b - a;
-                let l = ab.length_sq();
-                let t = if l > 0.0 {
-                    ((p - a).dot(ab) / l).clamp(0.0, 1.0)
-                } else {
-                    0.0
-                };
-                p.distance(a + ab * t)
-            })
+            .map(|w| crate::canvas::distance_to_segment(p, w[0], w[1]))
             .fold(f32::INFINITY, f32::min),
     }
 }
@@ -2286,15 +2304,7 @@ const _: () = assert!(KNOB_REVEAL >= KNOB_PICK);
 
 /// How far `p` is from edge `edge` of the quad `q`, as a segment.
 fn edge_distance(q: [egui::Pos2; 4], edge: usize, p: egui::Pos2) -> f32 {
-    let (a, b) = (q[edge], q[(edge + 1) % 4]);
-    let ab = b - a;
-    let l = ab.length_sq();
-    let t = if l > 0.0 {
-        ((p - a).dot(ab) / l).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    p.distance(a + ab * t)
+    crate::canvas::distance_to_segment(p, q[edge], q[(edge + 1) % 4])
 }
 
 /// A layer's box in world space, its corners in the screen quad's order, so an
@@ -2938,9 +2948,10 @@ impl MastikApp {
         if !self.prototype_mode() {
             return 0.0;
         }
-        let from_tag = links_on(&self.session.doc, self.session.page)
-            .iter()
-            .any(|l| l.from == id && self.leaves_from_tag(l));
+        // Only the frame's own links can leave from its tag: no page walk.
+        let mut own = Vec::new();
+        links_from(&self.session.doc, id, &mut own);
+        let from_tag = own.iter().any(|l| self.leaves_from_tag(l));
         match from_tag {
             // The dot's ring is 1.5 wide, half of it outside its radius.
             true => TAG_DOT_GAP + KNOB_R + 1.0,
@@ -3059,13 +3070,15 @@ impl MastikApp {
             "Add interaction"
         };
         self.write_reactions(from, list, label, icon::INTERACTION);
-        // Open where it can be set further, as a click on a connector does.
+        // Open where it can be set further, and pick its block, as a click on
+        // a connector does.
         if self.session.doc.get(from).is_some_and(|n| {
             n.reactions()
                 .iter()
                 .any(|r| r.id == at.reaction && find(&r.actions, at.action).is_some())
         }) {
             self.proto.open = Some(at);
+            self.proto.block = Some((from, at.reaction));
         }
         self.session.info(format!("Linked to “{target}”"));
     }
@@ -3823,6 +3836,7 @@ impl MastikApp {
             return;
         }
         let flows = doc.page(page).map(|p| p.flows.clone()).unwrap_or_default();
+        let main = doc.get(id).is_some_and(|n| n.component());
         let here: Vec<std::borrow::Cow<'_, str>> = flows
             .iter()
             .enumerate()
@@ -3835,6 +3849,12 @@ impl MastikApp {
                 many => format!("Starts the flows {}", many.join(", ")),
             };
             ui::selection_note(ui, &words);
+            return;
+        }
+        // A main is a component, not a screen, as *Navigate to* picks it last.
+        if main {
+            crate::settings::text_button(ui, "Start a flow here", FieldButton::Disabled)
+                .on_disabled_hover_text("A main component is not a screen to start a flow on");
             return;
         }
         if crate::settings::text_button(ui, "Start a flow here", FieldButton::Off)
@@ -7452,8 +7472,7 @@ impl MastikApp {
     }
 
     /// A snap point's name field, `point` naming the layer and the point (`None`
-    /// for where it is drawn): typed into a `ui::Draft`, so `Escape` gives the
-    /// typing up. Answers a new, non-empty name on a committing defocus.
+    /// for where it is drawn).
     fn point_name_field(
         &mut self,
         ui: &mut egui::Ui,
@@ -7463,10 +7482,25 @@ impl MastikApp {
         tip: Option<&str>,
     ) -> Option<String> {
         let key = DraftKey::PointName(point.0, point.1);
+        self.name_draft_field(ui, key, current, w, "Name", tip)
+    }
+
+    /// A name field typed into a `ui::Draft` under `key`, so `Escape` gives the
+    /// typing up: a snap point's and a flow's. Answers a new, non-empty name,
+    /// trimmed, on a committing defocus.
+    fn name_draft_field(
+        &mut self,
+        ui: &mut egui::Ui,
+        key: DraftKey,
+        current: &str,
+        w: f32,
+        hint: &str,
+        tip: Option<&str>,
+    ) -> Option<String> {
         let ctx = ui.ctx().clone();
         let mut text = ui::Draft::live(&mut self.proto.draft, &ctx, key)
             .map_or(current.to_string(), |d| d.text.clone());
-        let mut resp = ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, "Name");
+        let mut resp = ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, hint);
         if let Some(tip) = tip {
             resp = resp.on_hover_text(tip);
         }
@@ -7481,16 +7515,7 @@ impl MastikApp {
         let page = self.session.page;
         let doc = &self.session.doc;
         let flows = doc.page(page).map(|p| p.flows.clone()).unwrap_or_default();
-        let frames: Vec<NodeId> = doc
-            .get(page)
-            .map(|r| {
-                r.children()
-                    .iter()
-                    .copied()
-                    .filter(|c| is_frame(doc, *c))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let frames = flow_starts(doc, page);
         let action = match frames.first() {
             Some(_) => ui::HeadAction::new(icon::PLUS, "Add a flow"),
             None => ui::HeadAction::inert(icon::PLUS, "Add a frame to start a flow from"),
@@ -7512,7 +7537,9 @@ impl MastikApp {
                     ui.spacing_mut().item_spacing.x = COL;
                     let w = ui.available_width() - ui::CONTROL_H - COL;
                     let half = (w - COL) / 2.0;
-                    if let Some(n) = app.flow_name_field(ui, f.id, &f.name, half) {
+                    let key = DraftKey::FlowName(f.id);
+                    if let Some(n) = app.name_draft_field(ui, key, &f.name, half, "Flow name", None)
+                    {
                         let list = flows
                             .iter()
                             .map(|x| match x.id == f.id {
@@ -7727,13 +7754,11 @@ impl MastikApp {
                         .collect();
                     if let Some(c) =
                         collection_combo(ui, doc, ("flow-col", f.id, i), half, &free, col)
+                        && let Some(m) = mode_not_read(doc, f.start, c)
                     {
-                        let now = doc.mode_of_at(f.start, c.owner);
-                        if let Some(m) = c.modes.iter().find(|m| Some(m.0) != now) {
-                            let mut modes = f.modes.clone();
-                            modes[i] = m.0;
-                            out = Some((modes, "Change starting mode"));
-                        }
+                        let mut modes = f.modes.clone();
+                        modes[i] = m;
+                        out = Some((modes, "Change starting mode"));
                     }
                 });
                 let shown = col
@@ -7765,10 +7790,7 @@ impl MastikApp {
         let unused = cols
             .iter()
             .find(|c| !f.modes.iter().any(|m| t.owner_of(*m) == Some(c.owner)))
-            .and_then(|c| {
-                let now = doc.mode_of_at(f.start, c.owner);
-                c.modes.iter().find(|m| Some(m.0) != now).map(|m| m.0)
-            });
+            .and_then(|c| mode_not_read(doc, f.start, c));
         let why = match (cols.is_empty(), unused) {
             (true, _) => "No collection has a second mode",
             (false, None) => "Every collection has a starting mode",
@@ -7838,52 +7860,12 @@ impl MastikApp {
         if typed == shown {
             return None;
         }
-        let t = typed.trim();
-        let alias = t
-            .strip_prefix('{')
-            .and_then(|r| r.strip_suffix('}'))
-            .and_then(|n| match doc.variables().ids_named(n)[..] {
-                [one] => doc.variables().get(one),
-                _ => None,
-            })
-            .filter(|v| v.kind == kind && v.id != var)
-            .map(|v| Cell::Alias(v.id));
-        let read = alias.or(match kind {
-            VarKind::Number => t
-                .parse::<f64>()
-                .ok()
-                .filter(|n| n.is_finite())
-                .map(Cell::Number),
-            VarKind::String => Some(Cell::String(typed.clone())),
-            VarKind::Boolean => match t {
-                "true" => Some(Cell::Boolean(true)),
-                "false" => Some(Cell::Boolean(false)),
-                _ => None,
-            },
-            VarKind::Color => crate::colour_text::parse(t).map(|c| Cell::Color(c.color(1.0))),
-        });
+        let read = flow_value_read(doc, var, &typed);
         if read.is_none() {
             let why = format!("Not a {}", kind_word(kind));
             self.proto.draft = Some(ui::Draft::new(&ctx, key, typed).refuse(why));
         }
         read
-    }
-
-    fn flow_name_field(
-        &mut self,
-        ui: &mut egui::Ui,
-        item: ItemId,
-        current: &str,
-        w: f32,
-    ) -> Option<String> {
-        let key = DraftKey::FlowName(item);
-        let ctx = ui.ctx().clone();
-        let mut text = ui::Draft::live(&mut self.proto.draft, &ctx, key)
-            .map_or(current.to_string(), |d| d.text.clone());
-        let resp = ui::text_field(ui, egui::vec2(w, ui::CONTROL_H), &mut text, "Flow name");
-        let typed = ui::Draft::follow(&mut self.proto.draft, &resp, key, &text)?;
-        let typed = typed.trim().to_string();
-        (!typed.is_empty() && typed != current).then_some(typed)
     }
 
     /// The page's *Prototype* card: the device drawn round the screen, how the
@@ -7902,7 +7884,7 @@ impl MastikApp {
             ui::labelled(ui, "Device", |ui| {
                 let shown = play.device.clone().unwrap_or_else(|| "None".into());
                 let mut pick: Option<Option<String>> = None;
-                let face = ui::glyph_and_text(icon::DEVICES, &shown);
+                let face = ui::glyph_and_text(icon::PHONE, &shown);
                 let combo_w = w - ui::CONTROL_H - COL;
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = COL;
@@ -7915,7 +7897,7 @@ impl MastikApp {
                         }
                         for (group, entries) in FRAME_PRESETS
                             .iter()
-                            .filter(|(g, _)| matches!(*g, "PHONE" | "TABLET"))
+                            .filter(|(g, _)| mastik_core::presets::DEVICE_GROUPS.contains(g))
                         {
                             ui::menu_sep(ui);
                             ui::menu_eyebrow(ui, group);
@@ -7933,19 +7915,9 @@ impl MastikApp {
                     })
                     .response
                     .on_hover_text("The device drawn round the screen while playing");
-                    // Beside the device, lit while turned: a screen with no device
-                    // has no orientation.
+                    // Beside the device, lit while turned.
                     let can = play.can_turn();
-                    let state = match (can, play.landscape) {
-                        (false, _) => FieldButton::Disabled,
-                        (true, true) => FieldButton::On,
-                        (true, false) => FieldButton::Off,
-                    };
-                    let tip = match (can, play.landscape) {
-                        (false, _) => "Pick a device to turn",
-                        (true, true) => "Turn to portrait",
-                        (true, false) => "Turn to landscape",
-                    };
+                    let (state, tip) = turn_button(&play);
                     let turn = ui::field_button(ui, icon::TURN_DEVICE, ui::CONTROL_H, state);
                     let turn = match can {
                         true => turn.on_hover_text(tip),
@@ -7996,8 +7968,7 @@ impl MastikApp {
                 };
                 ui::selection_note(ui, &note);
             }
-            // A device lays the screen out at its size under every scaling.
-            if play.can_turn() || play.scaling == Scaling::Responsive {
+            if lays_out_screen(&play) {
                 let flows = doc.page(page).map(|p| p.flows.clone()).unwrap_or_default();
                 let flat = flows.iter().position(|f| {
                     doc.get(f.value.start)
@@ -8241,6 +8212,127 @@ mod tests {
 
     fn keyed(n: u32, a: Action) -> Keyed<Action> {
         Keyed::new(item(n), a)
+    }
+
+    /// A flow starts on a screen before a main: Flows' `+` takes the first of
+    /// `flow_starts`, and the main the fixture puts first on the page comes last.
+    /// flip: `flow_starts` without its sort → fails at "a screen first".
+    #[test]
+    fn a_flow_starts_on_a_screen_before_a_main() {
+        let ctx = egui::Context::default();
+        let f = fixture(&ctx);
+        let doc = &f.app.session.doc;
+        let page = f.app.session.page;
+        assert_eq!(
+            doc.get(page).unwrap().children().first(),
+            Some(&f.main),
+            "fixture: the main is the page's first child"
+        );
+        let starts = flow_starts(doc, page);
+        assert!(
+            starts.first().is_some_and(|s| [f.home, f.cart].contains(s)),
+            "a screen first: {starts:?}"
+        );
+        assert_eq!(starts.last(), Some(&f.main), "the main last");
+    }
+
+    /// A flow's starting value reads as its variable's kind; a new flow takes
+    /// the first free *Flow n*; a starting mode picks one the start frame does
+    /// not read now.
+    /// flip: `flow_value_read` without `v.id != var` → fails at "not itself";
+    /// without `is_finite` → fails at "inf"; `mode_not_read` taking the mode
+    /// read now → fails at "the other mode".
+    #[test]
+    fn a_flows_starting_values_names_and_modes_read() {
+        use mastik_core::variable::{CollectionId, Mode, Variable};
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let [light, dark] = [(); 2].map(|_| f.app.session.ids.mint_mode());
+        let [count, total, on, label, brand] = [(); 5].map(|_| f.app.session.ids.mint_var());
+        let var = |id, name: &str, kind, cell: Cell| Operation::AddVariable {
+            var: Variable {
+                id,
+                name: name.into(),
+                kind,
+                cells: [(light, cell.clone()), (dark, cell)].into(),
+                scope: None,
+                origin: None,
+                forked: None,
+                description: String::new(),
+            },
+        };
+        let mode = |id, name: &str, index| Operation::AddMode {
+            collection: CollectionId::FIRST,
+            mode: Mode {
+                id,
+                name: name.into(),
+            },
+            index,
+            cells: vec![],
+        };
+        assert!(f.app.session.commit(Transaction(vec![
+            mode(light, "Light", 0),
+            mode(dark, "Dark", 1),
+            var(count, "count", VarKind::Number, Cell::Number(1.0)),
+            var(total, "total", VarKind::Number, Cell::Number(2.0)),
+            var(on, "on", VarKind::Boolean, Cell::Boolean(false)),
+            var(label, "label", VarKind::String, Cell::String("a".into())),
+            var(
+                brand,
+                "brand",
+                VarKind::Color,
+                Cell::Color(mastik_core::peniko::Color::BLACK)
+            ),
+        ])));
+        let doc = &f.app.session.doc;
+        let read = |v, t: &str| flow_value_read(doc, v, t);
+        assert_eq!(read(count, " 12 "), Some(Cell::Number(12.0)));
+        assert_eq!(read(count, "inf"), None, "inf");
+        assert_eq!(read(count, "{total}"), Some(Cell::Alias(total)));
+        assert_eq!(read(count, "{count}"), None, "not itself");
+        assert_eq!(read(count, "{on}"), None, "not another kind");
+        assert_eq!(read(on, "true"), Some(Cell::Boolean(true)));
+        assert_eq!(read(on, "True"), None, "exactly true");
+        assert_eq!(
+            read(label, " x "),
+            Some(Cell::String(" x ".into())),
+            "as typed"
+        );
+        let Some(Cell::Color(c)) = read(brand, "#11223380") else {
+            panic!("a colour");
+        };
+        assert_eq!(c.to_rgba8().to_u8_array()[3], 0x80, "its alpha kept");
+
+        let flow = |name: &str| {
+            Keyed::new(
+                item(1),
+                Flow {
+                    name: name.into(),
+                    start: f.home,
+                    modes: Vec::new(),
+                    values: Vec::new(),
+                },
+            )
+        };
+        assert_eq!(free_flow_name(&[]), "Flow 1");
+        assert_eq!(free_flow_name(&[flow("Flow 2")]), "Flow 3");
+        assert_eq!(free_flow_name(&[flow("Checkout")]), "Flow 2");
+
+        let cols = switchable_collections(doc);
+        let col = cols
+            .iter()
+            .find(|c| c.modes.iter().any(|m| m.0 == dark))
+            .expect("fixture: a collection with two modes");
+        assert_eq!(
+            doc.mode_of_at(f.home, col.owner),
+            Some(light),
+            "fixture: the frame reads Light"
+        );
+        assert_eq!(
+            mode_not_read(doc, f.home, col),
+            Some(dark),
+            "the other mode"
+        );
     }
 
     /// A picker's targets on a screen holding a list keep the template and
@@ -8512,14 +8604,17 @@ mod tests {
     }
 
     /// Dropping a dot's link on another screen commits one *Navigate to* as one
-    /// step; on the layer's own screen it links nothing. flip: `link_target`
-    /// without its own-screen test → fails at "nothing on its own frame".
+    /// step, opens it and picks its block over one picked before; on the
+    /// layer's own screen it links nothing. flip: `link_target` without its
+    /// own-screen test → fails at "nothing on its own frame"; `drop_link` not
+    /// setting `proto.block` → fails at "its block is picked".
     #[test]
     fn dropping_a_link_on_a_screen_links_to_it() {
         let ctx = egui::Context::default();
         let mut f = fixture(&ctx);
         f.app.session.prototype_mode = true;
         f.app.session.selection.set_one(f.add);
+        f.app.proto.block = Some((f.add, item(9)));
         f.app
             .drop_link(f.add, mastik_core::kurbo::Point::new(100.0, 100.0));
         assert!(
@@ -8537,6 +8632,11 @@ mod tests {
             f.app.proto.open.map(|at| at.action),
             Some(r[0].actions[0].id),
             "its popover opens"
+        );
+        assert_eq!(
+            f.app.proto.block,
+            Some((f.add, r[0].id)),
+            "its block is picked"
         );
         assert!(f.app.session.undo());
         assert!(
@@ -10687,6 +10787,38 @@ mod tests {
         f.app.cards_drawn.clear();
         draw(&mut f.app, &ctx);
         assert!(f.app.cards_drawn.contains(&"Flows"), "the page's flows");
+        assert!(
+            f.app.cards_drawn.contains(&"Prototype"),
+            "the page's Prototype card"
+        );
+    }
+
+    /// The page card's turn button is disabled without a device and lit while
+    /// turned; its no-layout note shows under a device or *Responsive* only.
+    /// flip: `turn_button` ignoring `can_turn` → fails at "no device";
+    /// `lays_out_screen` without the device → fails at "a device lays out".
+    #[test]
+    fn the_page_cards_turn_button_and_layout_note_follow_the_device() {
+        let none = PagePlay::default();
+        let phone = PagePlay {
+            device: Some("iPhone 18 Pro".into()),
+            ..PagePlay::default()
+        };
+        assert!(phone.can_turn(), "fixture: a known device");
+        let turned = PagePlay {
+            landscape: true,
+            ..phone.clone()
+        };
+        assert_eq!(turn_button(&none).0, FieldButton::Disabled, "no device");
+        assert_eq!(turn_button(&phone).0, FieldButton::Off);
+        assert_eq!(turn_button(&turned).0, FieldButton::On);
+        assert!(!lays_out_screen(&none), "drawn as is");
+        assert!(lays_out_screen(&phone), "a device lays out");
+        let responsive = PagePlay {
+            scaling: Scaling::Responsive,
+            ..PagePlay::default()
+        };
+        assert!(lays_out_screen(&responsive));
     }
 
     /// An action row's verb, target and timing, set in three sizes, share one
