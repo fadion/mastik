@@ -69,6 +69,12 @@ pub(crate) fn interacting(resp: &egui::Response) -> bool {
     // valve-gate-not-a-commit: decides whether to build a transaction; the valves commit on their own latch.
     resp.dragged() || resp.drag_stopped() || resp.lost_focus() || resp.changed()
 }
+/// Whether this frame's `Escape` abandons the edit a field just let go of, as
+/// [`MastikApp::edit_valve`] rules: egui does not revert a `DragValue` on it, so a
+/// hand-rolled gate that commits on defocus must ask.
+pub(crate) fn escaped(resp: &egui::Response) -> bool {
+    resp.ctx.input(|i| i.key_pressed(egui::Key::Escape))
+}
 /// The colour every guide in a set is drawn in, or `None` where they disagree.
 ///
 /// Compared as the drawn colour rather than the `Option` override, so a guide on

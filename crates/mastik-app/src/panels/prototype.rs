@@ -3,7 +3,9 @@
 //! flows and prototype settings. Every edit is one transaction on the saved model
 //! (`mastik_core::prototype`); nothing here plays.
 
-use super::inspector::{FRAME_PRESETS, carried_unit, identity_card, identity_glyph, interacting};
+use super::inspector::{
+    FRAME_PRESETS, carried_unit, escaped, identity_card, identity_glyph, interacting,
+};
 use super::paint::{self, PaintSlot};
 use crate::app::MastikApp;
 use crate::preview::Drag;
@@ -5422,6 +5424,7 @@ impl MastikApp {
                         if changed
                             && !resp.dragged()
                             && !resp.has_focus()
+                            && !escaped(&resp)
                             && !self.gesture_cancelled
                         {
                             out = Some((
@@ -6153,7 +6156,12 @@ impl MastikApp {
         for (resp, rid, v, next) in numbers {
             self.proto_hold(rid, v, &resp);
             let engaged = resp.dragged() || resp.has_focus();
-            if next != t && !engaged && interacting(&resp) && !self.gesture_cancelled {
+            if next != t
+                && !engaged
+                && interacting(&resp)
+                && !escaped(&resp)
+                && !self.gesture_cancelled
+            {
                 out = Some(next);
             }
         }
@@ -6294,7 +6302,12 @@ impl MastikApp {
         for (resp, rid, v, next) in numbers {
             self.proto_hold(rid, v, &resp);
             let engaged = resp.dragged() || resp.has_focus();
-            if next != o && !engaged && interacting(&resp) && !self.gesture_cancelled {
+            if next != o
+                && !engaged
+                && interacting(&resp)
+                && !escaped(&resp)
+                && !self.gesture_cancelled
+            {
                 out = Some(next);
             }
         }
@@ -9613,6 +9626,111 @@ mod tests {
             ],
         );
         assert_eq!(drawn(&f.app), None, "the default name clears it");
+    }
+
+    /// A number typed into the popover's *Duration* is given up on `Escape`, as
+    /// every valved field's is, and committed on `Enter`.
+    /// flip: `timing_fields`' gate without `escaped` → fails at "Escape gives it up".
+    #[test]
+    fn escape_abandons_a_typed_duration() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        let to = f.cart;
+        let open = one_action(
+            &mut f,
+            Action::Navigate {
+                to,
+                transition: Transition::default(),
+                keep_scroll: false,
+            },
+        );
+        f.app.session.selection.set_one(f.add);
+        f.app.proto.open = Some(open);
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 2400.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                ui.set_max_width(280.0);
+                app.inspector_ui(ui)
+            })
+        };
+        let field_at = |out: &egui::FullOutput, text: &str| {
+            out.shapes.iter().find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == text => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+        };
+        let ms = |app: &MastikApp| {
+            let n = app.session.doc.get(f.add).unwrap();
+            match &n.reactions()[0].actions[0].value {
+                Action::Navigate { transition, .. } => match transition.timing {
+                    Timing::Ease { ms, .. } => ms,
+                    Timing::Spring { .. } => panic!("fixture: an eased transition"),
+                },
+                _ => panic!("fixture: the navigate action"),
+            }
+        };
+        let type_over = |app: &mut MastikApp, at: egui::Pos2| {
+            let press = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            frame(app, vec![egui::Event::PointerMoved(at), press(true)]);
+            frame(app, vec![press(false)]);
+            frame(
+                app,
+                vec![
+                    key(egui::Key::A, egui::Modifiers::COMMAND),
+                    egui::Event::Text("2000".into()),
+                ],
+            );
+        };
+        let mut out = frame(&mut f.app, vec![]);
+        for _ in 0..3 {
+            out = frame(&mut f.app, vec![]);
+        }
+        let at = field_at(&out, "300").expect("the popover's Duration reads 300");
+        type_over(&mut f.app, at);
+        let out = frame(&mut f.app, vec![]);
+        assert!(field_at(&out, "2000").is_some(), "fixture: typed");
+        frame(
+            &mut f.app,
+            vec![key(egui::Key::Escape, egui::Modifiers::NONE)],
+        );
+        frame(&mut f.app, vec![]);
+        assert_eq!(ms(&f.app), 300, "Escape gives it up");
+        // Escape also closed the popover.
+        f.app.proto.open = Some(open);
+        for _ in 0..3 {
+            frame(&mut f.app, vec![]);
+        }
+        let out = frame(&mut f.app, vec![]);
+        let at = field_at(&out, "300").expect("the old duration is back");
+        type_over(&mut f.app, at);
+        frame(
+            &mut f.app,
+            vec![key(egui::Key::Enter, egui::Modifiers::NONE)],
+        );
+        frame(&mut f.app, vec![]);
+        assert_eq!(ms(&f.app), 2000, "Enter commits");
     }
 
     /// Prototype mode is remembered by the library for the document, as the
