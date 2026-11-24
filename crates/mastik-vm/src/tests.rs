@@ -2346,8 +2346,11 @@ fn tables_reads_and_gathers_writes_into_one_edit() {
 }
 
 /// Table names complete after `tables.` in the bar and a script, and for a
-/// verb's `table` argument, each with its size.
-/// flip: `verb_argument` not offering `table_names` → fails at "the verb's argument".
+/// verb's text argument naming a table (`table`, `set_chart_data`'s `data`),
+/// each with its size; a chart's `table` model takes no name.
+/// flip: `verb_argument` not offering `table_names` → fails at "the verb's
+/// argument"; offering them for any param named `table` → fails at "a chart's
+/// own table".
 #[test]
 fn table_names_complete_after_tables_and_for_a_table_argument() {
     let h = people();
@@ -2356,6 +2359,10 @@ fn table_names_complete_after_tables_and_for_a_table_argument() {
     let want = Some(("People".to_owned(), "3 rows \u{b7} 2 columns".to_owned()));
     let c = complete(&h.doc, h.page, &labels, "edit_table Pe", 13);
     assert_eq!(label(c), want, "the verb's argument");
+    let c = complete(&h.doc, h.page, &labels, "set_chart_data Pe", 17);
+    assert_eq!(label(c), None, "a chart's own table");
+    let c = complete(&h.doc, h.page, &labels, "set_chart_data x Pe", 19);
+    assert_eq!(label(c), want, "set_chart_data's data");
     let c = complete(&h.doc, h.page, &labels, "print(tables.Pe", 15);
     assert_eq!(label(c), want, "after tables. in the bar");
     let c = complete_script(&h.doc, h.page, "local t = tables.P", 18);

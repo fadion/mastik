@@ -303,7 +303,9 @@ fn verb_argument(doc: &Document, line: &str, start: usize, word: &str) -> Option
         .filter(|(i, _)| Some(*i) != subject)
         .map(|(_, p)| p)
         .nth(before)?;
-    if param.name == "table" {
+    // A text naming a table; a chart's own `table` is a `ChartTable` model,
+    // which no name fills.
+    if matches!(param.kind, ParamKind::Text) && matches!(param.name, "table" | "data") {
         return Some(table_names(doc, word));
     }
     let ParamKind::Choice(words) = param.kind else {
