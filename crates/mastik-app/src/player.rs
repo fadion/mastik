@@ -620,10 +620,8 @@ impl Playing {
     fn paint_screen(&mut self, ui: &egui::Ui, rect: egui::Rect, scale: f32, ground: egui::Color32) {
         let scene = self.player.scene();
         let ppp = ui.ctx().pixels_per_point();
-        let px = (
-            ((rect.width() * ppp).round() as u32).max(1),
-            ((rect.height() * ppp).round() as u32).max(1),
-        );
+        let limit = ui.ctx().input(|i| i.max_texture_side);
+        let px = screen_pixels(rect.size(), ppp, limit);
         let moved = !self.player.take_dirty().is_empty();
         let stale = moved
             || self.texture.is_none()
@@ -1210,6 +1208,18 @@ pub(crate) fn value_words(v: &Value) -> String {
         Value::String(s) => s.clone(),
         Value::Boolean(b) => b.to_string(),
     }
+}
+
+/// The device pixels a screen drawn at `size` points takes at `ppp`, scaled
+/// down as a whole so neither side passes `limit`, the device's largest
+/// texture side: past it the GPU refuses the texture and the app aborts. A
+/// screen that tall is drawn softer, stretched over its rect.
+fn screen_pixels(size: egui::Vec2, ppp: f32, limit: usize) -> (u32, u32) {
+    let (w, h) = (size.x * ppp, size.y * ppp);
+    let limit = limit.max(1) as f32;
+    let shrink = (limit / w.max(h)).min(1.0);
+    let side = |v: f32| ((v * shrink).round() as u32).clamp(1, limit as u32);
+    (side(w), side(h))
 }
 
 /// Whether the document `p` plays is the one in front: its tab is active, or
@@ -2538,6 +2548,27 @@ mod tests {
             app.playing.as_ref().map(|p| p.place),
             Some(Place::Fullscreen),
             "fullscreen"
+        );
+    }
+
+    /// A tall screen at *Fill width* asks for no texture side past the device's
+    /// limit, and keeps its shape; one that fits is drawn at full size.
+    /// flip: `screen_pixels` without its `shrink` → fails at "its shape" (the
+    /// per-side clamp alone squashes the screen).
+    #[test]
+    fn a_tall_screen_draws_within_the_texture_limit() {
+        // 390 × 5000 at *Fill width* in a 1440 pt room, at 200 %.
+        let size = egui::vec2(1440.0, 5000.0 * 1440.0 / 390.0);
+        let (w, h) = screen_pixels(size, 2.0, 8192);
+        assert!(w <= 8192 && h <= 8192, "within the limit: {w}×{h}");
+        let (ratio, drawn) = (size.y / size.x, h as f32 / w as f32);
+        assert!(
+            (ratio - drawn).abs() < 0.01,
+            "its shape: {ratio} vs {drawn}"
+        );
+        assert_eq!(
+            screen_pixels(egui::vec2(390.0, 844.0), 2.0, 8192),
+            (780, 1688)
         );
     }
 
