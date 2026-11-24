@@ -161,9 +161,9 @@ out both ends.
   variant whose *After* changes its instance to the next variant is **a state that loops** (a
   spinner, a skeleton's shimmer) for as long as its frame shows. There is no loop setting: the
   loop is the variants' own reactions, which every instance follows and a kit publish keeps. An
-  *After* restarted this way waits at least 16 ms, so two states changing to each other after
-  nothing still let time move, and one `tick` fires at most 1024 timers, the loop going on from
-  the tick's end.
+  *After* restarted this way, or started by a frame a timer's reaction opened, waits at least
+  16 ms, so two states or two screens changing to each other after nothing still let time move,
+  and one `tick` fires at most 1024 timers, the loop going on from the tick's end.
 - *Frame opens* runs when the screen or an overlay opens; *variable changes* runs on every shown
   frame's layers when a play value changes what the variable reads; *table changes* runs on every
   shown frame's layers after each write that changes the table's rows: a row action, or a
@@ -182,7 +182,8 @@ out both ends.
 - **Targets are read through `prototype::resolve_target`**, so a reaction a main gives its instance
   acts on the instance's own layer. A target not there — or not a frame where a frame is needed —
   is skipped with one `Missing` notice per action.
-- **Navigate** closes every overlay and pushes the history. The player keeps every screen's scroll
+- **Navigate** closes every overlay and pushes the history, which keeps the last 1000 visits
+  (`MAX_HISTORY`). The player keeps every screen's scroll
   offsets for the run; `Player::show` resets those of the frames inside the destination unless
   the action keeps scroll (`keep_scroll`), and *Back* to a screen keeps them when the navigation
   that left it did (`Visit::keep`). Navigating to the screen itself does nothing.

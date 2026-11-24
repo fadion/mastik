@@ -506,6 +506,9 @@ impl Player {
             transition,
             keep,
         });
+        if self.history.len() > crate::player::MAX_HISTORY {
+            self.history.remove(0);
+        }
         self.show(to, transition, keep);
     }
 

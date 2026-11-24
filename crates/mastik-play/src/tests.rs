@@ -508,8 +508,7 @@ fn a_key_fires_its_reaction() {
     assert_eq!(number(&p, n), 1.0, "plain only");
 }
 
-/// An `After` reaction runs at its time after its frame opens, and not once the
-/// frame has closed.
+/// An `After` reaction runs at its time after its frame opens.
 ///
 /// flip: `Player::tick` running a timer at the tick's end rather than at its due
 /// → fails at "started at its due".
@@ -534,6 +533,82 @@ fn a_timer_fires_at_its_time() {
     assert_eq!(p.screen(), b);
     // The dissolve started at 500, not at the tick's 550.
     assert_eq!(p.scene().layers[1].opacity, 0.5, "started at its due");
+}
+
+/// An `After` does not fire once its frame has closed: a splash's timer is
+/// dropped when the person taps through before it is due, and starts over
+/// when they come back.
+///
+/// flip: `Player::on_close` keeping the closed frame's timers → fails at
+/// "started over on coming back" (`fire_timer`'s shown check alone covers
+/// "still on B").
+#[test]
+fn a_closed_frames_timer_does_not_fire() {
+    let (mut fx, a, b, _) = two_screens(Transition::INSTANT);
+    let c = fx.frame("C", 600.0, 200.0, 100.0);
+    fx.on(
+        a,
+        Trigger::After { ms: 500 },
+        vec![Action::Navigate {
+            to: c,
+            transition: Transition::INSTANT,
+            keep_scroll: false,
+        }],
+    );
+    let mut p = fx.play(a);
+    p.tick(100.0);
+    click(&mut p, 20.0, 20.0);
+    assert_eq!(p.screen(), b);
+    p.tick(100.0);
+    assert_eq!(p.screen(), b, "still on B");
+    p.back();
+    assert_eq!(p.screen(), a, "back on A");
+    // Back at 200: the first timer would have been due at 500.
+    p.tick(350.0);
+    assert_eq!(p.screen(), a, "started over on coming back");
+    p.tick(150.0);
+    assert_eq!(p.screen(), c);
+}
+
+/// Two screens each navigating to the other *After 0* still let time move, one
+/// turn a frame, and *Back*'s history keeps at most `MAX_HISTORY` visits.
+///
+/// flip: `on_open` dropping its floor under a timer → fails at "one turn a
+/// frame"; `navigate` not trimming the history → fails at "the history is
+/// bounded".
+#[test]
+fn a_loop_between_screens_after_nothing_waits_a_frame() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let b = fx.frame("B", 300.0, 200.0, 100.0);
+    for (from, to) in [(a, b), (b, a)] {
+        fx.on(
+            from,
+            Trigger::After { ms: 0 },
+            vec![Action::Navigate {
+                to,
+                transition: Transition::INSTANT,
+                keep_scroll: false,
+            }],
+        );
+    }
+    let mut p = fx.play(a);
+    for _ in 0..10 {
+        p.tick(16.0);
+    }
+    assert!(
+        p.history().len() <= 11,
+        "one turn a frame: {}",
+        p.history().len()
+    );
+    for _ in 0..crate::player::MAX_HISTORY {
+        p.tick(16.0);
+    }
+    assert_eq!(
+        p.history().len(),
+        crate::player::MAX_HISTORY,
+        "the history is bounded"
+    );
 }
 
 /// A screen waiting only on an *After* timer is moving but not animating, and

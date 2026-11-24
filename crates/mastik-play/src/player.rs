@@ -167,9 +167,14 @@ pub(crate) struct Timer {
 /// reaction that changes a variable…) before the player stops following.
 pub(crate) const MAX_DEPTH: u32 = 16;
 
-/// The shortest wait of an *After* started by a change of state, in
-/// milliseconds: two states each changing to the other after nothing would
-/// otherwise fire forever without time moving.
+/// How many visits *Back*'s history keeps; past it the oldest goes, so an
+/// auto-advancing screen left running does not grow it for ever.
+pub(crate) const MAX_HISTORY: usize = 1000;
+
+/// The shortest wait of an *After* started by a change of state or by a frame
+/// a timer opened, in milliseconds: two states or two screens each changing
+/// to the other after nothing would otherwise fire forever without time
+/// moving.
 const MIN_LOOP_MS: f64 = 16.0;
 
 /// How many timers one tick fires at most. A tick that spans many turns of a
@@ -243,6 +248,10 @@ pub struct Player {
     pub(crate) focus_shown: Option<NodeId>,
     pub(crate) whiles: Vec<While>,
     pub(crate) timers: Vec<Timer>,
+    /// Set while a timer's reaction runs: an *After* a frame it opens starts
+    /// waits at least [`MIN_LOOP_MS`], so two screens navigating to each other
+    /// after nothing still let time move.
+    timed: bool,
     /// Milliseconds since play started.
     pub(crate) now: f64,
     pub(crate) anims: Anims,
@@ -298,6 +307,7 @@ impl Player {
             focus_shown: None,
             whiles: Vec::new(),
             timers: Vec::new(),
+            timed: false,
             now: 0.0,
             anims: Anims::default(),
             notices: Vec::new(),
@@ -1028,6 +1038,7 @@ impl Player {
     /// sets its starting modes) is not started twice.
     pub(crate) fn on_open(&mut self, frame: NodeId) {
         let nodes = subtree_nodes(&self.doc, &[frame]);
+        let floor = if self.timed { MIN_LOOP_MS } else { 0.0 };
         let mut opens = Vec::new();
         for id in nodes {
             let Some(n) = self.doc.get(id) else { continue };
@@ -1037,7 +1048,7 @@ impl Player {
                     Trigger::FrameOpens => opens.push((id, r.id)),
                     Trigger::After { .. } if self.timers.iter().any(timed) => {}
                     Trigger::After { ms } => self.timers.push(Timer {
-                        due: self.now + f64::from(ms),
+                        due: self.now + f64::from(ms).max(floor),
                         holder: id,
                         reaction: r.id,
                         frame,
@@ -1085,7 +1096,9 @@ impl Player {
         if !self.shown().contains(&timer.frame) {
             return;
         }
+        let was = std::mem::replace(&mut self.timed, true);
         self.run_reaction(timer.holder, timer.reaction, None);
+        self.timed = was;
     }
 
     // ── Values ───────────────────────────────────────────────────────────────
