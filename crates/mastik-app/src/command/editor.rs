@@ -1749,9 +1749,10 @@ impl MastikApp {
     }
 
     /// The document script holding library script `name`: one already here
-    /// with its name and text, or else a copy's id with the `AddScript` that
-    /// puts it in, uncommitted, so the caller makes it one step with its own
-    /// edit. The copy is marked as the person's own either way.
+    /// with its text and its name, or the name numbered as a copy is when the
+    /// name was taken (`Shake 2`); or else a copy's id with the `AddScript`
+    /// that puts it in, uncommitted, so the caller makes it one step with its
+    /// own edit. The copy is marked as the person's own either way.
     pub(crate) fn copy_library_script(
         &mut self,
         name: &str,
@@ -1764,9 +1765,14 @@ impl MastikApp {
             }
         };
         let scripts = self.session.doc.scripts();
+        let numbered = |n: &str| {
+            n.strip_prefix(name)
+                .and_then(|r| r.strip_prefix(' '))
+                .is_some_and(|r| r.parse::<u32>().is_ok())
+        };
         if let Some(s) = scripts
             .iter()
-            .find(|s| s.name == name && s.source == source)
+            .find(|s| s.source == source && (s.name == name || numbered(&s.name)))
         {
             return Some((s.id, None));
         }
@@ -4296,6 +4302,42 @@ mod tests {
             app.session.doc.scripts().is_empty()
                 && app.session.doc.get(card).unwrap().reactions().is_empty(),
             "one undo takes back the copy and the action together"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Beside a document script of the library script's name but other text,
+    /// the copy goes in numbered once, and asked again, that copy answers.
+    /// flip: `copy_library_script` matching the name only as given → fails at
+    /// "the numbered copy answers".
+    #[test]
+    fn a_library_script_beside_another_of_its_name_is_copied_in_once() {
+        let dir = scratch_library("copy-in-taken");
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        library::write("Shake", "print(1)").expect("fixture: written");
+        let own = Script {
+            id: app.session.ids.mint_script(),
+            name: "Shake".into(),
+            source: "print(2)".into(),
+        };
+        assert!(app.session.commit(Transaction(vec![Operation::AddScript {
+            script: own,
+            index: 0,
+        }])));
+        let (id, add) = app.copy_library_script("Shake").expect("copied");
+        let add = add.expect("a copy to put in");
+        let Operation::AddScript { script, .. } = &add else {
+            panic!("an AddScript");
+        };
+        assert_eq!(script.name, "Shake 2", "numbered past the person's own");
+        assert!(app.session.commit(Transaction(vec![add])));
+        assert_eq!(
+            app.copy_library_script("Shake")
+                .map(|(s, a)| (s, a.is_none())),
+            Some((id, true)),
+            "the numbered copy answers"
         );
         let _ = std::fs::remove_dir_all(dir);
     }
