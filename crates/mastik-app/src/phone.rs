@@ -552,17 +552,28 @@ pub(crate) enum CardAct {
 struct Built {
     /// The fonts the page carries, as [`Sharing::fonts`] counts them.
     fonts: (usize, usize),
-    page: Vec<u8>,
+    /// The page, when it was asked for.
+    page: Option<Vec<u8>>,
     doc: Vec<u8>,
 }
 
-/// The parts for `opening`: the page written for `version` and the document.
+#[cfg(test)]
+thread_local! {
+    /// How many pages [`build`] packed on this thread.
+    static PACKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The parts for `opening`: the document, and the page written for `version`
+/// when `wants_page` asks for it given the fonts counted. The page packs the
+/// whole player, megabytes of deflate and base64, so an edit the phones can
+/// play in place never packs one.
 fn build(
     doc: &Document,
     wasm: &[u8],
     glue: &str,
     opening: Opening,
     version: u64,
+    wants_page: impl FnOnce((usize, usize)) -> bool,
 ) -> Result<Built, String> {
     let parts = Parts::mirror(doc, Player { wasm, glue }, opening)
         .map_err(|e| format!("Can't share this prototype: {e}"))?;
@@ -574,7 +585,11 @@ fn build(
         Opening::Frame(f) => Some(f),
         Opening::Flow(_) => None::<NodeId>,
     };
-    let page = parts.mirror_html(frame, version).into_bytes();
+    let page = wants_page(fonts).then(|| {
+        #[cfg(test)]
+        PACKED.with(|n| n.set(n.get() + 1));
+        parts.mirror_html(frame, version).into_bytes()
+    });
     Ok(Built {
         fonts,
         page,
@@ -642,7 +657,8 @@ impl Sharing {
             fonts,
             page,
             doc: bytes,
-        } = build(doc, &wasm, &glue, self.opening, self.version)?;
+        } = build(doc, &wasm, &glue, self.opening, self.version, |_| true)?;
+        let page = page.unwrap_or_default();
         let wake = {
             let ctx = ctx.clone();
             move || ctx.request_repaint()
@@ -710,20 +726,24 @@ impl Sharing {
         let version = self.version + 1;
         // An edit the trim refuses (the flow playing deleted) leaves the phones
         // where they are.
+        let known = self.fonts;
         let Ok(Built {
             fonts,
             page,
             doc: bytes,
-        }) = build(doc, &self.wasm, &self.glue, self.opening, version)
+        }) = build(doc, &self.wasm, &self.glue, self.opening, version, |f| {
+            f != known
+        })
         else {
             return;
         };
         self.version = version;
-        if fonts == self.fonts {
-            share.publish(bytes, version);
-        } else {
-            self.fonts = fonts;
-            share.reload(page, bytes, version);
+        match page {
+            None => share.publish(bytes, version),
+            Some(page) => {
+                self.fonts = fonts;
+                share.reload(page, bytes, version);
+            }
         }
     }
 
@@ -1105,10 +1125,12 @@ mod tests {
     }
 
     /// An edit reaches a following phone as a new version once the document
-    /// has sat still, and the document it fetches carries the edit.
+    /// has sat still, the document it fetches carries the edit, and an edit
+    /// needing no new fonts packs no page.
     ///
     /// flip: `Sharing::send` not waiting for the document to settle → fails at
-    /// "nothing before it settles".
+    /// "nothing before it settles"; `build` packing the page whether asked or
+    /// not → fails at "no page packed".
     #[test]
     fn an_edit_reaches_the_phone_once_it_settles() {
         use mastik_core::kurbo::{Affine, RoundedRectRadii, Size};
@@ -1133,6 +1155,8 @@ mod tests {
             .expect("a frame");
         let ctx = egui::Context::default();
         let opening = Opening::Frame(frame);
+        let packed = || PACKED.with(std::cell::Cell::get);
+        let before = packed();
         let mut s = Sharing::start_with(
             &ctx,
             &doc,
@@ -1140,6 +1164,7 @@ mod tests {
             (b"\0asm".to_vec(), "let wasm_bindgen;".into()),
             Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
         );
+        assert_eq!(packed(), before + 1, "control: the first page is packed");
         let share = s.share.as_ref().expect("sharing on loopback");
         let host = share
             .url
@@ -1173,6 +1198,11 @@ mod tests {
         assert_eq!(next_event(), None, "nothing before it settles");
         s.send(&ctx, &doc, 10.0 + SETTLE);
         assert_eq!(next_event().as_deref(), Some("2"), "the new version");
+        assert_eq!(
+            packed(),
+            before + 1,
+            "no page packed for an edit played in place"
+        );
         let mut req = TcpStream::connect(&host).unwrap();
         req.write_all(format!("GET /{t}/doc?v=2 HTTP/1.1\r\n\r\n").as_bytes())
             .unwrap();
