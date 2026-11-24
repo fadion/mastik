@@ -79,7 +79,7 @@ pub(super) fn run_exports(
     }
     // A row's pictures beside a linked table, read as the export worker reads them.
     let pictured;
-    let doc = match plan.iter().any(|f| f.row.is_some()) {
+    let doc = match plan.iter().any(crate::panels::draws_rows) {
         true => {
             pictured = crate::panels::with_row_pictures(s.doc.clone(), &plan);
             &pictured

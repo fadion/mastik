@@ -238,6 +238,29 @@ pub(crate) fn read_pictures(
     read_pictures_in(doc, dir, table, columns, list::MAX_DRAWN)
 }
 
+/// [`read_pictures`] for data set `set`, beside its linked file: the
+/// `AddImage`s of the pictures `columns` name that `set` does not map yet, with
+/// `set`'s map grown by them; `None` when it is not linked or nothing is found.
+pub(crate) fn read_set_pictures(
+    doc: &mastik_core::Document,
+    set: &DataSet,
+    columns: &[mastik_core::chart::ColumnId],
+) -> Option<(Vec<Operation>, DataSet)> {
+    let link = set.source.as_ref()?;
+    if columns.is_empty() {
+        return None;
+    }
+    let dir = Path::new(&link.path).parent();
+    let (images, pairs) = read_pictures(doc, dir, &set.table, columns);
+    let mut next = set.clone();
+    for (cell, picture) in pairs {
+        if set.picture(doc, &cell).is_none() && !next.pictures.iter().any(|(c, _)| *c == cell) {
+            next.pictures.push((cell, picture));
+        }
+    }
+    (next.pictures.len() > set.pictures.len()).then_some((images, next))
+}
+
 /// [`read_pictures`] over the first `rows` rows: every row for an export,
 /// which draws a file per row.
 pub(crate) fn read_pictures_in(
@@ -554,6 +577,10 @@ impl MastikApp {
         fill: Option<Vec<list::Fill>>,
         images: Vec<Operation>,
     ) -> Option<NodeId> {
+        let existing = match &source {
+            list::Source::Existing(set) => Some(*set),
+            list::Source::New(_) => None,
+        };
         let made = list::make(
             &self.session.doc,
             &self.session.resolved,
@@ -561,15 +588,31 @@ impl MastikApp {
             instance,
             source,
         );
+        let doc = &self.session.doc;
         let made = made.map(|(mut tx, frame)| {
-            tx.0.splice(0..0, images);
-            if let Some(fill) = fill {
-                for op in &mut tx.0 {
-                    if let Operation::SetList { list: Some(l), .. } = op {
+            let mut read = None;
+            for op in &mut tx.0 {
+                if let Operation::SetList { list: Some(l), .. } = op {
+                    if let Some(fill) = &fill {
                         l.fill = fill.clone();
+                    }
+                    // A table already in the document has not been read for
+                    // this template's pictures; a new one came with its own.
+                    if let Some(set) = existing.and_then(|s| doc.data_set(s)) {
+                        let columns = picture_columns_of(doc, instance, &l.fill);
+                        read = read_set_pictures(doc, set, &columns);
                     }
                 }
             }
+            let mut front = images;
+            if let Some((added, set)) = read {
+                front.extend(added);
+                front.push(Operation::SetDataSet {
+                    id: set.id,
+                    set: Some(Box::new(set)),
+                });
+            }
+            tx.0.splice(0..0, front);
             (tx, frame)
         });
         let (tx, frame) = match made {
@@ -609,16 +652,27 @@ impl MastikApp {
         };
         let next = self.list_on(id, &now, &set);
         let name = set.name.clone();
-        let tx = Transaction(vec![
-            Operation::SetDataSet {
-                id: set.id,
-                set: Some(Box::new(set)),
-            },
-            Operation::SetList {
-                id,
-                list: Some(Box::new(next)),
-            },
-        ]);
+        let doc = &self.session.doc;
+        let columns = picture_columns(doc, id, &next.fill);
+        let (images, set) = match read_set_pictures(doc, &set, &columns) {
+            Some(read) => read,
+            None => (Vec::new(), set),
+        };
+        let tx = Transaction(
+            images
+                .into_iter()
+                .chain([
+                    Operation::SetDataSet {
+                        id: set.id,
+                        set: Some(Box::new(set)),
+                    },
+                    Operation::SetList {
+                        id,
+                        list: Some(Box::new(next)),
+                    },
+                ])
+                .collect(),
+        );
         self.session.name_step("List data", icon::TABLE);
         if self.commit_edit(tx) {
             self.session.info(format!("The list reads {name}"));

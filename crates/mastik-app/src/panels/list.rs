@@ -192,7 +192,23 @@ impl MastikApp {
             Some(TablePick::Set(d)) => {
                 if let Some(set) = self.session.doc.data_set(d).cloned() {
                     let next = self.list_on(id, now, &set);
-                    self.list_commit(id, "List data", next);
+                    let doc = &self.session.doc;
+                    let columns = crate::list_data::picture_columns(doc, id, &next.fill);
+                    match crate::list_data::read_set_pictures(doc, &set, &columns) {
+                        Some((mut ops, set)) => {
+                            ops.push(Operation::SetDataSet {
+                                id: set.id,
+                                set: Some(Box::new(set)),
+                            });
+                            ops.push(Operation::SetList {
+                                id,
+                                list: Some(Box::new(next)),
+                            });
+                            self.session.name_step("List data", icon::TABLE);
+                            self.commit_edit(Transaction(ops));
+                        }
+                        None => self.list_commit(id, "List data", next),
+                    }
                 }
             }
             Some(TablePick::File) => self.list_data_dialog(id),
@@ -1472,6 +1488,112 @@ mod tests {
         let cells: Vec<&str> = pairs.iter().map(|(c, _)| c.as_str()).collect();
         assert_eq!(cells, ["img/a.png"], "not climbed out");
         assert_eq!(ops.len(), 1, "added once");
+    }
+
+    /// *Make a list from data* over a linked table already in the document reads
+    /// the pictures its image column names beside the file, in the same step.
+    /// flip: `commit_make_list_filled` skipping `read_set_pictures` → fails at
+    /// "read beside".
+    #[test]
+    fn a_list_made_over_a_linked_table_reads_its_pictures() {
+        use mastik_core::chart::DataLink;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let png = crate::app::rgba_to_png(&[200; 16], (2, 2)).unwrap();
+        let (main_pic, _) =
+            crate::app::read_picture(png.clone(), Some("png".into()), None).unwrap();
+        let page = app.session.doc.first_page().to_wire();
+        let size = mastik_core::kurbo::Size::new(20.0, 20.0);
+        let frame = serde_json::to_value(NodeKind::Artboard {
+            size,
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        })
+        .unwrap();
+        let rect = serde_json::to_value(NodeKind::Rect {
+            size,
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        })
+        .unwrap();
+        let main = verb(
+            &mut app,
+            "create_node",
+            json!({ "parent": page, "kind": frame, "name": "Card", "x": -4000 }),
+        )[0];
+        let thumb = verb(
+            &mut app,
+            "create_node",
+            json!({ "parent": main.to_wire(), "kind": rect }),
+        )[0];
+        let fill = mastik_core::Fill {
+            brush: mastik_core::BrushSource::Literal(mastik_core::image_brush(main_pic.id.clone())),
+            visible: true,
+        };
+        let item = app.session.ids.mint_item();
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::AddImage {
+                id: main_pic.id.clone(),
+                entry: main_pic.entry.clone(),
+            },
+            mastik_core::Operation::SetFills {
+                id: thumb,
+                fills: vec![mastik_core::Keyed::new(item, fill)],
+            },
+        ])));
+        verb(
+            &mut app,
+            "make_component",
+            json!({ "nodes": [main.to_wire()] }),
+        );
+        verb(
+            &mut app,
+            "define_property",
+            json!({ "node": thumb.to_wire(), "kind": "image", "name": "Photo" }),
+        );
+        let inst = verb(
+            &mut app,
+            "create_instance",
+            json!({ "main": main.to_wire(), "parent": page, "x": -3500, "y": 0 }),
+        )[0];
+        let dir = std::env::temp_dir().join(format!("mastik-make-list-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let other = crate::app::rgba_to_png(&[10; 16], (2, 2)).unwrap();
+        std::fs::write(dir.join("ada.png"), other).unwrap();
+        let set = DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "People".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "Photo".into(),
+                }],
+                rows: vec![vec!["ada.png".into()]],
+            },
+            source: Some(DataLink {
+                path: dir.join("people.csv").to_string_lossy().into_owned(),
+                size: 0,
+                modified: 0,
+                header: None,
+            }),
+            pictures: Vec::new(),
+        };
+        let data = set.id;
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::SetDataSet {
+                id: data,
+                set: Some(Box::new(set)),
+            }
+        ])));
+        app.make_list_over(inst, data);
+        let _ = std::fs::remove_dir_all(&dir);
+        let doc = &app.session.doc;
+        let made = doc.get(app.session.selection.single().expect("the list"));
+        let made = made.and_then(|n| n.list()).expect("a list");
+        assert_eq!(made.data, data, "the list reads the table");
+        let set = doc.data_set(data).unwrap();
+        assert!(set.picture(doc, "ada.png").is_some(), "read beside");
     }
 
     /// Pictures beside a data file are read only under a local absolute folder:

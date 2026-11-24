@@ -887,9 +887,24 @@ impl MastikApp {
             return None;
         }
         // A row's file is drawn from its row's filled copy, as `plan::render`
-        // draws it.
+        // draws it, with the row's pictures beside a linked table read as the
+        // worker reads them.
         let filled = key.row.and_then(|row| {
-            mastik_export::plan::filled_copy(&self.session.doc, key.node, &key.spec, row)
+            let mut pictured = None;
+            let linked = |t| {
+                self.session
+                    .doc
+                    .data_set(t)
+                    .is_some_and(|s| s.source.is_some())
+            };
+            if let Some(p) = &key.spec.per_row
+                && linked(p.table)
+            {
+                let mut doc = self.session.doc.clone();
+                pictured = add_row_pictures(&mut doc, p.table, Some(row)).then_some(doc);
+            }
+            let base = pictured.as_ref().unwrap_or(&self.session.doc);
+            mastik_export::plan::filled_copy(base, key.node, &key.spec, row)
         });
         let (doc, res) = match &filled {
             Some((copy, res, _)) => (copy, res),
@@ -3838,8 +3853,14 @@ impl ExportFlags {
     }
 }
 
-/// `doc` with the pictures named beside each linked table a *One file per row*
-/// file reads, for every row, added and mapped in the table, outside history:
+/// Whether `file` draws a table's rows: one row's file, or a *One PDF* holding
+/// a page per row.
+pub(crate) fn draws_rows(file: &PlannedFile) -> bool {
+    file.row.is_some() || file.spec.rows_as_pages()
+}
+
+/// `doc` with the pictures named beside each linked table a per-row file
+/// reads, for every row, added and mapped in the table, outside history:
 /// the worker's throwaway copy, so a row's photo draws without a list over the
 /// table having read it first. The CLI's `export --all` reads them the same way.
 pub(crate) fn with_row_pictures(
@@ -3847,7 +3868,7 @@ pub(crate) fn with_row_pictures(
     files: &[PlannedFile],
 ) -> mastik_core::Document {
     let mut sets: Vec<mastik_core::list::DataSetId> = Vec::new();
-    for f in files.iter().filter(|f| f.row.is_some()) {
+    for f in files.iter().filter(|f| draws_rows(f)) {
         if let Some(p) = &f.spec.per_row
             && !sets.contains(&p.table)
         {
@@ -3855,32 +3876,55 @@ pub(crate) fn with_row_pictures(
         }
     }
     for id in sets {
-        let Some(set) = doc.data_set(id).cloned() else {
-            continue;
-        };
-        let Some(link) = &set.source else { continue };
-        let dir = std::path::Path::new(&link.path).parent();
-        let columns: Vec<_> = set.table.columns.iter().map(|c| c.id).collect();
-        let rows = set.table.rows.len();
-        let (mut ops, pairs) =
-            crate::list_data::read_pictures_in(&doc, dir, &set.table, &columns, rows);
-        let pairs: Vec<_> = pairs
-            .into_iter()
-            .filter(|(cell, _)| set.picture(&doc, cell).is_none())
-            .collect();
-        if pairs.is_empty() {
-            continue;
-        }
-        let mut next = set.clone();
-        next.pictures.extend(pairs);
-        ops.push(Operation::SetDataSet {
-            id,
-            set: Some(Box::new(next)),
-        });
-        // A picture that does not apply leaves the cell missing, as before.
-        let _ = doc.apply(&Transaction(ops));
+        add_row_pictures(&mut doc, id, None);
     }
     doc
+}
+
+/// Add to `doc`, outside history, the pictures beside linked table `id`'s file
+/// that the cells of row `only` (every row when `None`) name and the table does
+/// not map yet, and map them; whether any were added.
+fn add_row_pictures(
+    doc: &mut mastik_core::Document,
+    id: mastik_core::list::DataSetId,
+    only: Option<usize>,
+) -> bool {
+    let Some(set) = doc.data_set(id).cloned() else {
+        return false;
+    };
+    let Some(link) = &set.source else {
+        return false;
+    };
+    let dir = std::path::Path::new(&link.path).parent();
+    let columns: Vec<_> = set.table.columns.iter().map(|c| c.id).collect();
+    let one;
+    let table = match only {
+        None => &set.table,
+        Some(row) => {
+            one = mastik_core::chart::Table {
+                columns: set.table.columns.clone(),
+                rows: set.table.rows.get(row).cloned().into_iter().collect(),
+            };
+            &one
+        }
+    };
+    let (mut ops, pairs) =
+        crate::list_data::read_pictures_in(doc, dir, table, &columns, table.rows.len());
+    let pairs: Vec<_> = pairs
+        .into_iter()
+        .filter(|(cell, _)| set.picture(doc, cell).is_none())
+        .collect();
+    if pairs.is_empty() {
+        return false;
+    }
+    let mut next = set.clone();
+    next.pictures.extend(pairs);
+    ops.push(Operation::SetDataSet {
+        id,
+        set: Some(Box::new(next)),
+    });
+    // A picture that does not apply leaves the cell missing, as before.
+    doc.apply(&Transaction(ops)).is_ok()
 }
 
 /// A planned path's file name, folders and all left off.
@@ -5986,8 +6030,11 @@ mod code_export_tests {
     }
 
     /// The worker's copy reads the pictures beside a linked table for every row,
-    /// past the 200 a list reads, and the table maps them.
-    /// flip: `with_row_pictures` reading `list::MAX_DRAWN` rows → fails at "row 201".
+    /// past the 200 a list reads, and the table maps them; a *One PDF* file,
+    /// which has no row of its own, reads them too, and a preview reads only its
+    /// row's. Whether `build_export_preview` calls the read is pinned by no test.
+    /// flip: `with_row_pictures` reading `list::MAX_DRAWN` rows → fails at "row 201";
+    /// `draws_rows` reading only `row` → fails at "one PDF".
     #[test]
     fn the_worker_reads_every_rows_picture_beside_a_linked_table() {
         use mastik_core::list::DataSet;
@@ -6036,10 +6083,33 @@ mod code_export_tests {
             clamped: false,
             row: Some(200),
         };
-        let read = with_row_pictures(doc, &[file]);
+        // A *One PDF* file is planned with no row of its own.
+        let one_pdf = PlannedFile {
+            spec: ExportSpec {
+                per_row: Some(PerRow {
+                    rows_as: mastik_core::export::RowsAs::Pages,
+                    ..PerRow::new(table)
+                }),
+                ..ExportSpec::new(ExportFormat::Pdf, ExportScale::Times(1.0))
+            },
+            path: "a.pdf".into(),
+            row: None,
+            ..file.clone()
+        };
+        let read = with_row_pictures(doc.clone(), &[file]);
+        let pdf = with_row_pictures(doc.clone(), &[one_pdf]);
+        // The preview reads its one row alone.
+        let (mut first, mut last) = (doc.clone(), doc);
+        let previews = (
+            add_row_pictures(&mut first, table, Some(0)),
+            add_row_pictures(&mut last, table, Some(200)),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(previews, (false, true), "one row's pictures");
         let set = read.data_set(table).expect("the table");
         assert!(set.picture(&read, "last.png").is_some(), "row 201");
-        let _ = std::fs::remove_dir_all(&dir);
+        let set = pdf.data_set(table).expect("the table");
+        assert!(set.picture(&pdf, "last.png").is_some(), "one PDF");
     }
 
     /// A per-row preview draws the row it is keyed on, and the stepper reads

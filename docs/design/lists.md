@@ -118,10 +118,14 @@ list's description as it drops a misplaced one.
   (`MAX_DRAWN`), each file
   up to `tokens_import::MAX_READ`, decoded by `app::read_picture`. A cell already naming a
   document picture's id is not read, and each cell is tried once per read however many rows name
-  it. Each new picture's `AddImage` lands in the same step as the map. Reads happen on the import
-  box's *Make list*, on *Update* and *Relink…* (which replace the map), and when the card's *Fill*
-  points an image property at a column it did not already fill while the set is linked; any
-  other fill edit reads nothing.
+  it. Each new picture's `AddImage` lands in the same step as the map. Reads happen whenever a
+  list comes to read a linked table (`list_data::read_set_pictures`): the import box's *Make
+  list*, *Make a list from data ▸* a table, the card's table dropdown and *From a file…*; on
+  *Update* and *Relink…* (which replace the map); and when the card's *Fill* points an image
+  property at a column it did not already fill while the set is linked. Any other fill edit
+  reads nothing. *Fill with content* reads every linked table's first `MAX_DRAWN` rows when it
+  opens, and any further row its plan takes; a per-row export reads every row, and its preview
+  the row shown.
   A browser drop's file has no folder, so nothing is read for it.
 - **The reads run on the UI thread** at those moments, not on the chart import's worker.
 

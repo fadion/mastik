@@ -748,6 +748,51 @@ fn shuffled_rows_are_distinct_and_a_chosen_kind_wins() {
     assert_eq!(row.column, None, "the chosen kind takes it off its column");
 }
 
+/// *By column name* gives a shape a column whose cells name pictures read
+/// beside a linked table's file, which the set does not map yet.
+/// flip: `table_column` reading only `DataSet::image_columns` → fails at "read beside".
+#[test]
+fn by_column_name_fills_a_shape_from_pictures_read_beside_the_file() {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    let mut f = Fixture::new();
+    let (list, rows) = f.team();
+    let set = mastik_core::list::DataSet {
+        id: f.ids.mint_data_set(),
+        name: "People".into(),
+        table: Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "Avatar".into(),
+            }],
+            rows: vec![vec!["ada.png".into()]],
+        },
+        source: None,
+        pictures: Vec::new(),
+    };
+    let data = set.id;
+    f.commit(vec![Operation::SetDataSet {
+        id: data,
+        set: Some(Box::new(set)),
+    }]);
+    let opts = Options {
+        table: Some(fill::TableContent::ByColumnName(data)),
+        avatars: None,
+        ..Options::default()
+    };
+    let avatar = f.child(rows[0], "Avatar");
+    let column = |plan: &Plan| plan.rows.iter().find(|r| r.node == avatar)?.column;
+    assert_eq!(column(&f.plan(&[list], &opts)), None, "no picture named");
+    let beside = Options {
+        pictures: vec![(data, "ada.png".into(), ImageId("p".into()))],
+        ..opts
+    };
+    assert_eq!(
+        column(&f.plan(&[list], &beside)),
+        Some((data, ColumnId(0))),
+        "read beside"
+    );
+}
+
 fn opts(locale: &str) -> Options {
     Options {
         locale: locale.into(),

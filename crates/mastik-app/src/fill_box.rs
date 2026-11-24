@@ -165,6 +165,9 @@ impl FillBox {
             return;
         }
         self.plan = fill::plan(doc, res, &self.selection, &self.opts);
+        if self.read_taken_rows(doc) {
+            self.plan = fill::plan(doc, res, &self.selection, &self.opts);
+        }
         self.every = match self.opts.records && self.opts.avatars.is_some() {
             true => self.plan.clone(),
             false => fill::outline(
@@ -185,7 +188,64 @@ impl FillBox {
                 .collect();
             self.samples = (locale, samples);
         }
-        self.asked = Some(now);
+        // Keyed on the options as read, so pictures read for this plan do not
+        // plan it again.
+        self.asked = Some((self.opts.clone(), now.1, now.2, now.3));
+    }
+
+    /// Read the pictures beside a linked table for the rows `plan` takes past
+    /// the first [`mastik_core::list::MAX_DRAWN`] the box read on open (*From row* further
+    /// on, or *Shuffled*), adding them to [`Options::pictures`]; whether any
+    /// were found.
+    fn read_taken_rows(&mut self, doc: &Document) -> bool {
+        let mut taken: Vec<(mastik_core::list::DataSetId, usize)> = Vec::new();
+        for r in &self.plan.rows {
+            if let (Some((d, _)), Some(row)) = (r.column, r.table_row)
+                && row >= mastik_core::list::MAX_DRAWN
+                && !taken.contains(&(d, row))
+            {
+                taken.push((d, row));
+            }
+        }
+        let mut found = false;
+        for set in doc.data_sets() {
+            let Some(link) = &set.source else { continue };
+            let rows: Vec<Vec<String>> = (taken.iter())
+                .filter(|(d, _)| *d == set.id)
+                .filter_map(|(_, r)| set.table.rows.get(*r).cloned())
+                .collect();
+            if rows.is_empty() {
+                continue;
+            }
+            let table = mastik_core::chart::Table {
+                columns: set.table.columns.clone(),
+                rows,
+            };
+            let columns: Vec<_> = table.columns.iter().map(|c| c.id).collect();
+            let dir = std::path::Path::new(&link.path).parent();
+            let (images, pairs) =
+                crate::list_data::read_pictures_in(doc, dir, &table, &columns, table.rows.len());
+            for op in images {
+                let mastik_core::Operation::AddImage { id, .. } = &op else {
+                    continue;
+                };
+                let held = (self.read.iter()).any(
+                    |o| matches!(o, mastik_core::Operation::AddImage { id: had, .. } if had == id),
+                );
+                if !held {
+                    self.read.push(op);
+                }
+            }
+            for (cell, id) in pairs {
+                let known = set.picture(doc, &cell).is_some()
+                    || (self.opts.pictures.iter()).any(|(s, c, _)| *s == set.id && *c == cell);
+                if !known {
+                    self.opts.pictures.push((set.id, cell, id));
+                    found = true;
+                }
+            }
+        }
+        found
     }
 
     fn sample(&self, kind: Kind) -> &str {
@@ -1544,6 +1604,75 @@ mod tests {
             "the picture beside the file"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A row past the 200 the box reads on open, taken by *From row*, still
+    /// finds its picture beside the file: the plan reads the rows it takes.
+    /// flip: `replan` not calling `read_taken_rows` → fails at "row 201".
+    #[test]
+    fn a_picture_past_the_first_200_rows_is_read_when_taken() {
+        use mastik_core::chart::{Column, ColumnId, DataLink, Table};
+        let (ctx, mut app) = app();
+        let (_, rows) = team(&mut app);
+        let dir = std::env::temp_dir().join(format!("mastik-fill-past-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = crate::app::rgba_to_png(&[255, 0, 0, 255], (1, 1)).unwrap();
+        std::fs::write(dir.join("ada.png"), png).unwrap();
+        let mut cells: Vec<Vec<String>> = (0..200).map(|_| vec![String::new()]).collect();
+        cells.push(vec!["ada.png".into()]);
+        let set = mastik_core::list::DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "People".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "Photo".into(),
+                }],
+                rows: cells,
+            },
+            source: Some(DataLink {
+                path: dir.join("people.csv").to_string_lossy().into_owned(),
+                size: 0,
+                modified: 0,
+                header: None,
+            }),
+            pictures: Vec::new(),
+        };
+        let data = set.id;
+        assert!(app.session.commit(Transaction(vec![Operation::SetDataSet {
+            id: data,
+            set: Some(Box::new(set)),
+        }])));
+        pass(&ctx, &mut app);
+        app.dispatch(&ctx, crate::input::Action::FillContent);
+        pass(&ctx, &mut app);
+        let mut b = app.fill_content.take().expect("the box opened");
+        assert!(b.opts.pictures.is_empty(), "row 201 is not read on open");
+        let doc = &app.session.doc;
+        let avatar = *doc
+            .get(rows[0])
+            .unwrap()
+            .children()
+            .iter()
+            .find(|c| doc.get(**c).unwrap().name() == "Avatar")
+            .unwrap();
+        b.opts.columns.insert(avatar, (data, ColumnId(0)));
+        b.opts.from_row = 200;
+        b.replan(
+            &app.session.doc,
+            &app.session.resolved,
+            app.session.page,
+            app.session.revision(),
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(b.plan.missing_pictures, 0, "row 201");
+        app.commit_fill_content(&b);
+        let doc = &app.session.doc;
+        let id = (doc.data_set(data).unwrap())
+            .picture(doc, "ada.png")
+            .expect("the table maps it now");
+        let fill = &doc.get(avatar).unwrap().paint().fills[0];
+        assert_eq!(fill.brush.literal(), Some(&mastik_core::image_brush(id)));
     }
 
     /// With nothing fillable selected the box still opens, *Fill* dim with its

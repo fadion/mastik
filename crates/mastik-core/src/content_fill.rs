@@ -2173,8 +2173,18 @@ fn table_column(doc: &Document, opts: &Options, t: &Target) -> Option<Cell> {
                 .columns
                 .iter()
                 .find(|c| column_key(&c.name) == key)?;
-            // A shape takes only a column naming pictures.
-            (!t.shape || set.image_columns(doc).contains(&c.id)).then_some((d, c.id))
+            // A shape takes only a column naming pictures, the set's own or ones
+            // read beside its file.
+            let beside = || {
+                let i = set.table.index_of(c.id)?;
+                let cells: Vec<&str> = (opts.pictures.iter())
+                    .filter(|(s, _, _)| *s == d)
+                    .map(|(_, cell, _)| cell.as_str())
+                    .collect();
+                Some(set.table.rows.iter().any(|r| cells.contains(&r[i].trim())))
+            };
+            (!t.shape || set.image_columns(doc).contains(&c.id) || beside() == Some(true))
+                .then_some((d, c.id))
         }
     }
 }
