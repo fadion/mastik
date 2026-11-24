@@ -766,7 +766,7 @@ impl MastikApp {
             None => chart.clone(),
         };
         let w = W.min(canvas.width() - 32.0).max(320.0);
-        let linked = shown.source.is_some();
+        let lock = Lock::of(&shown);
         // Each column's series swatch, a binding read where the chart is.
         let swatches: Vec<Option<egui::Color32>> = shown
             .table
@@ -825,18 +825,8 @@ impl MastikApp {
                     save = true;
                 }
             };
-            egui::Frame::NONE
-                .inner_margin(egui::Margin {
-                    left: PAD as i8,
-                    right: PAD as i8,
-                    top: 0,
-                    bottom: PAD as i8,
-                })
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
-                    let heads = Heads::Chart(&swatches);
-                    grid(ui, &shown, heads, &mut state, linked, &mut bar, &mut act);
-                });
+            let heads = Heads::Chart(&swatches);
+            window_grid(ui, &shown, heads, &mut state, lock, &mut bar, &mut act);
         });
         if rename && let Some(s) = &set {
             state.naming = Some(s.name.clone());
@@ -926,16 +916,8 @@ impl MastikApp {
             (0..=1, 0) => String::new(),
             _ => format!(" \u{b7} {}", self.readers_words(set)),
         };
-        // The chart's grid reads a chart; a data set's table stands in one that
-        // maps nothing.
-        let chart = Chart {
-            table: data.table.clone(),
-            source: data.source.clone(),
-            mapping: Default::default(),
-            series: Vec::new(),
-            ..Chart::sample(ChartKind::Column)
-        };
-        let linked = chart.source.is_some();
+        let chart = stand_in(&data.table, data.source.clone());
+        let lock = Lock::of(&chart);
         let w = W.min(canvas.width() - 32.0).max(320.0);
         let mut act: Vec<Act> = Vec::new();
         let mut renamed = None;
@@ -959,23 +941,13 @@ impl MastikApp {
                 act.push(Act::Close);
             }
             renamed = kept;
-            egui::Frame::NONE
-                .inner_margin(egui::Margin {
-                    left: PAD as i8,
-                    right: PAD as i8,
-                    top: 0,
-                    bottom: PAD as i8,
-                })
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
-                    let heads = Heads::Fills(&fills, &warned);
-                    let mut bar = |ui: &mut egui::Ui, slot: Slot| {
-                        if slot == Slot::Trail {
-                            rename |= rename_button(ui, naming);
-                        }
-                    };
-                    grid(ui, &chart, heads, &mut state, linked, &mut bar, &mut act);
-                });
+            let heads = Heads::Fills(&fills, &warned);
+            let mut bar = |ui: &mut egui::Ui, slot: Slot| {
+                if slot == Slot::Trail {
+                    rename |= rename_button(ui, naming);
+                }
+            };
+            window_grid(ui, &chart, heads, &mut state, lock, &mut bar, &mut act);
         });
         if rename {
             state.naming = Some(data.name.clone());
@@ -1069,45 +1041,38 @@ impl MastikApp {
                 // As tall as the window over a table, so the first one made does
                 // not resize it.
                 let body = egui::vec2(inner, ui::CONTROL_H + GAP + state.grid_h);
-                egui::Frame::NONE
-                    .inner_margin(egui::Margin {
-                        left: PAD as i8,
-                        right: PAD as i8,
-                        top: 0,
-                        bottom: PAD as i8,
-                    })
-                    .show(ui, |ui| {
-                        let layout = egui::Layout::top_down(egui::Align::Center);
-                        ui.allocate_ui_with_layout(body, layout, |ui| {
-                            ui.set_min_size(body);
-                            ui.add_space(state.grid_h / 4.0);
-                            ui::empty_state(
-                                ui,
-                                Some(icon::TABLE),
-                                "This document has no tables",
-                                "Make one, or read one from a CSV, TSV or JSON file",
-                                |ui| {
-                                    use crate::settings::{text_button, text_button_w};
-                                    // Word buttons, as every other empty state's.
-                                    ui.add_space(2.0);
-                                    ui.horizontal(|ui| {
-                                        let both = text_button_w(ui, "New table")
-                                            + text_button_w(ui, "From a file…")
-                                            + ui::CARD_COL_GAP;
-                                        ui.add_space((ui.available_width() - both) / 2.0);
-                                        ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                                        let off = ui::FieldButton::Off;
-                                        if text_button(ui, "New table", off).clicked() {
-                                            asked = Some(TablesAct::New);
-                                        }
-                                        if text_button(ui, "From a file…", off).clicked() {
-                                            asked = Some(TablesAct::File);
-                                        }
-                                    });
-                                },
-                            );
-                        });
+                window_body(ui, |ui| {
+                    let layout = egui::Layout::top_down(egui::Align::Center);
+                    ui.allocate_ui_with_layout(body, layout, |ui| {
+                        ui.set_min_size(body);
+                        ui.add_space(state.grid_h / 4.0);
+                        ui::empty_state(
+                            ui,
+                            Some(icon::TABLE),
+                            "This document has no tables",
+                            "Make one, or read one from a CSV, TSV or JSON file",
+                            |ui| {
+                                use crate::settings::{text_button, text_button_w};
+                                // Word buttons, as every other empty state's.
+                                ui.add_space(2.0);
+                                ui.horizontal(|ui| {
+                                    let both = text_button_w(ui, "New table")
+                                        + text_button_w(ui, "From a file…")
+                                        + ui::CARD_COL_GAP;
+                                    ui.add_space((ui.available_width() - both) / 2.0);
+                                    ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                                    let off = ui::FieldButton::Off;
+                                    if text_button(ui, "New table", off).clicked() {
+                                        asked = Some(TablesAct::New);
+                                    }
+                                    if text_button(ui, "From a file…", off).clicked() {
+                                        asked = Some(TablesAct::File);
+                                    }
+                                });
+                            },
+                        );
                     });
+                });
                 return;
             };
             let rest = if readers.is_empty() {
@@ -1127,15 +1092,8 @@ impl MastikApp {
                 act.push(Act::Close);
             }
             renamed = kept;
-            // The grid reads a chart; the table stands in one that maps nothing.
-            let chart = Chart {
-                table: data.table.clone(),
-                source: data.source.clone(),
-                mapping: Default::default(),
-                series: Vec::new(),
-                ..Chart::sample(ChartKind::Column)
-            };
-            let linked = chart.source.is_some();
+            let chart = stand_in(&data.table, data.source.clone());
+            let lock = Lock::of(&chart);
             let mut bar = |ui: &mut egui::Ui, slot: Slot| match slot {
                 Slot::Lead => {
                     use crate::list_data::{TablePick, TableRows, table_combo};
@@ -1181,25 +1139,8 @@ impl MastikApp {
                     rename |= rename_button(ui, naming);
                 }
             };
-            egui::Frame::NONE
-                .inner_margin(egui::Margin {
-                    left: PAD as i8,
-                    right: PAD as i8,
-                    top: 0,
-                    bottom: PAD as i8,
-                })
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
-                    grid(
-                        ui,
-                        &chart,
-                        Heads::Plain,
-                        &mut state,
-                        linked,
-                        &mut bar,
-                        &mut act,
-                    );
-                });
+            let heads = Heads::Plain;
+            window_grid(ui, &chart, heads, &mut state, lock, &mut bar, &mut act);
         });
         if rename && let Some(d) = &data {
             state.naming = Some(d.name.clone());
@@ -1367,32 +1308,9 @@ pub(crate) fn played_table_card(
         if crate::settings::card_head_noted(ui, w, "Data tables", Some(&note)) {
             act.push(Act::Close);
         }
-        let chart = Chart {
-            table: set.table.clone(),
-            source: None,
-            mapping: Default::default(),
-            series: Vec::new(),
-            ..Chart::sample(ChartKind::Column)
-        };
-        egui::Frame::NONE
-            .inner_margin(egui::Margin {
-                left: PAD as i8,
-                right: PAD as i8,
-                top: 0,
-                bottom: PAD as i8,
-            })
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
-                grid(
-                    ui,
-                    &chart,
-                    Heads::Plain,
-                    state,
-                    true,
-                    &mut |_, _| {},
-                    &mut act,
-                );
-            });
+        let chart = stand_in(&set.table, None);
+        let (heads, lock) = (Heads::Plain, Lock::Played);
+        window_grid(ui, &chart, heads, state, lock, &mut |_, _| {}, &mut act);
     });
     let mut closed = false;
     for a in act {
@@ -1403,6 +1321,68 @@ pub(crate) fn played_table_card(
         }
     }
     closed
+}
+
+/// Whether the data window's table takes typing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lock {
+    /// Typed into in place.
+    Open,
+    /// Held by its linked file, which *Update* reads again.
+    Linked,
+    /// Held as play left it: read-only, with no toolbar.
+    Played,
+}
+
+impl Lock {
+    /// [`Lock::Linked`] for a table read from a file, else [`Lock::Open`].
+    fn of(chart: &Chart) -> Self {
+        match chart.source.is_some() {
+            true => Self::Linked,
+            false => Self::Open,
+        }
+    }
+}
+
+/// The chart the grid reads for a data set's table: one that maps nothing.
+fn stand_in(table: &chart::Table, source: Option<chart::DataLink>) -> Chart {
+    Chart {
+        table: table.clone(),
+        source,
+        mapping: Default::default(),
+        series: Vec::new(),
+        ..Chart::sample(ChartKind::Column)
+    }
+}
+
+/// The data window's body under its head: `add` inside the window's padding.
+fn window_body<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::NONE
+        .inner_margin(egui::Margin {
+            left: PAD as i8,
+            right: PAD as i8,
+            top: 0,
+            bottom: PAD as i8,
+        })
+        .show(ui, add)
+        .inner
+}
+
+/// [`grid`] as every data window lays it out: in [`window_body`], its cells
+/// [`ui::CARD_COL_GAP`] apart across and [`GAP`] down.
+fn window_grid(
+    ui: &mut egui::Ui,
+    chart: &Chart,
+    heads: Heads<'_>,
+    s: &mut ChartData,
+    lock: Lock,
+    bar: &mut dyn FnMut(&mut egui::Ui, Slot),
+    act: &mut Vec<Act>,
+) {
+    window_body(ui, |ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(ui::CARD_COL_GAP, GAP);
+        grid(ui, chart, heads, s, lock, bar, act);
+    });
 }
 
 /// The grid under its toolbar (*Add row*, *Add column*, and *Import…* at the
@@ -1416,7 +1396,7 @@ fn grid(
     chart: &Chart,
     heads: Heads<'_>,
     s: &mut ChartData,
-    linked: bool,
+    lock: Lock,
     bar: &mut dyn FnMut(&mut egui::Ui, Slot),
     act: &mut Vec<Act>,
 ) {
@@ -1425,8 +1405,10 @@ fn grid(
     // The table's size once this pass's edit lands, so the cursor may stand on
     // a row or column added just now.
     let (mut fit_r, mut fit_c) = (nr, nc);
-    // A played table has nothing to add or import: no toolbar.
-    let played = linked && chart.source.is_none();
+    // Either lock refuses typing; a played table has nothing to add or import
+    // either: no toolbar.
+    let linked = lock != Lock::Open;
+    let played = lock == Lock::Played;
     if !played {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
