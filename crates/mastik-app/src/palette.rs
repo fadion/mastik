@@ -2279,6 +2279,58 @@ pub(crate) mod tests {
         );
     }
 
+    /// On an instance the palette runs *Make a list from a file…* and *…from a
+    /// new table*, and never lists the submenu's head as absent.
+    /// flip: `KIND_VERBS` holding `Item::MakeList` → fails at "no absent head".
+    #[test]
+    fn an_instances_rows_leave_out_the_make_list_head() {
+        use mastik_core::verbs::{self, Ctx};
+        use serde_json::json;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let verb = |app: &mut MastikApp, name: &str, args: serde_json::Value| {
+            let res = app.session.resolved.clone();
+            let done = verbs::call(
+                &mut Ctx {
+                    doc: &app.session.doc,
+                    res: &res,
+                    ids: &mut app.session.ids,
+                    images: None,
+                    contrast: None,
+                },
+                name,
+                &args,
+            )
+            .unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(app.session.commit(done.tx), "{name} commits");
+            done.created
+        };
+        let page = app.session.doc.first_page().to_wire();
+        let rect = add_rect(&mut app);
+        let made = verb(
+            &mut app,
+            "make_component",
+            json!({ "nodes": [rect.to_wire()] }),
+        );
+        let main = made.first().copied().unwrap_or(rect);
+        let inst = verb(
+            &mut app,
+            "create_instance",
+            json!({ "main": main.to_wire(), "parent": page, "x": 400, "y": 0 }),
+        )[0];
+        app.session.selection.set_one(inst);
+        app.toggle_palette(&ctx);
+        let pal = app.palette.take().expect("the palette opened");
+        let cmds = app.palette_commands(&pal);
+        let find = |item| cmds.iter().find(|c| c.item == item);
+        assert!(
+            find(Item::MakeListFile).is_some_and(|c| !c.absent),
+            "fixture: an instance takes a list"
+        );
+        assert!(find(Item::MakeList).is_none(), "no absent head");
+    }
+
     /// *Export as Penpot file…* and *Export as Sketch file…* are rows with
     /// nothing selected, since they write the whole document, and each runs its
     /// export.

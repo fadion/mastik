@@ -2916,7 +2916,8 @@ pub const KIND_VERBS: &[(Item, &str)] = &[
     (Item::EditChartData, "Select a chart"),
     (Item::ImportChartData, "Select a chart"),
     (Item::FlattenChart, "Select a chart"),
-    (Item::MakeList, "Needs an instance"),
+    // *Make a list from data* is a submenu head the palette never runs; its
+    // two rows stand for it.
     (Item::MakeListFile, "Needs an instance"),
     (Item::MakeListNewTable, "Needs an instance"),
     (Item::DetachList, "Select a list"),
