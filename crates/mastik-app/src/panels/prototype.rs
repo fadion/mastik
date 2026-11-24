@@ -68,9 +68,10 @@ pub(crate) struct ProtoState {
     /// last.
     pub marks_drawn: std::cell::RefCell<Vec<(ProtoMark, egui::Rect)>>,
     /// The interactions *Copy interactions* took, with the tab they were copied
-    /// in: *Paste interactions* offers them on that tab's document only, since
-    /// their targets are that document's layers.
-    pub copied: Option<(Option<crate::tabs::TabId>, Vec<Reaction>)>,
+    /// in and the layer they came from: *Paste interactions* offers them on that
+    /// tab's document only, since their targets are that document's layers, and
+    /// re-homes what was the source's own (`rehomed`).
+    pub copied: Option<(Option<crate::tabs::TabId>, NodeId, Vec<Reaction>)>,
     /// The interaction block picked by a click on one of its connectors, by its
     /// layer and reaction: ringed in the card among two or more, and on the
     /// canvas its connectors and scroll line are the layer's only ones drawn
@@ -1054,6 +1055,85 @@ fn fresh_ids(list: &[Keyed<Action>], mint: &mut impl FnMut() -> ItemId) -> Vec<K
             Keyed::new(mint(), value)
         })
         .collect()
+}
+
+/// `r` as *Paste interactions* writes it on `to`, copied from `from`: what was
+/// `from`'s own becomes `to`'s. A *Change to* of `from`'s own instance switches
+/// `to`'s, which must be of the same set, and *On drop at* one of `from`'s snap
+/// points names `to`'s point of that name. Other targets stay the document's
+/// layers. `Err` says why `to` cannot take it.
+fn rehomed(doc: &Document, from: NodeId, to: NodeId, r: &Reaction) -> Result<Reaction, String> {
+    let name = doc
+        .get(to)
+        .map_or_else(|| "The layer".to_owned(), |n| n.name().to_owned());
+    let points = |id: NodeId| {
+        doc.get(id)
+            .and_then(|n| n.play().follow.clone())
+            .map(|f| f.points)
+            .unwrap_or_default()
+    };
+    let mut trigger = r.trigger.clone();
+    if let Trigger::Drop {
+        at: DropAt::Point(p),
+    } = &mut trigger
+        && let Some(point) = points(from).into_iter().find(|k| k.id == *p)
+    {
+        let Some(there) = points(to)
+            .into_iter()
+            .find(|k| k.value.name == point.value.name)
+        else {
+            return Err(format!(
+                "{name} has no snap point named “{}”",
+                point.value.name
+            ));
+        };
+        *p = there.id;
+    }
+    let own = state_instance(doc, from);
+    let target = state_instance(doc, to);
+    fn walk(
+        list: &[Keyed<Action>],
+        own: Option<NodeId>,
+        target: &dyn Fn(NodeId) -> Option<NodeId>,
+    ) -> Option<Vec<Keyed<Action>>> {
+        list.iter()
+            .map(|k| {
+                let value = match &k.value {
+                    Action::ChangeState {
+                        instance,
+                        to,
+                        transition,
+                    } if Some(*instance) == own => Action::ChangeState {
+                        instance: target(*to)?,
+                        to: *to,
+                        transition: *transition,
+                    },
+                    Action::Conditional {
+                        branches,
+                        otherwise,
+                    } => Action::Conditional {
+                        branches: branches
+                            .iter()
+                            .map(|b| {
+                                Some(Branch {
+                                    when: b.when.clone(),
+                                    actions: walk(&b.actions, own, target)?,
+                                })
+                            })
+                            .collect::<Option<_>>()?,
+                        otherwise: walk(otherwise, own, target)?,
+                    },
+                    other => other.clone(),
+                };
+                Some(Keyed::new(k.id, value))
+            })
+            .collect()
+    }
+    // `to`'s instance, when the variant it switches to is one of its states.
+    let switch = |variant: NodeId| target.filter(|t| states_of(doc, *t).contains(&variant));
+    let actions = walk(&r.actions, own, &switch)
+        .ok_or_else(|| format!("{name} is no instance of the set its Change to switches"))?;
+    Ok(Reaction { trigger, actions })
 }
 
 // --- expressions ----------------------------------------------------------------
@@ -3798,7 +3878,7 @@ impl MastikApp {
         self.proto
             .copied
             .as_ref()
-            .is_some_and(|(tab, _)| *tab == self.tabs.active)
+            .is_some_and(|(tab, ..)| *tab == self.tabs.active)
     }
 
     /// *Copy interactions*: keep the source layer's interactions, apart from the
@@ -3814,7 +3894,7 @@ impl MastikApp {
             1 => "Copied 1 interaction".to_string(),
             n => format!("Copied {n} interactions"),
         });
-        self.proto.copied = Some((self.tabs.active, list));
+        self.proto.copied = Some((self.tabs.active, id, list));
     }
 
     /// *Paste interactions*: add the copied interactions after each selected
@@ -3823,7 +3903,7 @@ impl MastikApp {
         if !self.interactions_copied() {
             return;
         }
-        let Some((_, copied)) = self.proto.copied.clone() else {
+        let Some((_, source, copied)) = self.proto.copied.clone() else {
             return;
         };
         let ids = self.session.selection.ids().to_vec();
@@ -3834,9 +3914,16 @@ impl MastikApp {
             };
             let mut list = node.reactions().to_vec();
             for r in &copied {
+                let r = match rehomed(&self.session.doc, source, id, r) {
+                    Ok(r) => r,
+                    Err(why) => {
+                        self.session.info(format!("Not pasted: {why}"));
+                        return;
+                    }
+                };
                 let mut mint = || self.session.ids.mint_item();
                 let copy = Reaction {
-                    trigger: r.trigger.clone(),
+                    trigger: r.trigger,
                     actions: fresh_ids(&r.actions, &mut mint),
                 };
                 list.push(Keyed::new(mint(), copy));
@@ -9569,6 +9656,143 @@ mod tests {
             !f.app.interactions_copied(),
             "another tab's copy is not offered"
         );
+    }
+
+    /// Pasted interactions take the target's own instance for a *Change to* of
+    /// the source's, and its snap point of the same name for *On drop at*; a
+    /// target with neither refuses the paste and keeps what it had.
+    ///
+    /// flip: `rehomed` keeping the copied instance → fails at "switches its
+    /// own"; keeping the copied point → fails at "its own point".
+    #[test]
+    fn pasted_interactions_take_the_targets_own_instance_and_point() {
+        use mastik_core::prototype::{DragPoint, Follow, LayerPlay};
+        use mastik_core::variant::{VariantProp, VariantSet};
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let root = f.app.session.doc.first_page();
+        let [set, rest, hover] = [(); 3].map(|_| f.app.session.ids.mint());
+        let frame = |id, parent, index, name: &str| Operation::CreateNode {
+            id,
+            parent,
+            index,
+            kind: NodeKind::Artboard {
+                size: Size::new(80.0, 30.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: Some(name.into()),
+        };
+        let prop = VariantProp::new("State", vec!["Default".into(), "Hovered".into()]);
+        let mut ops = vec![
+            frame(set, root, 0, "Button"),
+            frame(rest, set, 0, "Default"),
+            frame(hover, set, 1, "Hovered"),
+        ];
+        for v in [rest, hover] {
+            ops.push(Operation::SetComponent {
+                id: v,
+                component: true,
+            });
+        }
+        ops.push(Operation::SetVariantSet {
+            id: set,
+            set: Some(VariantSet { props: vec![prop] }),
+        });
+        for (v, value) in [(rest, "Default"), (hover, "Hovered")] {
+            ops.push(Operation::SetVariant {
+                id: v,
+                values: vec![value.into()],
+            });
+        }
+        let point = |n: u32| LayerPlay {
+            follow: Some(Follow {
+                points: vec![keyed_point(n)],
+                ..Follow::default()
+            }),
+            ..LayerPlay::default()
+        };
+        fn keyed_point(n: u32) -> Keyed<DragPoint> {
+            Keyed::new(
+                item(n),
+                DragPoint {
+                    name: "End".into(),
+                    x: 40.0,
+                    y: 0.0,
+                },
+            )
+        }
+        ops.push(Operation::SetPlay {
+            id: f.add,
+            play: point(50),
+        });
+        ops.push(Operation::SetPlay {
+            id: f.cart,
+            play: point(60),
+        });
+        assert!(f.app.session.commit(Transaction(ops)));
+        let change = Action::ChangeState {
+            instance: rest,
+            to: hover,
+            transition: Transition::INSTANT,
+        };
+        let reactions = |trigger, action| {
+            vec![Keyed::new(
+                item(1),
+                Reaction {
+                    trigger,
+                    actions: vec![keyed(11, action)],
+                },
+            )]
+        };
+        let read = |f: &F, id| f.app.session.doc.get(id).unwrap().reactions().to_vec();
+
+        f.app.write_reactions(
+            rest,
+            reactions(Trigger::Click, change),
+            "Add interaction",
+            icon::INTERACTION,
+        );
+        f.app.session.selection.set_one(rest);
+        f.app.copy_interactions();
+        f.app.session.selection.set_one(hover);
+        f.app.paste_interactions();
+        let pasted = read(&f, hover);
+        assert!(
+            matches!(
+                pasted[0].value.actions[0].value,
+                Action::ChangeState { instance, to, .. } if instance == hover && to == hover
+            ),
+            "switches its own: {pasted:?}"
+        );
+        f.app.session.selection.set_one(f.home);
+        f.app.paste_interactions();
+        assert!(read(&f, f.home).is_empty(), "no instance: refused");
+
+        let drop = Trigger::Drop {
+            at: DropAt::Point(item(50)),
+        };
+        f.app.write_reactions(
+            f.add,
+            reactions(drop, Action::Back),
+            "Add interaction",
+            icon::INTERACTION,
+        );
+        f.app.session.selection.set_one(f.add);
+        f.app.copy_interactions();
+        f.app.session.selection.set_one(f.cart);
+        f.app.paste_interactions();
+        assert_eq!(
+            read(&f, f.cart)[0].value.trigger,
+            Trigger::Drop {
+                at: DropAt::Point(item(60))
+            },
+            "its own point"
+        );
+        f.app.session.selection.set_one(f.home);
+        f.app.paste_interactions();
+        assert!(read(&f, f.home).is_empty(), "no such point: refused");
     }
 
     /// A scroll trigger's line moves along its frame's scroll and snaps to a

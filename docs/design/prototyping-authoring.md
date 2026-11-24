@@ -72,7 +72,10 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   copied in, and says *Copied N interactions*. *Paste interactions* is live in that tab only,
   since the copies' targets are that document's layers: it appends every copied interaction to
   each selected layer with fresh item ids, nested actions' too, as one *Paste interactions* step,
-  or writes nothing and says why when the door refuses a layer's list.
+  or writes nothing and says why when the door refuses a layer's list. What was the source's own
+  is re-homed (`rehomed`): a *Change to* of the source's instance switches the target's, which
+  must be of the same set, and *On drop at* a source snap point names the target's point of that
+  name; a target that has neither refuses the paste with the reason.
 - **Triggers** are offered in two groups under `ui::menu_eyebrow`s, *Pointer* (*On click*, *On
   double click*, *On press*, *While pressing*, *On long press*, *On hover*, *While hovering*, *On
   leave*, *On drag*, *On swipe*, *On drop*) and *Other* (*Key…*, *After delay*, *When a variable
