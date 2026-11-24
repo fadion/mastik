@@ -367,12 +367,15 @@ struct Walk<'a> {
     shared: std::rc::Rc<Shared>,
 }
 
-/// What every walk of one build shares. Both depend only on the document and the
+/// What every walk of one build shares. Each depends only on the document and the
 /// preview, never on where the walk is.
 #[derive(Default)]
 struct Shared {
     /// What the preview patches and its ancestors ([`Walk::grown`]).
     grown: std::cell::OnceCell<rustc_hash::FxHashSet<NodeId>>,
+    /// The ancestors of what the preview patches, not the patched themselves
+    /// ([`Walk::patched_below`]).
+    below: std::cell::OnceCell<rustc_hash::FxHashSet<NodeId>>,
     /// Each container's [`drawn_children_ink`] by container, world transform and
     /// view, so a nested shadowed group is measured once a build rather than once
     /// for every measure and shadow pass enclosing it, which doubled per level.
@@ -437,6 +440,27 @@ impl<'a> Walk<'a> {
                 let mut out = rustc_hash::FxHashSet::default();
                 for patched in ov.patched() {
                     let mut at = Some(patched);
+                    while let Some(p) = at {
+                        if !out.insert(p) {
+                            break;
+                        }
+                        at = doc.get(p).and_then(|n| n.parent());
+                    }
+                }
+                out
+            })
+            .contains(&id)
+    }
+
+    /// Whether the preview patches something inside `id`, so its committed
+    /// bounds, carried by a placement, no longer cover what it draws.
+    fn patched_below(&self, doc: &Document, ov: &RenderOverrides, id: NodeId) -> bool {
+        self.shared
+            .below
+            .get_or_init(|| {
+                let mut out = rustc_hash::FxHashSet::default();
+                for patched in ov.patched() {
+                    let mut at = doc.get(patched).and_then(|n| n.parent());
                     while let Some(p) = at {
                         if !out.insert(p) {
                             break;
@@ -1820,12 +1844,17 @@ fn paint_node_pass<P: ScenePainter>(
     // layer dragged past the rest of its page leaves the page's box, and the page
     // would be skipped with it. `ink_bounds`, not `world_bounds` (§5.3a): a drop
     // shadow lands outside the layer's box. A level-of-detail walk also skips
-    // what lands under half a device pixel.
+    // what lands under half a device pixel. A node a play placement alone moved
+    // (a frame put on the screen, a scrolled card) is culled by its committed
+    // bounds carried there, unless something inside it is patched apart.
     if bounds_cover_subtree
-        && !ov.moved(id)
         && ov.ghosts_of(id).next().is_none()
-        && !walk.grown(doc, ov, id)
         && let Some(bounds) = res.ink_bounds(id)
+        && let Some(bounds) = match ov.moved(id) {
+            false => (!walk.grown(doc, ov, id)).then_some(bounds),
+            true if walk.patched_below(doc, ov, id) => None,
+            true => ov.placed_bounds(doc, res, id, bounds),
+        }
         && (!view.iter().any(|v| intersects(bounds, *v))
             || (ov.level_of_detail() && sub_pixel(bounds, base)))
     {

@@ -189,6 +189,9 @@ pub struct RenderOverrides {
     /// Nodes whose world transform may have moved, including descendants. The
     /// scene walk must not cull these against `Resolved`'s stale bounds.
     moved: FxHashSet<NodeId>,
+    /// The part of `moved` a play placement moved ([`Self::place`]): a frame
+    /// put on the screen, a scrolled child. See [`Self::placed_bounds`].
+    placed: FxHashSet<NodeId>,
     /// Nodes on their way *out* of the frame they are in: drawn in their own place
     /// in the tree, but outside their parent's clip. See [`Self::escape_clip`].
     escaping: FxHashSet<NodeId>,
@@ -630,6 +633,49 @@ impl RenderOverrides {
     pub(crate) fn place(&mut self, doc: &Document, id: NodeId, local: Affine) {
         self.entry(id).transform = Some(local);
         self.mark_moved(doc, id);
+        let mut stack = vec![id];
+        while let Some(current) = stack.pop() {
+            if self.placed.insert(current)
+                && let Some(node) = doc.get(current)
+            {
+                stack.extend(node.children().iter().copied());
+            }
+        }
+    }
+
+    /// `bounds`, `id`'s committed bounds in page space, carried to where this
+    /// preview draws it, when a placement alone moved it: its world transform
+    /// here composed with the inverse of the committed one. `None` when anything
+    /// else may have changed its shape (its kind, layout, paint, effects or text,
+    /// or a boolean's outline), so the walk does not cull it on stale bounds.
+    pub fn placed_bounds(
+        &self,
+        doc: &Document,
+        res: &Resolved,
+        id: NodeId,
+        bounds: kurbo::Rect,
+    ) -> Option<kurbo::Rect> {
+        if !self.placed.contains(&id) || self.boolean.contains_key(&id) {
+            return None;
+        }
+        if let Some(o) = self.nodes.get(&id) {
+            let reshaped = o.kind.is_some()
+                || o.laid_out
+                || o.paint.is_some()
+                || o.effects.is_some()
+                || o.text.is_some()
+                || o.insets.is_some()
+                || o.display.is_some()
+                || o.spacing_vars.is_some()
+                || o.item.is_some()
+                || o.frame.is_some()
+                || o.stretch.is_some();
+            if reshaped {
+                return None;
+            }
+        }
+        let delta = self.world_transform(doc, res, id)? * res.world_transform(id)?.inverse();
+        Some(delta.transform_rect_bbox(bounds))
     }
 
     /// Project a pending transaction onto the derived layer.

@@ -177,3 +177,127 @@ fn a_radii_patch_keeps_a_stretched_gradient_stretched() {
     patched.patches.push(radii);
     assert_eq!(draw(&patched), still, "the ramp spans the stretched box");
 }
+
+/// Counts the fills a walk emits, by the brush's colour.
+#[derive(Default)]
+struct Fills(Vec<Brush>);
+
+impl mastik_render::scene::ScenePainter for Fills {
+    fn has_image(&self, _id: &mastik_core::ImageId) -> bool {
+        true
+    }
+    fn fill_path(
+        &mut self,
+        _t: Affine,
+        _path: &mastik_core::kurbo::BezPath,
+        brush: &Brush,
+        _framing: Option<mastik_core::Framing>,
+        _rule: mastik_render::scene::ClipRule,
+    ) {
+        self.0.push(brush.clone());
+    }
+    fn stroke_path(
+        &mut self,
+        _t: Affine,
+        _path: &mastik_core::kurbo::BezPath,
+        _s: &mastik_render::scene::StrokePaint<'_>,
+    ) {
+    }
+    fn draw_text(&mut self, _t: Affine, _run: &mastik_render::scene::TextRun<'_>) {}
+    fn push_layer(
+        &mut self,
+        _t: Affine,
+        _clip: Option<&mastik_core::kurbo::BezPath>,
+        _rule: mastik_render::scene::ClipRule,
+        _opacity: f32,
+    ) {
+    }
+    fn push_mask_layer(&mut self) {}
+    fn push_luminance_mask_layer(&mut self) {}
+    fn push_effect_layer(
+        &mut self,
+        _t: Affine,
+        _bounds: mastik_core::kurbo::Rect,
+        _effects: &[Keyed<mastik_core::Effect>],
+    ) {
+    }
+    fn push_blend_layer(&mut self, _mode: mastik_core::BlendMode) {}
+    fn pop_layer(&mut self) {}
+}
+
+/// A scrolled feed draws only the rows on the screen: rows scrolled past are
+/// culled by their bounds carried through the placement and the scroll, and a
+/// row straddling the screen's bottom edge still draws.
+/// flip: `RenderOverrides::placed_bounds` answering `None` → fails at "only the
+/// rows on the screen".
+#[test]
+fn a_scrolled_feed_draws_only_what_is_on_screen() {
+    use mastik_core::kurbo::Vec2;
+    use mastik_core::prototype::{LayerPlay, ScrollAxis};
+    let mut ids = IdSource::new(0x7E57);
+    let page = ids.mint();
+    let mut doc = Document::new(page);
+    // Far from the page's origin, so the placement moves it.
+    let screen = frame(&mut doc, &mut ids, page, 700.0, [255, 255, 255]);
+    let mut ops = vec![Operation::SetPlay {
+        id: screen,
+        play: LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            ..LayerPlay::default()
+        },
+    }];
+    // Forty rows 20 tall, each its own colour by its index in the red channel.
+    for i in 0..40u8 {
+        let id = ids.mint();
+        ops.push(Operation::CreateNode {
+            id,
+            parent: screen,
+            index: usize::from(i),
+            kind: NodeKind::Rect {
+                size: Size::new(100.0, 20.0),
+                corner_radii: RoundedRectRadii::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: Some(Affine::translate((0.0, f64::from(i) * 20.0))),
+            name: Some(format!("Row {i}")),
+        });
+        ops.push(Operation::SetFills {
+            id,
+            fills: keyed_by_position([Fill {
+                brush: Brush::Solid(Color::from_rgba8(i, 0, 200, 255)).into(),
+                visible: true,
+            }]),
+        });
+    }
+    doc.apply(&Transaction(ops)).expect("a feed");
+    let mut p = Player::new(&doc, Start::Frame(screen), 0x91A7).expect("plays");
+    // 210 down: rows 10 to 15 show, row 15 cut by the bottom edge.
+    p.input(Input::Wheel {
+        at: Point::new(50.0, 50.0),
+        delta: Vec2::new(0.0, 210.0),
+    });
+    assert_eq!(
+        p.scroll_offset(screen),
+        Vec2::new(0.0, 210.0),
+        "fixture: scrolled"
+    );
+    let scene = p.scene();
+    let (doc, res) = (p.document(), p.resolved());
+    let vp = mastik_render::play::viewport(&scene, 1.0);
+    let patches = mastik_render::play::overrides(doc, res, &scene);
+    let mut fills = Fills::default();
+    mastik_render::play::build(doc, res, &vp, &patches, &scene, &mut fills);
+    let rows: Vec<u8> = fills
+        .0
+        .iter()
+        .filter_map(|b| match b {
+            Brush::Solid(c) if c.to_rgba8().b == 200 => Some(c.to_rgba8().r),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        (10..=15).collect::<Vec<_>>(),
+        "only the rows on the screen"
+    );
+}
