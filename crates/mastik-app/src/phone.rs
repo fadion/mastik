@@ -20,8 +20,12 @@ const FORGET: Duration = Duration::from_secs(60);
 /// The longest request head and body read; anything longer is refused.
 const MAX_HEAD: usize = 8 * 1024;
 const MAX_BODY: usize = 4 * 1024;
-/// How long a connection may take to send its request or take a write.
+/// How long a connection may take to send its request or take one write.
 const IO_WAIT: Duration = Duration::from_secs(5);
+/// The most a reply hands the socket in one write, so [`IO_WAIT`] bounds each
+/// piece's progress rather than the whole body: Winsock can fail a blocking
+/// send that outlasts the timeout whole, rather than return what it sent.
+const PIECE: usize = 64 * 1024;
 
 /// A phone following the share.
 #[derive(Clone, Debug, PartialEq)]
@@ -378,15 +382,17 @@ fn listen(mut stream: TcpStream, shared: &Mutex<Shared>, id: &str, agent: &str) 
     s.streams.push((id.to_string(), stream));
 }
 
-/// A whole response with a body.
-fn reply(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8]) -> std::io::Result<()> {
+/// A whole response with a body, written a [`PIECE`] at a time.
+fn reply(stream: &mut impl Write, status: &str, kind: &str, body: &[u8]) -> std::io::Result<()> {
     let head = format!(
         "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\
          Cache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(head.as_bytes())?;
-    stream.write_all(body)?;
+    for piece in body.chunks(PIECE) {
+        stream.write_all(piece)?;
+    }
     stream.flush()
 }
 
@@ -1159,6 +1165,36 @@ mod tests {
             (req.path.as_str(), req.query.as_str(), req.agent.as_str()),
             ("/t/events", "id=a", "X")
         );
+    }
+
+    /// A reply hands the socket its body a `PIECE` at a time, whole and in
+    /// order, so the write timeout bounds each piece rather than the body. Not a
+    /// loopback test: Windows loopback takes a 16 MB send at once, so a slow
+    /// reader there never trips the timeout with or without the pieces.
+    /// flip: `reply` writing the body in one `write_all` → fails at "a piece".
+    #[test]
+    fn a_reply_is_written_a_piece_at_a_time() {
+        /// Every byte written, and the longest single write.
+        #[derive(Default)]
+        struct Socket {
+            got: Vec<u8>,
+            longest: usize,
+        }
+        impl Write for Socket {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.longest = self.longest.max(buf.len());
+                self.got.extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let body: Vec<u8> = (0..PIECE * 5 + 17).map(|i| (i % 251) as u8).collect();
+        let mut socket = Socket::default();
+        reply(&mut socket, "200 OK", "application/octet-stream", &body).expect("written");
+        assert!(socket.longest <= PIECE, "a piece: {}", socket.longest);
+        assert!(socket.got.ends_with(&body), "every byte, in order");
     }
 
     /// In private mode a phone's row draws the screen it reports masked, as the
