@@ -2451,11 +2451,16 @@ impl MastikApp {
             return Vec::new();
         };
         let mut out: Vec<(mastik_core::prototype::FlowRef, egui::Rect, String)> = Vec::new();
-        for f in &info.flows {
+        for (i, f) in info.flows.iter().enumerate() {
+            // A start moved to another page still has a quad; its chip would
+            // float over this page's canvas.
+            if doc.page_of(f.start) != Some(page) {
+                continue;
+            }
             let Some(frame) = self.selection_quad(f.start, rect, ppp).map(quad_box) else {
                 continue;
             };
-            let words = crate::private::flow(&f.name, out.len()).into_owned();
+            let words = crate::private::flow(&f.name, i).into_owned();
             let size = ui::canvas_pill_glyph_size(ui.ctx(), icon::PLAY, &words);
             // Leftward of any chip this frame already wears.
             let right = out
@@ -3748,10 +3753,11 @@ impl MastikApp {
             return;
         }
         let flows = doc.page(page).map(|p| p.flows.clone()).unwrap_or_default();
-        let here: Vec<&str> = flows
+        let here: Vec<std::borrow::Cow<'_, str>> = flows
             .iter()
-            .filter(|f| f.start == id)
-            .map(|f| f.name.as_str())
+            .enumerate()
+            .filter(|(_, f)| f.start == id)
+            .map(|(i, f)| crate::private::flow(&f.name, i))
             .collect();
         if !here.is_empty() {
             let words = match here.as_slice() {
@@ -7901,16 +7907,16 @@ impl MastikApp {
             // A device lays the screen out at its size under every scaling.
             if play.can_turn() || play.scaling == Scaling::Responsive {
                 let flows = doc.page(page).map(|p| p.flows.clone()).unwrap_or_default();
-                let flat = flows.iter().find(|f| {
+                let flat = flows.iter().position(|f| {
                     doc.get(f.value.start)
                         .is_some_and(|n| n.display().is_none())
                 });
-                if let Some(f) = flat {
+                if let Some(i) = flat {
                     ui::selection_note(
                         ui,
                         &format!(
                             "{}'s start frame has no layout; it keeps its children where drawn",
-                            f.value.name
+                            crate::private::flow(&flows[i].value.name, i)
                         ),
                     );
                 }
@@ -9170,6 +9176,80 @@ mod tests {
             pts[0].distance(egui::pos2(tag.right() + 4.0, tag.center().y)) < 1.0,
             "from the name tag"
         );
+    }
+
+    /// A flow chip is drawn only for a start on this page, and private mode
+    /// numbers it by its place among the page's flows; a screen's *Starts the
+    /// flow* line masks the name too.
+    /// flip: `flow_chips` without its page test → fails at "moved off";
+    /// numbering by the chips drawn → fails at "its place";
+    /// `flow_start_row` with the raw name → fails at "masked under the frame".
+    #[test]
+    fn flow_chips_stay_on_their_page_and_mask_by_place() {
+        let ctx = egui::Context::default();
+        let mut f = fixture(&ctx);
+        let page = f.app.session.page;
+        let flow = |n: &str, start| Flow {
+            name: n.into(),
+            start,
+            modes: Vec::new(),
+            values: Vec::new(),
+        };
+        assert!(f.app.session.commit(Transaction(vec![Operation::SetFlows {
+            id: page,
+            flows: vec![
+                Keyed::new(item(1), flow("Zqx onboarding", f.home)),
+                Keyed::new(item(2), flow("Zqx checkout", f.cart)),
+            ],
+        }])));
+        f.app.session.prototype_mode = true;
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 1600.0));
+        let words = |app: &MastikApp| {
+            let mut out = Vec::new();
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                out = app.flow_chips(ui, rect, 1.0);
+            });
+            out.into_iter().map(|(.., w)| w).collect::<Vec<_>>()
+        };
+        assert_eq!(words(&f.app).len(), 2, "both starts are on this page");
+
+        let start_line = |app: &mut MastikApp, id| {
+            let out = ctx.run_ui(Default::default(), |ui| app.flow_start_row(ui, id));
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect::<String>()
+        };
+        assert!(
+            start_line(&mut f.app, f.cart).contains("Zqx checkout"),
+            "control: the name under the frame"
+        );
+        crate::private::set(true);
+        let masked = start_line(&mut f.app, f.cart);
+        crate::private::set(false);
+        assert!(
+            masked.contains("Flow 2") && !masked.contains("Zqx"),
+            "masked under the frame: {masked}"
+        );
+
+        // Move Home, the first flow's start, to a new page, and come back.
+        f.app.add_page();
+        let other = f.app.session.page;
+        f.app.cancel_page_rename();
+        f.app.go_to_page(page);
+        assert_ne!(other, page, "the fixture made a second page");
+        f.app.session.selection.set(vec![f.home]);
+        f.app.move_selection_to_page(other);
+        assert_eq!(f.app.session.doc.page_of(f.home), Some(other), "moved");
+
+        assert_eq!(words(&f.app), vec!["Zqx checkout"], "moved off");
+        crate::private::set(true);
+        let masked = words(&f.app);
+        crate::private::set(false);
+        assert_eq!(masked, vec!["Flow 2"], "its place among the page's flows");
     }
 
     /// A manual overlay's ghost sits at its offset from the opening layer's
