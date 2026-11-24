@@ -10494,9 +10494,76 @@ impl MastikApp {
         view: egui::Rect,
         period: f32,
     ) -> Option<[egui::Pos2; 2]> {
-        let view = view.expand(period);
+        let (t0, t1) = Self::clip_segment(a, b, view.expand(period))?;
         let d = b - a;
-        // Liang–Barsky: the parameters at which the segment enters and leaves.
+        let length = d.length();
+        if length <= 0.0 {
+            return Some([a, b]);
+        }
+        let start = (t0 * length / period).floor() * period / length;
+        Some([a + d * start, a + d * t1])
+    }
+
+    /// [`Self::dashed_in_view`] for a polyline: the runs of `pts` worth dashing or
+    /// dotting in `view`, each cut to the view grown by one `period` and starting a
+    /// whole number of periods along the line from its first point. `dashed_line`
+    /// and `dotted_line` start their pattern at a run's start, so the runs draw what
+    /// the whole line would, and it holds still under a pan.
+    pub(crate) fn polyline_in_view(
+        pts: &[egui::Pos2],
+        view: egui::Rect,
+        period: f32,
+    ) -> Vec<Vec<egui::Pos2>> {
+        let view = view.expand(period);
+        // The length along the line at each point.
+        let mut along = Vec::with_capacity(pts.len());
+        let mut sum = 0.0_f32;
+        for (i, p) in pts.iter().enumerate() {
+            if i > 0 {
+                sum += (*p - pts[i - 1]).length();
+            }
+            along.push(sum);
+        }
+        // The point `s` along the line, on or before segment `i`.
+        let at = |s: f32, i: usize| {
+            let k = (0..=i).rev().find(|k| along[*k] <= s).unwrap_or(0);
+            let len = along[k + 1] - along[k];
+            let f = if len > 0.0 { (s - along[k]) / len } else { 0.0 };
+            (k, pts[k] + (pts[k + 1] - pts[k]) * f)
+        };
+        let mut runs = Vec::new();
+        let mut run: Vec<egui::Pos2> = Vec::new();
+        for i in 0..pts.len().saturating_sub(1) {
+            let (a, b) = (pts[i], pts[i + 1]);
+            let Some((t0, t1)) = Self::clip_segment(a, b, view) else {
+                if !run.is_empty() {
+                    runs.push(std::mem::take(&mut run));
+                }
+                continue;
+            };
+            if run.is_empty() {
+                let s = along[i] + t0 * (along[i + 1] - along[i]);
+                let (k, start) = at((s / period).floor() * period, i);
+                run.push(start);
+                run.extend_from_slice(&pts[k + 1..=i]);
+            }
+            if t1 < 1.0 {
+                run.push(a + (b - a) * t1);
+                runs.push(std::mem::take(&mut run));
+            } else {
+                run.push(b);
+            }
+        }
+        if !run.is_empty() {
+            runs.push(run);
+        }
+        runs
+    }
+
+    /// Liang–Barsky: the parameters along `a`→`b` at which it enters and leaves
+    /// `view`, `None` where it misses.
+    fn clip_segment(a: egui::Pos2, b: egui::Pos2, view: egui::Rect) -> Option<(f32, f32)> {
+        let d = b - a;
         let (mut t0, mut t1) = (0.0_f32, 1.0_f32);
         for (p, q) in [
             (-d.x, a.x - view.min.x),
@@ -10514,15 +10581,7 @@ impl MastikApp {
                 t1 = t1.min(q / p);
             }
         }
-        if t0 > t1 {
-            return None;
-        }
-        let length = d.length();
-        if length <= 0.0 {
-            return Some([a, b]);
-        }
-        let start = (t0 * length / period).floor() * period / length;
-        Some([a + d * start, a + d * t1])
+        (t0 <= t1).then_some((t0, t1))
     }
 
     /// The selection outline for `id`, from the **preview** layer so it tracks a

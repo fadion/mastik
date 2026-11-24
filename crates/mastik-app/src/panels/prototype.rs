@@ -2410,9 +2410,11 @@ fn cubic(a: egui::Pos2, c1: egui::Pos2, c2: egui::Pos2, b: egui::Pos2) -> Vec<eg
 }
 
 /// Stroke `pts` as a connector `w` thick with an arrowhead on its last point. The
-/// line stops at the head's base, so its weight never shows past the tip.
+/// line stops at the head's base, so its weight never shows past the tip. A dashed
+/// or dotted line is cut to `view` first: each dash is a shape of its own.
 fn paint_link(
     painter: &egui::Painter,
+    view: egui::Rect,
     mut pts: Vec<egui::Pos2>,
     line: LinkLine,
     ink: egui::Color32,
@@ -2435,10 +2437,16 @@ fn paint_link(
             LinkLine::Solid => {
                 painter.add(egui::Shape::line(pts, stroke));
             }
-            LinkLine::Dashed => painter.extend(egui::Shape::dashed_line(&pts, stroke, 6.0, 4.0)),
+            LinkLine::Dashed => {
+                for run in MastikApp::polyline_in_view(&pts, view, 6.0 + 4.0) {
+                    painter.extend(egui::Shape::dashed_line(&run, stroke, 6.0, 4.0));
+                }
+            }
             // Round dots the line's width across, a dash's length apart.
             LinkLine::Dotted => {
-                painter.extend(egui::Shape::dotted_line(&pts, ink, 6.0, w / 2.0));
+                for run in MastikApp::polyline_in_view(&pts, view, 6.0) {
+                    painter.extend(egui::Shape::dotted_line(&run, ink, 6.0, w / 2.0));
+                }
             }
         }
     }
@@ -2856,7 +2864,7 @@ impl MastikApp {
                     ink,
                 );
             }
-            paint_link(painter, pts.clone(), link.line, ink, w);
+            paint_link(painter, rect, pts.clone(), link.line, ink, w);
             // A dot where it leaves, so every connector has a starting point.
             if let Some(a) = pts.first() {
                 painter.circle(*a, KNOB_R, color::POINT, egui::Stroke::new(1.5, ink));
@@ -2886,6 +2894,7 @@ impl MastikApp {
             }
             paint_link(
                 painter,
+                rect,
                 curve(at, out, b, out_b),
                 LinkLine::Solid,
                 color::SELECT,
@@ -3435,8 +3444,11 @@ impl MastikApp {
             Drag::ProtoMark { mark, .. } => Some(mark),
             _ => None,
         };
+        // Cut to the view: each dash is a shape of its own.
         let dashed = |pts: &[egui::Pos2], stroke| {
-            painter.extend(egui::Shape::dashed_line(pts, stroke, MARK_DASH, MARK_GAP));
+            for run in Self::polyline_in_view(pts, rect, MARK_DASH + MARK_GAP) {
+                painter.extend(egui::Shape::dashed_line(&run, stroke, MARK_DASH, MARK_GAP));
+            }
         };
         for [a, b] in self.snap_edges() {
             let pts = [self.to_screen(a, rect, ppp), self.to_screen(b, rect, ppp)];
@@ -9980,6 +9992,74 @@ mod tests {
         };
         assert_eq!(branches.len(), 2, "fixture: the first branch removed");
         assert!(at(&out, "zz(").is_empty(), "not moved");
+    }
+
+    /// An overlay's dashed connector costs what is on screen: a few hundred
+    /// shapes at 256×, where the whole line would be thousands of dashes.
+    /// flip: `paint_link` dashing the whole polyline → fails at "a few hundred at 256×".
+    #[test]
+    fn a_dashed_connector_is_cut_to_the_view() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        let overlay = f.cart;
+        one_action(
+            &mut f,
+            Action::OpenOverlay {
+                overlay,
+                settings: OverlaySettings::default(),
+                transition: Transition::default(),
+            },
+        );
+        f.app.canvas_px = (1200, 900);
+        f.app.session.camera.zoom = 1.0;
+        f.app.session.camera.center = mastik_core::kurbo::Point::new(600.0, 450.0);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1200.0, 900.0));
+        let count = |app: &MastikApp| {
+            ctx.run_ui(Default::default(), |ui| {
+                let painter = ui.painter().clone();
+                app.draw_prototype_links(ui, &painter, rect, 1.0);
+            })
+            .shapes
+            .len()
+        };
+        count(&f.app);
+        let mid = {
+            let drawn = f.app.proto.links_drawn.borrow();
+            assert_eq!(drawn.len(), 1, "fixture: one connector drawn");
+            drawn[0].1[drawn[0].1.len() / 2]
+        };
+        let centre = f.app.to_world(mid, rect, 1.0);
+        f.app.session.camera.zoom = 256.0;
+        f.app.session.camera.center = centre;
+        let zoomed = count(&f.app);
+        assert!(zoomed > 20, "the line is drawn: {zoomed}");
+        assert!(zoomed < 1000, "a few hundred at 256×: {zoomed}");
+    }
+
+    /// A polyline's runs in view start whole dash periods along it from its first
+    /// point, so a cut line draws the dashes the whole line would.
+    /// flip: `polyline_in_view` starting a run at the view's edge → fails at
+    /// "whole periods".
+    #[test]
+    fn a_cut_polyline_keeps_its_phase() {
+        let pts = [
+            egui::pos2(-5000.0, 50.0),
+            egui::pos2(-3.3, 50.0),
+            egui::pos2(-3.3, 5000.0),
+        ];
+        let view = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(100.0, 100.0));
+        let runs = MastikApp::polyline_in_view(&pts, view, 7.0);
+        assert_eq!(runs.len(), 1, "one run: {runs:?}");
+        let run = &runs[0];
+        let along = run[0].x - pts[0].x;
+        assert!(
+            (along / 7.0 - (along / 7.0).round()).abs() < 1e-3,
+            "whole periods: {along}"
+        );
+        assert!(run[0].x >= -7.0 - 7.0 && run[0].x <= 0.0, "cut: {run:?}");
+        assert_eq!(run[1], pts[1], "the corner kept");
+        assert!(run.last().unwrap().y <= 107.0 + 1e-3, "cut at the far end");
     }
 
     /// Prototype mode is remembered by the library for the document, as the
