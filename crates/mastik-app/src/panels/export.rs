@@ -3344,19 +3344,35 @@ impl MastikApp {
             .map_or_else(|| "video".into(), |n| n.to_string_lossy().into_owned());
         self.spawn_export(label, move |cancel| {
             mastik_core::text::register_font_data(&resolved.text_fonts());
-            let made = mastik_export::video::video(
-                &doc,
-                &take,
-                crate::session::random_actor(),
-                &options,
-                &mut |_, _| !cancel.cancelled(),
-            );
+            // Written as it is made into a file beside the chosen one, which
+            // replaces it only once whole: a long take is never held in memory,
+            // and a cancel or a failure leaves the chosen path as it was.
+            let mut part = path.clone().into_os_string();
+            part.push(".part");
+            let part = std::path::PathBuf::from(part);
+            let made = std::fs::File::create(&part)
+                .map_err(|e| e.to_string())
+                .and_then(|file| {
+                    mastik_export::video::video_to(
+                        &doc,
+                        &take,
+                        crate::session::random_actor(),
+                        &options,
+                        std::io::BufWriter::new(file),
+                        &mut |_, _| !cancel.cancelled(),
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .and_then(|mut out| std::io::Write::flush(&mut out).map_err(|e| e.to_string()));
             if !cancel.begin_write() {
+                let _ = std::fs::remove_file(&part);
                 return Delivered::cancelled();
             }
-            let written = made
-                .map_err(|e| e.to_string())
-                .and_then(|bytes| std::fs::write(&path, bytes).map_err(|e| e.to_string()));
+            let written =
+                made.and_then(|()| std::fs::rename(&part, &path).map_err(|e| e.to_string()));
+            if written.is_err() {
+                let _ = std::fs::remove_file(&part);
+            }
             Delivered {
                 asker,
                 written: usize::from(written.is_ok()),
@@ -6811,5 +6827,55 @@ mod code_export_tests {
             };
             assert_eq!(settings_button_state(&png, false), ui::FieldButton::Off);
         }
+    }
+
+    /// A take's video is written whole to the chosen path, replacing what was
+    /// there, through a file beside it that does not stay behind.
+    /// flip: `export_take_to` not renaming the part file → fails at "the GIF".
+    #[test]
+    fn a_take_is_written_through_a_part_file() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = crate::app::MastikApp::headless(&ctx);
+        let parent = app.session.doc.first_page();
+        let frame = app.session.ids.mint();
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::CreateNode {
+                id: frame,
+                parent,
+                index: 0,
+                kind: mastik_core::NodeKind::Artboard {
+                    size: mastik_core::kurbo::Size::new(40.0, 30.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: None,
+                name: Some("Home".into()),
+            },
+        ])));
+        let dir = std::env::temp_dir().join(format!("mastik-take-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("take.gif");
+        std::fs::write(&path, b"old").unwrap();
+        let take = mastik_play::Take {
+            start: mastik_play::Start::Frame(frame),
+            inputs: Vec::new(),
+            length: 200.0,
+        };
+        let options = mastik_export::video::Options {
+            format: mastik_export::video::Format::Gif,
+            fps: 10,
+            scale: 1.0,
+            clicks: false,
+            device: false,
+        };
+        app.export_take_to(take, options, path.clone());
+        app.settle_exports();
+        let written = std::fs::read(&path).expect("the file");
+        assert!(written.starts_with(b"GIF89a"), "the GIF");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(left.len(), 1, "no part file stays: {left:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

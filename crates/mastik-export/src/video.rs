@@ -10,6 +10,7 @@
 use mastik_core::Document;
 use mastik_play::{Replay, StartError, Take};
 use mastik_render::{ImageStore, VelloCpuRenderer};
+use std::io::{Seek, Write};
 
 /// The container and codec a video is written in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,6 +202,27 @@ pub fn video(
     options: &Options,
     progress: &mut dyn FnMut(usize, usize) -> bool,
 ) -> Result<Vec<u8>, VideoError> {
+    video_to(
+        doc,
+        take,
+        actor,
+        options,
+        std::io::Cursor::new(Vec::new()),
+        progress,
+    )
+    .map(std::io::Cursor::into_inner)
+}
+
+/// [`video`] written into `out` as it is made, answering `out`: a GIF goes
+/// frame by frame, so a long take is never held whole in memory.
+pub fn video_to<W: Write + Seek>(
+    doc: &Document,
+    take: &Take,
+    actor: u64,
+    options: &Options,
+    out: W,
+    progress: &mut dyn FnMut(usize, usize) -> bool,
+) -> Result<W, VideoError> {
     if !(1..=MAX_FPS).contains(&options.fps) || !(options.scale.is_finite() && options.scale > 0.0)
     {
         return Err(VideoError::Options);
@@ -212,8 +234,8 @@ pub fn video(
     let total = frame_count(take, options.fps);
     let step = 1000.0 / f64::from(options.fps);
     let mut sink = match options.format {
-        Format::Gif => Sink::Gif(None),
-        Format::Mp4 => Sink::Mp4(None),
+        Format::Gif => Sink::Gif(Some(out), None),
+        Format::Mp4 => Sink::Mp4(out, None),
     };
     let mut first: Option<Fixed> = None;
     for i in 0..total {
@@ -380,22 +402,24 @@ fn fit(rgba: &[u8], from: (u32, u32), to: (u32, u32)) -> Vec<u8> {
     out
 }
 
-/// Where the frames go.
-enum Sink {
-    Gif(Option<Gif>),
-    Mp4(Option<Box<Mp4>>),
+/// Where the frames go: a GIF's writer until its encoder takes it at the first
+/// frame, and the encoder; an MP4's writer, which takes the muxed file once
+/// every frame is coded, and the encoder.
+enum Sink<W: Write> {
+    Gif(Option<W>, Option<Gif<W>>),
+    Mp4(W, Option<Box<Mp4>>),
 }
 
 /// A GIF being written: the encoder, and the frame not written yet with its
 /// size and its delay so far. A frame the same as the one before it adds its
 /// delay to that one instead of being written again, so a screen nothing
 /// moves on costs one frame, not one per frame time.
-struct Gif {
-    encoder: gif::Encoder<Vec<u8>>,
+struct Gif<W: Write> {
+    encoder: gif::Encoder<W>,
     held: Option<(Vec<u8>, (u16, u16), u16)>,
 }
 
-impl Gif {
+impl<W: Write> Gif<W> {
     /// Write the held frame, if any.
     fn flush(&mut self) -> Result<(), gif::EncodingError> {
         if let Some((mut frame, (w, h), delay)) = self.held.take() {
@@ -417,7 +441,7 @@ struct Mp4 {
     samples: Vec<(Vec<u8>, bool)>,
 }
 
-impl Sink {
+impl<W: Write + Seek> Sink<W> {
     fn push(
         &mut self,
         frame: Vec<u8>,
@@ -427,13 +451,13 @@ impl Sink {
     ) -> Result<(), VideoError> {
         let encode = |e: &dyn std::fmt::Display| VideoError::Encode(e.to_string());
         match self {
-            Sink::Gif(enc) => {
+            Sink::Gif(out, enc) => {
                 let (w, h) = (
                     u16::try_from(size.0).map_err(|e| encode(&e))?,
                     u16::try_from(size.1).map_err(|e| encode(&e))?,
                 );
-                if enc.is_none() {
-                    let mut e = gif::Encoder::new(Vec::new(), w, h, &[]).map_err(|e| encode(&e))?;
+                if let Some(out) = out.take() {
+                    let mut e = gif::Encoder::new(out, w, h, &[]).map_err(|e| encode(&e))?;
                     e.set_repeat(gif::Repeat::Infinite)
                         .map_err(|e| encode(&e))?;
                     *enc = Some(Gif {
@@ -457,7 +481,7 @@ impl Sink {
                 g.held = Some((frame, (w, h), delay));
                 Ok(())
             }
-            Sink::Mp4(mp4) => {
+            Sink::Mp4(_, mp4) => {
                 if mp4.is_none() {
                     let config = openh264::encoder::EncoderConfig::new()
                         .max_frame_rate(openh264::encoder::FrameRate::from_hz(fps as f32))
@@ -508,15 +532,15 @@ impl Sink {
         }
     }
 
-    fn finish(self, fps: u32) -> Result<Vec<u8>, VideoError> {
+    fn finish(self, fps: u32) -> Result<W, VideoError> {
         let encode = |e: &dyn std::fmt::Display| VideoError::Encode(e.to_string());
         match self {
-            Sink::Gif(enc) => {
+            Sink::Gif(_, enc) => {
                 let mut g = enc.ok_or(VideoError::Empty)?;
                 g.flush().map_err(|e| encode(&e))?;
                 g.encoder.into_inner().map_err(|e| encode(&e))
             }
-            Sink::Mp4(m) => {
+            Sink::Mp4(out, m) => {
                 let m = m.ok_or(VideoError::Empty)?;
                 // The muxer indexes into both and panics on an empty one.
                 if m.sps.len() < 4 || m.pps.is_empty() {
@@ -532,8 +556,7 @@ impl Sink {
                         .map_err(|e| encode(&e))?,
                     timescale: fps,
                 };
-                let mut w = mp4::Mp4Writer::write_start(std::io::Cursor::new(Vec::new()), &config)
-                    .map_err(|e| encode(&e))?;
+                let mut w = mp4::Mp4Writer::write_start(out, &config).map_err(|e| encode(&e))?;
                 w.add_track(&mp4::TrackConfig {
                     track_type: mp4::TrackType::Video,
                     timescale: fps,
@@ -560,7 +583,7 @@ impl Sink {
                     .map_err(|e| encode(&e))?;
                 }
                 w.write_end().map_err(|e| encode(&e))?;
-                Ok(w.into_writer().into_inner())
+                Ok(w.into_writer())
             }
         }
     }

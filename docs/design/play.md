@@ -426,6 +426,9 @@ that one rather than being written again, so a still stretch costs one frame. An
 from OpenH264 built from source (BSD-2-Clause; the C++ toolchain `mlua` already needs builds it,
 and its patent licence covers only Cisco's own binaries), at even sizes, muxed by the `mp4` crate
 with one sample a frame. `progress` hears each frame and stops the job by answering false.
+`video_to` writes into any `Write + Seek` as it goes, a GIF frame by frame, so the app streams a
+take into a `.part` file beside the chosen one and renames it once whole: a long take is never
+held in memory, and a cancel or failure leaves the chosen path as it was.
 
 ## Notices
 
