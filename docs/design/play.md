@@ -208,7 +208,7 @@ out both ends.
   collection is held at that mode; on the screen frame for *This screen*. A page holds no kit's
   mode, so *Everywhere* puts a kit's on each top-level frame instead, passing over one that pins
   a mode of that kit collection in the document (`Player::everywhere`). The player remembers
-  what it gave each node (`put_modes`), so a live edit's re-clone puts it back; a *while* trigger
+  what it gave each node (`put_modes`), so a live edit puts it back, re-cloned or not; a *while* trigger
   undoes it (`Undo::Modes`). A mode in neither the document's collections nor a kit's is skipped
   with `Missing`. Nothing animates. *Restart* and a new flow start from the document's own modes
   and the flow's starting modes, which play sets as *Everywhere* does before anything opens.
@@ -369,7 +369,9 @@ or no scrolling frame above, means no effect (`effect_now`).
 
 `apply_edit(tx)` takes each transaction the editor commits. It is applied to the base copy (an
 `Err` there means the shell passed the wrong document and nothing changes), then to the played
-copy. When the copy refuses it — play changed something the edit touches — the copy is cloned again
+copy. Edits are absolute, so one the copy takes can write over play's own choices: after it, each
+node whose modes differ from what *Set mode* gave it is given them again, and the screen its play
+size (`put_play_back`). When the copy refuses it — play changed something the edit touches — the copy is cloned again
 from the base and play state carried across by id: the screen, history, overlays, play values,
 scroll offsets, each instance re-switched to the main play left it on, and the modes *Set mode*
 gave. Motions under way end; a drag's settle ends where it was going and its drops run. After any

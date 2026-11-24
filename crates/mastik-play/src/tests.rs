@@ -1594,6 +1594,164 @@ fn live_update_keeps_play_state() {
     );
 }
 
+/// An edit the copy takes cannot write over play's own choices: a page's modes
+/// edited keep the mode *Set mode* gave, and the screen resized keeps its
+/// play size.
+///
+/// flip: `Player::put_play_back` not putting modes back → fails at "the played
+/// mode holds"; not refitting the screen → fails at "the play size holds".
+#[test]
+fn a_clean_live_edit_keeps_set_modes_and_the_play_size() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    let (light, dark, n) = dark_mode(&mut fx);
+    let mut p = fx.play(a);
+    let played = Size::new(400.0, 300.0);
+    p.set_play_size(Some(played));
+    p.input(Input::SetMode(dark));
+    assert_eq!(number(&p, n), 2.0, "fixture: dark");
+    let size = |p: &Player| p.document().get(a).and_then(|x| x.kind().box_size());
+
+    let tx = Transaction(vec![
+        Operation::SetModes {
+            id: fx.page,
+            modes: vec![light],
+        },
+        Operation::SetGeometry {
+            id: a,
+            geometry: mastik_core::op::GeometryPatch::Size(Size::new(200.0, 150.0)),
+        },
+    ]);
+    fx.doc.apply(&tx).unwrap();
+    p.apply_edit(&tx).unwrap();
+    assert!(p.take_notices().is_empty(), "fixture: taken, not refused");
+    assert_eq!(number(&p, n), 2.0, "the played mode holds");
+    assert_eq!(p.modes()[0].current, dark);
+    assert_eq!(size(&p), Some(played), "the play size holds");
+}
+
+/// A *Dark* mode added beside the first collection's light one, and a number
+/// variable reading 1 in light and 2 in dark. Answers light, dark and the
+/// variable.
+fn dark_mode(fx: &mut Fx) -> (ModeId, ModeId, VarId) {
+    let light = fx.mode;
+    let dark = fx.ids.mint_mode();
+    fx.apply(vec![Operation::AddMode {
+        collection: CollectionId::FIRST,
+        mode: Mode {
+            id: dark,
+            name: "Dark".into(),
+        },
+        index: 1,
+        cells: vec![],
+    }]);
+    let n = fx.ids.mint_var();
+    fx.apply(vec![Operation::AddVariable {
+        var: Variable {
+            id: n,
+            name: "n".into(),
+            kind: VarKind::Number,
+            cells: [(light, Cell::Number(1.0)), (dark, Cell::Number(2.0))].into(),
+            scope: None,
+            origin: None,
+            forked: None,
+            description: String::new(),
+        },
+    }]);
+    (light, dark, n)
+}
+
+/// A refused edit's re-clone keeps an instance play switched, a mode *Set
+/// mode* gave and an open overlay; a later edit deleting the overlay's frame
+/// closes it and one deleting a played variable drops its value, each said,
+/// while a variable whose starting value was edited keeps its play value.
+///
+/// flip: `Player::reclone` not re-switching the instances → fails at "the
+/// state is re-switched"; not putting the modes back → fails at "the mode is
+/// given again".
+#[test]
+fn a_live_edit_carries_states_modes_and_overlays_and_falls_back() {
+    let (mut fx, a, instance, [_, hover, _]) = button_set();
+    let (light, dark, n) = dark_mode(&mut fx);
+    let mut zero = |name: &str| {
+        let id = fx.ids.mint_var();
+        fx.apply(vec![Operation::AddVariable {
+            var: Variable {
+                id,
+                name: name.into(),
+                kind: VarKind::Number,
+                cells: [(light, Cell::Number(0.0)), (dark, Cell::Number(0.0))].into(),
+                scope: None,
+                origin: None,
+                forked: None,
+                description: String::new(),
+            },
+        }]);
+        id
+    };
+    let (m, gone) = (zero("m"), zero("gone"));
+    let doomed = fx.rect(a, "Doomed", 100.0, 80.0, 10.0, 10.0);
+    let menu = fx.frame("Menu", 900.0, 80.0, 40.0);
+    let go = fx.rect(a, "Go", 150.0, 50.0, 40.0, 40.0);
+    fx.on(
+        go,
+        Trigger::Click,
+        vec![
+            Action::ChangeState {
+                instance,
+                to: hover,
+                transition: Transition::INSTANT,
+            },
+            Action::OpenOverlay {
+                overlay: menu,
+                settings: OverlaySettings::default(),
+                transition: Transition::INSTANT,
+            },
+        ],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 160.0, 60.0);
+    p.input(Input::SetMode(dark));
+    p.set_value(m, Value::Number(5.0)).unwrap();
+    p.set_value(gone, Value::Number(3.0)).unwrap();
+    let link = |p: &Player| p.doc.get(instance).unwrap().link();
+    assert_eq!(link(&p), Some(hover), "fixture: switched");
+    assert_eq!(p.overlays(), vec![menu], "fixture: open");
+    assert_eq!(number(&p, n), 2.0, "fixture: dark");
+
+    // Refused: play deleted a layer the edit renames.
+    p.commit(Transaction(vec![Operation::DeleteNode { id: doomed }]))
+        .unwrap();
+    let tx = Transaction(vec![Operation::SetName {
+        id: doomed,
+        name: "Renamed".into(),
+    }]);
+    fx.doc.apply(&tx).unwrap();
+    p.apply_edit(&tx).unwrap();
+    assert_eq!(p.doc.get(doomed).unwrap().name(), "Renamed", "re-cloned");
+    assert_eq!(link(&p), Some(hover), "the state is re-switched");
+    assert_eq!(number(&p, n), 2.0, "the mode is given again");
+    assert_eq!(p.overlays(), vec![menu], "the overlay is kept");
+    assert!(p.take_notices().is_empty());
+
+    let tx = Transaction(vec![
+        Operation::DeleteNode { id: menu },
+        Operation::RemoveVariable { id: gone },
+        Operation::SetVariableCell {
+            id: m,
+            mode: light,
+            cell: Cell::Number(9.0),
+        },
+    ]);
+    fx.doc.apply(&tx).unwrap();
+    p.apply_edit(&tx).unwrap();
+    assert!(p.overlays().is_empty(), "the overlay's frame went: closed");
+    let notices = p.take_notices();
+    assert!(notices.contains(&Notice::Fallback(crate::Fallback::Overlay)));
+    assert!(notices.contains(&Notice::Fallback(crate::Fallback::Variable)));
+    assert_eq!(number(&p, m), 5.0, "an edited start keeps the play value");
+}
+
 /// A document sent whole is played in place of the old one, keeping the
 /// screen and the play values; a later one without the screen falls back.
 ///

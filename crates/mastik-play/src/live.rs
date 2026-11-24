@@ -8,7 +8,8 @@ impl Player {
     ///
     /// Ids are minted by their callers and operations are deterministic, so the
     /// copy takes the same transaction and stays the document plus what play did
-    /// to it, play state untouched. When the copy refuses it, because play
+    /// to it, play state untouched, and what the edit wrote over *Set mode*'s
+    /// modes or the screen's play size put back. When the copy refuses it, because play
     /// changed something the edit also touches, the copy is cloned again from
     /// the document and play state carried across by id: the screen, history,
     /// overlays, play values, scroll offsets and each instance's state. Either
@@ -27,6 +28,7 @@ impl Player {
                 let settled = self.res.settle(&mut self.doc);
                 self.dirty.extend(out.dirty.0);
                 self.dirty.extend(settled.0);
+                self.put_play_back();
             }
             Err(_) => self.reclone(),
         }
@@ -51,6 +53,28 @@ impl Player {
         self.prepare();
         self.reopen_rows();
         self.fall_back();
+    }
+
+    /// After an edit the copy took, what the edit wrote over play's own choices
+    /// put back: each node's modes *Set mode* gave it, and the screen's play
+    /// size. Edits are absolute, so a `SetModes` or a resize of the screen
+    /// lands on the copy whole.
+    fn put_play_back(&mut self) {
+        let mut undone: Vec<_> = self
+            .modes
+            .iter()
+            .filter(|(id, set)| {
+                self.doc
+                    .get(**id)
+                    .is_some_and(|n| n.modes() != set.as_slice())
+            })
+            .map(|(id, set)| (*id, set.clone()))
+            .collect();
+        undone.sort();
+        for (id, set) in undone {
+            self.put_modes(id, set);
+        }
+        self.fit_screen(self.screen);
     }
 
     /// The copy cloned again from the document, with each instance play
