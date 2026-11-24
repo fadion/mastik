@@ -167,9 +167,10 @@ as `serve` does.
 
 ## The player in the page
 
-`mastik_web::start(canvas, document, cpu)` loads the document and starts `mastik-play`'s
-`Player` on the flow the export opens on (`PlayExport::opens`, else the first flow, else the
-first page's first frame). The page plays on what it loaded: there is no original to protect,
+`mastik_web::start(canvas, document, cpu, frame)` loads the document and starts `mastik-play`'s
+`Player` where `shell::opening` says: on `frame` (a mirrored page's frame id) when the document
+holds that frame, else on the flow the export opens on (`PlayExport::opens`), else the first
+flow, else the first page's first frame. The page plays on what it loaded: there is no original to protect,
 and the engine is the in-app player's, so the two behave the same. The shell keeps only the
 canvas, the drawing and the page around them.
 

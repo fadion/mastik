@@ -17,7 +17,7 @@ git.
 | `docs/non-goals.md` | What is deliberately not built, one line each. |
 | `docs/shortcuts.md` | The keymap. |
 | `docs/context-menus.md` | The context-menu spec. |
-| `docs/prototyping.md` | Prototyping: where each built part's design lives, and what is still open (*Run script* in the exported page, lists from data). |
+| `docs/prototyping.md` | Prototyping: where each built part's design lives, and what is still open. |
 | `todo.md` | The maintainer's private scratchpad, untracked. Never record anything there. |
 
 ### Keeping the record

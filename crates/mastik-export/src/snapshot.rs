@@ -65,6 +65,8 @@ use std::collections::BTreeMap;
 /// - **28** The prototype: `NodeSnapshot::reactions` and `play`,
 ///   `PageSnapshot::flows` and `play`, and `Snapshot::play_export`, each absent
 ///   when empty or at its default.
+/// - **29** `NodeSnapshot::list` (`ListSummary`) on a list frame and
+///   `list_copy` on a copy and every layer inside one; `ChartSummary::data_id`.
 pub const SNAPSHOT_VERSION: u32 = 29;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
