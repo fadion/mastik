@@ -7714,6 +7714,68 @@ fn set_reactions_stores_names_by_id_and_refuses_what_does_not_read() {
     );
 }
 
+/// `copy_reactions` pastes a layer's reactions after each layer's own as *Paste
+/// interactions* does: fresh item ids, and *On drop at* the source's snap point
+/// moved to the layer's point of that name; a layer with no such point refuses.
+/// flip: `rehomed` keeping the copied point → fails at "its own point".
+#[test]
+fn copy_reactions_pastes_as_paste_interactions_does() {
+    use mastik_core::prototype::{DropAt, Trigger};
+    let (mut doc, mut ids, page) = blank();
+    let [a, b, c] = [0, 1, 2].map(|_| {
+        run(
+            &mut doc,
+            &mut ids,
+            "create_node",
+            json!({ "parent": page.to_wire(), "kind": frame(40.0, 40.0) }),
+        )[0]
+    });
+    for (layer, point) in [(a, "7e5b:50"), (b, "7e5b:60")] {
+        run(
+            &mut doc,
+            &mut ids,
+            "set_play",
+            json!({ "nodes": [layer.to_wire()], "play": { "follow": { "points": [
+                { "id": point, "name": "End", "x": 40.0, "y": 0.0 }] } } }),
+        );
+    }
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [a.to_wire()], "reactions": [
+            { "trigger": { "Drop": { "at": { "Point": "7e5b:50" } } }, "actions": ["Back"] }] }),
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "copy_reactions",
+        json!({ "nodes": [b.to_wire()], "from": a.to_wire() }),
+    );
+    let theirs = &doc.get(a).unwrap().reactions()[0];
+    let ours = &doc.get(b).unwrap().reactions()[0];
+    let b_point = doc.get(b).unwrap().play().follow.as_ref().unwrap().points[0].id;
+    assert_eq!(
+        ours.value.trigger,
+        Trigger::Drop {
+            at: DropAt::Point(b_point)
+        },
+        "its own point"
+    );
+    assert_ne!(ours.id, theirs.id, "a fresh id");
+    let why = format!(
+        "{:?}",
+        answer(
+            &doc,
+            &mut ids,
+            "copy_reactions",
+            json!({ "nodes": [c.to_wire()], "from": a.to_wire() })
+        )
+        .err()
+    );
+    assert!(why.contains("snap point"), "{why}");
+}
+
 /// `set_play_export` writes the HTML export's settings as the card keeps them,
 /// refusing a flow that is none (listing the flows) and an `opens` outside a
 /// non-empty `flows`.

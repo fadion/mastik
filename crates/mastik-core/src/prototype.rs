@@ -1543,6 +1543,165 @@ pub fn expr_stored(
     Ok(e)
 }
 
+/// The action lists `action` nests: a conditional's branches', then `otherwise`.
+pub fn nested_lists_mut(action: &mut Action) -> impl Iterator<Item = &mut Vec<Keyed<Action>>> {
+    let (branches, otherwise): (&mut [Branch], Option<&mut Vec<Keyed<Action>>>) = match action {
+        Action::Conditional {
+            branches,
+            otherwise,
+        } => (branches, Some(otherwise)),
+        _ => (&mut [], None),
+    };
+    branches.iter_mut().map(|b| &mut b.actions).chain(otherwise)
+}
+
+/// A copy of `list` with every item id (nested ones included) minted afresh, for
+/// *Duplicate* and *Paste interactions*: the door refuses a repeated id.
+pub fn fresh_ids(list: &[Keyed<Action>], mint: &mut impl FnMut() -> ItemId) -> Vec<Keyed<Action>> {
+    list.iter()
+        .map(|k| {
+            let mut value = k.value.clone();
+            for l in nested_lists_mut(&mut value) {
+                *l = fresh_ids(l, mint);
+            }
+            Keyed::new(mint(), value)
+        })
+        .collect()
+}
+
+/// The instance *Change to* switches from a layer: the instance it is or is in,
+/// when that instance's main is a variant of a set; or, inside a main variant,
+/// that main, which each of its instances reads as itself ([`resolve_target`]):
+/// how a state that moves on to the next is built.
+pub fn state_instance(doc: &Document, id: NodeId) -> Option<NodeId> {
+    if let Some(root) = crate::component::instance_root(doc, id) {
+        let main = crate::component::main_of(doc, root)?;
+        return crate::variant::set_of(doc, main).map(|_| root);
+    }
+    let mut at = Some(id);
+    while let Some(x) = at {
+        let n = doc.get(x)?;
+        if n.component() {
+            return crate::variant::set_of(doc, x).map(|_| x);
+        }
+        at = n.parent();
+    }
+    None
+}
+
+/// The variants an instance may change to: its main's set's, in order.
+pub fn states_of(doc: &Document, instance: NodeId) -> Vec<NodeId> {
+    crate::component::main_of(doc, instance)
+        .and_then(|m| crate::variant::set_of(doc, m))
+        .map(|set| crate::variant::variants(doc, set))
+        .unwrap_or_default()
+}
+
+/// `r` as *Paste interactions* writes it on `to`, copied from `from`: what was
+/// `from`'s own becomes `to`'s. A *Change to* of `from`'s own instance switches
+/// `to`'s, which must be of the same set, and *On drop at* one of `from`'s snap
+/// points names `to`'s point of that name. Other targets stay the document's
+/// layers. `Err` says why `to` cannot take it.
+pub fn rehomed(doc: &Document, from: NodeId, to: NodeId, r: &Reaction) -> Result<Reaction, String> {
+    let name = doc
+        .get(to)
+        .map_or_else(|| "The layer".to_owned(), |n| n.name().to_owned());
+    let points = |id: NodeId| {
+        doc.get(id)
+            .and_then(|n| n.play().follow.clone())
+            .map(|f| f.points)
+            .unwrap_or_default()
+    };
+    let mut trigger = r.trigger.clone();
+    if let Trigger::Drop {
+        at: DropAt::Point(p),
+    } = &mut trigger
+        && let Some(point) = points(from).into_iter().find(|k| k.id == *p)
+    {
+        let Some(there) = points(to)
+            .into_iter()
+            .find(|k| k.value.name == point.value.name)
+        else {
+            return Err(format!(
+                "{name} has no snap point named “{}”",
+                point.value.name
+            ));
+        };
+        *p = there.id;
+    }
+    let own = state_instance(doc, from);
+    let target = state_instance(doc, to);
+    fn walk(
+        list: &[Keyed<Action>],
+        own: Option<NodeId>,
+        target: &dyn Fn(NodeId) -> Option<NodeId>,
+    ) -> Option<Vec<Keyed<Action>>> {
+        list.iter()
+            .map(|k| {
+                let value = match &k.value {
+                    Action::ChangeState {
+                        instance,
+                        to,
+                        transition,
+                    } if Some(*instance) == own => Action::ChangeState {
+                        instance: target(*to)?,
+                        to: *to,
+                        transition: *transition,
+                    },
+                    Action::Conditional {
+                        branches,
+                        otherwise,
+                    } => Action::Conditional {
+                        branches: branches
+                            .iter()
+                            .map(|b| {
+                                Some(Branch {
+                                    when: b.when.clone(),
+                                    actions: walk(&b.actions, own, target)?,
+                                })
+                            })
+                            .collect::<Option<_>>()?,
+                        otherwise: walk(otherwise, own, target)?,
+                    },
+                    other => other.clone(),
+                };
+                Some(Keyed::new(k.id, value))
+            })
+            .collect()
+    }
+    // `to`'s instance, when the variant it switches to is one of its states.
+    let switch = |variant: NodeId| target.filter(|t| states_of(doc, *t).contains(&variant));
+    let actions = walk(&r.actions, own, &switch)
+        .ok_or_else(|| format!("{name} is no instance of the set its Change to switches"))?;
+    Ok(Reaction { trigger, actions })
+}
+
+/// `to`'s reactions with `copied`, read from `from`, added after its own as
+/// *Paste interactions* adds them: each rehomed ([`rehomed`]) and given fresh
+/// item ids, the whole list checked as the door checks it.
+pub fn pasted(
+    doc: &Document,
+    from: NodeId,
+    to: NodeId,
+    copied: &[Reaction],
+    mint: &mut impl FnMut() -> ItemId,
+) -> Result<Vec<Keyed<Reaction>>, String> {
+    let mut list = doc
+        .get(to)
+        .map(|n| n.reactions().to_vec())
+        .unwrap_or_default();
+    for r in copied {
+        let r = rehomed(doc, from, to, r)?;
+        let copy = Reaction {
+            trigger: r.trigger,
+            actions: fresh_ids(&r.actions, mint),
+        };
+        list.push(Keyed::new(mint(), copy));
+    }
+    check(&list).map_err(|why| why.to_string())?;
+    Ok(list)
+}
+
 /// The layer `target` names when read from a reaction on `holder`. A reaction on
 /// a copy is its source's, so its target is first resolved in the source's world
 /// (down the link chain, for a nested instance), then mapped to the layer of

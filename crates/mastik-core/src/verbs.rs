@@ -6134,6 +6134,34 @@ pub static VERBS: &[Verb] = &[
         },
     },
     Verb {
+        name: "copy_reactions",
+        doc: "Add a layer's reactions after each layer's own, as Paste interactions does: what was the source's own instance or snap point becomes each layer's",
+        params: &[
+            req("nodes", NODES, "the layers that take them"),
+            req("from", NODE, "the layer whose reactions are copied"),
+        ],
+        run: |ctx, a| {
+            let from = a.layer(ctx.doc, "from")?;
+            let copied: Vec<crate::prototype::Reaction> = ctx
+                .doc
+                .get(from)
+                .map(|n| n.reactions().iter().map(|k| k.value.clone()).collect())
+                .unwrap_or_default();
+            let mut ops = Vec::new();
+            for id in existing_layers(ctx, a)? {
+                if id == from {
+                    continue;
+                }
+                let ids = &mut *ctx.ids;
+                let reactions =
+                    crate::prototype::pasted(ctx.doc, from, id, &copied, &mut || ids.mint_item())
+                        .map_err(|why| a.invalid("nodes", why))?;
+                ops.push(Operation::SetReactions { id, reactions });
+            }
+            Ok(Done::ops(ops))
+        },
+    },
+    Verb {
         name: "set_play",
         doc: "Replace layers' prototype settings: a frame's scroll and snap, a child's pin, an input, how a layer follows a drag, and a scroll effect",
         params: &[

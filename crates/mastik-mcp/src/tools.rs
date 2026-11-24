@@ -42,7 +42,7 @@ pub const PHASE_1: [&str; 32] = [
 ///
 /// `create_node`, `insert_subtree`, `duplicate` and `add_image` return the new
 /// ids: the handler minted them, so it knows them.
-pub const PHASE_2: [&str; 91] = [
+pub const PHASE_2: [&str; 92] = [
     "create_node",
     "create_text",
     "insert_subtree",
@@ -115,6 +115,7 @@ pub const PHASE_2: [&str; 91] = [
     "flatten_chart",
     "set_exports",
     "set_reactions",
+    "copy_reactions",
     "set_play",
     "add_page",
     "duplicate_page",

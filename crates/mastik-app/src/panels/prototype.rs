@@ -846,18 +846,7 @@ pub(crate) fn find(list: &[Keyed<Action>], id: ItemId) -> Option<&Keyed<Action>>
     })
 }
 
-/// The action lists nested in `action`, in [`Action::nested`]'s order, to
-/// change: a conditional's branches, then its *else*.
-fn nested_lists_mut(action: &mut Action) -> impl Iterator<Item = &mut Vec<Keyed<Action>>> {
-    let (branches, otherwise): (&mut [Branch], Option<&mut Vec<Keyed<Action>>>) = match action {
-        Action::Conditional {
-            branches,
-            otherwise,
-        } => (branches, Some(otherwise)),
-        _ => (&mut [], None),
-    };
-    branches.iter_mut().map(|b| &mut b.actions).chain(otherwise)
-}
+use mastik_core::prototype::{fresh_ids, nested_lists_mut};
 
 /// [`find`], to change it.
 pub(crate) fn find_mut(list: &mut [Keyed<Action>], id: ItemId) -> Option<&mut Keyed<Action>> {
@@ -1012,99 +1001,6 @@ fn canvas_pointer(ui: &egui::Ui) -> Option<egui::Pos2> {
         .layer_id_at(p)
         .is_none_or(|l| l == ui.layer_id())
         .then_some(p)
-}
-
-/// A copy of `list` with every item id (nested ones included) minted afresh, for
-/// *Duplicate* and *Paste interactions*: the door refuses a repeated id.
-fn fresh_ids(list: &[Keyed<Action>], mint: &mut impl FnMut() -> ItemId) -> Vec<Keyed<Action>> {
-    list.iter()
-        .map(|k| {
-            let mut value = k.value.clone();
-            for l in nested_lists_mut(&mut value) {
-                *l = fresh_ids(l, mint);
-            }
-            Keyed::new(mint(), value)
-        })
-        .collect()
-}
-
-/// `r` as *Paste interactions* writes it on `to`, copied from `from`: what was
-/// `from`'s own becomes `to`'s. A *Change to* of `from`'s own instance switches
-/// `to`'s, which must be of the same set, and *On drop at* one of `from`'s snap
-/// points names `to`'s point of that name. Other targets stay the document's
-/// layers. `Err` says why `to` cannot take it.
-fn rehomed(doc: &Document, from: NodeId, to: NodeId, r: &Reaction) -> Result<Reaction, String> {
-    let name = doc
-        .get(to)
-        .map_or_else(|| "The layer".to_owned(), |n| n.name().to_owned());
-    let points = |id: NodeId| {
-        doc.get(id)
-            .and_then(|n| n.play().follow.clone())
-            .map(|f| f.points)
-            .unwrap_or_default()
-    };
-    let mut trigger = r.trigger.clone();
-    if let Trigger::Drop {
-        at: DropAt::Point(p),
-    } = &mut trigger
-        && let Some(point) = points(from).into_iter().find(|k| k.id == *p)
-    {
-        let Some(there) = points(to)
-            .into_iter()
-            .find(|k| k.value.name == point.value.name)
-        else {
-            return Err(format!(
-                "{name} has no snap point named “{}”",
-                point.value.name
-            ));
-        };
-        *p = there.id;
-    }
-    let own = state_instance(doc, from);
-    let target = state_instance(doc, to);
-    fn walk(
-        list: &[Keyed<Action>],
-        own: Option<NodeId>,
-        target: &dyn Fn(NodeId) -> Option<NodeId>,
-    ) -> Option<Vec<Keyed<Action>>> {
-        list.iter()
-            .map(|k| {
-                let value = match &k.value {
-                    Action::ChangeState {
-                        instance,
-                        to,
-                        transition,
-                    } if Some(*instance) == own => Action::ChangeState {
-                        instance: target(*to)?,
-                        to: *to,
-                        transition: *transition,
-                    },
-                    Action::Conditional {
-                        branches,
-                        otherwise,
-                    } => Action::Conditional {
-                        branches: branches
-                            .iter()
-                            .map(|b| {
-                                Some(Branch {
-                                    when: b.when.clone(),
-                                    actions: walk(&b.actions, own, target)?,
-                                })
-                            })
-                            .collect::<Option<_>>()?,
-                        otherwise: walk(otherwise, own, target)?,
-                    },
-                    other => other.clone(),
-                };
-                Some(Keyed::new(k.id, value))
-            })
-            .collect()
-    }
-    // `to`'s instance, when the variant it switches to is one of its states.
-    let switch = |variant: NodeId| target.filter(|t| states_of(doc, *t).contains(&variant));
-    let actions = walk(&r.actions, own, &switch)
-        .ok_or_else(|| format!("{name} is no instance of the set its Change to switches"))?;
-    Ok(Reaction { trigger, actions })
 }
 
 // --- expressions ----------------------------------------------------------------
@@ -1454,33 +1350,7 @@ fn pickable_under(doc: &Document, root: NodeId) -> Vec<NodeId> {
         .collect()
 }
 
-/// The instance *Change to* switches from a layer: the instance it is or is in,
-/// when that instance's main is a variant of a set; or, inside a main variant,
-/// that main, which each of its instances reads as itself (`resolve_target`):
-/// how a state that moves on to the next is built.
-pub(crate) fn state_instance(doc: &Document, id: NodeId) -> Option<NodeId> {
-    if let Some(root) = mastik_core::component::instance_root(doc, id) {
-        let main = mastik_core::component::main_of(doc, root)?;
-        return mastik_core::variant::set_of(doc, main).map(|_| root);
-    }
-    let mut at = Some(id);
-    while let Some(x) = at {
-        let n = doc.get(x)?;
-        if n.component() {
-            return mastik_core::variant::set_of(doc, x).map(|_| x);
-        }
-        at = n.parent();
-    }
-    None
-}
-
-/// The variants an instance may change to: its main's set's, in order.
-fn states_of(doc: &Document, instance: NodeId) -> Vec<NodeId> {
-    mastik_core::component::main_of(doc, instance)
-        .and_then(|m| mastik_core::variant::set_of(doc, m))
-        .map(|set| mastik_core::variant::variants(doc, set))
-        .unwrap_or_default()
-}
+pub(crate) use mastik_core::prototype::{state_instance, states_of};
 
 fn name(doc: &Document, id: NodeId) -> String {
     crate::private::layer(doc, id).into_owned()
@@ -3939,33 +3809,21 @@ impl MastikApp {
         let ids = self.session.selection.ids().to_vec();
         let mut ops = Vec::new();
         for id in ids {
-            let Some(node) = self.session.doc.get(id) else {
+            if self.session.doc.get(id).is_none() {
                 continue;
-            };
-            let mut list = node.reactions().to_vec();
-            for r in &copied {
-                let r = match rehomed(&self.session.doc, source, id, r) {
-                    Ok(r) => r,
-                    Err(why) => {
-                        self.session.info(format!("Not pasted: {why}"));
-                        return;
-                    }
-                };
-                let mut mint = || self.session.ids.mint_item();
-                let copy = Reaction {
-                    trigger: r.trigger,
-                    actions: fresh_ids(&r.actions, &mut mint),
-                };
-                list.push(Keyed::new(mint(), copy));
             }
-            if let Err(why) = mastik_core::prototype::check(&list) {
-                self.session.info(format!("Not pasted: {why}"));
-                return;
+            let session = &mut self.session;
+            let mut mint = || session.ids.mint_item();
+            match mastik_core::prototype::pasted(&session.doc, source, id, &copied, &mut mint) {
+                Ok(list) => ops.push(Operation::SetReactions {
+                    id,
+                    reactions: list,
+                }),
+                Err(why) => {
+                    self.session.info(format!("Not pasted: {why}"));
+                    return;
+                }
             }
-            ops.push(Operation::SetReactions {
-                id,
-                reactions: list,
-            });
         }
         if ops.is_empty() {
             return;
