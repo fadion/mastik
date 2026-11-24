@@ -3900,8 +3900,9 @@ mod radial_centre_tests {
     }
 
     /// The first `Escape` over the ends menu closes the menu and keeps the picker;
-    /// the second closes the picker.
-    /// flip: dropping `escape`'s open-popup rung above the picker's → fails at "the picker stays".
+    /// the second closes the picker. Each press is routed as the frame routes it:
+    /// the popup's claim first, the ladder only with the key still there.
+    /// flip: `claim_popup_escape` leaving the press in the input → fails at "the picker stays".
     #[test]
     fn escape_closes_the_ends_menu_before_the_picker() {
         let ctx = egui::Context::default();
@@ -3915,22 +3916,35 @@ mod radial_centre_tests {
             "fixture: the menu is open"
         );
 
-        let escape = egui::Event::Key {
-            key: egui::Key::Escape,
-            physical_key: None,
-            pressed: true,
-            repeat: false,
-            modifiers: Default::default(),
+        let press = |app: &mut MastikApp| {
+            let escape = egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            };
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), SCREEN)),
+                events: vec![escape],
+                ..Default::default()
+            };
+            let _ = ctx.run_ui(input, |ui| {
+                crate::ui::claim_popup_escape(ui.ctx());
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    app.escape(ui.ctx());
+                }
+                app.picker_ui(ui.ctx());
+            });
         };
-        app.escape(&ctx);
-        let _ = placed(&ctx, &mut app, vec![escape]);
+        press(&mut app);
         assert!(app.picker.is_some(), "the picker stays");
         assert!(
             !egui::Popup::is_id_open(&ctx, ends_menu_id()),
             "the menu closed"
         );
 
-        app.escape(&ctx);
+        press(&mut app);
         assert!(app.picker.is_none(), "the next press closes the picker");
     }
 

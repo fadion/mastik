@@ -403,14 +403,14 @@ redo and save (`input::resolve`; a text entry keeps even those), and these are t
 
 | Key | Action |
 |---|---|
-| `Tab` / `Shift+Tab` | the next / previous control; an open popover or dialog keeps it inside, wrapping. In a `ui::suggest_field` showing a ghost or a lit row, `Tab` takes it |
+| `Tab` / `Shift+Tab` | the next / previous control; an open popover or dialog keeps it inside, wrapping. In a `ui::suggest_field` showing a ghost or a lit row, or a prototype expression field's open `@`/`{` list, `Tab` takes it |
 | `Enter` · `Space` | press it, as a click does |
 | `Shift+F10` | right-click it: its menu, where the pointer's would open (`ui::menu_key_as_right_click`) |
 | `Alt+↓` | open the list behind it: a split button's choices, a tool group's members (`ui::list_key`), a `ui::suggest_field`'s names |
 | `F2` · `Ctrl+R` | rename the row: a layer, a page, a variable, a mode, a group; type into a variable's colour cell (`ui::rename_key`) |
 | arrows | a slider, the picker's plane and tracks, a gradient stop: a hundredth of the range, a tenth with `Shift` (`ui::arrow_keys`). Elsewhere egui moves the focus to the neighbour that way |
 | `Delete` | a gradient stop: remove it (not below two). A layers row: delete the selection when the row is in it, else the row |
-| `Escape` | drop the focus, or close the surface it is in |
+| `Escape` | close the open dropdown or list, and only it; else drop the focus, or close the surface it is in |
 
 A layers row adds `→`/`←` (open, fold), `↑`/`↓` (the next row, past the rows in view) and
 `Ctrl+Shift+H` / `Ctrl+Shift+L` for that row. `Space` is the focused control's, never the pan
@@ -557,11 +557,10 @@ code rather than editing this sentence:
 
 focus mode → a bindable field's menu / `--` list / mode menu → a style card's menu, picker, name
 or edit (`escape_styles`) → an armed eyedropper (`disarm_dropper`: a picker's pick button, else the
-rail tool, which hands back to the tool it was armed from) → an open menu of the colour picker's
-(the gradient's *Ends and mixing*), which closes itself → the detached colour picker → the
+rail tool, which hands back to the tool it was armed from) → the detached colour picker → the
 insert picker (`kit_picker`) or the assets browser (`asset_panel`) → the
-variables browser (inner rungs first) → a text session → the find box → batch rename (its open
-order list first) → the Clean up box → the Fill with content box (an open kind list first) → colour review (its own
+variables browser (inner rungs first) → a text session → the find box → batch rename → the
+Clean up box → the Fill with content box → colour review (its own
 inner rungs first) → the Credits card (`credits_open`) → the Repeat card → the Blend shapes card's wait for a path (`cancel_blend_pick`) → the Blend shapes card → an open warp envelope → the path bar's mirror flyout → a compare →
 the pen →
 **a gesture in flight**
@@ -579,6 +578,11 @@ only when nothing was in flight — a plain `TextEdit`, where renaming a layer a
 used to clear the selection too. `Enter` is the ladder's counterpart, not its alias, and
 **asymmetric** (§15 D228): it toggles the two tools it can enter and only goes **deeper** into a
 group; coming back out is the ladder's job.
+
+**An open dropdown, menu or suggestion list takes the press before anything else**: egui's own
+popups (every `ComboBox`, `Popup::menu`, a picker's *Ends and mixing*, a dialog's dropdown) and
+the lists that call `ui::keep_escape` close, and nothing behind them — the ladder, the dialog or
+popover hosting them — hears that press (`ui::claim_popup_escape`, at the top of the frame).
 
 **Anything floating takes the press before the ladder and takes only one thing** (§15 D527, D801):
 a context menu, a top-bar dropdown (`Action::Escape if open_menu != None`), a modal, the detached

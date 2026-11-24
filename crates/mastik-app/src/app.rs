@@ -2267,6 +2267,8 @@ impl MastikApp {
         let canvas_tab =
             self.view != View::Dashboard && (self.text.is_some() || self.edited_path().is_some());
         let _focus = crate::ui::KeyboardFocus::begin(&ctx, canvas_tab);
+        // Before every key reader: an open popup takes `Escape` and nothing behind it.
+        crate::ui::claim_popup_escape(&ctx);
         // A push asked for by a menu is this frame's reset's to take; one no door
         // took must not turn a later reset into a push.
         crate::ui::take_push(&ctx);
@@ -3552,9 +3554,6 @@ impl MastikApp {
             // A style card's menu, its picker, a new style's name, a style edit — one a press.
         } else if self.disarm_dropper() {
             // Above the picker it may be picking for.
-        } else if self.picker.is_some() && egui::Popup::is_any_open(ctx) {
-            // A menu of the picker's (the gradient's ends) takes this press and
-            // closes itself; the picker goes on the next.
         } else if self.picker.take().is_some() {
         } else if self.kit_picker.take().is_some()
             || self.asset_panel.take().is_some()
@@ -3571,17 +3570,12 @@ impl MastikApp {
         } else if self.find.open {
             // Below a text edit, which a row's double-click opens from the box.
             self.close_find();
-        } else if self.batch_rename.is_some() {
-            // Its order list, open, takes this press and closes itself.
-            if !egui::Popup::is_any_open(ctx) {
-                self.batch_rename = None;
-            }
-        } else if self.clean_up.take().is_some() || self.escape_chart_data(ctx) {
-        } else if self.fill_content.is_some() {
-            // A row's open kind list takes this press and closes itself.
-            if !egui::Popup::is_any_open(ctx) {
-                self.fill_content = None;
-            }
+        } else if self.batch_rename.take().is_some()
+            || self.clean_up.take().is_some()
+            || self.escape_chart_data(ctx)
+            || self.fill_content.take().is_some()
+        {
+            // One box a press, in this order.
         } else if self.colour_review.open {
             // Its open menu or the name being typed goes first, the card next press.
             self.colour_review.escape();
@@ -18749,6 +18743,39 @@ mod context_menu_rule_tests {
         assert!(
             !app.focus,
             "one Escape leaves focus mode, as its toast says"
+        );
+    }
+
+    /// With an inspector dropdown open, one `Escape` closes the dropdown and keeps
+    /// the selection; the next press deselects as usual.
+    ///
+    /// flip: `frame_body` not calling `ui::claim_popup_escape` → fails at "the selection stays"
+    #[test]
+    fn escape_over_an_inspector_dropdown_closes_only_the_dropdown() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = probe_app(&ctx);
+        whole_frame(&ctx, &mut app, Vec::new());
+        whole_frame(&ctx, &mut app, Vec::new());
+        let menu = egui::Id::new("blend-menu");
+        egui::Popup::open_id(&ctx, menu);
+        whole_frame(&ctx, &mut app, Vec::new());
+        whole_frame(&ctx, &mut app, Vec::new());
+        assert!(
+            egui::Popup::is_id_open(&ctx, menu),
+            "fixture: the Layer card's blend dropdown is drawn and open"
+        );
+
+        whole_frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+        assert!(
+            !egui::Popup::is_id_open(&ctx, menu),
+            "Escape closes the dropdown"
+        );
+        assert_eq!(app.session.selection.ids(), [id], "the selection stays");
+
+        whole_frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+        assert!(
+            app.session.selection.is_empty(),
+            "with nothing open the next press deselects"
         );
     }
 }

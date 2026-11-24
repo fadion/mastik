@@ -6729,6 +6729,59 @@ fn kept_tab_id() -> egui::Id {
     egui::Id::new("focus-kept-tab")
 }
 
+/// Spends this frame's `Escape` on the popup open last frame: one press closes the
+/// open dropdown, menu or suggestion list and nothing else, so neither the surface
+/// hosting it nor the canvas's selection hears it. Called once at the top of the
+/// frame body, before any key reader. egui's own popups (a `ComboBox`,
+/// `Popup::menu`, a context menu) are closed here; one the app holds open asks for
+/// the press with [`keep_escape`] and closes on [`popup_escaped`].
+pub fn claim_popup_escape(ctx: &egui::Context) {
+    // One accessor at a time: the context lock is not re-entrant.
+    let kept = ctx
+        .data_mut(|d| d.remove_temp::<bool>(kept_escape_id()))
+        .is_some();
+    let open = kept || egui::Popup::is_any_open(ctx);
+    let claimed = open && ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    if claimed {
+        ctx.input_mut(|i| {
+            i.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Key {
+                        key: egui::Key::Escape,
+                        ..
+                    }
+                )
+            });
+        });
+        egui::Popup::close_all(ctx);
+    }
+    ctx.data_mut(|d| d.insert_temp(escaped_id(), claimed));
+}
+
+/// Marks a popup whose open state the app holds (not egui's memory) as open, so
+/// next frame's `Escape` is [`claim_popup_escape`]'s. Call it every frame the
+/// popup shows, and close it when [`popup_escaped`] says so.
+pub fn keep_escape(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(kept_escape_id(), true));
+}
+
+/// Whether [`claim_popup_escape`] spent this frame's `Escape` on an open popup.
+pub fn popup_escaped(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(escaped_id()))
+        .unwrap_or(false)
+}
+
+/// Set by [`keep_escape`], spent by the next [`claim_popup_escape`].
+fn kept_escape_id() -> egui::Id {
+    egui::Id::new("popup-kept-escape")
+}
+
+/// This frame's answer of [`claim_popup_escape`].
+fn escaped_id() -> egui::Id {
+    egui::Id::new("popup-escaped")
+}
+
 /// Moves the focus one stop along the surface `ui` draws, as `Tab` (or, `back`,
 /// `Shift+Tab`) would: for a control that kept this frame's `Tab` ([`keep_tab`])
 /// and finds it has no use for it after all.

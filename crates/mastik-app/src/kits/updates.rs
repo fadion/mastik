@@ -617,8 +617,10 @@ impl MastikApp {
                 });
                 // The press that opened it is no press away from it.
                 let opening = ctx.input(|i| i.pointer.secondary_clicked());
-                if (away && !opening) || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if (away && !opening) || ui::popup_escaped(ctx) {
                     self.kit_review.menu = None;
+                } else {
+                    ui::keep_escape(ctx);
                 }
             }
         }

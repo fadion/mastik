@@ -1566,8 +1566,10 @@ impl MastikApp {
         let elsewhere = ctx.input(|i| i.pointer.any_click())
             && !menu.contains_pointer()
             && !head.contains_pointer();
-        if elsewhere || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if elsewhere || crate::ui::popup_escaped(ctx) {
             self.tabs.overflow_open = false;
+        } else {
+            crate::ui::keep_escape(ctx);
         }
     }
 
