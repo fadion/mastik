@@ -2440,7 +2440,17 @@ impl MastikApp {
                 .show(ui, |ui| self.present_ui(ui));
             return;
         }
-        // The player filling the window is present mode's other branch.
+        // The player filling the window is present mode's other branch. A modal
+        // (its bar's Export, a disk clash) is drawn over the editor, so the player
+        // goes back over the canvas for it, its takes kept.
+        if self.modal_is_up()
+            && self
+                .playing
+                .as_ref()
+                .is_some_and(|p| p.place == crate::player::Place::Fullscreen)
+        {
+            self.place_player(&ctx, crate::player::Place::Over);
+        }
         if self
             .playing
             .as_ref()

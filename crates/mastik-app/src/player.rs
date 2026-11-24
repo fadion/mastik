@@ -1384,7 +1384,7 @@ impl crate::app::MastikApp {
     }
 
     /// Move the player to `place`.
-    fn place_player(&mut self, ctx: &egui::Context, place: Place) {
+    pub(crate) fn place_player(&mut self, ctx: &egui::Context, place: Place) {
         let Some(p) = self.playing.as_mut() else {
             return;
         };
@@ -1500,6 +1500,13 @@ impl crate::app::MastikApp {
                     false => self.place_player(&ctx, Place::Over),
                 }
                 return;
+            }
+            // The editor is hidden, so of its keymap only what reaches the
+            // document passes: undo, redo and save. A text field keeps its keys.
+            if !ctx.text_edit_focused() {
+                for action in crate::input::passing_keys(&ctx, self.prefs.nudge) {
+                    self.dispatch(&ctx, action);
+                }
             }
         }
         let act = self.player_body(ui, &mut p, ui.available_rect_before_wrap());
@@ -2028,14 +2035,23 @@ mod tests {
         let _ = frame_out(ctx, app, events);
     }
 
-    /// [`whole_frame`], answering egui's output.
+    /// `whole_frame`, answering egui's output. A key's modifiers are held for
+    /// the frame, as the keymap reads them.
     fn frame_out(
         ctx: &egui::Context,
         app: &mut MastikApp,
         events: Vec<egui::Event>,
     ) -> egui::FullOutput {
         let mut frame = eframe::Frame::_new_kittest();
+        let modifiers = events
+            .iter()
+            .find_map(|e| match e {
+                egui::Event::Key { modifiers, .. } => Some(*modifiers),
+                _ => None,
+            })
+            .unwrap_or_default();
         let input = egui::RawInput {
+            modifiers,
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::pos2(0.0, 0.0),
                 egui::vec2(1320.0, 820.0),
@@ -2647,6 +2663,50 @@ mod tests {
             !app.playing.as_ref().expect("still playing").focused,
             "the next Escape gives the keys back"
         );
+    }
+
+    /// Filling the window, the player passes `Ctrl+Z` to the document, and
+    /// goes back over the canvas when its bar's Export raises the export card,
+    /// keeping the take just recorded.
+    ///
+    /// flip: `frame_body` without its fullscreen modal guard → fails at "back
+    /// over the canvas"; `player_fullscreen_ui` without `passing_keys` → fails
+    /// at "Ctrl+Z undid it".
+    #[test]
+    fn fullscreen_play_passes_undo_and_leaves_for_a_modal() {
+        let ctx = egui::Context::default();
+        let (mut app, [_, _, rect]) = fixture(&ctx, true);
+        app.play(&ctx, Place::Fullscreen, false);
+        whole_frame(&ctx, &mut app, Vec::new());
+        let depth = app.session.history.undo_depth();
+        assert!(
+            app.session
+                .commit(Transaction(vec![Operation::SetTransform {
+                    id: rect,
+                    transform: Affine::translate((40.0, 30.0)),
+                }]))
+        );
+        let undo = egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        whole_frame(&ctx, &mut app, vec![undo]);
+        let p = app.playing.as_ref().expect("still playing");
+        assert_eq!(p.place, Place::Fullscreen, "fixture: still fullscreen");
+        assert_eq!(app.session.history.undo_depth(), depth, "Ctrl+Z undid it");
+
+        app.player_act(&ctx, BarAct::Record);
+        app.player_act(&ctx, BarAct::Record);
+        app.player_act(&ctx, BarAct::Export);
+        assert!(app.proto_export.is_some(), "fixture: the card asked for");
+        whole_frame(&ctx, &mut app, Vec::new());
+        let p = app.playing.as_ref().expect("still playing");
+        assert_eq!(p.place, Place::Over, "back over the canvas");
+        assert_eq!(p.takes.len(), 1, "the take kept");
+        assert!(app.proto_export.is_some(), "the card is up");
     }
 
     /// Present mode plays the prototype fullscreen when the document has a flow,
