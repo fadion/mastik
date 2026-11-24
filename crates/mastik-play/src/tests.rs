@@ -1187,6 +1187,70 @@ fn a_manual_overlay_sits_by_the_layer_that_opens_it() {
 
 // ── Scrolling ───────────────────────────────────────────────────────────────
 
+/// *Scroll to* scrolls the nearest scrolling frame above its layer, held at its
+/// end, never the screen; *Open URL* asks the shell for an `http` or `https`
+/// address only, trimmed, and skips any other with a notice.
+///
+/// flip: `scroll_to` not clamping its offset → fails at "held at its end";
+/// *Open URL* taking any scheme → fails at "only the web address".
+#[test]
+fn scroll_to_and_open_url_reach_only_what_they_may() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 200.0, 400.0);
+    fx.play_settings(
+        a,
+        LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            ..LayerPlay::default()
+        },
+    );
+    let list = fx.node(a, "List", frame_kind(200.0, 100.0), (0.0, 0.0));
+    fx.play_settings(
+        list,
+        LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            ..LayerPlay::default()
+        },
+    );
+    let cards: Vec<NodeId> = (0..4)
+        .map(|i| fx.rect(list, "Card", 0.0, f64::from(i) * 50.0, 200.0, 50.0))
+        .collect();
+    let go = fx.rect(a, "Go", 0.0, 200.0, 40.0, 40.0);
+    fx.on(
+        go,
+        Trigger::Click,
+        vec![
+            Action::ScrollTo {
+                layer: cards[3],
+                transition: Transition::INSTANT,
+            },
+            Action::OpenUrl {
+                url: " HTTPS://x.test ".into(),
+            },
+            Action::OpenUrl {
+                url: "javascript:alert(1)".into(),
+            },
+        ],
+    );
+    let mut p = fx.play(a);
+    click(&mut p, 10.0, 210.0);
+    assert_eq!(
+        p.scroll_offset(list),
+        Vec2::new(0.0, 100.0),
+        "held at its end"
+    );
+    assert_eq!(p.scroll_offset(a), Vec2::ZERO, "not the screen");
+    assert_eq!(
+        p.take_requests(),
+        vec![crate::Request::OpenUrl("HTTPS://x.test".into())],
+        "only the web address"
+    );
+    assert!(matches!(
+        p.take_notices().as_slice(),
+        [Notice::Missing { .. }]
+    ));
+}
+
 /// A vertical scrolling frame scrolls as far as its content reaches; a fixed
 /// child stays, a sticky one stops at the top edge.
 ///
@@ -4423,7 +4487,8 @@ fn row_actions_pick_their_row_and_say_why_they_skip() {
 /// document's back.
 ///
 /// flip: `rebase` not calling `carry_tables` → fails at "kept through a
-/// re-clone".
+/// re-clone"; `Player::pick` reading *Opened row* as the last row → fails at
+/// "the opened row, row 1, deleted".
 #[test]
 fn played_rows_survive_a_live_edit_that_leaves_their_table() {
     use mastik_core::prototype::{RowEnd, WhichRow};
@@ -4472,6 +4537,13 @@ fn played_rows_survive_a_live_edit_that_leaves_their_table() {
     p.apply_edit(&tx).unwrap();
     assert_eq!(len(&p), 3, "the document's rows again");
     assert!(p.tables().is_empty());
+    let names = |p: &Player| -> Vec<String> {
+        let t = &p.document().data_set(cart).unwrap().table;
+        t.rows.iter().map(|r| r[0].clone()).collect()
+    };
     click(&mut p, 160.0, 310.0);
-    assert_eq!(len(&p), 2, "the opened row, row 1, deleted");
+    assert_eq!(names(&p), ["Z", "Y"], "the opened row, row 1, deleted");
+    p.input(Input::OpenRow { data: cart, row: 1 });
+    click(&mut p, 160.0, 310.0);
+    assert_eq!(names(&p), ["Z"], "the row opened, row 2, deleted");
 }
