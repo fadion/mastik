@@ -388,19 +388,13 @@ impl Player {
         }
         let chain = hit.chain;
         // An input's text may be empty and so have no width: a click on the box
-        // holding it focuses it too.
+        // holding it focuses it too. One in a disabled instance takes no focus.
+        let takes = |id: NodeId| self.is_text_input(id) && !self.disabled(id);
         let held = chain.first().and_then(|deepest| {
             let n = self.doc.get(*deepest)?;
-            n.children()
-                .iter()
-                .copied()
-                .find(|c| self.is_text_input(*c))
+            n.children().iter().copied().find(|c| takes(*c))
         });
-        let focus = chain
-            .iter()
-            .copied()
-            .find(|id| self.is_text_input(*id))
-            .or(held);
+        let focus = chain.iter().copied().find(|id| takes(*id)).or(held);
         self.set_focus(focus);
         let long = self
             .picked(&chain, &|t| matches!(t, Trigger::LongPress { .. }))
@@ -481,9 +475,12 @@ impl Player {
             return true;
         }
         let mut used = false;
-        // An input instance flips its variable.
+        // An input instance flips its variable, unless it is disabled.
         let checkbox = press.chain.iter().find_map(|id| {
             let input = self.doc.get(*id)?.play().input.clone()?;
+            if self.disabled(*id) {
+                return None;
+            }
             input.property.is_some().then_some(input.var)
         });
         if let Some(var) = checkbox
@@ -623,6 +620,9 @@ impl Player {
         let mut fire = Vec::new();
         for id in subtree_nodes(&self.doc, &[frame]) {
             let Some(n) = self.doc.get(id) else { continue };
+            if self.disabled(id) {
+                continue;
+            }
             for r in n.reactions() {
                 if let Trigger::Key { key: k, shift: s } = &r.value.trigger
                     && k.eq_ignore_ascii_case(key)

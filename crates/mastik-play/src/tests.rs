@@ -991,26 +991,8 @@ fn smart_animate_pairs_two_variants_of_one_set() {
         });
     }
     fx.apply(ops);
-    let mut place = |main: NodeId, parent: NodeId, at: (f64, f64)| {
-        let (tx, made) = mastik_core::insert_subtrees(
-            &fx.doc,
-            &mut fx.ids,
-            &[Placement {
-                nodes: fx.doc.capture_subtree(main).unwrap(),
-                parent,
-                index: None,
-            }],
-            Default::default(),
-        );
-        fx.apply(tx.0);
-        fx.apply(vec![Operation::SetTransform {
-            id: made[0],
-            transform: Affine::translate(at),
-        }]);
-        made[0]
-    };
-    let from = place(off, a, (10.0, 10.0));
-    let to = place(on, b, (50.0, 40.0));
+    let from = place(&mut fx, off, a, (10.0, 10.0));
+    let to = place(&mut fx, on, b, (50.0, 40.0));
     let go = fx.rect(a, "Go", 150.0, 60.0, 20.0, 20.0);
     fx.on(
         go,
@@ -1301,6 +1283,141 @@ fn a_checkbox_input_writes_and_shows_its_variable() {
     assert_eq!(p.focused(), Some(boxed));
     assert!(key(&mut p, " ", false));
     assert_eq!(p.doc.get(boxed).unwrap().link(), Some(on), "Space flips");
+}
+
+/// An instance of `main` placed in `parent` at `at`.
+fn place(fx: &mut Fx, main: NodeId, parent: NodeId, at: (f64, f64)) -> NodeId {
+    let (tx, made) = mastik_core::insert_subtrees(
+        &fx.doc,
+        &mut fx.ids,
+        &[Placement {
+            nodes: fx.doc.capture_subtree(main).unwrap(),
+            parent,
+            index: None,
+        }],
+        Default::default(),
+    );
+    fx.apply(tx.0);
+    fx.apply(vec![Operation::SetTransform {
+        id: made[0],
+        transform: Affine::translate(at),
+    }]);
+    made[0]
+}
+
+/// A set's *Disabled* variant takes no input: in an instance shown *Disabled*,
+/// a key trigger, a checkbox's click and a text input's focus all do nothing,
+/// while the same card shown *Default* beside it takes each.
+///
+/// flip: `Player::key` not skipping disabled layers → fails at "the key";
+/// `pointer_up`'s checkbox not skipping them → fails at "the checkbox";
+/// `pointer_down`'s focus not skipping them → fails at "the field".
+#[test]
+fn a_disabled_instance_takes_no_input() {
+    let mut fx = Fx::new();
+    let a = fx.frame("A", 0.0, 300.0, 100.0);
+    let n = fx.var("n", VarKind::Number, Cell::Number(0.0));
+    let agreed = fx.var("agreed", VarKind::Boolean, Cell::Boolean(false));
+    let name = fx.var("name", VarKind::String, Cell::String(String::new()));
+    // A checkbox set `Checked: Off, On`.
+    let boxes = fx.frame("Checkbox", 600.0, 100.0, 50.0);
+    let off = fx.node(boxes, "Off", frame_kind(20.0, 20.0), (0.0, 0.0));
+    let on = fx.node(boxes, "On", frame_kind(20.0, 20.0), (40.0, 0.0));
+    // A card set `State: Default, Disabled`, each variant holding a field, a
+    // checkbox and a layer with a key trigger.
+    let cards = fx.frame("Card", 600.0, 300.0, 100.0);
+    let default = fx.node(cards, "Default", frame_kind(100.0, 60.0), (0.0, 0.0));
+    let disabled = fx.node(cards, "Disabled", frame_kind(100.0, 60.0), (150.0, 0.0));
+    let mut prop = VariantProp::new("State", vec!["Default".into(), "Disabled".into()]);
+    prop.states.insert("Disabled".into(), Interaction::Disabled);
+    let mut ops: Vec<Operation> = [off, on, default, disabled]
+        .iter()
+        .map(|id| Operation::SetComponent {
+            id: *id,
+            component: true,
+        })
+        .collect();
+    ops.push(Operation::SetVariantSet {
+        id: boxes,
+        set: Some(VariantSet {
+            props: vec![VariantProp::new("Checked", vec!["Off".into(), "On".into()])],
+        }),
+    });
+    ops.push(Operation::SetVariantSet {
+        id: cards,
+        set: Some(VariantSet { props: vec![prop] }),
+    });
+    for (id, v) in [
+        (off, "Off"),
+        (on, "On"),
+        (default, "Default"),
+        (disabled, "Disabled"),
+    ] {
+        ops.push(Operation::SetVariant {
+            id,
+            values: vec![v.into()],
+        });
+    }
+    fx.apply(ops);
+    for main in [default, disabled] {
+        let field = fx.node(main, "Value", text_kind(""), (4.0, 4.0));
+        fx.play_settings(
+            field,
+            LayerPlay {
+                input: Some(Bound {
+                    var: name,
+                    property: None,
+                }),
+                ..LayerPlay::default()
+            },
+        );
+        let check = place(&mut fx, off, main, (60.0, 30.0));
+        fx.play_settings(
+            check,
+            LayerPlay {
+                input: Some(Bound {
+                    var: agreed,
+                    property: Some("Checked".into()),
+                }),
+                ..LayerPlay::default()
+            },
+        );
+        let keyed = fx.rect(main, "Keyed", 0.0, 50.0, 10.0, 10.0);
+        fx.on(
+            keyed,
+            Trigger::Key {
+                key: "Enter".into(),
+                shift: false,
+            },
+            vec![add(n, 1.0)],
+        );
+    }
+    let off_card = place(&mut fx, disabled, a, (0.0, 0.0));
+    let on_card = place(&mut fx, default, a, (150.0, 0.0));
+    let mut p = fx.play(a);
+    assert_eq!(
+        p.doc.get(off_card).unwrap().link(),
+        Some(disabled),
+        "fixture"
+    );
+
+    key(&mut p, "Enter", false);
+    assert_eq!(number(&p, n), 1.0, "the key reaches the Default card alone");
+    click(&mut p, 65.0, 35.0);
+    assert_eq!(
+        p.doc.resolve_var(a, agreed),
+        Some(Value::Boolean(false)),
+        "the checkbox"
+    );
+    click(&mut p, 10.0, 25.0);
+    assert_eq!(p.focused(), None, "the field");
+
+    // The Default card takes each.
+    click(&mut p, 215.0, 35.0);
+    assert_eq!(p.doc.resolve_var(a, agreed), Some(Value::Boolean(true)));
+    click(&mut p, 160.0, 25.0);
+    let field = p.doc.get(on_card).unwrap().children()[0];
+    assert_eq!(p.focused(), Some(field));
 }
 
 // ── Scripts ─────────────────────────────────────────────────────────────────
