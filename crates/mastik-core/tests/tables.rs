@@ -224,6 +224,60 @@ fn edit_table_edits_in_one_step() {
     assert!(doc == before, "one undo takes the edit back");
 }
 
+/// `edit_table` deleting a middle column takes its cell out of every row, the
+/// other cells staying under their columns, a `set` naming the columns as they
+/// stand after the delete, and a list reading the table keeps its fill; one
+/// undo puts the column back.
+/// flip: `edit_table` removing the cell at the column's index plus one → fails
+/// at the cells.
+#[test]
+fn edit_table_deletes_a_column_from_every_row() {
+    let (mut doc, mut ids, page) = blank();
+    let mut h = History::default();
+    let inst = row_instance(&mut h, &mut doc, &mut ids, page);
+    let done = run(
+        &mut h,
+        &mut doc,
+        &mut ids,
+        "add_table",
+        json!({
+            "name": "People",
+            "columns": ["Name", "Age", "City"],
+            "rows": [["Ana", "31", "Oslo"], ["Ben", "40", "Rome"]],
+        }),
+    );
+    let set = DataSetId(NodeId::from_wire(done.made.as_deref().unwrap()).unwrap());
+    let l = made(
+        &mut h,
+        &mut doc,
+        &mut ids,
+        "make_list",
+        json!({ "node": inst.to_wire(), "table": set.0.to_wire() }),
+    );
+    let before = doc.clone();
+    run(
+        &mut h,
+        &mut doc,
+        &mut ids,
+        "edit_table",
+        json!({
+            "table": "People",
+            "columns": { "delete": ["Age"] },
+            "set": [{ "row": 2, "column": "City", "value": "Lima" }],
+        }),
+    );
+    assert_eq!(
+        cells(&doc, set),
+        vec![vec!["Ana", "Oslo"], vec!["Ben", "Lima"]]
+    );
+    let t = &doc.data_set(set).unwrap().table;
+    let names: Vec<&str> = t.columns.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["Name", "City"]);
+    assert_eq!(titles(&doc, l), ["Ana", "Ben"], "the list keeps its fill");
+    assert!(h.undo(&mut doc).is_ok());
+    assert!(doc == before, "one undo puts the column back");
+}
+
 /// A number sent as JSON is written in its shortest form, a whole float with
 /// no `.0`; one sent as a string keeps its spelling.
 /// flip: `CellIn::text` writing every number as serde prints it → fails at

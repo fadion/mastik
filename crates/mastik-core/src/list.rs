@@ -1902,6 +1902,71 @@ mod tests {
         );
     }
 
+    /// *Any* passes a row passing one test, *All* only one passing both; a
+    /// second sort key orders the rows the first ties; `validate` refuses a
+    /// ninth test, a third key and a copy named twice.
+    /// flip: `passing` ignoring `filter.any` → fails at "any"; `sort_rows`
+    /// reading the first key alone → fails at "then by".
+    #[test]
+    fn any_joins_tests_and_then_by_breaks_ties() {
+        let t = table(
+            &["Name", "Category", "Price"],
+            &[
+                &["Scarf", "Knits", "28"],
+                &["Linen shirt", "Shirts", "42"],
+                &["Beanie", "Knits", "28"],
+                &["Oxford shirt", "Shirts", "58"],
+            ],
+        );
+        let (name, cat, price) = (t.columns[0].id, t.columns[1].id, t.columns[2].id);
+        let test = |column, op, value: &str| Test {
+            column,
+            op,
+            value: crate::prototype::expr::Expr(value.into()),
+        };
+        let mut l = List::new(DataSetId(NodeId { actor: 1, seq: 1 }));
+        l.filter.tests = vec![
+            test(cat, TestOp::Is, "Knits"),
+            test(name, TestOp::Contains, "Oxford"),
+        ];
+        assert!(
+            l.shown_rows(&t, &no_vars).is_empty(),
+            "all: none passes both"
+        );
+        l.filter.any = true;
+        assert_eq!(l.shown_rows(&t, &no_vars), vec![0, 2, 3], "any");
+        l.filter = Filter::default();
+        l.sort = vec![
+            SortKey {
+                column: price,
+                descending: false,
+            },
+            SortKey {
+                column: name,
+                descending: false,
+            },
+        ];
+        assert_eq!(l.shown_rows(&t, &no_vars), vec![2, 0, 1, 3], "then by");
+
+        let frame = NodeId { actor: 1, seq: 9 };
+        assert!(l.validate(frame).is_ok());
+        let mut bad = l.clone();
+        bad.filter.tests = vec![test(cat, TestOp::Is, "Knits"); MAX_TESTS + 1];
+        assert_eq!(bad.validate(frame), Err(ListRule::BadFilter), "tests");
+        let mut bad = l.clone();
+        bad.sort.push(SortKey {
+            column: cat,
+            descending: true,
+        });
+        assert_eq!(bad.validate(frame), Err(ListRule::BadFilter), "keys");
+        let mut bad = l.clone();
+        let copy = NodeId { actor: 1, seq: 10 };
+        bad.copies = vec![copy, copy];
+        assert_eq!(bad.validate(frame), Err(ListRule::BadCopies), "twice");
+        bad.copies = vec![frame];
+        assert_eq!(bad.validate(frame), Err(ListRule::BadCopies), "itself");
+    }
+
     /// A value naming a variable reads it; one naming none is literal text.
     #[test]
     fn a_test_value_is_literal_unless_it_names_a_variable() {

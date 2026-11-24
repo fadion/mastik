@@ -741,3 +741,25 @@ fn a_page_plays_at_its_device_turned_or_its_room() {
     };
     assert!(!unknown.can_turn(), "a device no preset names");
 }
+
+/// `device_size` finds the phones and tablets the *Device* dropdown offers and
+/// the retired ones, and no other preset.
+///
+/// flip: `device_size` searching the retired devices alone → fails at "an
+/// offered phone"; dropping its device-group filter → fails at "not a device".
+#[test]
+fn a_device_is_sized_from_the_offered_list_and_the_retired() {
+    use mastik_core::presets::device_size;
+    assert_eq!(
+        device_size("iPhone 18 Pro"),
+        Some(Size::new(402.0, 874.0)),
+        "an offered phone"
+    );
+    assert_eq!(
+        device_size("iPad mini"),
+        Some(Size::new(744.0, 1133.0)),
+        "an offered tablet"
+    );
+    assert_eq!(device_size("iPhone 16"), Some(Size::new(393.0, 852.0)));
+    assert_eq!(device_size("Desktop"), None, "not a device");
+}

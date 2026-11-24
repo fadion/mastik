@@ -183,8 +183,11 @@ fn badges(doc: &Document, l: NodeId) -> Vec<bool> {
 
 /// Making a list fills the template from row 1 and one copy per later row, by
 /// the columns whose names match the properties; one undo takes the frame, the
-/// data set and every row away, and redo brings them back.
-/// flip: `regenerate_in_history` skipping `join_last` → fails at "one undo".
+/// data set and every row away, and redo brings them back. The frame's
+/// children are the template then the copies in row order.
+/// flip: `regenerate_in_history` skipping `join_last` → fails at "one undo";
+/// `insert_subtrees` not shifting a later placement at the same index → fails
+/// at "the frame draws the rows in order".
 #[test]
 fn a_list_repeats_its_template_per_row_and_undoes_whole() {
     let (mut doc, mut ids, page) = blank();
@@ -200,6 +203,13 @@ fn a_list_repeats_its_template_per_row_and_undoes_whole() {
     assert_eq!(badges(&doc, l), [true, false, true]);
     assert_eq!(list::template(&doc, l), Some(inst));
     assert_eq!(doc.get(l).unwrap().name(), "Row list");
+    let copies = doc.get(l).unwrap().list().unwrap().copies.clone();
+    assert_eq!(copies.len(), 2);
+    assert_eq!(
+        doc.get(l).unwrap().children(),
+        [inst, copies[0], copies[1]],
+        "the frame draws the rows in order"
+    );
 
     let after = doc.clone();
     assert!(history.undo(&mut doc).is_ok());
