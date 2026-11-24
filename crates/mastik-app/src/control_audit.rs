@@ -1462,6 +1462,62 @@ fn sweep_on(theme: Theme) {
         a.export_row_open = Some(0);
     });
     check("per-row export settings", app, found);
+    // The player over the canvas: its floating bar, and the state card open
+    // over a text, a number and a boolean, so it shows a field of each.
+    let mut app = with_auto_layout(&ctx);
+    {
+        use mastik_core::variable::{Cell, CollectionId, Mode, VarKind, Variable};
+        let mode = app.session.ids.mint_mode();
+        let mut ops = vec![Operation::AddMode {
+            collection: CollectionId::FIRST,
+            mode: Mode {
+                id: mode,
+                name: "Default".into(),
+            },
+            index: 0,
+            cells: vec![],
+        }];
+        for (name, kind, cell) in [
+            ("Word", VarKind::String, Cell::String("qq".into())),
+            ("Count", VarKind::Number, Cell::Number(3.0)),
+            ("On", VarKind::Boolean, Cell::Boolean(true)),
+        ] {
+            ops.push(Operation::AddVariable {
+                var: Variable {
+                    id: app.session.ids.mint_var(),
+                    name: name.into(),
+                    kind,
+                    cells: [(mode, cell)].into(),
+                    scope: None,
+                    origin: None,
+                    forked: None,
+                    description: String::new(),
+                },
+            });
+        }
+        assert!(app.session.commit(Transaction(ops)));
+    }
+    let found = opened(&ctx, &mut app, |ctx, a| {
+        a.play(ctx, crate::player::Place::Over, false);
+        a.playing.as_mut().expect("fixture: playing").card = true;
+    });
+    check("player bar and state card", app, found);
+    // The phone sharing card, serving on loopback.
+    let mut app = with_auto_layout(&ctx);
+    let found = opened(&ctx, &mut app, |ctx, a| {
+        a.play(ctx, crate::player::Place::Over, false);
+        let frame = a.session.selection.ids()[0];
+        let sharing = crate::phone::Sharing::start_with(
+            ctx,
+            &a.session.doc,
+            mastik_export::prototype::Opening::Frame(frame),
+            (b"\0asm".to_vec(), "let wasm_bindgen;".into()),
+            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)),
+        );
+        assert!(sharing.is_sharing(), "fixture: sharing on loopback");
+        a.playing.as_mut().expect("fixture: playing").sharing = Some(sharing);
+    });
+    check("phone sharing card", app, found);
 
     let mut app = with_a_rect(&ctx);
     let found = opened(&ctx, &mut app, |_, a| a.stroke_menu = Some(0));

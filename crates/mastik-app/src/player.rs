@@ -185,7 +185,7 @@ pub(crate) struct Playing {
     /// for the bar's size readout.
     resized_at: Option<f64>,
     /// *Play on a phone*, while asked for: it stops with the player.
-    sharing: Option<crate::phone::Sharing>,
+    pub(crate) sharing: Option<crate::phone::Sharing>,
     /// egui's clock when the pointer last moved over a player filling a screen,
     /// for its floating bar.
     stirred_at: f64,
