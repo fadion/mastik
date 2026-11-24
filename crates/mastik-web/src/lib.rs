@@ -424,6 +424,14 @@ impl Player {
                 Notice::ScrollFrameGone { .. } => {
                     "A scroll trigger watches a frame that is gone; it never fires".into()
                 }
+                Notice::TableFull { table, .. } => {
+                    let n = mastik_core::chart::MAX_ROWS;
+                    format!(
+                        "Skipped Add row: {table} holds {},{:03} rows, the most a table can",
+                        n / 1000,
+                        n % 1000
+                    )
+                }
             })
             .collect()
     }
