@@ -706,6 +706,35 @@ fn filled_tip(column: &str, set: &str) -> String {
     format!("Filled from {column} in {set}, as every row is: edit it in the table")
 }
 
+/// Why layer `id`'s field of `kind` cannot be edited: it is a layer of a list's
+/// template that a filled property drives, so the next regeneration would write
+/// the row's cell back over the edit. The canvas text session, the Text card's
+/// content and the layers eye refuse with it, as the instance card does.
+pub(crate) fn filled_layer(
+    doc: &mastik_core::Document,
+    id: NodeId,
+    kind: PropKind,
+) -> Option<String> {
+    let mut at = doc.get(id)?.parent();
+    while let Some(root) = at {
+        let frame = doc.get(root)?.parent();
+        let is_template = frame.is_some_and(|f| mastik_core::list::template(doc, f) == Some(root));
+        if is_template {
+            return mastik_core::variant::instance_properties(doc, root)
+                .iter()
+                .filter(|p| p.kind == kind)
+                .filter(|p| mastik_core::variant::counterparts(doc, root, p).contains(&id))
+                .find_map(|p| {
+                    let target = mastik_core::list::Target::Prop(p.id);
+                    filled_column_of(doc, root, &target)
+                })
+                .map(|(col, set)| filled_tip(&col, &set));
+        }
+        at = frame;
+    }
+    None
+}
+
 /// A row's label in the label column, **right-aligned against its control**
 /// (§15 D996, `component::label_mark_in`) — every label in the column ending the
 /// same distance from the field it names, whatever its length.

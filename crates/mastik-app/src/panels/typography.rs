@@ -1061,7 +1061,13 @@ impl MastikApp {
             Some(mastik_core::NodeKind::Text { content, .. }) => content,
             _ => content.clone(),
         };
-        let read_only = live || self.field_var(key).is_some() || shown.contains('\n');
+        let filled = crate::panels::variants::filled_layer(
+            &self.session.doc,
+            id,
+            mastik_core::variant::PropKind::Text,
+        );
+        let read_only =
+            live || filled.is_some() || self.field_var(key).is_some() || shown.contains('\n');
         let edit_id = egui::Id::new(("type-content", id));
         let focused = ui.memory(|m| m.has_focus(edit_id));
         let mut text = match focused {
@@ -1138,10 +1144,10 @@ impl MastikApp {
         };
         let hover = ui.interact(row, edit_id.with("hover"), sense);
         if read_only {
-            let why = if live {
-                "Being edited on the canvas"
-            } else {
-                "Text of several lines — edit it on the canvas"
+            let why = match &filled {
+                _ if live => "Being edited on the canvas",
+                Some(why) => why.as_str(),
+                None => "Text of several lines — edit it on the canvas",
             };
             let _ = hover.clone().on_hover_text(why);
         }

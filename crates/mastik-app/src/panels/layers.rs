@@ -2325,6 +2325,15 @@ impl MastikApp {
                         self.collapsed.remove(&id);
                     }
                 }
+                Some(RowHit::Eye)
+                    if let Some(why) = super::variants::filled_layer(
+                        &self.session.doc,
+                        id,
+                        mastik_core::variant::PropKind::Boolean,
+                    ) =>
+                {
+                    self.session.info(why);
+                }
                 Some(RowHit::Eye) => {
                     match visible {
                         true => self.session.name_step("Hide", icon::EYE_SLASH),

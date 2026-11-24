@@ -1506,6 +1506,39 @@ mod tests {
         );
     }
 
+    /// The template's text layer a filled property drives refuses the canvas
+    /// text session with the column's words, so no edit lands that the
+    /// regeneration would write back; a field no column fills stays editable.
+    /// flip: `begin_edit_text` not asking `filled_layer` → fails at "no session".
+    #[test]
+    fn a_filled_layer_on_the_template_refuses_the_text_session() {
+        use mastik_core::variant::PropKind;
+        let ctx = egui::Context::default();
+        let (mut app, inst) = with_row(&ctx);
+        let _ = listed(&mut app, inst, &["Linen", "Wool"]);
+        let label = app.session.doc.get(inst).unwrap().children()[0];
+        let doc = &app.session.doc;
+        assert!(
+            crate::panels::variants::filled_layer(doc, label, PropKind::Text)
+                .is_some_and(|w| w.contains("Filled from title in rows.csv")),
+            "the column's words"
+        );
+        assert_eq!(
+            crate::panels::variants::filled_layer(doc, label, PropKind::Boolean),
+            None,
+            "no column fills its visibility"
+        );
+        let depth = app.session.history.undo_depth();
+        app.begin_edit_text(Some(label), None);
+        assert!(app.text.is_none(), "no session");
+        assert!(
+            app.session.status().text.contains("Filled from title"),
+            "said: {}",
+            app.session.status().text
+        );
+        assert_eq!(app.session.history.undo_depth(), depth, "no step");
+    }
+
     /// *Reset all* on a list's template takes back its other overrides and
     /// leaves each filled property at its row's cell, since the list is made
     /// again in the reset's step; so it stays offered there.

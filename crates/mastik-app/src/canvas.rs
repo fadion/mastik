@@ -8207,6 +8207,13 @@ impl MastikApp {
                 .info("This layer is locked — unlock it to edit the text");
             return;
         }
+        let doc = &self.session.doc;
+        let text = mastik_core::variant::PropKind::Text;
+        if let Some(why) = crate::panels::variants::filled_layer(doc, id, text) {
+            self.session.selection.set_one(id);
+            self.session.info(why);
+            return;
+        }
         // The text as drawn, bound values resolved (`keep_text_bindings`).
         let Some(kind) = self.session.doc.resolved_kind(id) else {
             return;
