@@ -131,6 +131,39 @@ impl PerRow {
             fill: Vec::new(),
         }
     }
+
+    /// This row switched to read `onto`, as the List card moves a list: a *Fill*
+    /// pick keeps its column where `onto` has one of the same name in `from` (the
+    /// table read until now) and is dropped where it has none, since column ids
+    /// are per table and a kept id would name an unrelated column. A pick of
+    /// *None* stays; *Name by* starts over.
+    pub fn moved_onto(
+        &self,
+        from: Option<&crate::chart::Table>,
+        onto: &crate::list::DataSet,
+    ) -> Self {
+        let fill = self
+            .fill
+            .iter()
+            .filter_map(|pick| {
+                let Some(column) = pick.column else {
+                    return Some(pick.clone());
+                };
+                let name = &from?.column(column)?.name;
+                let moved = onto.table.columns.iter().find(|c| c.name == *name)?;
+                Some(crate::list::RowPick {
+                    column: Some(moved.id),
+                    ..pick.clone()
+                })
+            })
+            .collect();
+        Self {
+            table: onto.id,
+            name_by: None,
+            fill,
+            ..self.clone()
+        }
+    }
 }
 
 /// How a PDF row under [`ExportSpec::per_row`] writes its rows. Every other
@@ -794,6 +827,60 @@ mod tests {
         assert!(spec.rows_as_pages());
         spec.format = ExportFormat::Png;
         assert!(!spec.rows_as_pages(), "pages are a PDF's alone");
+    }
+
+    /// Switching a row's table moves each *Fill* pick onto the new table's
+    /// column of the same name and drops a pick whose column it lacks, though
+    /// the old ids exist in the new table naming other columns.
+    ///
+    /// flip: `PerRow::moved_onto` keeping `fill` as it is → fails at the picks.
+    #[test]
+    fn a_table_switch_moves_the_fill_picks_by_column_name() {
+        use crate::chart::{Column, Table};
+        use crate::list::{DataSet, RowPick, RowSlot};
+        let mut ids = crate::IdSource::new(0xB);
+        let table = |names: &[&str]| {
+            let mut t = Table::default();
+            for name in names {
+                let id = t.next_column_id();
+                t.columns.push(Column {
+                    id,
+                    name: (*name).into(),
+                });
+            }
+            t
+        };
+        let set = |id, table| DataSet {
+            id,
+            name: String::new(),
+            table,
+            source: None,
+            pictures: Vec::new(),
+        };
+        let a = set(ids.mint_data_set(), table(&["Name", "Title"]));
+        let b = set(ids.mint_data_set(), table(&["Email", "Company", "Name"]));
+        let (headline, photo, date) = (ids.mint(), ids.mint(), ids.mint());
+        let pick = |node, column| RowPick {
+            slot: RowSlot::Layer(node),
+            column,
+        };
+        let now = PerRow {
+            name_by: Some(a.table.columns[0].id),
+            fill: vec![
+                pick(headline, Some(a.table.columns[1].id)),
+                pick(photo, None),
+                pick(date, Some(a.table.columns[0].id)),
+            ],
+            ..PerRow::new(a.id)
+        };
+        let moved = now.moved_onto(Some(&a.table), &b);
+        assert_eq!(moved.table, b.id);
+        assert_eq!(moved.name_by, None);
+        assert_eq!(
+            moved.fill,
+            [pick(photo, None), pick(date, Some(b.table.columns[2].id))],
+            "the picks"
+        );
     }
 
     /// `from_label` reads back what `label` writes (round trip over `COMMON`), plus

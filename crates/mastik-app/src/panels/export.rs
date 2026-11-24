@@ -1797,11 +1797,10 @@ impl MastikApp {
         let fill_table = set.map(|s| s.table.clone());
         match table {
             Some(TablePick::Set(table)) => {
-                edit(out, spec).per_row = Some(PerRow {
-                    table,
-                    name_by: None,
-                    ..per_row.clone()
-                });
+                if let Some(onto) = doc.data_set(table) {
+                    let moved = per_row.moved_onto(set.map(|s| &s.table), onto);
+                    edit(out, spec).per_row = Some(moved);
+                }
             }
             Some(TablePick::File) => self.table_file_dialog(),
             _ => {}
