@@ -336,8 +336,9 @@ step.
   an image row, *3 pictures not found*, the cells and *looked for next to products.csv* its
   tooltip, and apart from it *1 picture not read*, the read's reason its tooltip, for a file
   that is there but refused (an SVG, one over 16 MB, one past the largest edge); the last read
-  keeps those reasons (`list_data::refused_picture`), which the import box and the export
-  report split by too. Each is a `ui::note_line_tip`, warning glyph and muted words as above. With no such
+  in this process keeps those reasons (`list_data::refused_picture`), and a file that is there
+  but no read has looked at since the document opened reads *is there but was not read: Update
+  reads it*, never *not found*. The import box and the export report split by it too. Each is a `ui::note_line_tip`, warning glyph and muted words as above. With no such
   property, *Its component has no text, boolean, image or variant property*
   (`list_data::NO_FILL_TARGETS`, the import box's too). Undo step *List fill*, which reads the
   image column's pictures in the same step while the set is linked.

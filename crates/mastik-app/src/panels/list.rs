@@ -2100,9 +2100,11 @@ mod tests {
 
     /// A picture beside the data file that is there but refused (an SVG) is
     /// split from one not found, with the read's reason; once it reads, the
-    /// reason goes.
+    /// reason goes; one there that no read in this process looked at (after a
+    /// reopen) is still not read, not missing.
     /// flip: `read_pictures_in` not calling `refuse` on a refused read → fails
-    /// at "not found".
+    /// at "the read's reason"; `refused_picture` without `unread_picture` →
+    /// fails at "there, not missing".
     #[test]
     fn a_refused_picture_is_not_read_rather_than_not_found() {
         let ctx = egui::Context::default();
@@ -2136,17 +2138,25 @@ mod tests {
             crate::list_data::split_refused(Some(&set), ["logo.svg", "nobody.png"]);
         assert_eq!(missing, ["nobody.png"], "not found");
         assert_eq!(refused.len(), 1, "not read");
-        assert!(refused[0].contains("logo.svg"), "{refused:?}");
+        assert!(
+            refused[0].contains("logo.svg") && !refused[0].contains("Update reads it"),
+            "the read's reason: {refused:?}"
+        );
 
         let png = crate::app::rgba_to_png(&[200; 16], (2, 2)).unwrap();
         std::fs::write(dir.join("logo.svg"), &png).unwrap();
         let _ =
             crate::list_data::read_pictures(&app.session.doc, Some(&dir), &table, &[ColumnId(0)]);
+        let reads = crate::list_data::last_refusal(&set, "logo.svg");
+        // A file no read in this process looked at, as after a reopen.
+        std::fs::write(dir.join("unread.png"), &png).unwrap();
+        let (missing, refused) = crate::list_data::split_refused(Some(&set), ["unread.png"]);
         let _ = std::fs::remove_dir_all(&dir);
-        assert_eq!(
-            crate::list_data::refused_picture(&set, "logo.svg"),
-            None,
-            "it reads now"
+        assert_eq!(reads, None, "it reads now");
+        assert!(missing.is_empty(), "there, not missing");
+        assert!(
+            refused.len() == 1 && refused[0].contains("not read"),
+            "{refused:?}"
         );
     }
 

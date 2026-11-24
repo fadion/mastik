@@ -361,11 +361,42 @@ fn forget_refusal(path: &Path) {
 }
 
 /// Why the picture `cell` names beside data set `set`'s linked file was
-/// refused, when the last read found it and could not take it.
+/// refused, when the last read found it and could not take it. With no read
+/// in this process (the document was reopened), a file that is there is
+/// worded as not read rather than not found.
 pub(crate) fn refused_picture(set: &DataSet, cell: &str) -> Option<String> {
+    last_refusal(set, cell).or_else(|| unread_picture(set, cell))
+}
+
+/// What the last read in this process said of the picture `cell` names beside
+/// `set`'s linked file, when it refused it.
+pub(crate) fn last_refusal(set: &DataSet, cell: &str) -> Option<String> {
     let dir = Path::new(&set.source.as_ref()?.path).parent()?;
     let path = dir.join(cell.trim().replace('\\', "/"));
     REFUSED.lock().ok()?.get(&path).cloned()
+}
+
+/// The note for a picture `cell` names that is beside `set`'s linked file but
+/// no read in this process has looked at.
+fn unread_picture(set: &DataSet, cell: &str) -> Option<String> {
+    let dir = Path::new(&set.source.as_ref()?.path).parent()?;
+    let path = dir.join(cell.trim().replace('\\', "/"));
+    // The same gates the read keeps: a plain path under the folder, and no
+    // stat leaves this machine.
+    let rel = cell.trim().replace('\\', "/");
+    let plain = Path::new(&rel).components().all(|k| {
+        matches!(
+            k,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    });
+    let there = plain
+        && crate::tokens_import::local_path(&path)
+        && std::fs::metadata(&path).is_ok_and(|m| m.is_file());
+    there.then(|| {
+        let shown = crate::app::image_name(&path);
+        format!("“{shown}” is there but was not read: Update reads it")
+    })
 }
 
 /// `cells` no picture fills, split into those not found and those found but
