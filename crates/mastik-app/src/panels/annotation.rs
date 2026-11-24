@@ -26,7 +26,7 @@ impl MastikApp {
         };
         // Private mode hides an annotation as it does a description.
         let private = crate::private::on();
-        let mut text = match ui::Draft::live(&mut self.note_edit, ui.ctx(), id) {
+        let mut text = match ui::Draft::live(&mut self.annotation_edit, ui.ctx(), id) {
             Some(d) => d.text.clone(),
             None if private => String::new(),
             None => saved.clone(),
@@ -41,7 +41,7 @@ impl MastikApp {
             .add_enabled_ui(!private, |ui| ui::text_area(ui, &mut text, area))
             .inner
             .on_hover_text("What the drawing can't say: marked on the canvas, and written above the layer's code");
-        if let Some(typed) = ui::Draft::follow(&mut self.note_edit, &resp, id, &text) {
+        if let Some(typed) = ui::Draft::follow(&mut self.annotation_edit, &resp, id, &text) {
             let text = typed.trim().to_string();
             if text != saved {
                 self.session.name_step("Annotation", icon::NOTE);

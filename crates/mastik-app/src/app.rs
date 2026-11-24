@@ -698,7 +698,7 @@ pub struct MastikApp {
     /// In-progress description edit on a component card; commits once, on defocus.
     pub(crate) desc_edit: Option<crate::ui::Draft<NodeId>>,
     /// In-progress annotation edit in the identity card; commits once, on defocus.
-    pub(crate) note_edit: Option<crate::ui::Draft<NodeId>>,
+    pub(crate) annotation_edit: Option<crate::ui::Draft<NodeId>>,
     /// In-progress documentation link edit on a component card, kept past a
     /// refused commit.
     pub(crate) link_edit: Option<crate::ui::Draft<NodeId, mastik_core::LinkRefusal>>,
@@ -1907,7 +1907,7 @@ impl MastikApp {
             clipboard_stamp: None,
             name_edit: None,
             desc_edit: None,
-            note_edit: None,
+            annotation_edit: None,
             link_edit: None,
             href_edit: None,
             fonts,
