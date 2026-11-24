@@ -12,7 +12,7 @@
 
 use mastik_core::prototype::{FlowRef, PlayExport};
 use mastik_core::take::{Keep, take};
-use mastik_core::{Document, NodeId, Operation, Resolved, Transaction};
+use mastik_core::{Document, ImageEntry, ImageSource, NodeId, Operation, Resolved, Transaction};
 use std::collections::{BTreeSet, HashSet};
 use std::io::Write;
 
@@ -340,9 +340,13 @@ fn trim(
 }
 
 /// What a file handed to other people need not carry, taken from `doc`: the
+/// kit's published copy (every main it last published, from every page), the
 /// tables nothing kept reads (with the pictures only they named), every linked
-/// file's path on this machine, and the document's meta but its name.
+/// file's path on this machine, and the document's meta but its name. A linked
+/// picture keeps its entry with an empty path, so it draws as missing, as it
+/// would in the page anyway.
 fn for_sharing(doc: &mut Document) -> Result<(), mastik_core::OpError> {
+    doc.set_published(None);
     let unread = mastik_core::io::unread_data_sets(doc);
     let mut ops: Vec<Operation> = doc
         .data_sets()
@@ -379,6 +383,23 @@ fn for_sharing(doc: &mut Document) -> Result<(), mastik_core::OpError> {
         .map(|id| Operation::RemoveImage { id })
         .collect();
     doc.apply(&Transaction(gone))?;
+    let unlinked: Vec<Operation> = doc
+        .images()
+        .filter(|(_, e)| matches!(&e.source, ImageSource::Linked(p) if !p.is_empty()))
+        .flat_map(|(id, e)| {
+            [
+                Operation::RemoveImage { id: id.clone() },
+                Operation::AddImage {
+                    id: id.clone(),
+                    entry: ImageEntry {
+                        source: ImageSource::Linked(String::new()),
+                        ..e.clone()
+                    },
+                },
+            ]
+        })
+        .collect();
+    doc.apply(&Transaction(unlinked))?;
     doc.set_tokens_link(None);
     doc.set_meta(mastik_core::meta::DocumentMeta {
         name: doc.meta().name.clone(),

@@ -276,15 +276,23 @@ fn the_pruned_document_keeps_the_reached_pages_and_loads() {
     assert_eq!(loaded.page_ids().collect::<Vec<_>>(), pages, "round-trips");
 }
 
-/// The file is handed to other people: a table nothing kept reads goes, a
-/// read one stays with the pictures its rows name though no layer shows them,
-/// and no linked file's path or meta but the name stays.
+/// The file is handed to other people: a table nothing kept reads goes with the
+/// pictures only it named, a read one stays with the pictures its rows name
+/// though no layer shows them, and no linked file's path (a table's, a chart's,
+/// the tokens file's, a picture's), no published copy and no meta but the name
+/// stays.
 /// flip: `trim` skipping `for_sharing` → fails at "the unread table goes";
-/// `images_shown` not counting data sets → fails at "its picture stays".
+/// `images_shown` not counting data sets → fails at "its picture stays";
+/// `for_sharing` without the chart loop → fails at "the chart's path";
+/// without `set_published(None)` → fails at "no published copy"; without the
+/// `RemoveImage` pass → fails at "the unread table's picture goes"; without the
+/// linked-picture pass → fails at "the shown linked picture stays"; without
+/// `set_tokens_link(None)` → fails at "the tokens file's path".
 #[test]
 fn the_pruned_document_keeps_only_what_the_page_reads() {
     use mastik_core::chart::{Column, ColumnId, DataLink, Table};
     use mastik_core::list::DataSet;
+    use mastik_core::verbs::{self, Lent};
     let mut f = fixture();
     choose(&mut f.doc, vec![f.main]);
     let mut ids = IdSource::new(0x7A);
@@ -317,15 +325,37 @@ fn the_pruned_document_keeps_only_what_the_page_reads() {
     };
     let mut kept = set(read, "Read", "ada.png", r"C:\Users\someone\read.csv");
     kept.pictures.push(("ada.png".into(), photo.clone()));
+    let (unread_photo, linked) = (ImageId("unread-photo".into()), ImageId("hero".into()));
+    let mut dropped = set(
+        unread,
+        "Unread",
+        "secret-cell",
+        r"C:\Users\someone\unread.csv",
+    );
+    dropped
+        .pictures
+        .push(("secret-cell".into(), unread_photo.clone()));
+    let embedded = || ImageEntry {
+        source: ImageSource::Embedded(vec![0u8; 8].into()),
+        format: ImageFormat::Png,
+        width: 1,
+        height: 1,
+    };
     f.doc
         .apply(&Transaction(vec![
             Operation::AddImage {
                 id: photo.clone(),
+                entry: embedded(),
+            },
+            Operation::AddImage {
+                id: unread_photo.clone(),
+                entry: embedded(),
+            },
+            Operation::AddImage {
+                id: linked.clone(),
                 entry: ImageEntry {
-                    source: ImageSource::Embedded(vec![0u8; 8].into()),
-                    format: ImageFormat::Png,
-                    width: 1,
-                    height: 1,
+                    source: ImageSource::Linked(r"C:\Users\someone\hero.png".into()),
+                    ..embedded()
                 },
             },
             Operation::SetDataSet {
@@ -334,14 +364,16 @@ fn the_pruned_document_keeps_only_what_the_page_reads() {
             },
             Operation::SetDataSet {
                 id: unread,
-                set: Some(Box::new(set(
-                    unread,
-                    "Unread",
-                    "secret-cell",
-                    r"C:\Users\someone\unread.csv",
-                ))),
+                set: Some(Box::new(dropped)),
             },
             frame(tap, home, "Tap"),
+            Operation::SetFills {
+                id: tap,
+                fills: keyed_by_position([Fill {
+                    brush: image_brush(linked.clone()).into(),
+                    visible: true,
+                }]),
+            },
             Operation::SetReactions {
                 id: tap,
                 reactions: click(
@@ -355,20 +387,153 @@ fn the_pruned_document_keeps_only_what_the_page_reads() {
             },
         ]))
         .expect("fixture applies");
+    // A chart on the kept screen, linked to a file.
+    let script = serde_json::json!([{ "verb": "insert_chart",
+        "args": { "parent": home.to_wire(), "kind": "column" } }]);
+    let made = verbs::run_script(&mut f.doc, &mut ids, Lent::default(), &script)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let chart = NodeId::from_wire(&made[0][0]).expect("the chart");
+    let mut linked_chart = f.doc.get(chart).unwrap().chart().unwrap().clone();
+    linked_chart.source = Some(link(r"C:\Users\someone\chart.csv"));
+    f.doc
+        .apply(&Transaction(vec![Operation::SetChart {
+            id: chart,
+            chart: Some(Box::new(linked_chart)),
+        }]))
+        .expect("the chart's link");
+    // A kit's published copy holding a main on a page the flow never reaches.
+    let unreleased = ids.mint();
+    f.doc
+        .apply(&Transaction(vec![
+            frame(unreleased, f.unreached_page, "Unreleased card"),
+            Operation::SetComponent {
+                id: unreleased,
+                component: true,
+            },
+        ]))
+        .expect("an unreleased main");
+    let published = mastik_core::kit::freeze(&f.doc).expect("the kit has mains");
+    f.doc.set_published(Some(published));
+    f.doc.set_tokens_link(Some(mastik_core::meta::TokensLink {
+        path: r"C:\Users\someone\tokens.json".into(),
+        applied: serde_json::Value::Null,
+        into: None,
+    }));
     let mut meta = f.doc.meta().clone();
     meta.name = Some("Onboarding".into());
     meta.project = Some("acme-project".into());
     f.doc.set_meta(meta);
+    let before = String::from_utf8(io::save(&f.doc).expect("saves")).unwrap();
+    for there in ["chart.csv", "tokens.json", "hero.png", "Unreleased card"] {
+        assert!(
+            before.contains(there),
+            "fixture: {there} is in the document"
+        );
+    }
+
     let pruned = prune(&f.doc).expect("pruned");
     assert!(pruned.data_set(unread).is_none(), "the unread table goes");
     let set = pruned.data_set(read).expect("the read table stays");
     assert_eq!(set.source, None, "no path");
     assert!(pruned.has_image(&photo), "its picture stays");
+    assert!(
+        !pruned.has_image(&unread_photo),
+        "the unread table's picture goes"
+    );
+    assert!(pruned.published().is_none(), "no published copy");
+    assert_eq!(
+        pruned.image(&linked).map(|e| &e.source),
+        Some(&ImageSource::Linked(String::new())),
+        "the shown linked picture stays, with no path"
+    );
     assert_eq!(pruned.meta().name.as_deref(), Some("Onboarding"));
     let saved = String::from_utf8(io::save(&pruned).expect("saves")).unwrap();
-    for gone in ["secret-cell", "someone", "acme-project"] {
-        assert!(!saved.contains(gone), "{gone} is not in the file");
+    for (gone, what) in [
+        ("secret-cell", "the unread table"),
+        ("chart.csv", "the chart's path"),
+        ("tokens.json", "the tokens file's path"),
+        ("hero.png", "the picture's path"),
+        ("Unreleased card", "no published copy"),
+        ("someone", "no path"),
+        ("acme-project", "the meta"),
+    ] {
+        assert!(!saved.contains(gone), "{what}: {gone} is not in the file");
     }
+    io::load(saved.as_bytes()).expect("the loader takes it");
+}
+
+/// A table the page reads only through an expression's text, or only through a
+/// script, stays in the shared file; a table whose id merely ends another's does
+/// not count as read.
+/// flip: `unread_data_sets` without the scripts check → fails at "a script keeps
+/// every table"; its `names` closure narrowed to `s == wire` → fails at "read in
+/// an expression"; the digit guard dropped → fails at "not read by suffix".
+#[test]
+fn the_pruned_document_keeps_a_table_an_expression_or_a_script_reads() {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    use mastik_core::list::{DataSet, DataSetId};
+    use mastik_core::script::Script;
+    let table = |id: DataSetId, name: &str| DataSet {
+        id,
+        name: name.into(),
+        table: Table {
+            columns: vec![Column {
+                id: ColumnId(0),
+                name: "Name".into(),
+            }],
+            rows: vec![vec!["Ada".into()]],
+        },
+        source: None,
+        pictures: Vec::new(),
+    };
+    let mut f = fixture();
+    choose(&mut f.doc, vec![f.main]);
+    let mut ids = IdSource::new(0x7);
+    // `1:7` is the tail of `11:7`.
+    let wired = |w: &str| DataSetId(NodeId::from_wire(w).expect("an id"));
+    let (cart, other) = (wired("11:7"), wired("1:7"));
+    let home = f
+        .doc
+        .page(f.flows_page)
+        .and_then(|p| p.flows.iter().find(|k| k.id == f.main.flow))
+        .expect("Main")
+        .start;
+    let tap = ids.mint();
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::SetDataSet {
+                id: cart,
+                set: Some(Box::new(table(cart, "Cart"))),
+            },
+            Operation::SetDataSet {
+                id: other,
+                set: Some(Box::new(table(other, "Other"))),
+            },
+            // Any string of the saved form counts; a layer's name is the
+            // shortest place to write an expression's text.
+            frame(tap, home, "{11:7:rows}"),
+        ]))
+        .expect("fixture applies");
+    let pruned = prune(&f.doc).expect("pruned");
+    assert!(pruned.data_set(cart).is_some(), "read in an expression");
+    assert!(pruned.data_set(other).is_none(), "not read by suffix");
+
+    let mut scripted = f.doc.clone();
+    scripted
+        .apply(&Transaction(vec![Operation::AddScript {
+            script: Script {
+                id: ids.mint_script(),
+                name: "Count".into(),
+                source: "return #tables.Other.rows".into(),
+            },
+            index: 0,
+        }]))
+        .expect("a script");
+    let pruned = prune(&scripted).expect("pruned");
+    assert!(
+        pruned.data_set(other).is_some(),
+        "a script keeps every table"
+    );
 }
 
 /// With no flow named, every flow goes in, and with it the page only the second
