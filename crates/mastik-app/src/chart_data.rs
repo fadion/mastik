@@ -1522,6 +1522,12 @@ fn grid(
     let content = egui::vec2(GUTTER + COL_W * nc as f32, ROW_H * (nr as f32 + 1.0));
     let editing = s.edit.is_some() || s.rename.is_some();
     keys(ui, chart, s, linked, act, grid_id, editing);
+    // Holding the keyboard and staying open, the grid stands over a popover left
+    // open beside it.
+    let holds = editing || ui.memory(|m| m.has_focus(grid_id));
+    if holds && !act.iter().any(|a| matches!(a, Act::Close)) {
+        ui::keep_modal_escape(ui.ctx());
+    }
 
     // Scrolled by the wheel and the cursor, its bars hidden as Settings' are.
     let scroll = egui::ScrollArea::both()
@@ -1969,12 +1975,9 @@ fn keys(
             .iter()
             .any(|e| matches!(e, egui::Event::Key { key, pressed: true, .. } if *key == k))
     };
-    // An open menu holds the keyboard: `Escape` closes only it, and the
-    // arrows leave the grid under it alone.
+    // An open menu holds the keyboard: its popup claim spends `Escape` on it
+    // alone, and the arrows leave the grid under it alone.
     if s.menu.is_some() {
-        if pressed(egui::Key::Escape) {
-            s.menu = None;
-        }
         return;
     }
     if editing {
@@ -2361,8 +2364,10 @@ fn menus(
         && ui
             .input(|i| i.pointer.interact_pos())
             .is_some_and(|p| !area.response.rect.contains(p));
-    if outside || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    if outside || ui::popup_escaped(ui.ctx()) {
         s.menu = None;
+    } else {
+        ui::keep_escape(ui.ctx());
     }
 }
 
@@ -3045,6 +3050,9 @@ mod tests {
     /// that edit and leaves the window open; the next one closes it.
     /// flip: `escape_chart_data` not asking `busy` → fails at "the name's
     /// Escape leaves the window".
+    /// flip: the grid not calling `ui::keep_modal_escape` → fails at "keeps its
+    /// press"; `frame_body` without its `ui::modal_escaped` arm → fails at "the
+    /// ladder leaves it open".
     #[test]
     fn escape_in_an_edit_drops_it_and_keeps_the_window() {
         let ctx = egui::Context::default();
@@ -3076,8 +3084,16 @@ mod tests {
             app.chart_data.as_ref().is_some_and(|d| d.edit.is_none()),
             "a cell's Escape leaves the window, the edit dropped"
         );
+        // A popover drawn last frame asks for the press; the grid holds the keys.
+        app.stroke_menu = Some(0);
+        crate::ui::keep_popover_escape(&ctx);
         pass(&ctx, &mut app, vec![key(egui::Key::Escape)]);
         assert!(app.chart_data.is_none(), "the next Escape closes it");
+        assert!(
+            !crate::ui::popover_escaped(&ctx),
+            "a popover left open beside it keeps its press"
+        );
+        assert!(app.stroke_menu.is_some(), "and the ladder leaves it open");
     }
 
     /// *Rename table* opens the head's field; pressed again it keeps the
@@ -3538,8 +3554,7 @@ mod tests {
     }
 
     /// `Escape` on an open header menu closes the menu and leaves the window.
-    /// flip: `keys` answering `Escape` with *Close* while a menu is open →
-    /// fails at "the window stays".
+    /// flip: `menus` not calling `ui::keep_escape` → fails at "the menu closed".
     #[test]
     fn escape_on_a_menu_closes_only_the_menu() {
         let ctx = egui::Context::default();

@@ -2555,6 +2555,9 @@ impl MastikApp {
             // The Scripts window, pressed on last, keeps the keys from the canvas;
             // its open menu holds them as a context menu does.
             self.scripts_keys(&ctx);
+        } else if crate::ui::modal_escaped(&ctx) {
+            // The press is a surface's holding the keyboard as a modal does (the
+            // chart data grid); it answers the press as it draws.
         } else if crate::ui::popover_escaped(&ctx) {
             // The press is a popover's, which closes itself as it draws; no rung pays out.
         } else {

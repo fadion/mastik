@@ -277,7 +277,7 @@ and the second leaves focus mode.
 
 - the context menu, the tab menu, the rail's members row, a bound field's `--` variable list, its chip's field menu and a frame's *Mode* menu call `ui::keep_escape` as they draw, so `ui::claim_popup_escape` takes the press out of the input at the top of the next frame; the context menu's and the tab menu's arms in `frame_body` close them on `ui::popup_escaped` (the context menu's submenu first);
 - the top-bar dropdowns (`dropdown_padded`) and the five inspector and Export popovers call `ui::keep_popover_escape` as they draw; the claim leaves the press in the input for their fields, `frame_body`'s arm on `ui::popover_escaped` keeps it from the ladder, and they close themselves later in the frame;
-- the modals are gated out of `input::resolve` and answer `should_close()` or `ui::modal_escaped`; `frame_body` asks `ui::keep_modal_escape` for them and the palette, and the command bar, the player and the Scripts window holding the keys ask it themselves, so a popover left open under any of them keeps its press;
+- the modals are gated out of `input::resolve` and answer `should_close()` or `ui::modal_escaped`; `frame_body` asks `ui::keep_modal_escape` for them and the palette, and the command bar, the player and the Scripts window holding the keys and the chart data grid ask it themselves, so a popover left open under any of them keeps its press;
 - the colour picker is a rung of `escape`'s `else if` chain, which pays out one rung (an armed pick button is the rung above it); an open menu of the picker's, such as the gradient's *Ends and mixing*, is an egui popup, so `ui::claim_popup_escape` spends that press before `escape` runs and the next one closes the picker;
 - a script run in flight stops on a press no popover took (`tend_script_run` asks `ui::popover_escaped`): one press closes an open popover, the next stops the run.
 
@@ -846,7 +846,7 @@ centre.
 - **Same press, two consumers.** The cancel and the context menu share one press: `gesture_cancelled` must be read at the top of `canvas_context_menu`, before any branch selects.
 - **Dropdown keyboard focus.** A dropdown opened by clicking its head leaves `focused() == None`, so `egui_wants_keyboard_input` does not cover it.
 - **Popover flags outlive popovers.** Claim `Escape` from the drawing (`ui::keep_popover_escape`, `ui::keep_escape`), never from the flag, or Escape is swallowed behind a popover nobody is drawing. The modal flags `frame_body` reads are the exception: each is a card drawn whenever it is set.
-- **A modal claim asked on the frame it closes.** `ui::keep_modal_escape` called before the surface knows it stays (the bar's Escape) swallows the next press. Ask after the frame's acts.
+- **A modal claim asked on the frame it closes.** `ui::keep_modal_escape` called before the surface knows it stays (the bar's Escape, the grid's *Close*) swallows the next press. Ask after the frame's acts.
 - **Two popover lists.** They differ by the image card, the Repeat and Blend cards, the dropdown slot and the picker. A shared list would have to carry those exceptions.
 - **A dropdown drawn outside `dropdown_padded`.** A `TopMenu` drawn any other way must call `ui::keep_popover_escape` itself; without it, Escape closes the menu *and* drops the tool.
 - **Two copies of one resize rule.** `resized_box` and `resize_factors` have diverged twice. Change both, and test both: the box can be identical while the path differs.
