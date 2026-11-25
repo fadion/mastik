@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      url: ${{ steps.deploy.outputs.page_url || steps.deploy_2.outputs.page_url || steps.deploy_3.outputs.page_url }}
     steps:
       - uses: actions/checkout@v5
 
@@ -240,7 +240,29 @@ jobs:
         with:
           path: site
 
+      # deploy-pages looks the artifact up by name, and the listing can lag the
+      # upload above from under a second to most of a minute ("Found 0
+      # artifact(s)"). The lookup comes before any deployment is made, so a
+      # failed attempt leaves nothing behind and the step is simply tried again.
+      # A re-run of the job cannot do this: it uploads a second `github-pages`
+      # artifact and the lookup then refuses two.
       - name: Deploy to Pages
         id: deploy
         if: github.event_name != 'workflow_dispatch' || inputs.publish
+        continue-on-error: true
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+      - name: Wait for the artifact listing
+        if: steps.deploy.outcome == 'failure'
+        run: sleep 30
+      - name: Deploy to Pages (second try)
+        id: deploy_2
+        if: steps.deploy.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+      - name: Wait longer for the artifact listing
+        if: steps.deploy_2.outcome == 'failure'
+        run: sleep 90
+      - name: Deploy to Pages (last try)
+        id: deploy_3
+        if: steps.deploy_2.outcome == 'failure'
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
