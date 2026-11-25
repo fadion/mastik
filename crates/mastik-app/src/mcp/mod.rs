@@ -3565,7 +3565,8 @@ mod tests {
     ///
     /// flip: `components` listing properties for sets alone → fails at "a plain
     /// main's properties are listed"; `variables` without `shorten` → fails at "a
-    /// cell as set_variable_value takes it".
+    /// cell as set_variable_value takes it"; `components` without its
+    /// `variant_properties` → fails at "a set's variant properties are listed".
     #[test]
     fn the_lists_show_variables_styles_and_components() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
@@ -3621,6 +3622,24 @@ mod tests {
             listed[0]["properties"].to_string().contains("Shown"),
             "a plain main's properties are listed: {}",
             listed[0]
+        );
+
+        // A set lists its variant properties by name with their values.
+        let made = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "combine_as_variants",
+            json!({ "nodes": [main] }),
+        );
+        let set = ok(&made)["created"][0].clone();
+        let comps = call(&mut engine, &mut docs, 1, "list_components", json!({}));
+        let listed = ok(&comps)["components"].as_array().unwrap().clone();
+        let set = listed.iter().find(|c| c["id"] == set).unwrap();
+        let props = &set["variant_properties"][0];
+        assert!(
+            props["name"].is_string() && props["values"].is_array(),
+            "a set's variant properties are listed: {set}"
         );
     }
 

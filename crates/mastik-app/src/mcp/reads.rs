@@ -404,6 +404,11 @@ pub(super) fn components(doc: &Document) -> Value {
                             serde_json::to_value(node.props()).unwrap_or(Value::Null);
                     }
                 }
+                // A set's variant properties name what each variant's `variant` lists.
+                if let Some(s) = node.set().filter(|_| set) {
+                    entry["variant_properties"] =
+                        serde_json::to_value(&s.props).unwrap_or(Value::Null);
+                }
                 out.push(entry);
             }
             stack.extend(node.children().iter().rev().copied());
