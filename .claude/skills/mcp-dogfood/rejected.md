@@ -54,5 +54,7 @@ decision belongs in `docs/non-goals.md` or `docs/decisions.md` instead.
   reactions to every layer it names; layers whose targets differ take a call each.
 - **A script's colour write keeping the variable it equals.** A written value replaces its
   binding, as the inspector's does; a matching colour is not a binding.
+- **`get_outline` naming an instance's kind as `instance`.** The outline's `kind` is the
+  layer's kind, which agents compare against; `get_node` and `list_components` give the role.
 - **`print` showing a Luau table's contents.** Luau prints a table as its address; that is
   the language's, not a tool's.

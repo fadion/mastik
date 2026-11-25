@@ -2306,6 +2306,38 @@ mod tests {
         );
     }
 
+    /// `set` writing a text that names a variable or table in braces says the
+    /// braces show as written, and a text that names none says nothing.
+    ///
+    /// flip: `set` without its `reads_as_expression` note → fails at "the note".
+    #[test]
+    fn set_text_naming_data_says_it_shows_as_written() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let page = docs.session.page.to_wire();
+        let made = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "create_text",
+            json!({ "parent": page, "text": "Hi" }),
+        );
+        let t = ok(&made)["created"][0].clone();
+        let args = json!({ "name": "Tasks", "columns": ["Title"] });
+        ok(&call(&mut engine, &mut docs, 1, "add_table", args));
+        let set = |e: &mut Engine, d: &mut One, text: &str| {
+            let args = json!({ "nodes": [t], "props": { "text": text } });
+            ok(&call(e, d, 1, "set", args)).clone()
+        };
+        let out = set(&mut engine, &mut docs, "{Tasks.opened.Title}");
+        assert!(
+            out["said"].as_str().is_some_and(|s| s.contains("opened")),
+            "the note: {out}"
+        );
+        let out = set(&mut engine, &mut docs, "{braces} kept");
+        assert!(out.get("said").is_none(), "no note: {out}");
+    }
+
     /// `replace_font` takes a family the host can set, in the host's spelling,
     /// and refuses one it cannot.
     ///

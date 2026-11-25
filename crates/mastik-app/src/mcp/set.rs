@@ -263,7 +263,30 @@ pub(super) fn set(
             json!({ "set": [], "unchanged": written, "note": "the layers already had these values" }),
         ));
     }
-    Ok(Answer::Json(json!({ "set": written })))
+    let mut answer = json!({ "set": written });
+    if let Some(text) = canon.get("text").and_then(Value::as_str)
+        && reads_as_expression(&s.doc, text)
+    {
+        answer["said"] = json!(TEXT_IS_LITERAL);
+    }
+    Ok(Answer::Json(answer))
+}
+
+const TEXT_IS_LITERAL: &str = "A text shows its braces as written; it shows data through a list \
+     whose rows are `opened` filling a component's text property, or bound to a string variable \
+     (`bind_variable`, field `content`) that an action sets";
+
+/// Whether `text` holds a `{…}` naming a variable or table of `doc`, as an
+/// expression would: a text never reads one, so writing it is a likely slip.
+fn reads_as_expression(doc: &mastik_core::Document, text: &str) -> bool {
+    text.split('{')
+        .skip(1)
+        .filter_map(|r| r.split_once('}'))
+        .any(|(inner, _)| {
+            let head = inner.split('.').next().unwrap_or_default().trim();
+            doc.variables().iter().any(|v| v.name == head)
+                || doc.data_sets().iter().any(|t| t.name == head)
+        })
 }
 
 /// The `set_transform` step that puts the left and top of `id`'s box at `x`, `y`
