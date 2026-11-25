@@ -1566,6 +1566,24 @@ pub(crate) struct ContextMenu {
     /// it takes over only after [`crate::menu::AIM_GRACE`], so a diagonal run to the
     /// submenu can cross it.
     pub leaving: Option<(crate::menu::Item, f64)>,
+    /// The row whose submenu `Escape` or `←` just closed under a resting pointer:
+    /// hover leaves it shut until the pointer moves to another row, or the
+    /// row's own hover would open it again the next frame.
+    pub shut: Option<crate::menu::Item>,
+}
+
+impl ContextMenu {
+    /// `Escape`, one rung a press: closes an open submenu and answers `false`,
+    /// or answers `true` when the menu itself should close.
+    pub(crate) fn escape(&mut self) -> bool {
+        match self.flyout.take() {
+            Some(f) => {
+                self.shut = Some(f.parent);
+                false
+            }
+            None => true,
+        }
+    }
 }
 
 /// How long the selection chrome stays away after the last keystroke, or after a
@@ -2507,9 +2525,8 @@ impl MastikApp {
             // field can read them, and nothing reaches `input::resolve`.
             palette_keys = crate::palette::read_keys(&ctx);
         } else if let Some(menu) = self.context_menu.as_mut() {
-            // One rung a press: an open submenu first, then the menu.
             if crate::ui::popup_escaped(&ctx) {
-                if menu.flyout.take().is_none() {
+                if menu.escape() {
                     self.context_menu = None;
                 }
             } else {

@@ -3273,6 +3273,7 @@ impl MastikApp {
             highlight: None,
             flyout: None,
             leaving: None,
+            shut: None,
         }
     }
 
@@ -3290,6 +3291,7 @@ impl MastikApp {
         let mut highlight = menu.highlight;
         let mut flyout = menu.flyout;
         let mut leaving = menu.leaving;
+        let mut shut = menu.shut;
 
         // Rebuilt from live state every frame so checkable rows update; the
         // clipboard is the snapshot `menu` carries.
@@ -3353,7 +3355,10 @@ impl MastikApp {
                         .map(|r| r.item)
                 });
             }
-            (Some(Nav::Back), Some(_)) => flyout = None,
+            (Some(Nav::Back), Some(parent)) => {
+                flyout = None;
+                shut = Some(parent);
+            }
             (Some(Nav::Open), Some(_)) => {}
             (Some(Nav::Move(step)), None) => {
                 highlight = navigate(&groups, highlight, step);
@@ -3464,8 +3469,14 @@ impl MastikApp {
             && !pointer
                 .zip(fly_rect)
                 .is_some_and(|(p, fly)| heads_into(p - delta, p, fly));
+        // A row whose submenu a key shut stays shut under the pointer until it
+        // leaves the row; a click or a key opens it again.
+        if flyout.is_some() || hovered.map(|(item, _)| item) != shut {
+            shut = None;
+        }
         match (hovered, flyout) {
             _ if in_flyout || highlight.is_some() => leaving = None,
+            (Some((item, _)), None) if shut == Some(item) => leaving = None,
             (Some((item, rect)), None) => {
                 flyout = open(item, false).map(|f| Flyout { row: rect, ..f });
             }
@@ -3496,6 +3507,7 @@ impl MastikApp {
             m.highlight = highlight;
             m.flyout = flyout;
             m.leaving = leaving;
+            m.shut = shut;
         }
 
         if let Some(item) = chosen {
@@ -7734,6 +7746,42 @@ mod submenu_tests {
         );
         frame(&ctx, &mut app, 1.05 + AIM_GRACE + 0.01, None, Vec::new());
         assert_eq!(parent(&app), None, "a row rested on takes over");
+    }
+
+    /// `Escape` shuts a hovered row's submenu for good while the pointer rests on
+    /// the row; leaving the row and coming back opens it again.
+    ///
+    /// flip: `context_menu_ui` ignoring `shut` in the hover arm → fails at "it
+    /// stays shut under the pointer".
+    #[test]
+    fn escape_keeps_a_hovered_rows_submenu_shut_until_the_pointer_leaves() {
+        let ctx = egui::Context::default();
+        let mut app = open_on_a_rect(&ctx);
+        frame(&ctx, &mut app, 0.0, None, Vec::new());
+        let shapes = frame(&ctx, &mut app, 0.0, None, Vec::new());
+        let copy_as = at(&shapes, "Copy/Paste as");
+        let duplicate = at(&shapes, "Duplicate");
+        let mv = |p| vec![egui::Event::PointerMoved(p)];
+
+        frame(&ctx, &mut app, 0.1, None, mv(copy_as));
+        frame(&ctx, &mut app, 0.1, None, Vec::new());
+        assert_eq!(parent(&app), Some(Item::CopyPasteAs), "a hover opens it");
+
+        let closes = app.context_menu.as_mut().expect("open").escape();
+        assert!(!closes, "the first press is the submenu's");
+        for t in [0.2, 0.3, 0.4] {
+            frame(&ctx, &mut app, t, None, Vec::new());
+        }
+        assert_eq!(parent(&app), None, "it stays shut under the pointer");
+
+        frame(&ctx, &mut app, 0.5, None, mv(duplicate));
+        frame(&ctx, &mut app, 0.6, None, mv(copy_as));
+        frame(&ctx, &mut app, 0.6, None, Vec::new());
+        assert_eq!(
+            parent(&app),
+            Some(Item::CopyPasteAs),
+            "back on the row, it opens again"
+        );
     }
 
     /// An open submenu's row stays lit with the pointer between the row's end and
