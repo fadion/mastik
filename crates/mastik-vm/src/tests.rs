@@ -780,12 +780,11 @@ fn a_runaway_loop_stops_at_the_budget() {
     let err = run_script(&mut h, &e, "while true do end").unwrap_err();
     assert_eq!(err.kind, ErrorKind::Budget);
     assert_eq!(err.message, "Stopped after 1 s");
+    // A read trips its 20 ms or its step limit first by the machine's speed, so
+    // only the stop's kind is pinned.
     let err = eval_read(&mut h, &e, "(function() while true do end end)()").unwrap_err();
-    assert_eq!(err.kind, ErrorKind::Budget);
-    assert_eq!(
-        err.message, "Stopped after 500000 steps",
-        "a read's step budget"
-    );
+    assert_eq!(err.kind, ErrorKind::Budget, "a read's budget");
+    assert!(err.message.starts_with("Stopped after "), "{}", err.message);
 }
 
 /// A set stop flag ends a run as stopped: at the next step of a loop, and
