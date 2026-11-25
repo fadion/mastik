@@ -974,6 +974,9 @@ pub struct MastikApp {
     /// The table row, from 0, a *One file per row* preview draws; held to the
     /// table's last row where it is read.
     pub(crate) export_preview_row: usize,
+    /// The pictures a per-row preview last read from disk, keyed on its table,
+    /// the table's link and the row's unmapped cells.
+    pub(crate) export_row_read: Option<crate::panels::RowRead>,
     /// How many solid colours an SVG row's `currentColor` would merge, and what that
     /// was counted from: the settings card's warning, counted once per edit.
     pub(crate) export_merged: Option<(crate::panels::PreviewKey, usize)>,
@@ -2164,6 +2167,7 @@ impl MastikApp {
             export_clipboard: None,
             export_preview: None,
             export_preview_row: 0,
+            export_row_read: None,
             export_merged: None,
             export_prefix_text: None,
             export_suffix_text: None,

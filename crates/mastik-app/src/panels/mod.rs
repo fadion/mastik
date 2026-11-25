@@ -37,7 +37,8 @@ pub(crate) use component::PropCache;
 /// and the one door that opens it.
 pub(crate) use component::{doc_link_of, open_doc_link};
 pub(crate) use export::{
-    EditableFormat, ExportAll, ExportNumber, ExportPreview, ExportTurns, PreviewKey, RunningExport,
+    EditableFormat, ExportAll, ExportNumber, ExportPreview, ExportTurns, PreviewKey, RowRead,
+    RunningExport,
 };
 /// What an SVG export could not say exactly, worded once for every surface that
 /// reports it — the export card and *Copy as SVG* (§15 D780).

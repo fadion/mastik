@@ -134,7 +134,7 @@ list's description as it drops a misplaced one.
   reads nothing. *Make a list from data ▸* a table and `commit_list_onto` write the set ahead of
   the list through one helper (`list_data::set_ahead`). *Fill with content* reads every linked
   table's drawn rows when it opens, and any further row its plan takes; a per-row export reads every row, and its preview
-  the row shown.
+  the row shown, once per row and link (`MastikApp::export_row_read`), not again at each revision.
   A browser drop's file has no folder, so nothing is read for it.
 - **The reads run on the UI thread** at those moments, not on the chart import's worker.
 
