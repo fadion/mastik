@@ -1,11 +1,12 @@
 //! Styles (§5.3f, §15 D1037, D1038, D1062).
 //!
 //! A **style** is one slot's whole set of values — an isolated CSS class, not the
-//! cascade. Build step 3's slots are a layer's **fills**, its **strokes** and its
-//! **effects**, each the whole list its inspector card edits; step 6 adds a text
-//! layer's **type** (§15 D1067), and a frame or a group's **layout** — its display
-//! and the bindings of its gaps and padding (§15 D1075). A node holds at
-//! most one style per slot ([`StyleRefs`]), and styles do not stack.
+//! cascade. The slots are a layer's **fills**, its **strokes** and its
+//! **effects**, each the whole list its inspector card edits; a text layer's
+//! **type**; a frame or a group's **layout** — its display and the bindings of
+//! its gaps and padding; and a chart's **look**, its options less what says
+//! something about its data (`chart::Options::look`). A node holds at most one
+//! style per slot ([`StyleRefs`]), and styles do not stack.
 //!
 //! **A text style is the node's character defaults, not its spans** (§15 D1067,
 //! D1037's open (e)). It holds a [`TextStyle`] less its colour and its language
@@ -100,15 +101,19 @@ pub enum StyleSlot {
     /// padding (§15 D1075, D1038 (f)): never an item's grow or `align-self`.
     /// After the type in the browser's tab, its card the Container card.
     Layout,
+    /// A chart's look — its options less what says something about its data
+    /// (`chart::Options::look`). Last, its card the Chart card.
+    Chart,
 }
 
 impl StyleSlot {
-    pub const ALL: [StyleSlot; 5] = [
+    pub const ALL: [StyleSlot; 6] = [
         StyleSlot::Fills,
         StyleSlot::Strokes,
         StyleSlot::Effects,
         StyleSlot::Text,
         StyleSlot::Layout,
+        StyleSlot::Chart,
     ];
 
     /// The card's title, as the inspector writes it.
@@ -119,6 +124,7 @@ impl StyleSlot {
             StyleSlot::Effects => "Effects",
             StyleSlot::Text => "Type",
             StyleSlot::Layout => "Container",
+            StyleSlot::Chart => "Chart",
         }
     }
 }
@@ -173,6 +179,11 @@ pub enum StyleValue {
     Text(Box<TextStyle>),
     /// A layout style (§15 D1075). Boxed for `Text`'s reason.
     Layout(Box<LayoutStyle>),
+    /// A chart style: a chart's options as [`crate::chart::Options::look`]
+    /// holds them — how it looks, never its kind, stacking, order, data, series
+    /// colours, highlight, references, axis titles or typed ranges. Boxed for
+    /// `Text`'s reason.
+    Chart(Box<crate::chart::Options>),
 }
 
 impl StyleValue {
@@ -187,7 +198,9 @@ impl StyleValue {
             }
             StyleValue::Layout(l) => l.display.clamp_lengths(),
             StyleValue::Text(t) => t.clamp_size(),
-            StyleValue::Fills(_) | StyleValue::Effects(_) => {}
+            // A chart's options are refused out of range rather than clamped,
+            // on a chart and in a style alike (`check`).
+            StyleValue::Fills(_) | StyleValue::Effects(_) | StyleValue::Chart(_) => {}
         }
     }
 
@@ -198,6 +211,7 @@ impl StyleValue {
             StyleValue::Effects(_) => StyleSlot::Effects,
             StyleValue::Text(_) => StyleSlot::Text,
             StyleValue::Layout(_) => StyleSlot::Layout,
+            StyleValue::Chart(_) => StyleSlot::Chart,
         }
     }
 
@@ -205,7 +219,9 @@ impl StyleValue {
     /// answers the default type for [`StyleSlot::Text`] — [`check`] refuses
     /// binding one, so the answer is only ever compared, never written. A layer
     /// with no layout answers `None` for [`StyleSlot::Layout`]: there is no value
-    /// to make a style of, and nothing a layout style's look equals.
+    /// to make a style of, and nothing a layout style's look equals. A layer
+    /// that is not a chart answers `None` for [`StyleSlot::Chart`] for the same
+    /// reason.
     pub fn of(node: &crate::Node, slot: StyleSlot) -> Option<StyleValue> {
         Some(match slot {
             StyleSlot::Fills => StyleValue::Fills(node.paint.fills.clone()),
@@ -219,6 +235,7 @@ impl StyleValue {
                 display: node.display.clone()?,
                 spacing_vars: node.spacing_vars,
             })),
+            StyleSlot::Chart => StyleValue::Chart(Box::new(node.chart()?.options.look())),
         })
     }
 
@@ -234,6 +251,7 @@ impl StyleValue {
             (StyleValue::Effects(a), StyleValue::Effects(b)) => same_values(a, b),
             (StyleValue::Text(a), StyleValue::Text(b)) => type_part(a) == type_part(b),
             (StyleValue::Layout(a), StyleValue::Layout(b)) => a == b,
+            (StyleValue::Chart(a), StyleValue::Chart(b)) => a.look() == b.look(),
             _ => false,
         }
     }
@@ -243,10 +261,23 @@ impl StyleValue {
     /// against the new defaults (`spans: None`, `Operation::SetTextStyle`) — so a
     /// span the new defaults now equal is dropped as redundant, the price of the
     /// spans' one invariant (§15 D1067). A layout style is **two**: the display
-    /// and the bindings of its gaps and padding beside it (§15 D1075).
+    /// and the bindings of its gaps and padding beside it (§15 D1075). A chart
+    /// style rewrites the chart's options with the look over its own fields
+    /// (`chart::Options::with_look`), and is none on a layer with no chart.
     pub fn write_ops(&self, node: &crate::Node) -> Vec<Operation> {
         let id = node.id;
         vec![match self {
+            StyleValue::Chart(look) => {
+                let Some(own) = node.chart() else {
+                    return Vec::new();
+                };
+                let mut chart = own.clone();
+                chart.options = own.options.with_look(look);
+                Operation::SetChart {
+                    id,
+                    chart: Some(Box::new(chart)),
+                }
+            }
             StyleValue::Fills(fills) => Operation::SetFills {
                 id,
                 fills: fills.clone(),
@@ -285,14 +316,14 @@ impl StyleValue {
         }]
     }
 
-    /// How many items it holds — the summary's count; a text or a layout style
-    /// is one.
+    /// How many items it holds — the summary's count; a text, a layout or a
+    /// chart style is one.
     pub fn len(&self) -> usize {
         match self {
             StyleValue::Fills(v) => v.len(),
             StyleValue::Strokes(v) => v.len(),
             StyleValue::Effects(v) => v.len(),
-            StyleValue::Text(_) | StyleValue::Layout(_) => 1,
+            StyleValue::Text(_) | StyleValue::Layout(_) | StyleValue::Chart(_) => 1,
         }
     }
 
@@ -323,6 +354,8 @@ impl StyleValue {
                 .copied()
                 .chain(flow_vars(&l.display).into_iter().flatten())
                 .collect(),
+            // And a chart's colours, its *From variables* palette among them.
+            StyleValue::Chart(o) => o.brushes().filter_map(|b| b.var()).collect(),
         }
     }
 
@@ -331,7 +364,7 @@ impl StyleValue {
             StyleValue::Fills(v) => crate::item::first_duplicate(v),
             StyleValue::Strokes(v) => crate::item::first_duplicate(v),
             StyleValue::Effects(v) => crate::item::first_duplicate(v),
-            StyleValue::Text(_) | StyleValue::Layout(_) => None,
+            StyleValue::Text(_) | StyleValue::Layout(_) | StyleValue::Chart(_) => None,
         }
     }
 }
@@ -423,7 +456,7 @@ impl Styles {
                 StyleValue::Fills(v) => v.iter().map(|k| k.id.0).collect(),
                 StyleValue::Strokes(v) => v.iter().map(|k| k.id.0).collect(),
                 StyleValue::Effects(v) => v.iter().map(|k| k.id.0).collect(),
-                StyleValue::Text(_) | StyleValue::Layout(_) => Vec::new(),
+                StyleValue::Text(_) | StyleValue::Layout(_) | StyleValue::Chart(_) => Vec::new(),
             };
             std::iter::once(s.id.0).chain(items)
         })
@@ -453,6 +486,9 @@ pub struct StyleRefs {
     /// or a group (`container::is_container`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<StyleId>,
+    /// A chart's look — `None` on a layer that is not a chart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chart: Option<StyleId>,
 }
 
 impl StyleRefs {
@@ -463,6 +499,7 @@ impl StyleRefs {
             StyleSlot::Effects => self.effects,
             StyleSlot::Text => self.text,
             StyleSlot::Layout => self.layout,
+            StyleSlot::Chart => self.chart,
         }
     }
     pub fn set(&mut self, slot: StyleSlot, style: Option<StyleId>) {
@@ -472,6 +509,7 @@ impl StyleRefs {
             StyleSlot::Effects => self.effects = style,
             StyleSlot::Text => self.text = style,
             StyleSlot::Layout => self.layout = style,
+            StyleSlot::Chart => self.chart = style,
         }
     }
     pub fn is_empty(&self) -> bool {
@@ -496,6 +534,7 @@ pub fn bind_op(id: NodeId, slot: StyleSlot, style: Option<StyleId>) -> Operation
         StyleSlot::Effects => Operation::SetEffectsStyle { id, style },
         StyleSlot::Text => Operation::SetTypeStyle { id, style },
         StyleSlot::Layout => Operation::SetLayoutStyle { id, style },
+        StyleSlot::Chart => Operation::SetChartStyle { id, style },
     }
 }
 
@@ -505,7 +544,7 @@ pub fn bind_op(id: NodeId, slot: StyleSlot, style: Option<StyleId>) -> Operation
 pub fn targets(doc: &crate::Document, ids: &[NodeId], slot: StyleSlot) -> Vec<NodeId> {
     match slot {
         StyleSlot::Fills | StyleSlot::Strokes => crate::build::paint_targets(doc, ids),
-        StyleSlot::Effects | StyleSlot::Text | StyleSlot::Layout => ids.to_vec(),
+        StyleSlot::Effects | StyleSlot::Text | StyleSlot::Layout | StyleSlot::Chart => ids.to_vec(),
     }
 }
 
@@ -522,8 +561,14 @@ pub fn targets(doc: &crate::Document, ids: &[NodeId], slot: StyleSlot) -> Vec<No
 /// **A layout's slot is two operations** (§15 D1075): `SetDisplay`, and
 /// `SetSpacingVars`, the bindings of its gaps and padding. An item's
 /// `SetLayoutItem` is the child's, never the container's style.
+///
+/// **`SetChart` writes more than the chart slot** — the data, the series
+/// colours and the rest a chart style does not hold — safe for `SetTextStyle`'s
+/// reason. Its `None`, a flatten, leaves no chart to style, and [`settle`]
+/// detaches it.
 pub fn writes_slot(op: &Operation) -> Option<(NodeId, StyleSlot)> {
     match op {
+        Operation::SetChart { id, .. } => Some((*id, StyleSlot::Chart)),
         Operation::SetFills { id, .. } => Some((*id, StyleSlot::Fills)),
         Operation::SetStrokes { id, .. } => Some((*id, StyleSlot::Strokes)),
         Operation::SetEffects { id, .. } => Some((*id, StyleSlot::Effects)),
@@ -543,6 +588,7 @@ pub fn binds_slot(op: &Operation) -> Option<(NodeId, StyleSlot, Option<StyleId>)
         Operation::SetEffectsStyle { id, style } => Some((*id, StyleSlot::Effects, *style)),
         Operation::SetTypeStyle { id, style } => Some((*id, StyleSlot::Text, *style)),
         Operation::SetLayoutStyle { id, style } => Some((*id, StyleSlot::Layout, *style)),
+        Operation::SetChartStyle { id, style } => Some((*id, StyleSlot::Chart, *style)),
         _ => None,
     }
 }
@@ -559,9 +605,11 @@ pub enum StyleRule {
     #[error("{0:?} is bound to a variable that is not there or of the wrong kind")]
     BadVariable(StyleId),
     #[error(
-        "node {0:?} is bound to a style that is not there or of another slot, to a text style without being text, or to a layout style without being a frame or a group"
+        "node {0:?} is bound to a style that is not there or of another slot, to a text style without being text, to a layout style without being a frame or a group, or to a chart style without being a chart"
     )]
     BadBinding(NodeId),
+    #[error("{0:?} holds chart options a chart could not hold")]
+    BadChart(StyleId),
     #[error("node {0:?} in the vault is bound to a style of the document's own")]
     InVault(NodeId),
     #[error(
@@ -618,6 +666,13 @@ pub(crate) fn check<'a>(
         if s.value.first_duplicate().is_some() {
             return Err(StyleRule::DuplicateItem(s.id));
         }
+        // The chart rule's own check on options, or `settle` would write a look
+        // onto its users that `SetChart` refuses.
+        if let StyleValue::Chart(o) = &s.value
+            && o.validate().is_err()
+        {
+            return Err(StyleRule::BadChart(s.id));
+        }
         // A paint binds a colour, a stroke's width a number (§15 D1073).
         use crate::variable::VarKind;
         let bad = |v: Option<crate::variable::VarId>, want: VarKind| {
@@ -646,6 +701,8 @@ pub(crate) fn check<'a>(
                         .iter()
                         .any(|x| bad(*x, VarKind::String))
             }
+            // A chart's colours a colour each.
+            StyleValue::Chart(o) => o.brushes().any(|b| bad(b.var(), VarKind::Color)),
         };
         if wrong {
             return Err(StyleRule::BadVariable(s.id));
@@ -662,6 +719,9 @@ pub(crate) fn check<'a>(
                 return Err(StyleRule::BadBinding(n.id));
             }
             if slot == StyleSlot::Layout && !crate::container::is_container(&n.kind) {
+                return Err(StyleRule::BadBinding(n.id));
+            }
+            if slot == StyleSlot::Chart && n.chart().is_none() {
                 return Err(StyleRule::BadBinding(n.id));
             }
             // A vault node is bound to kits' styles only (§15 D1064), as it
@@ -778,6 +838,16 @@ pub fn settle(doc: &Document, tx: &Transaction, user: usize) -> Vec<Operation> {
             if slot == StyleSlot::Layout && !crate::container::is_container(&n.kind) {
                 continue; // `check` refuses it
             }
+            // A flattened chart has no look left to style: every door that
+            // flattens unbinds it here, in the same transaction. A binding this
+            // transaction made on a layer with no chart is left for `check` to
+            // refuse, saying why.
+            if slot == StyleSlot::Chart && n.chart().is_none() {
+                if !rebound.contains(&(n.id, slot)) {
+                    out.push(bind_op(n.id, slot, None));
+                }
+                continue;
+            }
             // 🚨 **A text style's values are plain, and a binding under one
             // goes**. `build::keep_text_bindings` detaches them where
             // the user applies the style, but a copy receives its main's
@@ -866,6 +936,23 @@ pub fn edit_through(doc: &Document, tx: Transaction, style: StyleId) -> Transact
         if let Operation::SetTextStyle { style: s, .. } = &op {
             if value.is_none() {
                 value = Some(StyleValue::Text(Box::new(type_part(s))));
+            }
+            out.push(op);
+            continue;
+        }
+        // **A chart's write passes through too**, for the text style's reason:
+        // `SetChart` carries the chart's data and series colours beside its
+        // look. Its look is the style's new value; a write that leaves the look
+        // as the style holds it (a data edit) changes nothing.
+        if slot == StyleSlot::Chart {
+            if value.is_none()
+                && let Operation::SetChart { chart: Some(c), .. } = &op
+            {
+                let look = StyleValue::Chart(Box::new(c.options.look()));
+                let held = doc.styles().get(style).map(|s| &s.value);
+                if held.is_none_or(|h| !h.same_look(&look)) {
+                    value = Some(look);
+                }
             }
             out.push(op);
             continue;
@@ -1222,6 +1309,14 @@ pub(crate) fn detach_vars(
                 .collect(),
         ),
         StyleValue::Text(_) => value.clone(),
+        // And a chart's colours bound to one of them.
+        StyleValue::Chart(o) => {
+            let mut o = o.clone();
+            for b in o.brushes_mut() {
+                *b = drawn(b);
+            }
+            StyleValue::Chart(o)
+        }
         // And a layout's gaps and padding bound to one of them, their numbers in
         // `mode` written into the display, floored at 0 as the engine floors a
         // literal (§15 D1075).

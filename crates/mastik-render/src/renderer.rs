@@ -1870,7 +1870,8 @@ impl RenderOverrides {
             | Operation::SetStrokeStyle { .. }
             | Operation::SetEffectsStyle { .. }
             | Operation::SetTypeStyle { .. }
-            | Operation::SetLayoutStyle { .. } => {}
+            | Operation::SetLayoutStyle { .. }
+            | Operation::SetChartStyle { .. } => {}
             // A stored script is never run by the document, so it draws nothing.
             Operation::AddScript { .. }
             | Operation::RemoveScript { .. }

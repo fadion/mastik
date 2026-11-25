@@ -1321,6 +1321,7 @@ fn card_of(op: &Operation) -> Option<&'static str> {
         // A chart never sits in a main or a copy.
         | O::SetChart { .. }
         | O::SetChartParts { .. }
+        | O::SetChartStyle { .. }
         // Nor does a list, and a data set is the document's.
         | O::SetList { .. }
         | O::SetDataSet { .. }

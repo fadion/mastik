@@ -14,6 +14,7 @@ use mastik_core::chart::{
     ValuePosition,
 };
 use mastik_core::kurbo;
+use mastik_core::style::StyleSlot;
 use mastik_core::{Brush, NodeId, Operation, Transaction};
 use std::hash::{Hash, Hasher};
 
@@ -717,68 +718,165 @@ impl MastikApp {
         self.chart_others = ids[1..].to_vec();
         self.refresh_chart_cache(ui.ctx(), id, &chart);
         let several = ids.len() > 1;
-        self.panel(ui, "Chart", None, |app, ui| {
-            ui.spacing_mut().item_spacing.y = ui::CARD_ROW_GAP;
-            app.chart_type_rows(ui, id, &chart);
-            app.chart_section(ui, "Chart style", "Style", |app, ui| {
-                app.chart_style_rows(ui, id, &chart);
-            });
-            app.chart_section(ui, "Chart data", "Data", |app, ui| {
-                if several {
-                    ui::selection_note(ui, "Edit data one chart at a time");
+        // A chart style's slot: the look's sections fold into its capsule, and
+        // what the style never holds (the type, the data, the series' own
+        // colours, the references and *This chart*'s rows) stays live round it.
+        let styled = super::styles::shown(&self.session.doc, ids, StyleSlot::Chart).any();
+        self.style_card_parts(
+            ui,
+            "Chart",
+            StyleSlot::Chart,
+            ids,
+            None,
+            false,
+            |app, ui| {
+                ui.spacing_mut().item_spacing.y = ui::CARD_ROW_GAP;
+                app.chart_type_rows(ui, id, &chart);
+            },
+            |app, ui| {
+                if styled {
+                    app.chart_look_sections(ui, id, &chart, true);
                 } else {
-                    app.chart_data_rows(ui, id, &chart);
+                    app.chart_style_section(ui, id, &chart, false);
+                    app.chart_data_sections(ui, id, &chart, several, false);
+                    app.chart_look_sections(ui, id, &chart, false);
+                    app.chart_references_section(ui, id, &chart, several);
+                    app.chart_text_section(ui, id, &chart);
                 }
-            });
-            if !several {
-                // A chart coloured by name lists its named marks here.
-                let series = named_mark_noun(&chart).map_or("Series", |(plural, _)| plural);
-                if chart.kind == ChartKind::Waterfall {
-                    // A waterfall's colours belong to the step, not the series.
-                    app.chart_section(ui, "Chart steps", "Steps", |app, ui| {
-                        app.chart_step_rows(ui, id, &chart);
-                    });
-                } else {
-                    app.chart_section(ui, "Chart series", series, |app, ui| {
-                        app.chart_series_rows(ui, id, &chart);
-                    });
+            },
+            |app, ui| {
+                if styled {
+                    app.chart_data_sections(ui, id, &chart, several, true);
+                    app.chart_references_section(ui, id, &chart, several);
                 }
-            }
-            app.chart_section(ui, "Chart marks", "Marks", |app, ui| {
-                app.chart_mark_rows(ui, id, &chart);
-            });
-            if chart.kind.has_axes() {
-                app.chart_section(ui, "Chart axes", "Axes", |app, ui| {
-                    app.chart_axis_rows(ui, id, &chart);
-                });
-            }
-            if chart.kind != ChartKind::Sankey {
-                app.chart_section(ui, "Chart values", "Values", |app, ui| {
-                    // A scatter draws no value labels: its rows stay, dimmed, under
-                    // the reason.
-                    let none = match chart.kind {
-                        ChartKind::Scatter => Some("A scatter draws no value labels"),
-                        ChartKind::Radar => Some("A radar draws no value labels"),
-                        _ => None,
-                    };
-                    if let Some(why) = none {
-                        ui::selection_note(ui, why);
-                    }
-                    ui::disable_unless(ui, none.is_none(), |ui| {
-                        app.chart_value_rows(ui, id, &chart)
-                    });
-                });
-                app.chart_section(ui, "Chart legend", "Legend", |app, ui| {
-                    app.chart_legend_rows(ui, id, &chart);
-                });
-            }
-            app.chart_references_section(ui, id, &chart, several);
-            app.chart_section(ui, "Chart text", "Text", |app, ui| {
-                app.chart_text_rows(ui, id, &chart);
-            });
-            app.flatten_button(ui, ids);
-        });
+                app.flatten_button(ui, ids);
+            },
+        );
         self.chart_others.clear();
+    }
+
+    /// Whether the card's charts take their look from a chart style it is not
+    /// editing: the look's rows outside the capsule (the palette) are shown
+    /// disabled then.
+    fn chart_look_locked(&self, id: NodeId) -> bool {
+        let ids: Vec<NodeId> = std::iter::once(id)
+            .chain(self.chart_others.iter().copied())
+            .collect();
+        match super::styles::shown(&self.session.doc, &ids, StyleSlot::Chart) {
+            super::styles::StyleShown::Plain => false,
+            super::styles::StyleShown::One(s) => self.session.style_edit != Some(s),
+            _ => true,
+        }
+    }
+
+    /// The *Style* section: the presets, the theme, the plot and the spacing,
+    /// and the chart's background unless `styled`, where it moves to *This
+    /// chart* (a background is the frame's fill, never the chart style's).
+    fn chart_style_section(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart, styled: bool) {
+        self.chart_section(ui, "Chart style", "Style", |app, ui| {
+            app.chart_style_rows(ui, id, chart, !styled);
+        });
+    }
+
+    /// The sections a chart style holds whole, after *Style*: Marks, Axes,
+    /// Values and Legend — and, styled, *Style* and *Text* with them, all of
+    /// them under the capsule.
+    fn chart_look_sections(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart, styled: bool) {
+        if styled {
+            self.chart_style_section(ui, id, chart, true);
+        }
+        self.chart_section(ui, "Chart marks", "Marks", |app, ui| {
+            app.chart_mark_rows(ui, id, chart);
+        });
+        if chart.kind.has_axes() {
+            self.chart_section(ui, "Chart axes", "Axes", |app, ui| {
+                app.chart_axis_rows(ui, id, chart, !styled);
+            });
+        }
+        if chart.kind != ChartKind::Sankey {
+            self.chart_section(ui, "Chart values", "Values", |app, ui| {
+                // A scatter draws no value labels: its rows stay, dimmed, under
+                // the reason.
+                let none = match chart.kind {
+                    ChartKind::Scatter => Some("A scatter draws no value labels"),
+                    ChartKind::Radar => Some("A radar draws no value labels"),
+                    _ => None,
+                };
+                if let Some(why) = none {
+                    ui::selection_note(ui, why);
+                }
+                ui::disable_unless(ui, none.is_none(), |ui| app.chart_value_rows(ui, id, chart));
+            });
+            self.chart_section(ui, "Chart legend", "Legend", |app, ui| {
+                app.chart_legend_rows(ui, id, chart);
+            });
+        }
+        if styled {
+            self.chart_text_section(ui, id, chart);
+        }
+    }
+
+    fn chart_text_section(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        self.chart_section(ui, "Chart text", "Text", |app, ui| {
+            app.chart_text_rows(ui, id, chart);
+        });
+    }
+
+    /// *Data*, and *Series* (or a waterfall's *Steps*) for one chart. `styled`
+    /// adds *This chart* to Data: the rows a chart style never holds that
+    /// otherwise sit among the look's — the background, and the axis titles
+    /// and typed ranges.
+    fn chart_data_sections(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        chart: &Chart,
+        several: bool,
+        styled: bool,
+    ) {
+        self.chart_section(ui, "Chart data", "Data", |app, ui| {
+            if several {
+                ui::selection_note(ui, "Edit data one chart at a time");
+            } else {
+                app.chart_data_rows(ui, id, chart);
+            }
+            if styled {
+                app.chart_own_rows(ui, id, chart);
+            }
+        });
+        if !several {
+            // A chart coloured by name lists its named marks here.
+            let series = named_mark_noun(chart).map_or("Series", |(plural, _)| plural);
+            if chart.kind == ChartKind::Waterfall {
+                // A waterfall's colours belong to the step, not the series.
+                self.chart_section(ui, "Chart steps", "Steps", |app, ui| {
+                    app.chart_step_rows(ui, id, chart);
+                });
+            } else {
+                self.chart_section(ui, "Chart series", series, |app, ui| {
+                    app.chart_series_rows(ui, id, chart);
+                });
+            }
+        }
+    }
+
+    /// *This chart*: a styled chart's background, axis titles and typed
+    /// ranges, live under Data since the style holds none of them.
+    fn chart_own_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        ui.label(ui::eyebrow("This chart"));
+        self.chart_background_row(ui, id);
+        if !chart.kind.has_axes() {
+            return;
+        }
+        let (first, second) = axis_titles(chart.kind);
+        for (value, title) in [(true, first), (false, second)] {
+            let label = if value { "Value axis" } else { "Category axis" };
+            ui.label(ui::eyebrow(title));
+            if value || chart.kind == ChartKind::Scatter {
+                self.chart_axis_range(ui, id, chart, value);
+            }
+            self.chart_axis_title(ui, id, chart, value, label);
+        }
     }
 
     /// The Chart card over charts of different kinds, which it cannot edit
@@ -1249,6 +1347,13 @@ impl MastikApp {
         let lollipops = matches!(chart.kind, ChartKind::Column | ChartKind::Bar)
             && chart.options.bars.shape == chart::BarShape::Lollipops;
         if let Some((names, at)) = variants(chart) {
+            // A variant that is a look (a line's curve, a donut, a filled radar)
+            // belongs to a chart style: held while one styles the chart, as the
+            // palette is. A stacking or a direction is the chart's own.
+            let locked = self.chart_look_locked(id);
+            let styled =
+                |i: usize| locked && with_variant(chart, i).options.look() != chart.options.look();
+            let off = |i: usize| (lollipops && i > 0) || styled(i);
             // Lollipops don't stack: only Grouped is offered while they show.
             let pick = ui::segmented_tipped(
                 ui,
@@ -1256,16 +1361,18 @@ impl MastikApp {
                 ui::SEGMENT_CELL_H,
                 names.len(),
                 at,
-                |i| !lollipops || i == 0,
+                |i| !off(i),
                 |i| {
-                    if lollipops && i > 0 {
+                    if styled(i) {
+                        "From the style · Detach to change"
+                    } else if lollipops && i > 0 {
                         "Lollipops don't stack"
                     } else {
                         "Chart type"
                     }
                 },
                 |p, i, r, on| {
-                    if lollipops && i > 0 {
+                    if off(i) && !on {
                         ui::segment_label_disabled(p, r, names[i]);
                     } else {
                         ui::segment_label(p, r, names[i], on);
@@ -1278,7 +1385,9 @@ impl MastikApp {
         }
     }
 
-    fn chart_style_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+    /// The *Style* section's rows; `background` leaves out the background row
+    /// when false, as on a styled chart, which shows it under *This chart*.
+    fn chart_style_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart, background: bool) {
         let lit = Preset::of(chart.kind, &chart.options);
         let n = Preset::ALL.len() as f32;
         let cell = (ui.available_width() - STYLE_GAP * (n - 1.0)) / n;
@@ -1316,7 +1425,9 @@ impl MastikApp {
                 c.options = p.apply(c.kind, &c.options);
             });
         }
-        self.chart_background_row(ui, id);
+        if background {
+            self.chart_background_row(ui, id);
+        }
         // The theme the unset colours are derived for; a colour of the
         // person's own stays whatever it is.
         self.chart_segments_of(
@@ -1732,7 +1843,16 @@ impl MastikApp {
             (Palette::Mono, "Mono"),
         ];
         let groups = colour_groups(&self.session.doc);
-        let bound = chart::bound_variables(chart);
+        // The stored group, else a file's series bound one by one.
+        let group: Option<Vec<mastik_core::VarId>> = chart
+            .options
+            .palette_group
+            .iter()
+            .map(|b| b.var())
+            .collect();
+        let bound = group
+            .filter(|g| !g.is_empty())
+            .or_else(|| chart::bound_variables(chart));
         // A group lights while the series run through it in order; a palette
         // while nothing is bound.
         let lit_group = bound.as_ref().and_then(|b| {
@@ -1751,36 +1871,45 @@ impl MastikApp {
                 .map_or("Mastik", |(_, n)| *n)
                 .to_string(),
         };
+        // A chart style holds the palette: shown disabled, saying where it is
+        // from, while the series' own swatches below stay live.
+        let locked = self.chart_look_locked(id);
+        let shown = match locked {
+            true => "From the style · Detach to change".to_string(),
+            false => shown,
+        };
         enum Pick {
             Palette(Palette),
             Group(usize),
         }
         let mut pick = None;
-        ui::labelled(ui, "Palette", |ui| {
-            ui::combo_height(ui);
-            egui::ComboBox::from_id_salt(("chart-palette", id))
-                .icon(ui::combo_chevron)
-                .width(ui.available_width())
-                .selected_text(ui::combo_text(&shown))
-                .show_ui(ui, |ui| {
-                    ui::menu_rows(ui);
-                    for (p, name) in palettes {
-                        let on = bound.is_none() && p == chart.options.palette;
-                        if ui.selectable_label(on, name).clicked() {
-                            pick = Some(Pick::Palette(p));
+        ui::disable_unless(ui, !locked, |ui| {
+            ui::labelled(ui, "Palette", |ui| {
+                ui::combo_height(ui);
+                egui::ComboBox::from_id_salt(("chart-palette", id))
+                    .icon(ui::combo_chevron)
+                    .width(ui.available_width())
+                    .selected_text(ui::combo_text(&shown))
+                    .show_ui(ui, |ui| {
+                        ui::menu_rows(ui);
+                        for (p, name) in palettes {
+                            let on = bound.is_none() && p == chart.options.palette;
+                            if ui.selectable_label(on, name).clicked() {
+                                pick = Some(Pick::Palette(p));
+                            }
                         }
-                    }
-                    ui::menu_sep(ui);
-                    ui::menu_eyebrow(ui, "From variables");
-                    if groups.is_empty() {
-                        ui::menu_note(ui, "No colour variables yet");
-                    }
-                    for (g, (name, _)) in groups.iter().enumerate() {
-                        if ui.selectable_label(lit_group == Some(g), name).clicked() {
-                            pick = Some(Pick::Group(g));
+                        ui::menu_sep(ui);
+                        ui::menu_eyebrow(ui, "From variables");
+                        if groups.is_empty() {
+                            ui::menu_note(ui, "No colour variables yet");
                         }
-                    }
-                });
+                        for (g, (name, _)) in groups.iter().enumerate() {
+                            if ui.selectable_label(lit_group == Some(g), name).clicked() {
+                                pick = Some(Pick::Group(g));
+                            }
+                        }
+                    });
+            });
         });
         match pick {
             Some(Pick::Palette(p)) => {
@@ -3558,12 +3687,11 @@ impl MastikApp {
         });
     }
 
-    fn chart_axis_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
-        let (first, second) = match chart.kind {
-            ChartKind::Bar => ("Value axis (bottom)", "Category axis (left)"),
-            ChartKind::Scatter => ("Y axis", "X axis"),
-            _ => ("Value axis", "Category axis"),
-        };
+    /// The *Axes* section's rows; `own` leaves out each axis's typed range and
+    /// title when false, as on a styled chart, which shows them under *This
+    /// chart*.
+    fn chart_axis_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart, own: bool) {
+        let (first, second) = axis_titles(chart.kind);
         for (value, title) in [(true, first), (false, second)] {
             ui.label(ui::eyebrow(title));
             let pick = move |c: &Chart| {
@@ -3793,6 +3921,76 @@ impl MastikApp {
                         },
                     );
                 }
+                if own {
+                    self.chart_axis_range(ui, id, chart, value);
+                }
+                if value {
+                    self.chart_format(ui, id, chart, "chart-value-format", |c| {
+                        &mut c.options.value_axis.format
+                    });
+                } else {
+                    self.chart_format(ui, id, chart, "chart-x-format", |c| {
+                        &mut c.options.category_axis.format
+                    });
+                }
+                let auto = axis.tick_count.is_none();
+                self.chart_switch(
+                    ui,
+                    id,
+                    chart,
+                    if value { "Auto ticks" } else { "Auto X ticks" },
+                    auto,
+                    move |c, on| {
+                        let mut a = pick(c);
+                        a.tick_count = (!on).then_some(5);
+                        put(c, a);
+                    },
+                );
+                if !auto {
+                    self.chart_number(
+                        ui,
+                        id,
+                        chart,
+                        ui.available_width(),
+                        "Ticks",
+                        if value { "Tick count" } else { "X tick count" },
+                        Scrub::whole(0.1).range(1.0..=100.0),
+                        0,
+                        move |c| f64::from(pick(c).tick_count.unwrap_or(5)),
+                        move |c, v| {
+                            let mut a = pick(c);
+                            a.tick_count = Some(v.round().clamp(1.0, 100.0) as u32);
+                            put(c, a);
+                        },
+                    );
+                }
+            }
+            if own {
+                self.chart_axis_title(ui, id, chart, value, label);
+            }
+        }
+    }
+
+    /// An axis's *Auto range* switch and, off, its Min and Max: the value axis's
+    /// (`value`), or a scatter's X axis's.
+    fn chart_axis_range(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart, value: bool) {
+        let pick = move |c: &Chart| {
+            if value {
+                c.options.value_axis.clone()
+            } else {
+                c.options.category_axis.clone()
+            }
+        };
+        let put = move |c: &mut Chart, a: chart::Axis| {
+            if value {
+                c.options.value_axis = a
+            } else {
+                c.options.category_axis = a
+            }
+        };
+        let axis = pick(chart);
+        {
+            {
                 let auto_range = axis.range.is_none();
                 let label = if value { "Auto range" } else { "Auto X range" };
                 if ui::switch_row(ui, label, auto_range, crate::settings::SWITCH_H).clicked() {
@@ -3864,48 +4062,7 @@ impl MastikApp {
                         );
                     });
                 }
-                if value {
-                    self.chart_format(ui, id, chart, "chart-value-format", |c| {
-                        &mut c.options.value_axis.format
-                    });
-                } else {
-                    self.chart_format(ui, id, chart, "chart-x-format", |c| {
-                        &mut c.options.category_axis.format
-                    });
-                }
-                let auto = axis.tick_count.is_none();
-                self.chart_switch(
-                    ui,
-                    id,
-                    chart,
-                    if value { "Auto ticks" } else { "Auto X ticks" },
-                    auto,
-                    move |c, on| {
-                        let mut a = pick(c);
-                        a.tick_count = (!on).then_some(5);
-                        put(c, a);
-                    },
-                );
-                if !auto {
-                    self.chart_number(
-                        ui,
-                        id,
-                        chart,
-                        ui.available_width(),
-                        "Ticks",
-                        if value { "Tick count" } else { "X tick count" },
-                        Scrub::whole(0.1).range(1.0..=100.0),
-                        0,
-                        move |c| f64::from(pick(c).tick_count.unwrap_or(5)),
-                        move |c, v| {
-                            let mut a = pick(c);
-                            a.tick_count = Some(v.round().clamp(1.0, 100.0) as u32);
-                            put(c, a);
-                        },
-                    );
-                }
             }
-            self.chart_axis_title(ui, id, chart, value, label);
         }
     }
 
@@ -4587,6 +4744,15 @@ fn auto_extent(chart: &Chart, value: bool) -> (f64, f64) {
     let hi = seen.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let ticks = chart::scale::ticks(lo, hi, axis.tick_count.unwrap_or(5), None);
     (ticks.min, ticks.max)
+}
+
+/// The value axis's and the category axis's eyebrows, as `kind` draws them.
+fn axis_titles(kind: ChartKind) -> (&'static str, &'static str) {
+    match kind {
+        ChartKind::Bar => ("Value axis (bottom)", "Category axis (left)"),
+        ChartKind::Scatter => ("Y axis", "X axis"),
+        _ => ("Value axis", "Category axis"),
+    }
 }
 
 /// Series `col` shown or hidden: a shown column not yet mapped joins the
@@ -5565,5 +5731,54 @@ mod tests {
             Brush::Solid(red).into(),
             "the slice draws in it"
         );
+    }
+
+    /// **A styled chart's look folds into the capsule and the rest stays live**:
+    /// bound to a chart style, the card draws the capsule's summary, no *Marks*
+    /// section, *This chart* under Data and the palette held *From the style*;
+    /// detached, Marks is back and *This chart* gone.
+    /// flip: `inspector_charts` reading every chart as unstyled, so the whole
+    /// card goes under the capsule → fails at "Data stays".
+    #[test]
+    fn a_styled_chart_folds_its_look_into_the_capsule() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = charted(&ctx, ChartKind::Column);
+        app.collapsed_panels.remove("Chart series");
+        let s = app.session.ids.mint_style();
+        let ops = mastik_core::style::create_ops(
+            &app.session.doc,
+            s,
+            "Dashboard",
+            id,
+            StyleSlot::Chart,
+            &[id],
+        )
+        .expect("a chart has a look");
+        assert!(app.commit_edit(Transaction(ops)));
+        assert_eq!(
+            app.session.doc.get(id).unwrap().styles().chart,
+            Some(s),
+            "the fixture is styled"
+        );
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            out = shapes(&ctx, &mut app);
+        }
+        assert!(drawn(&out, "Dashboard"), "the capsule's name");
+        assert!(drawn(&out, "Clean"), "its summary, the nearest preset");
+        assert!(!drawn(&out, "Marks"), "no Marks under the capsule");
+        assert!(drawn(&out, "Data"), "Data stays");
+        assert!(drawn(&out, "THIS CHART"), "the chart's own rows");
+        assert!(
+            drawn(&out, "From the style · Detach to change"),
+            "the palette is the style's"
+        );
+        let detach = mastik_core::style::bind_op(id, StyleSlot::Chart, None);
+        assert!(app.commit_edit(Transaction(vec![detach])));
+        for _ in 0..3 {
+            out = shapes(&ctx, &mut app);
+        }
+        assert!(drawn(&out, "Marks"), "Marks is back");
+        assert!(!drawn(&out, "THIS CHART"), "and This chart gone");
     }
 }

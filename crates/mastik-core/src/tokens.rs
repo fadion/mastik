@@ -436,6 +436,14 @@ impl Plan {
                 },
                 spacing_vars: l.spacing_vars.map(num),
             })),
+            // A chart's colours, its *From variables* palette among them.
+            StyleValue::Chart(o) => {
+                let mut o = o.clone();
+                for b in o.brushes_mut() {
+                    *b = to(b);
+                }
+                StyleValue::Chart(o)
+            }
         }
     }
 }

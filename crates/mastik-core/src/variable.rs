@@ -2395,6 +2395,8 @@ fn style_fields(value: &crate::style::StyleValue) -> &'static [Field] {
         V::Effects(_) => &[Field::Effect],
         V::Text(_) => &[],
         V::Layout(_) => &[Field::Spacing, Field::FlexDirection, Field::FlexWrap],
+        // A chart's colours are fills, as on a chart.
+        V::Chart(_) => &[Field::Fill],
     }
 }
 

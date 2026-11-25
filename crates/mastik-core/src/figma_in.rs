@@ -751,7 +751,7 @@ impl Builder<'_> {
                 Made::Effects(id, v.iter().map(|k| k.value.clone()).collect())
             }
             StyleValue::Text(t) => Made::Text(id, t.clone()),
-            StyleValue::Layout(_) => return None,
+            StyleValue::Layout(_) | StyleValue::Chart(_) => return None,
         };
         let named = self.style_names.get(&sid).unwrap_or(&sid);
         let name = self

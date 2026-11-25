@@ -2719,6 +2719,10 @@ impl Shower<'_> {
                 text: "Layout".to_string(),
                 swatch: None,
             },
+            StyleValue::Chart(_) => Shown {
+                text: "Chart".to_string(),
+                swatch: None,
+            },
         }
     }
 }

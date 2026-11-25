@@ -274,6 +274,11 @@ pub fn state_ops(node: &Node) -> Vec<Operation> {
             id,
             style: styles.layout,
         },
+        // And the Chart card's.
+        O::SetChartStyle {
+            id,
+            style: styles.chart,
+        },
     ];
     ops.extend(kind_ops(id, kind));
     ops

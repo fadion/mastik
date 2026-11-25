@@ -694,6 +694,12 @@ pub enum Operation {
         id: NodeId,
         style: Option<crate::style::StyleId>,
     },
+    /// The chart style a chart is bound to, as [`Self::SetFillStyle`]. Not
+    /// [`Self::SetChart`], which writes the chart itself.
+    SetChartStyle {
+        id: NodeId,
+        style: Option<crate::style::StyleId>,
+    },
     /// Put a script into the document's list at `index` (`crate::script`).
     /// Inverts to [`Self::RemoveScript`], and that back to this carrying the
     /// whole script and its place.
@@ -790,6 +796,7 @@ impl Operation {
             | Operation::SetEffectsStyle { id, .. }
             | Operation::SetTypeStyle { id, .. }
             | Operation::SetLayoutStyle { id, .. }
+            | Operation::SetChartStyle { id, .. }
             | Operation::SetOrigin { id, .. }
             | Operation::SetDetachedFrom { id, .. } => Some(*id),
             Operation::CreateNode { .. }
@@ -929,7 +936,8 @@ impl Operation {
             | Operation::SetStrokeStyle { id, .. }
             | Operation::SetEffectsStyle { id, .. }
             | Operation::SetTypeStyle { id, .. }
-            | Operation::SetLayoutStyle { id, .. } => id,
+            | Operation::SetLayoutStyle { id, .. }
+            | Operation::SetChartStyle { id, .. } => id,
             _ => return None,
         };
         *id = to;
@@ -1083,6 +1091,7 @@ impl Operation {
             | Operation::SetEffectsStyle { .. }
             | Operation::SetTypeStyle { .. }
             | Operation::SetLayoutStyle { .. }
+            | Operation::SetChartStyle { .. }
             // A stored script is never run by the document, so it draws nothing.
             | Operation::AddScript { .. }
             | Operation::RemoveScript { .. }
@@ -1295,6 +1304,9 @@ impl Operation {
             }
             Operation::SetLayoutStyle { id, style } => {
                 node(id).is_some_and(|n| n.styles().layout == *style)
+            }
+            Operation::SetChartStyle { id, style } => {
+                node(id).is_some_and(|n| n.styles().chart == *style)
             }
 
             Operation::SetVariableName { id, name } => {
@@ -2105,6 +2117,7 @@ mod changes_ink_tests {
             Operation::SetEffectsStyle { id, style: None },
             Operation::SetTypeStyle { id, style: None },
             Operation::SetLayoutStyle { id, style: None },
+            Operation::SetChartStyle { id, style: None },
             // A kit's style's version (§15 D1064): bookkeeping, as `SetOrigin` is.
             Operation::SetStyleOrigin {
                 id: style,
@@ -2192,7 +2205,7 @@ mod changes_ink_tests {
                 source: "print(1)".into(),
             },
         ];
-        assert_eq!(invisible.len(), 55, "the whole false arm");
+        assert_eq!(invisible.len(), 56, "the whole false arm");
         for op in &invisible {
             assert!(
                 !op.changes_ink(),

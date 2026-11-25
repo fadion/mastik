@@ -94,7 +94,8 @@ fn mode(op: &Operation) -> Mode {
         | Operation::SetStrokeStyle { .. }
         | Operation::SetEffectsStyle { .. }
         | Operation::SetTypeStyle { .. }
-        | Operation::SetLayoutStyle { .. } => Mode::Whole,
+        | Operation::SetLayoutStyle { .. }
+        | Operation::SetChartStyle { .. } => Mode::Whole,
         Operation::SetTextStyle { .. }
         | Operation::SetParagraphStyle { .. }
         | Operation::SetBlockStyle { .. }

@@ -779,6 +779,11 @@ fn raw_matches(scope: &Scope<'_>) -> Raw {
                         }
                 }
                 S::Layout(_) => false,
+                // A chart at the style's whole look, as applying it writes it.
+                S::Chart(o) => {
+                    styles.chart.is_none()
+                        && n.chart().is_some_and(|c| c.options.look() == o.look())
+                }
             };
             if fits {
                 raw.add(

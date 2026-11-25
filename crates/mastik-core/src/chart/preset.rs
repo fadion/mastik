@@ -134,6 +134,48 @@ impl Preset {
             .into_iter()
             .find(|p| p.apply(kind, options) == *options)
     }
+
+    /// The preset `options` are nearest to: the one whose application changes
+    /// the fewest of their values, the first of a tie — what a chart style's
+    /// summary names.
+    pub fn nearest(kind: ChartKind, options: &Options) -> Preset {
+        let here = leaves(options);
+        Preset::ALL
+            .into_iter()
+            .min_by_key(|p| {
+                let there = leaves(&p.apply(kind, options));
+                here.iter()
+                    .filter(|(k, v)| there.get(*k) != Some(*v))
+                    .count()
+                    + there.keys().filter(|k| !here.contains_key(*k)).count()
+            })
+            .expect("there are presets")
+    }
+}
+
+/// Every value `options` writes, by its path.
+fn leaves(options: &Options) -> std::collections::BTreeMap<String, serde_json::Value> {
+    fn walk(
+        at: String,
+        v: serde_json::Value,
+        out: &mut std::collections::BTreeMap<String, serde_json::Value>,
+    ) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, v) in m {
+                    walk(format!("{at}/{k}"), v, out);
+                }
+            }
+            v => {
+                out.insert(at, v);
+            }
+        }
+    }
+    let mut out = Default::default();
+    if let Ok(v) = serde_json::to_value(options) {
+        walk(String::new(), v, &mut out);
+    }
+    out
 }
 
 #[cfg(test)]

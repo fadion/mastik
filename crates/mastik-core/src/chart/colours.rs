@@ -12,13 +12,20 @@ fn literal(c: [u8; 3]) -> BrushSource {
     )))
 }
 
-/// The palette's colours for the theme `chart` is drawn in.
-pub(crate) fn drawn_palette(chart: &Chart) -> &'static [[u8; 3]] {
-    palette(chart.options.palette, chart.drawn_dark())
+/// The colour an unset series or named mark takes at place `i`: the *From
+/// variables* group's (`Options::palette_group`), else the palette's for the
+/// theme `chart` is drawn in, round again past the last either way.
+pub fn place_fill(chart: &Chart, i: usize) -> BrushSource {
+    let group = &chart.options.palette_group;
+    if !group.is_empty() {
+        return group[i % group.len()].clone();
+    }
+    let colours = palette(chart.options.palette, chart.drawn_dark());
+    literal(colours[i % colours.len()])
 }
 
-/// The fill series `column` draws in: its style's, else the palette's colour at
-/// its place among the mapped series.
+/// The fill series `column` draws in: its style's, else [`place_fill`] at its
+/// place among the mapped series.
 pub fn series_fill(chart: &Chart, column: ColumnId) -> Option<BrushSource> {
     if let Some(f) = chart
         .series
@@ -29,8 +36,7 @@ pub fn series_fill(chart: &Chart, column: ColumnId) -> Option<BrushSource> {
         return Some(f);
     }
     let n = chart.mapping.series.iter().position(|c| *c == column)?;
-    let colours = drawn_palette(chart);
-    Some(literal(colours[n % colours.len()]))
+    Some(place_fill(chart, n))
 }
 
 /// Whether series `column`'s colour is set rather than the palette's.
@@ -59,7 +65,6 @@ pub fn sankey_nodes(chart: &Chart) -> Vec<(String, BrushSource)> {
     let (Some(fc), Some(tc), Some(vc)) = (at(m.from), at(m.to), at(m.value)) else {
         return Vec::new();
     };
-    let colours = drawn_palette(chart);
     let mut out: Vec<(String, BrushSource)> = Vec::new();
     for row in &t.rows {
         let (from, to) = (row[fc].trim(), row[tc].trim());
@@ -74,8 +79,7 @@ pub fn sankey_nodes(chart: &Chart) -> Vec<(String, BrushSource)> {
                 continue;
             }
             let i = out.len();
-            let fill =
-                node_style(chart, name).unwrap_or_else(|| literal(colours[i % colours.len()]));
+            let fill = node_style(chart, name).unwrap_or_else(|| place_fill(chart, i));
             out.push((name.to_string(), fill));
         }
     }
@@ -88,11 +92,9 @@ pub fn sankey_nodes(chart: &Chart) -> Vec<(String, BrushSource)> {
 /// style from `Chart::nodes` by name, else the palette at its place. `None`
 /// for a chart coloured by series.
 pub fn named_marks(chart: &Chart) -> Option<Vec<(String, BrushSource)>> {
-    let colours = drawn_palette(chart);
     let marks = mark_places(chart)?;
-    let fill = |name: &str, i: usize| {
-        node_style(chart, name).unwrap_or_else(|| literal(colours[i % colours.len()]))
-    };
+    let fill =
+        |name: &str, i: usize| node_style(chart, name).unwrap_or_else(|| place_fill(chart, i));
     Some(
         marks
             .into_iter()
@@ -253,11 +255,17 @@ pub fn with_node_fill(chart: &Chart, name: &str, fill: Option<BrushSource>) -> C
 pub fn with_palette(chart: &Chart, p: super::Palette) -> Chart {
     let mut next = chart.clone();
     next.options.palette = p;
+    next.options.palette_group.clear();
+    unset_marks(&mut next);
+    next
+}
+
+/// Every series and named mark of `chart` back on its palette.
+fn unset_marks(next: &mut Chart) {
     for s in &mut next.series {
         s.fill = None;
     }
     next.nodes.clear();
-    next
 }
 
 /// `chart` as a file from before derived colours reads: its theme *Dark* when
@@ -301,31 +309,25 @@ pub fn unset_starting(chart: &Chart, dark: bool) -> Chart {
     next
 }
 
-/// `chart` with its series (its [`named_marks`], where it colours by name)
-/// bound to `vars` in order, round again past the last: *From variables*, so a
-/// mode switch recolours the chart. The palette stays what it was, for the
-/// series a later edit adds.
+/// `chart` on *From variables*: its palette `vars` in order
+/// (`Options::palette_group`, at most [`super::MAX_PALETTE_GROUP`]) and every
+/// series and named mark back on it, as a palette pick puts them, so a mode
+/// switch recolours the chart and a series a later edit adds takes the group's
+/// next colour.
 pub fn with_variables(chart: &Chart, vars: &[crate::VarId]) -> Chart {
     if vars.is_empty() {
         return chart.clone();
     }
-    let bound = |i: usize| BrushSource::Bound {
-        var: vars[i % vars.len()],
-        alpha: 1.0,
-    };
     let mut next = chart.clone();
-    match named_marks(chart) {
-        Some(marks) => {
-            for (i, (name, _)) in marks.into_iter().enumerate() {
-                next = with_node_fill(&next, &name, Some(bound(i)));
-            }
-        }
-        None => {
-            for (i, col) in chart.mapping.series.iter().enumerate() {
-                next = with_series_fill(&next, *col, Some(bound(i)));
-            }
-        }
-    }
+    next.options.palette_group = vars
+        .iter()
+        .take(super::MAX_PALETTE_GROUP)
+        .map(|var| BrushSource::Bound {
+            var: *var,
+            alpha: 1.0,
+        })
+        .collect();
+    unset_marks(&mut next);
     next
 }
 

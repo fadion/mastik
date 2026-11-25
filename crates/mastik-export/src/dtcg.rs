@@ -558,6 +558,7 @@ impl Writer<'_> {
                     StyleSlot::Effects => "effect",
                     StyleSlot::Text => "type",
                     StyleSlot::Layout => "layout",
+                    StyleSlot::Chart => "chart",
                 };
                 out.insert(key.to_string(), Json::Object(group));
             }
@@ -697,6 +698,7 @@ impl Writer<'_> {
             }
             StyleValue::Text(style) => Some(self.typography(name, style)),
             StyleValue::Layout(_) => left_out(&mut self.notes, "a layout has no DTCG type"),
+            StyleValue::Chart(_) => left_out(&mut self.notes, "a chart's look has no DTCG type"),
         }
     }
 
@@ -865,7 +867,7 @@ fn number_reads(doc: &Document) -> BTreeMap<VarId, BTreeSet<Read>> {
                     add(var, Read::Length);
                 }
             }
-            StyleValue::Fills(_) | StyleValue::Text(_) => {}
+            StyleValue::Fills(_) | StyleValue::Text(_) | StyleValue::Chart(_) => {}
         }
     }
     // A scoped number reads as its scope says, whatever binds it now: what it

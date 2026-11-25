@@ -197,7 +197,41 @@ fn summary(doc: &Document, value: &StyleValue) -> String {
                 ),
             }
         }
+        StyleValue::Chart(o) => chart_summary(o),
     }
+}
+
+/// A chart style's summary: `Soft · Fade · Dark` — the preset its look is
+/// nearest to, and up to two things set past every preset.
+fn chart_summary(o: &mastik_core::chart::Options) -> String {
+    use mastik_core::chart::{ChartKind, Preset, Theme};
+    let mut words = vec![Preset::nearest(ChartKind::Column, o).label()];
+    let extras = [
+        (o.fade.on, "Fade"),
+        (!o.palette_group.is_empty(), "Variables"),
+        (o.theme == Theme::Dark, "Dark"),
+        (o.theme == Theme::Light, "Light"),
+        (!o.text.family.is_empty(), "Own font"),
+    ];
+    words.extend(extras.into_iter().filter(|e| e.0).map(|e| e.1).take(2));
+    words.join(" · ")
+}
+
+/// A chart style's first three colours: its *From variables* palette as drawn
+/// in the document's default mode, else its palette for the theme it picks.
+fn chart_colours(doc: &Document, o: &mastik_core::chart::Options) -> [egui::Color32; 3] {
+    use mastik_core::chart::{self, Theme};
+    std::array::from_fn(|i| {
+        if !o.palette_group.is_empty() {
+            let b = &o.palette_group[i % o.palette_group.len()];
+            if let Brush::Solid(c) = doc.resolve_brush(NodeId::NOWHERE, b).into_owned() {
+                return ui::color_to_egui(c);
+            }
+        }
+        let p = chart::palette(o.palette, o.theme == Theme::Dark);
+        let [r, g, b] = p[i % p.len()];
+        egui::Color32::from_rgb(r, g, b)
+    })
 }
 
 /// A stroke style's width as drawn in the document's default mode, the colour's
@@ -227,7 +261,10 @@ fn preview_colour(doc: &Document, value: &StyleValue) -> Option<mastik_core::pen
             .filter(|s| s.visible)
             .map(|s| &s.brush)
             .collect(),
-        StyleValue::Effects(_) | StyleValue::Text(_) | StyleValue::Layout(_) => return None,
+        StyleValue::Effects(_)
+        | StyleValue::Text(_)
+        | StyleValue::Layout(_)
+        | StyleValue::Chart(_) => return None,
     };
     let b = brushes.first()?;
     match doc.resolve_brush(NodeId::NOWHERE, b).into_owned() {
@@ -287,6 +324,20 @@ pub(crate) fn paint_preview(p: &egui::Painter, doc: &Document, style: &Style, re
                 theme::icon_font(13.0),
                 theme::text::muted(),
             );
+        }
+        // Three columns in the style's first three colours, rising and falling
+        // as a column chart's do.
+        StyleValue::Chart(o) => {
+            let colours = chart_colours(doc, o);
+            let w = (rect.width() - 2.0 * 1.5) / 3.0;
+            for (i, (c, h)) in colours.iter().zip([0.55, 1.0, 0.75]).enumerate() {
+                let x = rect.left() + i as f32 * (w + 1.5);
+                let bar = egui::Rect::from_min_max(
+                    egui::pos2(x, rect.bottom() - rect.height() * h),
+                    egui::pos2(x + w, rect.bottom()),
+                );
+                p.rect_filled(bar, 1, *c);
+            }
         }
     }
 }
@@ -513,6 +564,35 @@ impl MastikApp {
         body: impl FnOnce(&mut Self, &mut egui::Ui),
         tail: impl FnOnce(&mut Self, &mut egui::Ui),
     ) -> bool {
+        self.style_card_parts(
+            ui,
+            title,
+            slot,
+            targets,
+            action,
+            live,
+            |_, _| {},
+            body,
+            tail,
+        )
+    }
+
+    /// [`Self::style_card_live`] with `head`, rows the style does not hold drawn
+    /// live **above** the capsule — the Chart card's type, which a chart style
+    /// never carries and which leads the card styled or not.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn style_card_parts(
+        &mut self,
+        ui: &mut egui::Ui,
+        title: &'static str,
+        slot: StyleSlot,
+        targets: &[NodeId],
+        action: Option<ui::HeadAction>,
+        live: bool,
+        head: impl FnOnce(&mut Self, &mut egui::Ui),
+        body: impl FnOnce(&mut Self, &mut egui::Ui),
+        tail: impl FnOnce(&mut Self, &mut egui::Ui),
+    ) -> bool {
         let state = shown(&self.session.doc, targets, slot);
         let editing = matches!(state, StyleShown::One(s) if self.session.style_edit == Some(s));
         // The `+` hides while any card in scope is styled, and nothing moves:
@@ -523,6 +603,7 @@ impl MastikApp {
             action
         };
         let clicks = self.panel_full(ui, title, None, action, None, true, None, |app, ui| {
+            head(app, ui);
             app.style_rows(ui, &state, slot, targets, editing, live, body);
             tail(app, ui);
         });

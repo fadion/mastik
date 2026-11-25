@@ -73,8 +73,10 @@ pub(super) fn colours(chart: &Chart) -> [Color; COLOURS] {
     let palette = chart::palette(chart.options.palette, chart.drawn_dark());
     std::array::from_fn(|i| {
         own.get(i).copied().unwrap_or_else(|| {
-            let c = palette[i % palette.len()];
-            Color::from_rgb8(c[0], c[1], c[2])
+            solid(&chart::place_fill(chart, i)).unwrap_or_else(|| {
+                let c = palette[i % palette.len()];
+                Color::from_rgb8(c[0], c[1], c[2])
+            })
         })
     })
 }

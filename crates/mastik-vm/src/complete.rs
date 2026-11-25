@@ -182,6 +182,7 @@ fn id_names(doc: &Document, what: &str, word: &str) -> Option<Vec<Row>> {
                     StyleSlot::Effects => "effect style",
                     StyleSlot::Text => "text style",
                     StyleSlot::Layout => "layout style",
+                    StyleSlot::Chart => "chart style",
                 };
                 (s.name.as_str(), slot.to_owned())
             }),

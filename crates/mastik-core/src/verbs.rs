@@ -2217,7 +2217,7 @@ const ELEMENTS: &[&str] = &[
 /// The browser states a variant value can be tied to, as `variant::Interaction`
 /// writes them.
 const STATES: &[&str] = &["hover", "focus-visible", "active", "disabled"];
-const STYLE_SLOTS: &[&str] = &["fills", "strokes", "effects", "text", "layout"];
+const STYLE_SLOTS: &[&str] = &["fills", "strokes", "effects", "text", "layout", "chart"];
 
 /// The style slot a [`STYLE_SLOTS`] word names.
 fn slot_of(word: &str) -> StyleSlot {
@@ -2226,6 +2226,7 @@ fn slot_of(word: &str) -> StyleSlot {
         "effects" => StyleSlot::Effects,
         "text" => StyleSlot::Text,
         "layout" => StyleSlot::Layout,
+        "chart" => StyleSlot::Chart,
         _ => StyleSlot::Fills,
     }
 }
@@ -2436,11 +2437,14 @@ pub enum StyleInput {
     Effects(Vec<Effect>),
     Text(Box<TextStyle>),
     Layout(Box<crate::style::LayoutStyle>),
+    /// A chart's options, as `set_chart` writes them whole.
+    Chart(Box<crate::chart::Options>),
 }
 
 /// `input` as a style holds it, each list position keeping the item id `own`'s
-/// list holds there (fresh ids past it, or for a new style), and a text style
-/// with its colour and language cleared (`style::type_part`).
+/// list holds there (fresh ids past it, or for a new style), a text style
+/// with its colour and language cleared (`style::type_part`), and a chart
+/// style with its options' own fields at their defaults (`Options::look`).
 fn style_value(ctx: &mut Ctx<'_>, input: StyleInput, own: Option<&StyleValue>) -> StyleValue {
     match (input, own) {
         (StyleInput::Fills(v), Some(StyleValue::Fills(o))) => StyleValue::Fills(rekeyed(ctx, o, v)),
@@ -2455,6 +2459,7 @@ fn style_value(ctx: &mut Ctx<'_>, input: StyleInput, own: Option<&StyleValue>) -
         (StyleInput::Effects(v), _) => StyleValue::Effects(rekeyed(ctx, &[], v)),
         (StyleInput::Text(t), _) => StyleValue::Text(Box::new(crate::style::type_part(&t))),
         (StyleInput::Layout(l), _) => StyleValue::Layout(l),
+        (StyleInput::Chart(o), _) => StyleValue::Chart(Box::new(o.look())),
     }
 }
 
@@ -8204,6 +8209,7 @@ fn tree_ops(
                 StyleSlot::Effects => Operation::SetEffectsStyle { id, style },
                 StyleSlot::Text => Operation::SetTypeStyle { id, style },
                 StyleSlot::Layout => Operation::SetLayoutStyle { id, style },
+                StyleSlot::Chart => Operation::SetChartStyle { id, style },
             });
         }
     }

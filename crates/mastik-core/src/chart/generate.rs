@@ -6,6 +6,7 @@
 //! percent of the plot, flex and grid on the containers), so the parts draw
 //! right before any layout runs and reflow with it after.
 
+use super::colours::place_fill;
 use super::scale::{self, Ticks};
 use super::{
     Axis, AxisSide, Chart, ChartKind, ColumnId, LabelAngle, LegendPosition, PartKey, PartRole,
@@ -211,7 +212,6 @@ fn read(chart: &Chart) -> Data {
             None => rows.push((i, format!("{}", i + 1))),
         }
     }
-    let colours = super::colours::drawn_palette(chart);
     let mut series = Vec::new();
     for (n, &col) in chart.mapping.series.iter().enumerate() {
         let Some(at) = t.index_of(col) else { continue };
@@ -237,7 +237,7 @@ fn read(chart: &Chart) -> Data {
             name,
             fill: style
                 .and_then(|s| s.fill.clone())
-                .unwrap_or_else(|| rgb(colours[n % colours.len()])),
+                .unwrap_or_else(|| place_fill(chart, n)),
             values,
         });
     }
@@ -3870,14 +3870,13 @@ fn sankey(
     let mut flows: Vec<Flow> = Vec::new();
     let mut named: rustc_hash::FxHashMap<String, usize> = Default::default();
     let mut joined: rustc_hash::FxHashMap<(usize, usize), usize> = Default::default();
-    let colours = super::colours::drawn_palette(chart);
     let mut index = |name: &str, nodes: &mut Vec<Node>| -> usize {
         if let Some(i) = named.get(name) {
             return *i;
         }
         let i = nodes.len();
         named.insert(name.to_string(), i);
-        let fill = named_fill(chart, name).unwrap_or_else(|| rgb(colours[i % colours.len()]));
+        let fill = named_fill(chart, name).unwrap_or_else(|| place_fill(chart, i));
         nodes.push(Node {
             name: name.to_string(),
             value: 0.0,
@@ -4419,7 +4418,6 @@ fn named_fill(chart: &Chart, name: &str) -> Option<BrushSource> {
 fn scatter_clouds(chart: &Chart, data: &mut Data) -> Vec<Cloud> {
     let t = &chart.table;
     let m = &chart.mapping;
-    let colours = super::colours::drawn_palette(chart);
     let xs: Vec<Option<f64>> = data.categories.iter().map(|c| parse_number(c)).collect();
     let rows: Vec<usize> = {
         // The table's rows that survived `read` (an empty X), in order.
@@ -4481,7 +4479,7 @@ fn scatter_clouds(chart: &Chart, data: &mut Data) -> Vec<Cloud> {
                         out.push(Cloud {
                             id: group_id(names.len() - 1),
                             fill: named_fill(chart, &name)
-                                .unwrap_or_else(|| rgb(colours[(names.len() - 1) % colours.len()])),
+                                .unwrap_or_else(|| place_fill(chart, names.len() - 1)),
                             name,
                             shape: shape_of(s.column),
                             points: Vec::new(),
@@ -4664,7 +4662,7 @@ const OTHER: &str = "Other";
 /// it. Colours run through the palette by category.
 fn pie_slices(chart: &Chart, data: &mut Data) -> Vec<Slice> {
     let o = &chart.options.slices;
-    let colours = super::colours::drawn_palette(chart);
+    let colours = palette(chart.options.palette, chart.drawn_dark());
     let Some(s) = data.series.first() else {
         return Vec::new();
     };
@@ -4685,7 +4683,7 @@ fn pie_slices(chart: &Chart, data: &mut Data) -> Vec<Slice> {
         let name = data.categories[c].clone();
         out.push(Slice {
             index: c as u32,
-            fill: named_fill(chart, &name).unwrap_or_else(|| rgb(colours[c % colours.len()])),
+            fill: named_fill(chart, &name).unwrap_or_else(|| place_fill(chart, c)),
             name,
             value: *v,
         });

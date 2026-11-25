@@ -15,8 +15,8 @@ mod settle;
 pub mod table_io;
 
 pub use colours::{
-    bound_variables, by_category, named_marks, sankey_nodes, sankey_totals, series_fill,
-    series_fill_set, unset_starting, with_node_fill, with_palette, with_series_fill,
+    bound_variables, by_category, named_marks, place_fill, sankey_nodes, sankey_totals,
+    series_fill, series_fill_set, unset_starting, with_node_fill, with_palette, with_series_fill,
     with_variables,
 };
 pub use generate::{Generated, Part, Refusal, category_order, generate, generate_on, palette};
@@ -106,6 +106,8 @@ pub struct Chart {
 
 /// The most references a chart holds.
 pub const MAX_REFERENCES: usize = 16;
+/// The most colours a *From variables* palette holds.
+pub const MAX_PALETTE_GROUP: usize = MAX_COLUMNS;
 
 /// What a highlight names, by name.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -696,6 +698,12 @@ pub enum PartRole {
 #[serde(default)]
 pub struct Options {
     pub palette: Palette,
+    /// *From variables*: the colours an unset series or named mark takes in
+    /// place of the palette's, in order, round again past the last — each bound
+    /// to a variable of the group picked, so a mode switch recolours the chart.
+    /// Empty is the palette. At most [`MAX_PALETTE_GROUP`].
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub palette_group: Vec<BrushSource>,
     /// Which ground the unset colours are derived for (`Chart::drawn_dark`).
     pub theme: Theme,
     /// The plot's own background, under the grid.
@@ -744,6 +752,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             palette: Palette::default(),
+            palette_group: Vec::new(),
             theme: Theme::default(),
             plot: Plot::default(),
             bars: Bars::default(),
@@ -1754,26 +1763,6 @@ impl Chart {
         if self.references.len() > MAX_REFERENCES {
             return Err(ChartRule::References);
         }
-        let b = &self.options.bars;
-        if b.shape == BarShape::Lollipops && b.stacking != Stacking::Apart {
-            return Err(ChartRule::LollipopsStack);
-        }
-        let w = &self.options.waterfall;
-        let sizes = [b.stem, b.head]
-            .iter()
-            .all(|v| v.is_finite() && (0.0..=4096.0).contains(v));
-        let wnames = w.totals.len() <= MAX_ROWS
-            && w.totals.iter().all(name)
-            && w.final_total.as_ref().is_none_or(name);
-        let angle = self.options.radar.start_angle;
-        let fade = self.options.fade.to;
-        let radar = angle.is_finite()
-            && (-360.0..=360.0).contains(&angle)
-            && fade.is_finite()
-            && (0.0..=100.0).contains(&fade);
-        if !sizes || !wnames || !radar {
-            return Err(ChartRule::BadOption);
-        }
         let mut ids = FxHashSet::default();
         for r in &self.references {
             if !ids.insert(r.id) {
@@ -1867,67 +1856,23 @@ impl Chart {
 
     /// Every colour the description holds; an unset one holds none.
     pub fn brushes(&self) -> impl Iterator<Item = &BrushSource> + '_ {
-        let o = &self.options;
         self.series
             .iter()
             .filter_map(|s| s.fill.as_ref())
             .chain(self.nodes.iter().filter_map(|n| n.fill.as_ref()))
-            .chain(
-                [
-                    &o.value_axis.colour,
-                    &o.value_axis.grid.colour,
-                    &o.category_axis.colour,
-                    &o.category_axis.grid.colour,
-                    &o.text.ink,
-                    &o.plot.fill,
-                    &o.stroke.colour,
-                    &o.text.tick.ink,
-                    &o.text.value.ink,
-                    &o.text.legend.ink,
-                    &o.text.title.ink,
-                    &o.below_zero,
-                    &self.highlight.muted,
-                    &o.bars.stem_colour,
-                    &o.waterfall.increase,
-                    &o.waterfall.decrease,
-                    &o.waterfall.total,
-                ]
-                .into_iter()
-                .flatten(),
-            )
+            .chain(self.options.brushes())
+            .chain(&self.highlight.muted)
             .chain(self.references.iter().map(|r| &r.colour))
     }
 
     /// [`Self::brushes`], to rewrite in place: a binding detached or rebound.
     pub fn brushes_mut(&mut self) -> impl Iterator<Item = &mut BrushSource> + '_ {
-        let o = &mut self.options;
         self.series
             .iter_mut()
             .filter_map(|s| s.fill.as_mut())
             .chain(self.nodes.iter_mut().filter_map(|n| n.fill.as_mut()))
-            .chain(
-                [
-                    &mut o.value_axis.colour,
-                    &mut o.value_axis.grid.colour,
-                    &mut o.category_axis.colour,
-                    &mut o.category_axis.grid.colour,
-                    &mut o.text.ink,
-                    &mut o.plot.fill,
-                    &mut o.stroke.colour,
-                    &mut o.text.tick.ink,
-                    &mut o.text.value.ink,
-                    &mut o.text.legend.ink,
-                    &mut o.text.title.ink,
-                    &mut o.below_zero,
-                    &mut self.highlight.muted,
-                    &mut o.bars.stem_colour,
-                    &mut o.waterfall.increase,
-                    &mut o.waterfall.decrease,
-                    &mut o.waterfall.total,
-                ]
-                .into_iter()
-                .flatten(),
-            )
+            .chain(self.options.brushes_mut())
+            .chain(&mut self.highlight.muted)
             .chain(self.references.iter_mut().map(|r| &mut r.colour))
     }
 
@@ -2431,7 +2376,125 @@ impl Options {
         serde_json::from_value(o).unwrap_or_else(|_| onto.clone())
     }
 
-    fn validate(&self) -> Result<(), ChartRule> {
+    /// Every colour the options hold; an unset one holds none.
+    pub fn brushes(&self) -> impl Iterator<Item = &BrushSource> + '_ {
+        [
+            &self.value_axis.colour,
+            &self.value_axis.grid.colour,
+            &self.category_axis.colour,
+            &self.category_axis.grid.colour,
+            &self.text.ink,
+            &self.plot.fill,
+            &self.stroke.colour,
+            &self.text.tick.ink,
+            &self.text.value.ink,
+            &self.text.legend.ink,
+            &self.text.title.ink,
+            &self.below_zero,
+            &self.bars.stem_colour,
+            &self.waterfall.increase,
+            &self.waterfall.decrease,
+            &self.waterfall.total,
+        ]
+        .into_iter()
+        .flatten()
+        .chain(&self.palette_group)
+    }
+
+    /// [`Self::brushes`], to rewrite in place.
+    pub fn brushes_mut(&mut self) -> impl Iterator<Item = &mut BrushSource> + '_ {
+        [
+            &mut self.value_axis.colour,
+            &mut self.value_axis.grid.colour,
+            &mut self.category_axis.colour,
+            &mut self.category_axis.grid.colour,
+            &mut self.text.ink,
+            &mut self.plot.fill,
+            &mut self.stroke.colour,
+            &mut self.text.tick.ink,
+            &mut self.text.value.ink,
+            &mut self.text.legend.ink,
+            &mut self.text.title.ink,
+            &mut self.below_zero,
+            &mut self.bars.stem_colour,
+            &mut self.waterfall.increase,
+            &mut self.waterfall.decrease,
+            &mut self.waterfall.total,
+        ]
+        .into_iter()
+        .flatten()
+        .chain(&mut self.palette_group)
+    }
+
+    /// These options as a chart style holds them: how the chart looks, with
+    /// every option that says something about one chart's data at its default
+    /// ([`Self::take_own`]).
+    pub fn look(&self) -> Options {
+        let mut o = self.clone();
+        o.take_own(&Options::default());
+        o
+    }
+
+    /// `look`'s look over these options' own fields: what a chart's options
+    /// become when a chart style is written onto it.
+    pub fn with_look(&self, look: &Options) -> Options {
+        let mut o = look.clone();
+        o.take_own(self);
+        o
+    }
+
+    /// `from`'s options that belong to one chart rather than its look, set
+    /// here: the stacking, order and bar shape, which change what the chart
+    /// says as its kind does; the axis titles and typed ranges, which name this
+    /// data; a pie's small-slice grouping; and a waterfall's direction and the
+    /// categories it totals. The one list both [`Self::look`] and
+    /// [`Self::with_look`] read.
+    fn take_own(&mut self, from: &Options) {
+        self.bars.stacking = from.bars.stacking;
+        self.bars.order = from.bars.order;
+        self.bars.shape = from.bars.shape;
+        self.lines.area_stacking = from.lines.area_stacking;
+        self.slices.order = from.slices.order;
+        self.slices.group_below = from.slices.group_below;
+        for (to, from) in [
+            (&mut self.value_axis, &from.value_axis),
+            (&mut self.category_axis, &from.category_axis),
+        ] {
+            to.title.clone_from(&from.title);
+            to.range = from.range;
+        }
+        self.waterfall.horizontal = from.waterfall.horizontal;
+        self.waterfall.totals.clone_from(&from.waterfall.totals);
+        self.waterfall
+            .final_total
+            .clone_from(&from.waterfall.final_total);
+    }
+
+    /// Whether these options may be stored, on a chart or as a chart style's
+    /// value: every number finite and in range, every text and list within its
+    /// limit, and lollipops never stacked.
+    pub(crate) fn validate(&self) -> Result<(), ChartRule> {
+        let b = &self.bars;
+        if b.shape == BarShape::Lollipops && b.stacking != Stacking::Apart {
+            return Err(ChartRule::LollipopsStack);
+        }
+        let name = |s: &String| s.chars().count() <= MAX_CELL_CHARS;
+        let w = &self.waterfall;
+        let sizes = [b.stem, b.head]
+            .iter()
+            .all(|v| v.is_finite() && (0.0..=4096.0).contains(v));
+        let wnames = w.totals.len() <= MAX_ROWS
+            && w.totals.iter().all(name)
+            && w.final_total.as_ref().is_none_or(name);
+        let angle = self.radar.start_angle;
+        let fade = self.fade.to;
+        let radar = angle.is_finite()
+            && (-360.0..=360.0).contains(&angle)
+            && fade.is_finite()
+            && (0.0..=100.0).contains(&fade);
+        if !sizes || !wnames || !radar || self.palette_group.len() > MAX_PALETTE_GROUP {
+            return Err(ChartRule::BadOption);
+        }
         let len = |v: f64, max: f64| v.is_finite() && (0.0..=max).contains(&v);
         let unit = |v: f64| len(v, 1.0);
         let pct = |v: f64| len(v, 100.0);
@@ -2682,18 +2745,17 @@ pub fn flatten(doc: &crate::Document, id: NodeId) -> Option<Operation> {
 /// *Flatten chart*: the frame keeps everything it is, its parts stay where they
 /// are, and the description goes; a part's binding its variable's scope refuses
 /// (a line's stroke drawing a colour scoped to fills) detaches to the colour it
-/// drew. The drop comes first, so the detaches no longer write a part. `None`
-/// for a node that is not a chart.
+/// drew. The drop comes first, so the detaches no longer write a part. A
+/// chart style the chart is bound to is unbound beside it, asked for as the
+/// flatten's own. `None` for a node that is not a chart.
 pub fn flatten_ops(doc: &crate::Document, id: NodeId) -> Option<Vec<Operation>> {
     let drop = flatten(doc, id)?;
-    let parts: Vec<NodeId> = doc
-        .get(id)?
-        .chart()?
-        .parts
-        .iter()
-        .map(|(_, p)| *p)
-        .collect();
+    let node = doc.get(id)?;
+    let parts: Vec<NodeId> = node.chart()?.parts.iter().map(|(_, p)| *p).collect();
     let mut ops = vec![drop];
+    if node.styles().chart.is_some() {
+        ops.push(Operation::SetChartStyle { id, style: None });
+    }
     ops.extend(crate::variable::out_of_scope_ops(doc, &parts));
     Some(ops)
 }
