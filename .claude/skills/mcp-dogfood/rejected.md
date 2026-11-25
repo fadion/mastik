@@ -56,5 +56,11 @@ decision belongs in `docs/non-goals.md` or `docs/decisions.md` instead.
   binding, as the inspector's does; a matching colour is not a binding.
 - **`get_outline` naming an instance's kind as `instance`.** The outline's `kind` is the
   layer's kind, which agents compare against; `get_node` and `list_components` give the role.
+- **`combine_as_variants` merging properties defined on each main before it.** A main owns
+  its properties until it joins a set; define them on the set after combining.
+- **A batch holding reads.** A batch is one undo step of writes; a read between writes is its
+  own call, and a write's answer names what it made.
+- **A variant property rename naming the property it clashes with.** The clash is the name the
+  call gave, which the refusal is about.
 - **`print` showing a Luau table's contents.** Luau prints a table as its address; that is
   the language's, not a tool's.

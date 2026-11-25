@@ -5365,7 +5365,8 @@ fn push_to_main_writes_an_override_into_the_main() {
 /// layer holding a main with a new main in it.
 ///
 /// flip: `add_variant` placing the copy below its source → fails at "the copy
-/// covers no variant".
+/// covers no variant"; `duplicate` without its main note → fails at "the
+/// duplicate's note".
 #[test]
 fn add_variant_and_duplicate_as_component_make_mains() {
     let (mut doc, mut ids, page) = blank();
@@ -5407,6 +5408,17 @@ fn add_variant_and_duplicate_as_component_make_mains() {
             "the copy covers no variant: {at:?} over {other:?}"
         );
     }
+    // A main's plain copy is an instance, and its answer says what copies a main.
+    let said = answer(
+        &doc,
+        &mut ids,
+        "duplicate",
+        json!({ "nodes": [a.to_wire()] }),
+    )
+    .unwrap()
+    .said
+    .unwrap_or_default();
+    assert!(said.contains("add_variant"), "the duplicate's note: {said}");
     let (lone, _) = main_component(&mut doc, &mut ids, page, "Lone", 50.0);
     assert_eq!(
         refused_param(

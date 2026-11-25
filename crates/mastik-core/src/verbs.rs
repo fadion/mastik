@@ -2921,11 +2921,25 @@ pub static VERBS: &[Verb] = &[
         run: |ctx, a| {
             let offset =
                 kurbo::Vec2::new(a.number("dx").unwrap_or(0.0), a.number("dy").unwrap_or(0.0));
-            let (tx, created) = build::duplicate(ctx.doc, ctx.ids, &a.nodes("nodes")?, offset);
+            let nodes = a.nodes("nodes")?;
+            let (tx, created) = build::duplicate(ctx.doc, ctx.ids, &nodes, offset);
             if created.is_empty() {
                 return Err(VerbError::Nothing("none of the layers can be copied"));
             }
-            Ok(Done::made(tx, created))
+            // A main's copy is an instance; one in a set is no variant, which
+            // agents expected.
+            let main = nodes
+                .iter()
+                .any(|n| ctx.doc.get(*n).is_some_and(|n| n.component()));
+            let done = Done::made(tx, created);
+            Ok(match main {
+                true => done.saying(
+                    "a main's copy is an instance of it: `add_variant` copies a variant as a new \
+                     one, and `duplicate_as_component` copies a main as a main"
+                        .into(),
+                ),
+                false => done,
+            })
         },
     },
     Verb {
