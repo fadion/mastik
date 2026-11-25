@@ -1903,14 +1903,21 @@ fn by_names(doc: &Document, verb: &'static Verb, args: &Value) -> Result<Value, 
     Ok(args)
 }
 
-/// `field`, a variable, mode or script (`what`) given by its name, as its id;
-/// an id is left as it is, since a target may dangle.
+/// `field`, a variable, mode or script (`what`) given by its name, as its id.
+/// A string shaped like an id (`16:9`) is kept as one when that id exists or
+/// nothing has it as a name, since a target may dangle.
 fn id_field(doc: &Document, what: &str, field: &mut Value) -> Result<(), String> {
-    if let Value::String(name) = field
-        && NodeId::from_wire(name).is_none()
-    {
-        *field = id_named(doc, what, name)?;
+    let Value::String(name) = field else {
+        return Ok(());
+    };
+    if let Some(id) = NodeId::from_wire(name) {
+        let items = named_items(doc, what)?;
+        let held = |v: &Value| v.as_str().and_then(NodeId::from_wire) == Some(id);
+        if items.iter().any(|(_, v)| held(v)) || !items.iter().any(|(n, _)| n == name) {
+            return Ok(());
+        }
     }
+    *field = id_named(doc, what, name)?;
     Ok(())
 }
 
@@ -1960,8 +1967,12 @@ fn tagged_names(doc: &Document, v: &mut Value, at: &str) -> Result<(), String> {
             id_field(doc, what, f).map_err(|why| format!("{}: {why}", field(name)))?;
         }
         if let Some(t) = fields.get_mut("table") {
+            // As `id_field`: an id-shaped name is an id unless only a name matches.
             if let Value::String(name) = t
-                && NodeId::from_wire(name).is_none()
+                && NodeId::from_wire(name).is_none_or(|id| {
+                    doc.data_set(crate::list::DataSetId(id)).is_none()
+                        && doc.data_sets().iter().any(|d| d.name == *name)
+                })
             {
                 let set = tables::find_table(doc, name)
                     .map_err(|why| format!("{}: {why}", field("table")))?;
@@ -2082,8 +2093,38 @@ fn bare_cell(doc: &Document, var: &Value, value: &Value) -> Option<Value> {
 /// The id of the `what` (variable, style, collection, mode, script) called `name`, or
 /// why there is not exactly one.
 fn id_named(doc: &Document, what: &str, name: &str) -> Result<Value, String> {
+    let named = named_items(doc, what)?;
+    let hits: Vec<&Value> = named
+        .iter()
+        .filter(|(n, _)| n == name)
+        .map(|(_, id)| id)
+        .collect();
+    match hits.as_slice() {
+        [id] => Ok((*id).clone()),
+        [] => {
+            let mut names: Vec<&str> = named.iter().map(|(n, _)| n.as_str()).collect();
+            names.sort_unstable();
+            names.dedup();
+            let more = names.len().saturating_sub(12);
+            names.truncate(12);
+            let list = match names.is_empty() {
+                true => "there are none".to_owned(),
+                false if more > 0 => format!("they are `{}` and {more} more", names.join("`, `")),
+                false => format!("they are `{}`", names.join("`, `")),
+            };
+            Err(format!("no {what} has the id or name `{name}`; {list}"))
+        }
+        _ => Err(format!(
+            "{} {what}s are named `{name}`; give its id",
+            hits.len()
+        )),
+    }
+}
+
+/// Every `what` (variable, style, collection, mode, script) by name and wire id.
+fn named_items(doc: &Document, what: &str) -> Result<Vec<(String, Value)>, String> {
     let vars = doc.variables();
-    let named: Vec<(String, Value)> = match what {
+    Ok(match what {
         "variable" => vars
             .iter()
             .map(|v| (v.name.clone(), serde_json::to_value(v.id)))
@@ -2129,32 +2170,7 @@ fn id_named(doc: &Document, what: &str, name: &str) -> Result<Value, String> {
             })
             .collect(),
         _ => return Err(format!("expected a {what}'s id")),
-    };
-    let hits: Vec<&Value> = named
-        .iter()
-        .filter(|(n, _)| n == name)
-        .map(|(_, id)| id)
-        .collect();
-    match hits.as_slice() {
-        [id] => Ok((*id).clone()),
-        [] => {
-            let mut names: Vec<&str> = named.iter().map(|(n, _)| n.as_str()).collect();
-            names.sort_unstable();
-            names.dedup();
-            let more = names.len().saturating_sub(12);
-            names.truncate(12);
-            let list = match names.is_empty() {
-                true => "there are none".to_owned(),
-                false if more > 0 => format!("they are `{}` and {more} more", names.join("`, `")),
-                false => format!("they are `{}`", names.join("`, `")),
-            };
-            Err(format!("no {what} has the id or name `{name}`; {list}"))
-        }
-        _ => Err(format!(
-            "{} {what}s are named `{name}`; give its id",
-            hits.len()
-        )),
-    }
+    })
 }
 
 const NODE: ParamKind = ParamKind::Node;
@@ -8128,7 +8144,8 @@ fn tree_ops(
     if let Some(written) = &tree.play {
         let mut v = written.clone();
         let ids = &mut *ctx.ids;
-        let play: crate::prototype::LayerPlay = loosen_model("LayerPlay", "", &mut v)
+        let play: crate::prototype::LayerPlay = play_names(ctx.doc, &mut v)
+            .and_then(|()| loosen_model("LayerPlay", "", &mut v))
             .map(|()| play_in(&mut v, &mut || ids.mint_item()))
             .and_then(|()| settle::<crate::prototype::LayerPlay>("LayerPlay", v))
             .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))

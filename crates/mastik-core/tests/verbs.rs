@@ -8078,12 +8078,13 @@ fn set_play_gives_snap_points_their_ids() {
 
 /// `set_reactions` and `set_flows` take a variable, mode, script, table or
 /// column by its name where they take its id, as a top-level id parameter does;
-/// a name that is none is refused naming its path, and an id is kept as it is.
+/// a name that is none is refused naming its path, an id is kept as it is, and a
+/// name that reads as an id (`4:3`) is taken as the name when no id matches.
 ///
 /// flip: `by_names` not reading a `[Reaction]` → fails at the first `run`;
 /// `reaction_names` not reading a row action's cells → the same `run`, at
 /// `cells[0].column`; `by_names` not reading a `[Flow]` → fails at the flows'
-/// `run`.
+/// `run`; `id_field` keeping every id-shaped string → fails at "the mode by name".
 #[test]
 fn reactions_and_flows_take_names_for_ids() {
     use mastik_core::prototype::{Action, Trigger};
@@ -8177,6 +8178,58 @@ fn reactions_and_flows_take_names_for_ids() {
     );
     let flow = &doc.page(page).unwrap().flows[0];
     assert_eq!(flow.values[0].0, count, "the flow's variable");
+
+    run(&mut doc, &mut ids, "add_mode", json!({ "name": "4:3" }));
+    run(
+        &mut doc,
+        &mut ids,
+        "add_table",
+        json!({ "name": "16:9", "columns": ["Item"], "rows": [] }),
+    );
+    let ratio = doc
+        .variables()
+        .modes()
+        .find(|m| m.name == "4:3")
+        .unwrap()
+        .id;
+    let wide = doc
+        .data_sets()
+        .iter()
+        .find(|d| d.name == "16:9")
+        .unwrap()
+        .id;
+    let reactions = json!([{ "trigger": "Click", "actions": [
+        { "SetMode": { "mode": "4:3" } },
+        { "AddRow": { "table": "16:9", "cells": [] } },
+    ] }]);
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [a.to_wire()], "reactions": reactions }),
+    );
+    let held = &doc.get(a).unwrap().reactions()[0].actions;
+    assert!(
+        matches!(held[0].value, Action::SetMode { mode, .. } if mode == ratio),
+        "the mode by name though it reads as an id: {held:?}"
+    );
+    assert!(
+        matches!(held[1].value, Action::AddRow { table, .. } if table == wide),
+        "the table by name though it reads as an id: {held:?}"
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "set_flows",
+        json!({ "page": page.to_wire(), "flows": [
+            { "name": "Main", "start": a.to_wire(), "modes": ["4:3"] },
+        ] }),
+    );
+    assert_eq!(
+        doc.page(page).unwrap().flows[0].modes,
+        vec![ratio],
+        "the flow's mode by name"
+    );
 }
 
 /// A screen action or a flow's start naming a layer that is there but is no
@@ -8186,7 +8239,9 @@ fn reactions_and_flows_take_names_for_ids() {
 ///
 /// flip: `targets_checked` not called from `set_reactions` → fails at "Navigate
 /// to a rectangle"; its `ChangeState` arm left out → fails at "Change to a
-/// rectangle"; `set_flows` without its start check → fails at "a flow".
+/// rectangle"; the arm's `to` check, the `SwapOverlay` arm, the `Conditional`
+/// recursion or `tree_reactions`' call left out → fails at its own assertion;
+/// `set_flows` without its start check → fails at "a flow".
 #[test]
 fn a_link_to_the_wrong_kind_of_layer_is_refused() {
     let (mut doc, mut ids, page) = blank();
@@ -8229,6 +8284,69 @@ fn a_link_to_the_wrong_kind_of_layer_is_refused() {
         json!({ "ChangeState": { "instance": r.to_wire(), "to": r.to_wire() } }),
     );
     assert!(why.contains("ChangeState"), "Change to a rectangle: {why}");
+    let shape = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame(20.0, 20.0) }),
+    )[0];
+    let main = run(
+        &mut doc,
+        &mut ids,
+        "make_component",
+        json!({ "nodes": [shape.to_wire()] }),
+    )[0];
+    let inst = run(
+        &mut doc,
+        &mut ids,
+        "create_instance",
+        json!({ "main": main.to_wire(), "parent": a.to_wire(), "x": 0, "y": 0 }),
+    )[0];
+    let why = refused(
+        &doc,
+        &mut ids,
+        json!({ "ChangeState": { "instance": inst.to_wire(), "to": r.to_wire() } }),
+    );
+    assert!(
+        why.contains("ChangeState.to"),
+        "an instance changed to a rectangle: {why}"
+    );
+    let why = refused(
+        &doc,
+        &mut ids,
+        json!({ "SwapOverlay": { "overlay": r.to_wire() } }),
+    );
+    assert!(
+        why.contains("SwapOverlay.overlay"),
+        "a swap to a rectangle: {why}"
+    );
+    let why = refused(
+        &doc,
+        &mut ids,
+        json!({ "Conditional": {
+            "branches": [{ "when": "true", "actions": [{ "Navigate": { "to": r.to_wire() } }] }],
+        } }),
+    );
+    assert!(
+        why.contains("branches[0].actions[0].Navigate.to"),
+        "a branch navigating to a rectangle: {why}"
+    );
+    let tree = json!({ "kind": frame(10.0, 10.0), "reactions": [{ "trigger": "Click",
+        "actions": [{ "Navigate": { "to": r.to_wire() } }] }] });
+    let why = format!(
+        "{:?}",
+        answer(
+            &doc,
+            &mut ids,
+            "insert_subtree",
+            json!({ "parent": page.to_wire(), "tree": tree })
+        )
+        .err()
+    );
+    assert!(
+        why.contains("Navigate.to"),
+        "a tree's reaction navigating to a rectangle: {why}"
+    );
     for kept in [
         json!({ "Navigate": { "to": a.to_wire() } }),
         json!({ "Navigate": { "to": "7e5b:999" } }),
@@ -8258,6 +8376,7 @@ fn a_link_to_the_wrong_kind_of_layer_is_refused() {
 /// `tree_reactions` without it → fails at "a tree's reaction";
 /// `flow_names` without the object arm → the `set_flows` run is refused;
 /// `play_fields` answering `None` → fails at "the overlay's fields";
+/// `tree_ops` without `play_names` → the tree's `insert_subtree` is refused;
 /// `model_fields` without its one-key arm → fails at "a field right under an
 /// action"; `play_fields` without its `cells` arm → fails at "a cell's fields".
 #[test]
@@ -8341,6 +8460,16 @@ fn prototype_fields_are_refused_by_name_and_values_take_names() {
     );
     let input = doc.get(t).unwrap().play().input.clone();
     assert_eq!(input.unwrap().var, filter, "an input by name");
+    let made = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": a.to_wire(), "tree": {
+            "kind": { "Text": { "content": "", "style": { "font_size": 16 } } },
+            "play": { "input": { "var": "Filter" } } } }),
+    )[0];
+    let input = doc.get(made).unwrap().play().input.clone();
+    assert_eq!(input.unwrap().var, filter, "a tree's input by name");
 
     let why = refusal(
         &doc,
