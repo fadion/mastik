@@ -368,7 +368,7 @@ fn result_of(output: Output) -> Value {
             Content::File { name, bytes, mime } => {
                 let uri = format!("mastik:///{}", uri_path(&name));
                 let resource = match String::from_utf8(bytes) {
-                    Ok(text) if is_text(mime) => {
+                    Ok(text) if is_text(mime) && text.len() <= TEXT_INLINE => {
                         json!({ "uri": uri, "mimeType": mime, "text": text })
                     }
                     Ok(text) => json!({
@@ -395,6 +395,11 @@ fn result_of(output: Output) -> Value {
     }
     result
 }
+
+/// The largest text file sent as text. A client reads a text resource into the
+/// agent's context, where a played prototype's megabytes overflow it, and saves
+/// a blob as a file.
+const TEXT_INLINE: usize = 256 * 1024;
 
 /// Whether a file of this media type is sent as text.
 fn is_text(mime: &str) -> bool {
@@ -709,6 +714,31 @@ mod tests {
         assert_eq!(svg["uri"], "mastik:///icons/close.svg");
         assert_eq!(svg["text"], "<svg/>");
         assert_eq!(r["content"][1]["resource"]["blob"], "YWI=");
+    }
+
+    /// A text file past `TEXT_INLINE` goes as a blob, which a client saves as a
+    /// file rather than reading into the agent's context.
+    ///
+    /// flip: dropping the size test from `result_of`'s text arm → fails at the
+    /// `text` assertion.
+    #[test]
+    fn a_large_text_file_is_a_blob() {
+        let html = "<p>".repeat(TEXT_INLINE / 3 + 1).into_bytes();
+        let output = Output {
+            content: vec![Content::File {
+                name: "Board.html".into(),
+                bytes: html,
+                mime: "text/html",
+            }],
+            structured: None,
+            is_error: false,
+            meta: None,
+        };
+        let r = result_of(output);
+        let resource = &r["content"][0]["resource"];
+        assert!(resource["text"].is_null());
+        assert!(resource["blob"].is_string(), "blob");
+        assert_eq!(resource["mimeType"], "text/html");
     }
 
     /// A file named with spaces, a `%` or accents gets a valid URI, its `/`s
