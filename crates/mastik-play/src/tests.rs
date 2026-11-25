@@ -615,7 +615,7 @@ fn leaving_a_hover_puts_back_newest_first() {
 /// lives on there, B's begins, and when A's ends it leaves B's value alone;
 /// B's own end puts back what both found.
 ///
-/// flip: `rehover` putting each ended while back without `hand_over_values`
+/// flip: `rehover` putting each ended while back without `hand_over`
 /// → fails at "B's value stays".
 #[test]
 fn an_older_hover_ending_leaves_the_newer_ones_value() {
@@ -659,6 +659,155 @@ fn an_older_hover_ending_leaves_the_newer_ones_value() {
     assert_eq!(preview(&p), text("B"), "B's value stays");
     p.input(Input::PointerMove(Point::new(150.0, 95.0)));
     assert_eq!(preview(&p), text("none"), "both put back");
+}
+
+/// Two cards in a scrolling frame, each with a *while hovering* doing
+/// `actions(card)`; answers the frame, the first and the second card.
+fn two_hover_cards(fx: &mut Fx, actions: &dyn Fn(usize) -> Vec<Action>) -> (NodeId, NodeId) {
+    let a = fx.frame("A", 0.0, 200.0, 100.0);
+    fx.play_settings(
+        a,
+        LayerPlay {
+            scroll: ScrollAxis::Vertical,
+            ..LayerPlay::default()
+        },
+    );
+    let first = fx.rect(a, "First", 10.0, 10.0, 100.0, 40.0);
+    let second = fx.rect(a, "Second", 10.0, 60.0, 100.0, 80.0);
+    fx.rect(a, "Long", 0.0, 150.0, 10.0, 400.0);
+    for (i, card) in [first, second].into_iter().enumerate() {
+        fx.on(card, Trigger::HoverWhile, actions(i));
+    }
+    (a, first)
+}
+
+/// Hover the first card, scroll the second under the pointer, then move off
+/// the first card's place onto the second's, then off both: the steps of
+/// `an_older_hover_ending_leaves_the_newer_ones_value`. `checks` runs after
+/// the scroll, after the first hover ends, and at the end.
+fn scroll_between_hovers(p: &mut Player, checks: &mut dyn FnMut(&Player, &str)) {
+    p.input(Input::PointerMove(Point::new(20.0, 20.0)));
+    p.input(Input::Wheel {
+        at: Point::new(20.0, 20.0),
+        delta: Vec2::new(0.0, 50.0),
+    });
+    p.input(Input::PointerMove(Point::new(21.0, 21.0)));
+    checks(p, "both");
+    p.input(Input::PointerMove(Point::new(20.0, 70.0)));
+    checks(p, "second");
+    p.input(Input::PointerMove(Point::new(150.0, 95.0)));
+    checks(p, "none");
+}
+
+/// A hover that wrote a variable twice hands over the value it found, not the
+/// one between its writes, so the variable ends at its start.
+///
+/// flip: `hand_over` filling a slot again (no `filled` test) → fails at
+/// "none: back to its start".
+#[test]
+fn a_hover_writing_twice_hands_over_what_it_found() {
+    let mut fx = Fx::new();
+    let n = fx.var("n", VarKind::Number, Cell::Number(0.0));
+    let (a, _) = two_hover_cards(&mut fx, &|_| vec![add(n, 1.0), add(n, 1.0)]);
+    let mut p = fx.play(a);
+    scroll_between_hovers(&mut p, &mut |p, at| {
+        let want = match at {
+            "both" => 4.0,
+            "second" => 4.0,
+            _ => 0.0,
+        };
+        assert_eq!(number(p, n), want, "{at}: back to its start");
+    });
+    assert!(p.values().iter().all(|r| !r.played), "no play value left");
+}
+
+/// Overlapping hovers that each set a mode of one collection on the screen:
+/// the older one's end leaves the newer one's mode, and the newer one's end
+/// puts back the screen's own mode, with play claiming none.
+///
+/// flip: the hand-over passing over `Undo::Modes` → fails at "second: the
+/// newer hover's mode stays".
+#[test]
+fn overlapping_hovers_setting_one_collection_put_its_mode_back() {
+    let mut fx = Fx::new();
+    let (light, dark, n) = dark_mode(&mut fx);
+    let dim = fx.ids.mint_mode();
+    let cells = fx
+        .doc
+        .variables()
+        .iter()
+        .filter_map(|v| {
+            let cell = match v.id == n {
+                true => Cell::Number(3.0),
+                false => v.cells.get(&light)?.clone(),
+            };
+            Some((v.id, cell))
+        })
+        .collect();
+    fx.apply(vec![Operation::AddMode {
+        collection: CollectionId::FIRST,
+        mode: Mode {
+            id: dim,
+            name: "Dim".into(),
+        },
+        index: 2,
+        cells,
+    }]);
+    let (a, _) = two_hover_cards(&mut fx, &|i| {
+        vec![Action::SetMode {
+            mode: [dark, dim][i],
+            scope: ModeScope::Screen,
+        }]
+    });
+    fx.apply(vec![Operation::SetModes {
+        id: a,
+        modes: vec![light],
+    }]);
+    let mut p = fx.play(a);
+    scroll_between_hovers(&mut p, &mut |p, at| {
+        let want = match at {
+            "both" => 3.0,
+            "second" => 3.0,
+            _ => 1.0,
+        };
+        assert_eq!(number(p, n), want, "{at}: the newer hover's mode stays");
+    });
+    assert!(p.modes.is_empty(), "play claims no mode");
+}
+
+/// A press's end puts its *while pressing* writes back newest first, so two
+/// reactions writing one variable leave it at its start.
+///
+/// flip: `pointer_up` putting the ended whiles back oldest first → fails at
+/// "back to its start".
+#[test]
+fn a_press_puts_its_while_pressing_writes_back_newest_first() {
+    let (mut fx, a, card, _) = one_card();
+    let status = fx.var("Status", VarKind::String, Cell::String("up".into()));
+    for to in ["'down'", "'held'"] {
+        fx.on(
+            card,
+            Trigger::PressWhile,
+            vec![Action::SetVariable {
+                var: status,
+                change: VarChange::Set {
+                    to: Expr(to.into()),
+                },
+            }],
+        );
+    }
+    let mut p = fx.play(a);
+    let read = |p: &Player| p.doc.resolve_var(p.screen(), status);
+    let at = Point::new(20.0, 20.0);
+    p.input(Input::PointerMove(at));
+    p.input(Input::PointerDown(at));
+    assert_eq!(read(&p), Some(Value::String("held".into())), "fixture");
+    p.input(Input::PointerUp(at));
+    assert_eq!(
+        read(&p),
+        Some(Value::String("up".into())),
+        "back to its start"
+    );
 }
 
 /// *Set variable* to a value of another kind is skipped with a notice; one that

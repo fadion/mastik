@@ -132,11 +132,12 @@ out both ends.
   its collection. A hover lasts while the
   layer is under the pointer or the pointer stays where the layer was when it began
   (`While::area`), so a *while hovering* navigation or modal overlay, which takes the layer from
-  under the pointer, ends when the pointer moves off that place. Hovers that end together are put
-  back newest first, and one that ends while a later one that wrote the same variable goes on
-  hands its earlier value to that one instead of writing over it (`hand_over_values`): after a
-  scroll moves card B under a pointer still on card A's place, A's end leaves B's value, and B's
-  end puts back what A found. *On leave* fires only
+  under the pointer, ends when the pointer moves off that place. Whiles that end together, the
+  hovers a move ends or the presses a release ends, are put back newest first. One that ends while
+  a later one that changed the same variable, instance or collection's mode on a node goes on
+  hands what it found to that one instead of writing over it (`hand_over`), the oldest value
+  winning: after a scroll moves card B under a pointer still on card A's place, A's end leaves
+  B's value or mode, and B's end puts back what A found. *On leave* fires only
   for a layer still in a shown frame — one that went with its frame is gone, not left — and not
   in a *Disabled* instance.
 - **A finger hovers nothing.** While the shell says the pointer is a finger (`Input::Touch(true)`),

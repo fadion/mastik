@@ -120,35 +120,66 @@ pub(crate) struct While {
     pub(crate) area: Option<Rect>,
 }
 
-/// Hand each ending while's variable put-back (`ends` true at its index) to
-/// the first later while still going that wrote the same variable: that one
-/// saw the ending one's write as the value to put back, so it takes the older
-/// value instead, and the ending one leaves the variable alone. Without it, a
-/// hover that outlives the next one's start writes over that one's value.
-fn hand_over_values(whiles: &mut [While], ends: &[bool]) {
+/// Hand each ending while's put-back (`ends` true at its index) of a variable,
+/// an instance's state or a node's mode of one collection to the first later
+/// while still going that changed the same: that one saw the ending one's
+/// change as what to put back, so it takes the older value instead, and the
+/// ending one leaves it alone. The oldest value wins: a slot filled once, by
+/// an older while or by an earlier entry of the same one, is not filled again.
+fn hand_over(whiles: &mut [While], ends: &[bool], t: &mastik_core::variable::Variables) {
+    let mut filled: Vec<(usize, usize)> = Vec::new();
     for i in 0..whiles.len() {
         if !ends[i] {
             continue;
         }
         let mut kept = Vec::new();
         for u in std::mem::take(&mut whiles[i].undo) {
-            let Undo::Value(var, was) = &u else {
+            let later = (i + 1..whiles.len()).filter(|j| !ends[*j]).find_map(|j| {
+                let k = whiles[j].undo.iter().position(|v| same_thing(v, &u, t))?;
+                Some((j, k))
+            });
+            let Some((j, k)) = later else {
                 kept.push(u);
                 continue;
             };
-            let later = (i + 1..whiles.len()).filter(|j| !ends[*j]).find_map(|j| {
-                let k = whiles[j]
-                    .undo
-                    .iter()
-                    .position(|v| matches!(v, Undo::Value(x, _) if x == var))?;
-                Some((j, k))
-            });
-            match later {
-                Some((j, k)) => whiles[j].undo[k] = Undo::Value(*var, was.clone()),
-                None => kept.push(u),
+            if !filled.contains(&(j, k)) {
+                whiles[j].undo[k] = taking_was(&whiles[j].undo[k], &u);
+                filled.push((j, k));
             }
         }
         whiles[i].undo = kept;
+    }
+}
+
+/// Whether put-backs `a` and `b` restore the same thing: one variable, one
+/// instance's state, or one node's mode of one collection.
+fn same_thing(a: &Undo, b: &Undo, t: &mastik_core::variable::Variables) -> bool {
+    match (a, b) {
+        (Undo::Value(x, _), Undo::Value(y, _)) => x == y,
+        (Undo::State(x, _), Undo::State(y, _)) => x == y,
+        (
+            Undo::Modes {
+                node: x, set: s, ..
+            },
+            Undo::Modes {
+                node: y, set: r, ..
+            },
+        ) => x == y && mastik_core::variable::same_collection(t, *s, *r),
+        _ => false,
+    }
+}
+
+/// `to` putting back what `from` would: its value, its main, or its mode and
+/// play's record of it.
+fn taking_was(to: &Undo, from: &Undo) -> Undo {
+    match (to, from) {
+        (Undo::Modes { node, set, .. }, Undo::Modes { was, played, .. }) => Undo::Modes {
+            node: *node,
+            set: *set,
+            was: *was,
+            played: played.clone(),
+        },
+        _ => from.clone(),
     }
 }
 
@@ -496,9 +527,13 @@ impl Player {
         let Some(press) = self.press.take() else {
             return false;
         };
+        // As `rehover` ends a hover: handed over to a later while still going,
+        // then put back newest first.
+        let ends: Vec<bool> = self.whiles.iter().map(|w| w.press).collect();
+        hand_over(&mut self.whiles, &ends, self.doc.variables());
         let ended: Vec<_> = self.whiles.iter().filter(|w| w.press).cloned().collect();
         self.whiles.retain(|w| !w.press);
-        for w in ended {
+        for w in ended.into_iter().rev() {
             self.undo(w.undo);
         }
         for id in press.chain.clone() {
@@ -600,7 +635,7 @@ impl Player {
                     || w.area.zip(pointer).is_some_and(|(a, p)| a.contains(p)))
         };
         let ends: Vec<bool> = self.whiles.iter().map(|w| !w.press && !over(w)).collect();
-        hand_over_values(&mut self.whiles, &ends);
+        hand_over(&mut self.whiles, &ends, self.doc.variables());
         let mut ended = Vec::new();
         let mut kept = Vec::new();
         for (w, end) in std::mem::take(&mut self.whiles).into_iter().zip(&ends) {
