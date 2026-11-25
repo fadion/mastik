@@ -84,17 +84,6 @@ pastes with the rest.
   them. Needs *Background and derived theme* first. Every five-slot enumeration grows a sixth.
   Landing it removes the non-goal *Saved user presets*.
 
-## Now · UI
-
-- **The last surfaces off the shared Escape claim.** Popups and popovers take Escape through
-  `ui::claim_popup_escape` (`keep_escape` / `popup_escaped` for a popup, `keep_popover_escape` /
-  `popover_escaped` for a popover that can host one; `app-chrome.md`, *Shared rules*). The
-  command palette, the command bar, the modal dialogs, the player and the Scripts window still
-  read the raw `Escape` press, so a popover left open under one of them closes on the same press
-  that closes it. Move each onto the claim at the tier it belongs to, keeping one press to one
-  thing, and delete the raw reads it replaces; the palette, command bar and Scripts lists already
-  consume their own Escape, so check what each still needs before converting it.
-
 ## Next · Editing parity
 
 Mastik as a standalone tool: the effects, paints, media and path tools that would otherwise send

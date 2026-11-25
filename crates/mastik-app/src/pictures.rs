@@ -401,9 +401,7 @@ impl MastikApp {
         let Some(mut card) = self.reduce.take() else {
             return;
         };
-        if card.revision != self.session.revision()
-            || ctx.input(|i| i.key_pressed(egui::Key::Escape))
-        {
+        if card.revision != self.session.revision() || crate::ui::modal_escaped(ctx) {
             return;
         }
         let enter = ui::card_enter(ctx);

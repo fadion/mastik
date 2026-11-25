@@ -746,7 +746,7 @@ impl MastikApp {
         let Some(mut t) = self.chart_import.take() else {
             return;
         };
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if ui::modal_escaped(ctx) {
             return;
         }
         let enter = ui::card_enter(ctx);

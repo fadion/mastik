@@ -592,7 +592,10 @@ no rung — dismissing something opened by accident must not deselect or drop th
 (the five inspector/Export popovers, a top-bar dropdown, the contrast fix card) calls
 `ui::keep_popover_escape` as it draws and is given the press only when no popup was open, so a
 dropdown inside it closes first; it closes on `ui::popover_escaped` after its body, and the
-routing in `frame_body` skips the ladder on that press. 🚨 **Only a popover on screen takes the
+routing in `frame_body` skips the ladder on that press. A modal dialog, the palette, the command
+bar, and the player or the Scripts window while it holds the keys stand above
+every popover (`ui::keep_modal_escape`): one press closes or answers the surface, and a popover
+left open under it stays for the next. 🚨 **Only a popover on screen takes the
 press** (§15 D847): a flag outlives its popover when the panel drawing it is skipped (non-text
 selection, focus mode), and claims nothing then; the press clears such a flag and pays out its
 rung. ⚠️ **Image editing's card is deliberately

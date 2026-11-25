@@ -317,7 +317,7 @@ impl MastikApp {
         {
             return;
         }
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if ui::modal_escaped(ctx) {
             return;
         }
         let enter = ui::card_enter(ctx);

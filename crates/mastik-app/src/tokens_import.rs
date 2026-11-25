@@ -578,7 +578,7 @@ impl MastikApp {
         let Some(mut t) = self.tokens_import.take() else {
             return;
         };
-        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if ui::modal_escaped(ctx) {
             return;
         }
         let enter = ui::card_enter(ctx);
@@ -1341,7 +1341,12 @@ mod tests {
                 events,
                 ..Default::default()
             };
-            let _ = ctx.run_ui(input, |ui| app.tokens_import_ui(ui.ctx(), canvas));
+            // As `frame_body` does: the open review asks for the modal's press.
+            let _ = ctx.run_ui(input, |ui| {
+                crate::ui::keep_modal_escape(ui.ctx());
+                crate::ui::claim_popup_escape(ui.ctx());
+                app.tokens_import_ui(ui.ctx(), canvas)
+            });
         };
         for _ in 0..4 {
             frame(&mut app, vec![]);

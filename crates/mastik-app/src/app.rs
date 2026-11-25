@@ -2279,6 +2279,11 @@ impl MastikApp {
         let canvas_tab =
             self.view != View::Dashboard && (self.text.is_some() || self.edited_path().is_some());
         let _focus = crate::ui::KeyboardFocus::begin(&ctx, canvas_tab);
+        // A modal or the palette left up by last frame stands over every popover.
+        // Every flag read here is drawn, so none is left set behind a skipped panel.
+        if self.dialog_is_up() || self.palette.is_some() {
+            crate::ui::keep_modal_escape(&ctx);
+        }
         // Before every key reader: an open popup takes `Escape` and nothing behind it.
         crate::ui::claim_popup_escape(&ctx);
         // A push asked for by a menu is this frame's reset's to take; one no door
@@ -8950,6 +8955,13 @@ impl MastikApp {
     /// Not `edited_image` (a canvas mode), and not `ctx.egui_wants_keyboard_input()`,
     /// which is false for a modal with buttons and no text field.
     pub(crate) fn modal_is_up(&self) -> bool {
+        self.publishing.is_some() || self.dialog_is_up()
+    }
+
+    /// [`Self::modal_is_up`] but for the publish popover: the modals that stand over
+    /// every popover and take `Escape` before one (`ui::keep_modal_escape`), where
+    /// the publish popover, a top-bar dropdown, takes it as a popover.
+    fn dialog_is_up(&self) -> bool {
         self.settings.is_some()
             || self.play_disclosure.is_some()
             || self.proto_export.is_some()
@@ -8959,7 +8971,6 @@ impl MastikApp {
             || !self.recovery.pending.is_empty()
             || self.deleting_value.is_some()
             || self.pages.deleting.is_some()
-            || self.publishing.is_some()
             || self.making_local.is_some()
             || self.kits_used_open
             || self.versions_open
@@ -18936,6 +18947,63 @@ mod context_menu_rule_tests {
             &|a| a.type_menu.is_some(),
             (icon::TRANSLATE, "None"),
         );
+    }
+
+    /// Escape over a surface standing above an open popover (the palette, the command
+    /// bar, a modal dialog) closes that surface alone; the popover and the selection
+    /// stay, and the next press closes the popover.
+    /// flip: `frame_body` not asking `ui::keep_modal_escape` for `dialog_is_up` →
+    /// fails at "the popover under it stays" for the dialog (for the palette, likewise).
+    /// flip: `command_bar_ui` not calling `ui::keep_modal_escape` → fails there for the
+    /// command bar; calling it on the frame the bar closes → fails at "the next press".
+    #[test]
+    fn escape_over_a_surface_above_a_popover_closes_only_the_surface() {
+        let case = |name: &str,
+                    open: &dyn Fn(&mut MastikApp, &egui::Context),
+                    up: &dyn Fn(&MastikApp) -> bool| {
+            let ctx = egui::Context::default();
+            crate::theme::install(&ctx);
+            let (mut app, id) = probe_app(&ctx);
+            whole_frame(&ctx, &mut app, Vec::new());
+            open(&mut app, &ctx);
+            // Opening one closes the popovers; one left open is the case asked about.
+            app.stroke_menu = Some(0);
+            for _ in 0..3 {
+                whole_frame(&ctx, &mut app, Vec::new());
+            }
+            assert!(
+                up(&app) && app.stroke_menu.is_some(),
+                "{name}: fixture: the surface stands over the open popover"
+            );
+
+            whole_frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+            assert!(!up(&app), "{name}: Escape closes the surface");
+            assert!(
+                app.stroke_menu.is_some(),
+                "{name}: the popover under it stays"
+            );
+            assert_eq!(
+                app.session.selection.ids(),
+                [id],
+                "{name}: the selection stays"
+            );
+
+            whole_frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+            assert!(
+                app.stroke_menu.is_none(),
+                "{name}: the next press closes the popover"
+            );
+            assert_eq!(app.session.selection.ids(), [id], "{name}: and only it");
+        };
+        case("palette", &|a, ctx| a.toggle_palette(ctx), &|a| {
+            a.palette.is_some()
+        });
+        case("command bar", &|a, _| a.open_command_bar(), &|a| {
+            a.command_bar.is_some()
+        });
+        case("dialog", &|a, _| a.confirming_close = true, &|a| {
+            a.confirming_close
+        });
     }
 }
 

@@ -610,7 +610,7 @@ impl MastikApp {
                     None => {}
                 }
             });
-        if outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if outside || crate::ui::modal_escaped(ctx) {
             close = true;
         }
         if export {

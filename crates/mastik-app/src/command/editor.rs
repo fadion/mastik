@@ -246,12 +246,6 @@ impl Scripts {
         self.menu.is_some()
     }
 
-    /// `Escape` while the window holds the keyboard: it closes the menu, and
-    /// otherwise goes no further than the window's own controls.
-    pub(crate) fn escape_menu(&mut self) {
-        self.menu = None;
-    }
-
     /// The code pane's widget id: a fresh one for each script shown, so the
     /// text edit's own undo never brings one script's text into another.
     fn code_id(&self) -> egui::Id {
@@ -265,10 +259,9 @@ impl MastikApp {
     /// control that is no text entry the undo, redo and save chords, as past a
     /// focused button; nothing reaches the canvas.
     pub(crate) fn scripts_keys(&mut self, ctx: &egui::Context) {
+        // `Escape` under it is the menu's popup claim, closed as it draws.
         if self.scripts.menu_open() {
-            if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
-                self.scripts.escape_menu();
-            } else {
+            if !crate::ui::popup_escaped(ctx) {
                 self.scripts.menu_nav = crate::menu::read_nav(ctx);
             }
             return;
@@ -1457,10 +1450,14 @@ impl MastikApp {
                 s.output_h = Some((output_h - edge.drag_delta().y).clamp(OUTPUT_HEAD_H, max));
             }
         });
-        if let Some(which) = &current
-            && let Some(chosen) = script_menu(ctx, &mut self.scripts, which)
-        {
-            act = Some(chosen);
+        match &current {
+            Some(which) => {
+                if let Some(chosen) = script_menu(ctx, &mut self.scripts, which) {
+                    act = Some(chosen);
+                }
+            }
+            // A menu not drawn claims no `Escape`, and would hold the keys.
+            None => self.scripts.menu = None,
         }
         // A press on the window or one of its popups gives it the keyboard; a
         // press anywhere else gives the keyboard back to the canvas.
@@ -1514,6 +1511,11 @@ impl MastikApp {
         self.scripts_act(act);
         let code_id = self.scripts.code_id();
         self.scripts.code_focused = ctx.memory(|m| m.has_focus(code_id));
+        // Still holding the keys, its lists and fields take `Escape`, never a
+        // popover left open beside it.
+        if self.scripts.holds_keys() {
+            crate::ui::keep_modal_escape(ctx);
+        }
     }
 
     /// Act on what the window asked for.
@@ -1805,7 +1807,7 @@ impl MastikApp {
         };
         let enter =
             ctx.input(|i| i.key_pressed(egui::Key::Enter)) && !ctx.egui_wants_keyboard_input();
-        let escape = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        let escape = ui::modal_escaped(ctx);
         let mut decided: Option<bool> = None;
         let outside =
             settings::canvas_card(ctx, "script-form", canvas, FORM_W, CardHold::Modal, |ui| {
@@ -1965,7 +1967,7 @@ impl MastikApp {
                 }
             },
         );
-        if outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if outside || ui::modal_escaped(ctx) {
             decided = Some(0);
         }
         match decided {
@@ -3022,8 +3024,10 @@ fn script_menu(ctx: &egui::Context, s: &mut Scripts, which: &Which) -> Option<Ac
     let outside = ctx.input(|i| i.pointer.any_pressed())
         && !area.response.contains_pointer()
         && !button.is_some_and(|r| ctx.pointer_interact_pos().is_some_and(|p| r.contains(p)));
-    if chosen.is_some() || outside {
+    if chosen.is_some() || outside || ui::popup_escaped(ctx) {
         s.menu = None;
+    } else {
+        ui::keep_escape(ctx);
     }
     chosen
 }
@@ -4183,11 +4187,15 @@ mod tests {
     }
 
     /// The ⋯ menu wears the accent while open, and `Escape` closes it without
-    /// reaching the canvas, whose selection stays.
-    /// flip: the key routing without its `holds_keys` branch → fails at
-    /// "Escape closed the menu".
+    /// reaching the canvas, whose selection stays; a second, with the window
+    /// holding the keys, is never a popover's left open beside it.
+    /// flip: `script_menu` not calling `ui::keep_escape` → fails at "Escape
+    /// closed the menu".
+    /// flip: `scripts_ui` not calling `ui::keep_modal_escape` → fails at "the
+    /// popover keeps its press".
     #[test]
     fn escape_closes_the_menu_and_not_the_selection() {
+        use crate::command::tests::{key as key_event, pass};
         let (ctx, mut app) = open_on("print(1)");
         let selected = app.session.selection.ids().to_vec();
         assert_eq!(selected.len(), 1, "fixture: a layer is selected");
@@ -4201,6 +4209,29 @@ mod tests {
             app.session.selection.ids(),
             &selected[..],
             "the selection stays"
+        );
+
+        assert!(
+            app.scripts.holds_keys(),
+            "fixture: the window holds the keys"
+        );
+        // A popover drawn last frame asks for the press.
+        crate::ui::keep_popover_escape(&ctx);
+        let none = egui::Modifiers::NONE;
+        pass(
+            &ctx,
+            &mut app,
+            vec![key_event(egui::Key::Escape, none)],
+            none,
+        );
+        assert!(
+            !crate::ui::popover_escaped(&ctx),
+            "the popover keeps its press"
+        );
+        assert_eq!(
+            app.session.selection.ids(),
+            &selected[..],
+            "and the selection"
         );
     }
 

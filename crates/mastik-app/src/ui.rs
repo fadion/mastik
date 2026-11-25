@@ -6734,13 +6734,18 @@ fn kept_tab_id() -> egui::Id {
 /// hosting it nor the canvas's selection hears it. Called once at the top of the
 /// frame body, before any key reader. egui's own popups (a `ComboBox`,
 /// `Popup::menu`, a context menu) are closed here; one the app holds open asks for
-/// the press with [`keep_escape`] and closes on [`popup_escaped`]. A popover (a
+/// the press with [`keep_escape`] and closes on [`popup_escaped`]. A modal, or a
+/// surface holding the keyboard as one, asks with [`keep_modal_escape`] and is
+/// given the press next, while no popup is open ([`modal_escaped`]). A popover (a
 /// card hosting popups of its own) asks with [`keep_popover_escape`] and is given
-/// the press only while none of those is open.
+/// the press only while neither is up.
 pub fn claim_popup_escape(ctx: &egui::Context) {
     // One accessor at a time: the context lock is not re-entrant.
     let kept = ctx
         .data_mut(|d| d.remove_temp::<bool>(kept_escape_id()))
+        .is_some();
+    let modal = ctx
+        .data_mut(|d| d.remove_temp::<bool>(kept_modal_escape_id()))
         .is_some();
     let popover = ctx
         .data_mut(|d| d.remove_temp::<bool>(kept_popover_escape_id()))
@@ -6748,7 +6753,8 @@ pub fn claim_popup_escape(ctx: &egui::Context) {
     let open = kept || egui::Popup::is_any_open(ctx);
     let pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
     let claimed = open && pressed;
-    let popover_claimed = !open && popover && pressed;
+    let modal_claimed = !open && modal && pressed;
+    let popover_claimed = !open && !modal && popover && pressed;
     if claimed {
         ctx.input_mut(|i| {
             i.events.retain(|e| {
@@ -6765,8 +6771,26 @@ pub fn claim_popup_escape(ctx: &egui::Context) {
     }
     ctx.data_mut(|d| {
         d.insert_temp(escaped_id(), claimed);
+        d.insert_temp(modal_escaped_id(), modal_claimed);
         d.insert_temp(popover_escaped_id(), popover_claimed);
     });
+}
+
+/// Marks a modal, or a surface holding the keyboard over the editor as one does
+/// (the command bar, the player while it holds the keys), as up, so next frame's
+/// `Escape` is its when no popup is open, and never a popover's under it. Call it
+/// on every frame the surface ends still up, never on the one it closes on, or
+/// the next press is lost to it. The press stays in the input for it to read.
+/// `MastikApp::frame_body` calls it for every modal `modal_is_up` names.
+pub fn keep_modal_escape(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(kept_modal_escape_id(), true));
+}
+
+/// Whether [`claim_popup_escape`] gave this frame's `Escape` to a modal: one was
+/// up last frame and no popup was open.
+pub fn modal_escaped(ctx: &egui::Context) -> bool {
+    ctx.data(|d| d.get_temp::<bool>(modal_escaped_id()))
+        .unwrap_or(false)
 }
 
 /// Marks a popup whose open state the app holds (not egui's memory) as open, so
@@ -6784,7 +6808,8 @@ pub fn popup_escaped(ctx: &egui::Context) -> bool {
 
 /// Marks a popover the app holds open (an inspector popover, a top-bar dropdown,
 /// the contrast fix card) as open, so next frame's `Escape` is its when no popup
-/// inside or over it was open. Call it every frame the popover shows, and close it
+/// inside or over it was open and no modal stood over it (so a popover is never
+/// hosted inside a modal). Call it every frame the popover shows, and close it
 /// on [`popover_escaped`] after drawing its body. The press stays in the input: a
 /// typed field in the popover reads it to give its text up, where its loss of
 /// focus alone would commit it. `MastikApp::frame_body`'s key routing reads
@@ -6807,6 +6832,16 @@ fn kept_escape_id() -> egui::Id {
 /// Set by [`keep_popover_escape`], spent by the next [`claim_popup_escape`].
 fn kept_popover_escape_id() -> egui::Id {
     egui::Id::new("popover-kept-escape")
+}
+
+/// Set by [`keep_modal_escape`], spent by the next [`claim_popup_escape`].
+fn kept_modal_escape_id() -> egui::Id {
+    egui::Id::new("modal-kept-escape")
+}
+
+/// This frame's answer of [`claim_popup_escape`] for a modal.
+fn modal_escaped_id() -> egui::Id {
+    egui::Id::new("modal-escaped")
 }
 
 /// This frame's answer of [`claim_popup_escape`] for a popup.

@@ -1543,6 +1543,10 @@ impl crate::app::MastikApp {
         if let Some(a) = act {
             self.player_act(ctx, a);
         }
+        // Still holding the keys, it stands over a popover left open beside it.
+        if self.player_holds_keys() {
+            crate::ui::keep_modal_escape(ctx);
+        }
     }
 
     /// Present mode's branch of the frame: the player filling the window.
@@ -2084,7 +2088,7 @@ impl crate::app::MastikApp {
                 }
             },
         );
-        if outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if outside || crate::ui::modal_escaped(ctx) {
             answer = answer.or(Some(false));
         }
         let Some(play) = answer else {
@@ -2847,6 +2851,40 @@ mod tests {
         assert!(
             !app.playing.as_ref().expect("still playing").focused,
             "the next Escape gives the keys back"
+        );
+    }
+
+    /// Holding the keys, the player takes Escape over a popover left open beside
+    /// it: it gives the keys back, and the popover is not given the press.
+    /// flip: `player_ui` not calling `ui::keep_modal_escape` → fails at "the
+    /// popover keeps its press".
+    #[test]
+    fn escape_in_the_player_leaves_a_popover_open() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = fixture(&ctx, false);
+        app.play(&ctx, Place::Over, false);
+        whole_frame(&ctx, &mut app, Vec::new());
+        assert!(
+            app.player_holds_keys(),
+            "fixture: the player holds the keys"
+        );
+        // A popover drawn last frame asks for the press.
+        crate::ui::keep_popover_escape(&ctx);
+        let escape = |pressed| egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        whole_frame(&ctx, &mut app, vec![escape(true), escape(false)]);
+        assert!(
+            !app.playing.as_ref().expect("still playing").focused,
+            "Escape gives the keys back"
+        );
+        assert!(
+            !crate::ui::popover_escaped(&ctx),
+            "the popover keeps its press"
         );
     }
 

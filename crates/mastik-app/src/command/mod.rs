@@ -1565,6 +1565,9 @@ impl MastikApp {
             .into_iter()
             .filter(|(id, _)| !pills.subject_ids.contains(id))
             .collect();
+        // Still up, the bar holds the keyboard: a popover left open under it
+        // keeps its press.
+        crate::ui::keep_modal_escape(ctx);
         self.command_bar = Some(bar);
     }
 }
