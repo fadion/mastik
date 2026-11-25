@@ -1060,7 +1060,7 @@ fn set_name(names: &[String]) -> String {
 }
 
 /// *Add variant*: a copy of `from` (or the set's last variant) as a new main in
-/// the set, below its source, taking the **first free combination**, with every
+/// the set, below its lowest variant, taking the **first free combination**, with every
 /// set property bound in the source bound in the copy too (§15 D982). The set
 /// grows to hold it. Answers the transaction and the new variant.
 pub fn add_variant(
@@ -1076,6 +1076,13 @@ pub fn add_variant(
     let template = doc.capture_subtree(source)?;
     let index = s.children.iter().position(|c| *c == source)? + 1;
     let height = crate::query::local_box(doc, res, source)?.height();
+    // Below the lowest variant rather than its source, so the copy covers none.
+    let top = res.world_bounds(source).map_or(0.0, |r| r.y0);
+    let lowest = variants(doc, set)
+        .iter()
+        .filter_map(|v| res.world_bounds(*v))
+        .map(|r| r.y1)
+        .fold(top + height, f64::max);
     let (mut tx, made) = crate::build::insert_subtrees_as(
         doc,
         ids,
@@ -1084,7 +1091,7 @@ pub fn add_variant(
             parent: set,
             index: Some(index),
         }],
-        kurbo::Vec2::new(0.0, height + VARIANT_GAP),
+        kurbo::Vec2::new(0.0, lowest - top + VARIANT_GAP),
         crate::component::MainCopy::NewMain,
     );
     let new = *made.first()?;
