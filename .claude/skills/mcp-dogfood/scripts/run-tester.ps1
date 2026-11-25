@@ -11,6 +11,11 @@
   stale serve cannot answer it. A window or a foreign serve showing up during the run makes the
   run invalid.
 
+  -Prototypes reads briefs-prototype.md, whose entries are a surface and a prototype. With
+  -Setup the run is the setup pass instead: it builds the entry's surface from setup.md and
+  leaves its manifest in surface.json. Without -Setup, -Seed starts the run from that surface
+  (a copy of the setup run's page.mastik) instead of an empty document.
+
   Exit codes: 0 a report was collected; 1 the script failed; 3 a window is running;
   4 a serve from another build is running; 5 a window or foreign host appeared during the run;
   6 the tester ended without a report (crash, budget, no JSON block).
@@ -20,6 +25,9 @@ param(
     [int]$Run = 1,
     [int]$BriefIndex = -1,
     [string]$BriefFile,
+    [switch]$Prototypes,
+    [switch]$Setup,
+    [string]$Seed,
     [switch]$AllTools,
     [string]$Photos = $env:MASTIK_DOGFOOD_PHOTOS,
     [string]$Model = 'opus',
@@ -116,7 +124,10 @@ if ($hosts | Where-Object Host -eq 'window') {
     Stop-Run 3 'a Mastik window is running; the tester would edit it. Ask the person to close it.'
 }
 
-$briefs = [IO.File]::ReadAllText((Join-Path $skill 'briefs.md'), $utf8)
+if ($Setup -and -not $Prototypes) { Stop-Run 1 '-Setup builds a prototype surface; give -Prototypes too' }
+if ($Seed -and -not (Test-Path $Seed)) { Stop-Run 1 "no seed document at $Seed" }
+$briefsName = if ($Prototypes) { 'briefs-prototype.md' } else { 'briefs.md' }
+$briefs = [IO.File]::ReadAllText((Join-Path $skill $briefsName), $utf8)
 $pool = @(Get-Entries $briefs 'Pool')
 if ($BriefFile) {
     $brief = ([IO.File]::ReadAllText($BriefFile, $utf8) -replace '\s+', ' ').Trim()
@@ -124,6 +135,15 @@ if ($BriefFile) {
     $brief = $pool[$BriefIndex % $pool.Count]
 } else {
     Stop-Run 1 'give -BriefIndex <n> or -BriefFile <path>'
+}
+# A prototype entry is its surface, then its prototype after `Prototype:`.
+$surface = ''
+if ($Prototypes -and -not $BriefFile) {
+    $halves = $brief -split '\s*Prototype:\s*', 2
+    if ($halves.Count -lt 2) { Stop-Run 1 "brief $BriefIndex has no 'Prototype:' half" }
+    $surface = ($halves[0] -replace '^Surface:\s*', '').Trim()
+    $brief = "The document already holds this design, made in an earlier session: $surface " +
+        "Don't redesign it: read it, then make it play. $($halves[1].Trim())"
 }
 $passes = @(Get-Entries $briefs 'The passes')
 $passText = (0..($passes.Count - 1) | ForEach-Object { "$($_ + 1). $($passes[$_])" }) -join "`n"
@@ -144,8 +164,12 @@ New-Item -ItemType Directory -Force $Out | Out-Null
 $Out = (Resolve-Path $Out).Path
 $doc = Join-Path $Out 'page.mastik'
 
-$seeded = Invoke-Mastik @('run', (Join-Path $skill 'seed.luau'), '-o', $doc)
-if ($seeded -ne 0) { Stop-Run 1 "seeding the document failed ($seeded)" }
+if ($Seed -and -not $Setup) {
+    Copy-Item $Seed $doc -Force
+} else {
+    $seeded = Invoke-Mastik @('run', (Join-Path $skill 'seed.luau'), '-o', $doc)
+    if ($seeded -ne 0) { Stop-Run 1 "seeding the document failed ($seeded)" }
+}
 
 $photoNames = @()
 if ($Photos -and (Test-Path $Photos)) {
@@ -161,8 +185,13 @@ if ($photoNames.Count -gt 0) {
     $photoText = 'There are no photo files for this run; get imagery however the tools allow, or say what stopped you.'
 }
 
-$prompt = [IO.File]::ReadAllText((Join-Path $skill 'tester.md'), $utf8)
-$prompt = $prompt.Replace('{{BRIEF}}', $brief).Replace('{{PASSES}}', $passText).Replace('{{PHOTOS}}', $photoText)
+if ($Setup) {
+    $prompt = [IO.File]::ReadAllText((Join-Path $skill 'setup.md'), $utf8)
+    $prompt = $prompt.Replace('{{SURFACE}}', $surface).Replace('{{PHOTOS}}', $photoText)
+} else {
+    $prompt = [IO.File]::ReadAllText((Join-Path $skill 'tester.md'), $utf8)
+    $prompt = $prompt.Replace('{{BRIEF}}', $brief).Replace('{{PASSES}}', $passText).Replace('{{PHOTOS}}', $photoText)
+}
 [IO.File]::WriteAllText((Join-Path $Out 'prompt.md'), $prompt, $utf8)
 
 $proxyArgs = @('mcp-proxy')
@@ -211,13 +240,15 @@ if ($intruders.Count -gt 0) {
     [IO.File]::WriteAllText((Join-Path $Out 'invalid.txt'), "other hosts ran during the run: $list", $utf8)
 }
 
+# The setup pass ends on its manifest, the tester on its findings.
+$collected = if ($Setup) { 'surface.json' } else { 'findings.json' }
 $parsed = $null
 try { $parsed = $answerText | ConvertFrom-Json } catch { }
 if ($parsed -and $parsed.result) {
     [IO.File]::WriteAllText((Join-Path $Out 'report.md'), [string]$parsed.result, $utf8)
     $block = [regex]::Matches([string]$parsed.result, '```json\s*([\s\S]*?)```')
     if ($block.Count -gt 0) {
-        [IO.File]::WriteAllText((Join-Path $Out 'findings.json'), $block[$block.Count - 1].Groups[1].Value.Trim(), $utf8)
+        [IO.File]::WriteAllText((Join-Path $Out $collected), $block[$block.Count - 1].Groups[1].Value.Trim(), $utf8)
     }
 }
 
@@ -263,7 +294,7 @@ if ((Invoke-Mastik @('export', $doc, '--png', '-o', (Join-Path $Out 'page.png'))
 
 $Out
 if ($intruders.Count -gt 0) { Stop-Run 5 "invalid run: $(Get-Content (Join-Path $Out 'invalid.txt'))" }
-if ($code -ne 0 -or -not $parsed -or $parsed.is_error -or -not (Test-Path (Join-Path $Out 'findings.json'))) {
+if ($code -ne 0 -or -not $parsed -or $parsed.is_error -or -not (Test-Path (Join-Path $Out $collected))) {
     $why = if ($parsed) { "subtype $($parsed.subtype), is_error $($parsed.is_error)" } else { 'no JSON result' }
     Stop-Run 6 "the tester ended without a report (claude exit $code, $why)"
 }

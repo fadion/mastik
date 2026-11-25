@@ -1,6 +1,6 @@
 ---
 name: mcp-dogfood
-description: Mastik's MCP self-improvement loop — a headless Opus tester designs a realistic page through the MCP of a fresh build, reports where the tools got in its way, and this session validates each finding, fixes what holds, rebuilds and runs again. Takes the number of runs ("/mcp-dogfood 5 runs"; default 3, at most 10) and stops early after a run with no meaningful findings. Use when the user asks to dogfood, exercise, stress or improve the MCP tools by using them, or to "run the MCP loop". Not for reviewing MCP code without using it (that's /code-review) or for one tool's bug the user already named.
+description: Mastik's MCP self-improvement loop — a headless Opus tester designs a realistic page through the MCP of a fresh build, reports where the tools got in its way, and this session validates each finding, fixes what holds, rebuilds and runs again. Takes the number of runs ("/mcp-dogfood 5 runs"; default 3, at most 10) and stops early after a run with no meaningful findings; "prototypes" runs the loop on prototyping instead, on a surface a setup pass builds first. Use when the user asks to dogfood, exercise, stress or improve the MCP tools by using them, or to "run the MCP loop". Not for reviewing MCP code without using it (that's /code-review) or for one tool's bug the user already named.
 ---
 
 # The MCP dogfood loop
@@ -23,6 +23,8 @@ the tools of the build it was started on.
   default it sees what a person's agent sees.
 - **A brief** in quotes is used for every run instead of the pool. Write it to a file in the
   scratchpad and pass `-BriefFile`.
+- **"prototypes":** the runs dogfood prototyping instead of page design, on a surface built
+  first. Follow *Prototypes* below; everything else in this file holds.
 
 Without "no commits", invoking this skill is the ask to commit. Each validated fix is committed
 on its own through the `commit` skill, so a later run never tests a half-finished change.
@@ -163,10 +165,52 @@ At the end:
   path;
 - confirm with `run-tester.ps1 -Check` that no serve is left running.
 
+## Prototypes
+
+A prototype needs a design to play, so a `prototypes` invocation builds one first and every run
+starts from a copy of it. Its briefs are `briefs-prototype.md`: each entry is a **surface**
+(screens, a component with interaction variants, data tables, variables) and a **prototype** to
+make on it. Pass `-Prototypes` to every `run-tester.ps1` call.
+
+**Phase 0 adds the setup**, after picking the offset:
+
+1. **Build the surface** in the background, as a headless run like any other, never an `Agent`
+   subagent: one would share this session's stale MCP (Phase 0, step 3).
+
+   ```powershell
+   powershell -NoProfile -ExecutionPolicy Bypass -File .claude/skills/mcp-dogfood/scripts/run-tester.ps1 -Prototypes -Setup -BriefIndex <offset> -Out <scratchpad>\dogfood\setup
+   ```
+
+   It runs `setup.md`, which asks for the static design and no interactions, and leaves the
+   setup agent's manifest in `surface.json`. Exit 6 means no manifest: read `answer.json` and
+   run it again.
+2. **Check the surface**, not the manifest's word for it, with the fresh build:
+   `target\release\mastik.exe inspect <setup>\page.mastik` with `outline` (one top-level frame
+   per screen), `components` (a main or set with variants), `tables` (each table the brief
+   names, with rows) and `variables`. A surface short of any of these tests nothing in the runs
+   after it: run the setup again rather than start them.
+3. **Look at the setup's `page.png`.** The surface's own trouble with the tools is page
+   design's, which the plain loop covers: leave it out of this loop's findings.
+
+**Each run** uses the same brief, `-BriefIndex <offset>`, and starts from the surface,
+`-Seed <setup>\page.mastik`, so a finding that goes away after a fix went away because of the
+fix, not because of a different design. The script rebuilds before each run; the surface is a
+saved document, which the new build reads.
+
+**A finished run** is judged by the prototype, which `page.png` does not show. Read it with
+`mastik.exe inspect <run>\page.mastik prototype` (`get_prototype`): every flow reaches the
+screens the brief links, the interactions read as the brief asks, and `holds` is empty. A
+run is clean only when that holds as well as the rest of *A run is clean*.
+
+**What is not offered** is not a finding: agents have no play tool and no video export, by
+design (`docs/design/mcp.md`). A finding that the tester could not check how its prototype
+plays is a finding only where `get_prototype` or a read could have told it and did not.
+
 ## Keeping the skill current
 
 - **The tester prompt names no tool.** It asks for capabilities, so tools can be merged and
   renamed without the skill going stale.
-- **When a brief stops reaching an area,** change `briefs.md`. The script reads its
-  `## Pool` and `## The passes` lists, so keep those headings.
+- **When a brief stops reaching an area,** change `briefs.md`, or `briefs-prototype.md` for
+  prototyping. The script reads their `## Pool` and `## The passes` lists, so keep those
+  headings, and a prototype entry's `Prototype:`, where it splits the entry.
 - **When the CLI used for reproducing changes,** edit Phase 2.
