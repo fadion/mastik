@@ -321,7 +321,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   is a *Dragging* step; the snap points' own steps wear `icon::CROSSHAIR_SIMPLE`, as moving one
   on the canvas does (`play_step_glyph`).
 - **An input**: a text layer binds a string variable; an instance a boolean one and the set's
-  two-valued property that shows it. `×` unbinds. The note under it says what typing or
+  two-valued property that shows it. The variable's dropdown starts with *None*, a value like
+  the variables under it (as the List card's *Sort by*): picking it unbinds. The note under it says what typing or
   ticking does while it is bound, and while it is not, what binding would do (*Bind a string
   variable to type into it while playing*).
 - **The page** (nothing selected): *Device* (*None*, then the phone and tablet frame templates by name, each group under its

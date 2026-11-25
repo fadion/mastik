@@ -6279,6 +6279,34 @@ impl MastikApp {
         kind: Option<VarKind>,
         taken: Option<(&[VarId], &'static str)>,
     ) -> Option<VarId> {
+        self.variable_combo_inner(ui, salt, current, kind, taken, false)
+            .flatten()
+    }
+
+    /// A [`Self::variable_combo`] whose first row is *None*, a value like the
+    /// variables under it, as the List card's *Sort by* has: answers
+    /// `Some(None)` when *None* is picked.
+    fn variable_combo_or_none(
+        &mut self,
+        ui: &mut egui::Ui,
+        salt: impl std::hash::Hash + std::fmt::Debug,
+        current: Option<VarId>,
+        kind: Option<VarKind>,
+    ) -> Option<Option<VarId>> {
+        self.variable_combo_inner(ui, salt, current, kind, None, true)
+    }
+
+    /// The one dropdown behind [`Self::variable_combo`] and
+    /// [`Self::variable_combo_or_none`]; `none` adds the *None* row.
+    fn variable_combo_inner(
+        &mut self,
+        ui: &mut egui::Ui,
+        salt: impl std::hash::Hash + std::fmt::Debug,
+        current: Option<VarId>,
+        kind: Option<VarKind>,
+        taken: Option<(&[VarId], &'static str)>,
+        none: bool,
+    ) -> Option<Option<VarId>> {
         let doc = &self.session.doc;
         let vars: Vec<(VarId, String)> = doc
             .variables()
@@ -6298,6 +6326,10 @@ impl MastikApp {
         let face = ui::glyph_and_text(icon::BRACKETS_CURLY, &shown);
         ui::fitted_combo(ui, salt, w, face, &shown, |ui| {
             ui::menu_rows(ui);
+            if none && ui.selectable_label(current.is_none(), "None").clicked() && current.is_some()
+            {
+                pick = Some(None);
+            }
             if vars.is_empty() {
                 ui::menu_note(ui, "No variables of that kind");
             }
@@ -6310,7 +6342,7 @@ impl MastikApp {
                     continue;
                 }
                 if ui.selectable_label(on, n).clicked() && !on {
-                    pick = Some(*v);
+                    pick = Some(Some(*v));
                 }
             }
         });
@@ -6770,38 +6802,25 @@ impl MastikApp {
                         VarKind::Boolean
                     };
                     let current = play.input.as_ref().map(|i| i.var);
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = COL;
-                        let cw = if current.is_some() {
-                            w - ui::CONTROL_H - COL
-                        } else {
-                            w
-                        };
-                        ui.scope(|ui| {
-                            ui.set_width(cw);
-                            if let Some(v) =
-                                app.variable_combo(ui, ("input", id), current, Some(kind), None)
-                            {
-                                let mut p = play.clone();
+                    // *None* is a value of the dropdown, as *Sort by*'s is: picking it
+                    // is how the layer stops being an input.
+                    ui.scope(|ui| {
+                        ui.set_width(w);
+                        if let Some(v) =
+                            app.variable_combo_or_none(ui, ("input", id), current, Some(kind))
+                        {
+                            let mut p = play.clone();
+                            p.input = v.map(|var| {
                                 let property = match text {
                                     true => None,
-                                    false => p
+                                    false => play
                                         .input
                                         .as_ref()
                                         .and_then(|i| i.property.clone())
                                         .or_else(|| bool_props.first().cloned()),
                                 };
-                                p.input = Some(Input { var: v, property });
-                                next = Some((p, "Input"));
-                            }
-                        });
-                        if current.is_some()
-                            && ui::field_button(ui, icon::X, ui::CONTROL_H, FieldButton::Off)
-                                .on_hover_text("Stop being an input")
-                                .clicked()
-                        {
-                            let mut p = play.clone();
-                            p.input = None;
+                                Input { var, property }
+                            });
                             next = Some((p, "Input"));
                         }
                     });
