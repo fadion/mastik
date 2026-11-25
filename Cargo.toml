@@ -8,7 +8,7 @@ exclude = ["crates/mastik-web"]
 
 [workspace.package]
 edition = "2024"
-version = "0.17.0"
+version = "0.18.0"
 license = "MIT"
 repository = "https://github.com/fadion/mastik"
 
