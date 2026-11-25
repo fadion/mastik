@@ -276,8 +276,9 @@ impl MastikApp {
         }
         match now.rows {
             Rows::First(n) => {
-                // A list's description has no preview, so the field holds what is
-                // scrubbed or typed until the valve commits it.
+                // A list's description has no preview: a scrub commits each whole
+                // step as a run, one undo step, so the copies follow it live;
+                // a typed value waits for the valve.
                 let rid = ui.id().with(("list-first", id));
                 let mut v = self
                     .proto
@@ -303,6 +304,14 @@ impl MastikApp {
                         })),
                     }]),
                     false => Transaction::default(),
+                };
+                let tx = if resp.dragged() && !self.gesture_cancelled && !tx.0.is_empty() {
+                    self.session.name_step("List rows", icon::TABLE);
+                    self.note_edit(Some(&resp), &tx);
+                    self.session.commit_run(tx, "list-first-rows");
+                    Transaction::default()
+                } else {
+                    tx
                 };
                 self.proto_valve(rid, v, &resp, "List rows", icon::TABLE, tx);
             }
@@ -1409,6 +1418,82 @@ mod tests {
         }
         let rows = app.session.doc.get(l).unwrap().list().unwrap().rows;
         assert_eq!(rows, Rows::First(6), "landed");
+        assert_eq!(app.session.history.undo_depth() - depth, 1, "one step");
+    }
+
+    /// Scrubbing *First*'s *Rows* field writes the count while the pointer is
+    /// still down, and the whole scrub is one undo step.
+    /// flip: `list_rows_rows` sending a dragged value through the valve only →
+    /// fails at "live, before the release".
+    #[test]
+    fn a_scrubbed_first_count_lands_while_dragging() {
+        use mastik_core::list::Rows;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, inst) = with_row(&ctx);
+        let (l, _) = listed(&mut app, inst, &["A", "B", "C", "D", "E", "F", "G"]);
+        let mut next = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        next.rows = Rows::First(3);
+        app.list_commit(l, "List rows", next);
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                ui.set_max_width(280.0);
+                let now = app.session.doc.get(l).unwrap().list().unwrap().clone();
+                app.list_rows_rows(ui, l, &now);
+            })
+        };
+        let mut out = frame(&mut app, vec![]);
+        for _ in 0..3 {
+            out = frame(&mut app, vec![]);
+        }
+        let field = out
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == "3" => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+            .expect("fixture: the field shows 3");
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let rows = |app: &MastikApp| app.session.doc.get(l).unwrap().list().unwrap().rows;
+        let depth = app.session.history.undo_depth();
+        frame(&mut app, vec![egui::Event::PointerMoved(field)]);
+        frame(&mut app, vec![press(field, true)]);
+        // A quarter of a row a point: twelve points right is three rows more.
+        let mut x = field.x;
+        for _ in 0..6 {
+            x += 2.0;
+            frame(
+                &mut app,
+                vec![egui::Event::PointerMoved(egui::pos2(x, field.y))],
+            );
+        }
+        frame(&mut app, vec![]);
+        let held = rows(&app);
+        assert!(
+            matches!(held, Rows::First(n) if n > 3),
+            "live, before the release: {held:?}"
+        );
+        frame(&mut app, vec![press(egui::pos2(x, field.y), false)]);
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        assert_eq!(rows(&app), held, "the release keeps it");
         assert_eq!(app.session.history.undo_depth() - depth, 1, "one step");
     }
 

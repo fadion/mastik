@@ -305,8 +305,9 @@ step.
   (`panels::list::MISSING_TABLE`, the Chart card's too).
 - **Rows** (a `ui::fold_rule` section) — `ui::segmented` *All* / *First* / *Row* / *Opened*
   (*Row*'s tooltip *One row of the table, the same in play*). *First* starts at 3 and shows a
-  full-width *Rows* count field (1 to 200), held while scrubbed or typed and committed once
-  (`proto_valve`, since a list's description has no preview). *Row* starts
+  full-width *Rows* count field (1 to 200). A list's description has no preview, so a scrub
+  commits each whole step as it lands, folded into one undo step (`commit_run`), and the copies
+  follow it live; a typed value is held and committed once (`proto_valve`). *Row* starts
   at 1 and shows a full-width `ui::fitted_combo` of the table's rows as *N · first cell*, its face
   *Row 3 · Linen shirt*, up to `list_data::ROWS_LISTED` (200) listed and then a menu note
   *Showing 200 of N rows: pick in the data window*; the words are `list_data::row_words`, which
