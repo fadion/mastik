@@ -5355,6 +5355,147 @@ fn a_row_filtered_out_by_its_write_skips_the_rest() {
     );
 }
 
+/// A row reaction that deletes its own row still runs the actions after it
+/// that need no row, on the last row as on any other.
+///
+/// flip: `run_actions` skipping every action once the row is gone (no
+/// `row_free` test) → fails at "the count runs on the last row".
+#[test]
+fn a_row_deleting_itself_runs_the_actions_that_need_no_row() {
+    use mastik_core::prototype::WhichRow;
+    let (mut fx, a, item, cart) = cart(&[["A", "1"], ["B", "1"], ["C", "1"]]);
+    let n = fx.var("n", VarKind::Number, Cell::Number(0.0));
+    fx.on(
+        item,
+        Trigger::Click,
+        vec![
+            Action::DeleteRow {
+                table: cart,
+                row: WhichRow::This,
+            },
+            add(n, 1.0),
+        ],
+    );
+    let l = fx.doc.get(item).unwrap().parent().unwrap();
+    mastik_core::list::regenerate_outside_history(&mut fx.doc, &[l]);
+    let mut p = fx.play(a);
+    let names = |p: &Player| -> Vec<String> {
+        let t = &p.document().data_set(cart).unwrap().table;
+        t.rows.iter().map(|r| r[0].clone()).collect()
+    };
+    click(&mut p, 30.0, 100.0);
+    assert_eq!(names(&p), ["A", "B"], "the last row deleted");
+    assert_eq!(number(&p, n), 1.0, "the count runs on the last row");
+    click(&mut p, 30.0, 20.0);
+    assert_eq!(names(&p), ["B"]);
+    assert_eq!(number(&p, n), 2.0, "and on the first");
+    assert_eq!(p.take_notices(), vec![]);
+}
+
+/// A row reaction's *This row* actions go on writing the row it fired in
+/// after an *Add row at start* or a delete of an earlier row moves that row.
+///
+/// flip: `Player::still` not following `row_shifts` → fails at "the clicked
+/// row edited" (the row moved into its place is).
+#[test]
+fn a_row_moved_by_an_add_or_a_delete_is_still_this_row() {
+    use mastik_core::chart::ColumnId;
+    use mastik_core::prototype::{CellWrite, RowEnd, WhichRow};
+    let (mut fx, a, item, cart) = cart(&[["A", "1"], ["B", "1"], ["C", "1"]]);
+    let edit = Action::EditRow {
+        table: cart,
+        row: WhichRow::This,
+        cells: vec![CellWrite {
+            column: ColumnId(1),
+            to: Expr("'9'".into()),
+        }],
+    };
+    fx.on(
+        item,
+        Trigger::Click,
+        vec![
+            Action::AddRow {
+                table: cart,
+                at: RowEnd::Start,
+                cells: vec![CellWrite {
+                    column: ColumnId(0),
+                    to: Expr("'New'".into()),
+                }],
+            },
+            edit.clone(),
+            Action::DeleteRow {
+                table: cart,
+                row: WhichRow::FirstWhere {
+                    when: Expr("true".into()),
+                },
+            },
+            edit,
+        ],
+    );
+    let l = fx.doc.get(item).unwrap().parent().unwrap();
+    mastik_core::list::regenerate_outside_history(&mut fx.doc, &[l]);
+    let mut p = fx.play(a);
+    let rows = |p: &Player| p.document().data_set(cart).unwrap().table.rows.clone();
+    click(&mut p, 30.0, 60.0);
+    assert_eq!(p.take_notices(), vec![], "nothing skipped");
+    assert_eq!(
+        rows(&p),
+        [["A", "1"], ["B", "9"], ["C", "1"]]
+            .map(|r| r.map(String::from).to_vec())
+            .to_vec(),
+        "the clicked row edited, through an add before it and a delete"
+    );
+}
+
+/// While no list was made again since a row path was taken, `still` answers
+/// the holder itself without filtering and sorting the table again; the
+/// fixture changes the list's filter on the copy without making it again, so
+/// only a fresh read of the list would lose the row.
+///
+/// flip: `Player::still` without its `remade` test → fails at "the holder
+/// answered".
+#[test]
+fn a_row_path_answers_its_holder_until_a_list_is_made_again() {
+    use mastik_core::chart::ColumnId;
+    use mastik_core::list::{Filter, List, Test, TestOp};
+    let (fx, a, item, _) = cart(&[["A", "1"], ["B", "2"]]);
+    let l = fx.doc.get(item).unwrap().parent().unwrap();
+    let mut p = fx.play(a);
+    let path = p.row_path(item);
+    assert!(path.is_some(), "fixture: the template is in a row");
+    let none_pass = List {
+        filter: Filter {
+            any: false,
+            tests: vec![Test {
+                column: ColumnId(1),
+                op: TestOp::Is,
+                value: Expr("9".into()),
+            }],
+        },
+        ..p.document().get(l).unwrap().list().unwrap().clone()
+    };
+    p.commit(Transaction(vec![Operation::SetList {
+        id: l,
+        list: Some(Box::new(none_pass)),
+    }]))
+    .unwrap();
+    assert!(
+        mastik_core::list::shown(p.document(), l).is_empty(),
+        "fixture: a fresh read finds no row"
+    );
+    assert_eq!(
+        p.still(item, path.as_ref()),
+        Some(item),
+        "the holder answered"
+    );
+    p.regenerate_list(l);
+    assert_eq!(
+        p.still(item, path.as_ref()),
+        None,
+        "and gone once made again"
+    );
+}
+
 /// *Set variable* of a text variable from one cell that reads as a number
 /// takes the cell as written, leading zeros and all.
 ///

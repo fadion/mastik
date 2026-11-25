@@ -759,7 +759,7 @@ impl Player {
         // A reaction's row write can make the holder's list again: each later
         // reaction is found by its place on the holder in its row, and none
         // runs once the row is no longer drawn.
-        let path = self.row_path(holder);
+        let path = self.hold_path(holder);
         let all: Vec<ItemId> = self
             .doc
             .get(holder)
@@ -782,6 +782,7 @@ impl Player {
             };
             self.run_reaction(now, r, None);
         }
+        self.let_go(path);
         used
     }
 

@@ -224,7 +224,10 @@ impl Player {
         let mut table = d.table;
         match at {
             RowEnd::End => table.rows.push(row),
-            RowEnd::Start => table.rows.insert(0, row),
+            RowEnd::Start => {
+                self.shift_rows(set, 0, true);
+                table.rows.insert(0, row);
+            }
         }
         self.write_table(set, table);
     }
@@ -270,7 +273,16 @@ impl Player {
         };
         let mut table = d.table;
         table.rows.remove(i);
+        self.shift_rows(set, i, false);
         self.write_table(set, table);
+    }
+
+    /// Note row `at` of `set` inserted (`added`) or removed for the row paths
+    /// held, before the write whose reactions may hold more.
+    fn shift_rows(&mut self, set: DataSetId, at: usize, added: bool) {
+        if self.paths_held > 0 {
+            self.row_shifts.push((set, at, added));
+        }
     }
 
     /// Give the copy's table `set` the rows of `table`: its lists and charts

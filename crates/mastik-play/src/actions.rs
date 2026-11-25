@@ -21,12 +21,16 @@ use mastik_core::{
 
 /// Where a layer sits in a list's row, found again after the list is made
 /// again with new copies ([`Player::row_path`]). The row is the table's, not
-/// the drawn place, which a filter or a sort moves.
+/// the drawn place, which a filter or a sort moves; an *Add row* or *Delete
+/// row* since moves it as well (`seen` onwards of [`Player::row_shifts`]).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct RowPath {
     list: NodeId,
+    set: mastik_core::list::DataSetId,
     row: usize,
     steps: Vec<usize>,
+    seen: usize,
+    remade: u64,
 }
 
 /// What an action under a *while* trigger did, so ending the hover or the press
@@ -84,7 +88,8 @@ impl Player {
     /// Run `actions` on `holder` in turn. A write to a table a list draws makes
     /// the list again with new copies, so a holder in a row is looked up in
     /// that row before each action; once the row is no longer drawn, the
-    /// actions left are skipped as `Missing`.
+    /// actions left that act on the row are skipped as `Missing`, and the rest
+    /// run on the last holder found.
     fn run_actions(
         &mut self,
         holder: NodeId,
@@ -92,19 +97,42 @@ impl Player {
         actions: &[Keyed<Action>],
         undo: &mut Vec<Undo>,
     ) {
-        let path = self.row_path(holder);
+        let path = self.hold_path(holder);
         let mut holder = holder;
         for k in actions {
-            let Some(now) = self.still(holder, path.as_ref()) else {
-                let notice = Notice::Missing {
-                    layer: holder,
-                    action: k.id,
-                };
-                self.notice_once(holder, k.id, notice);
-                continue;
-            };
-            holder = now;
+            match self.still(holder, path.as_ref()) {
+                Some(now) => holder = now,
+                None if row_free(&k.value) => {}
+                None => {
+                    let notice = Notice::Missing {
+                        layer: holder,
+                        action: k.id,
+                    };
+                    self.notice_once(holder, k.id, notice);
+                    continue;
+                }
+            }
             self.run_action(holder, trigger, k, undo);
+        }
+        self.let_go(path);
+    }
+
+    /// [`Self::row_path`], held until [`Self::let_go`]: while any is held,
+    /// *Add row* and *Delete row* note the rows they move.
+    pub(crate) fn hold_path(&mut self, id: NodeId) -> Option<RowPath> {
+        let path = self.row_path(id)?;
+        self.paths_held += 1;
+        Some(path)
+    }
+
+    /// A path from [`Self::hold_path`] let go; the shifts go with the last.
+    pub(crate) fn let_go(&mut self, path: Option<RowPath>) {
+        if path.is_none() {
+            return;
+        }
+        self.paths_held -= 1;
+        if self.paths_held == 0 {
+            self.row_shifts.clear();
         }
     }
 
@@ -117,8 +145,16 @@ impl Player {
         loop {
             if let Some((list, place)) = mastik_core::list::row_of(&self.doc, at) {
                 steps.reverse();
+                let set = self.doc.get(list)?.list()?.data;
                 let row = *mastik_core::list::shown(&self.doc, list).get(place)?;
-                return Some(RowPath { list, row, steps });
+                return Some(RowPath {
+                    list,
+                    set,
+                    row,
+                    steps,
+                    seen: self.row_shifts.len(),
+                    remade: self.remade,
+                });
             }
             let parent = self.doc.get(at)?.parent()?;
             let i = self
@@ -133,15 +169,31 @@ impl Player {
     }
 
     /// The layer at `path` in the list as it is drawn now, `None` once its row
-    /// is no longer drawn; `id` itself outside a row. The template keeps its id
-    /// while it comes to show another row, so `id` being there is not enough.
+    /// is deleted or no longer drawn; `id` itself outside a row, or while no
+    /// list was made again since the path was. Once one was, the template may
+    /// have come to show another row, so `id` being there is not enough.
     pub(crate) fn still(&self, id: NodeId, path: Option<&RowPath>) -> Option<NodeId> {
         let Some(p) = path else {
             return Some(id);
         };
+        if p.remade == self.remade && self.doc.get(id).is_some() {
+            return Some(id);
+        }
+        let mut row = p.row;
+        for &(set, at, added) in self.row_shifts.get(p.seen..).unwrap_or_default() {
+            if set != p.set {
+                continue;
+            }
+            match (added, at.cmp(&row)) {
+                (true, std::cmp::Ordering::Less | std::cmp::Ordering::Equal) => row += 1,
+                (false, std::cmp::Ordering::Less) => row -= 1,
+                (false, std::cmp::Ordering::Equal) => return None,
+                _ => {}
+            }
+        }
         let place = mastik_core::list::shown(&self.doc, p.list)
             .iter()
-            .position(|r| *r == p.row)?;
+            .position(|r| *r == row)?;
         let root = match place {
             0 => mastik_core::list::template(&self.doc, p.list)?,
             n => *self.doc.get(p.list)?.list()?.copies.get(n - 1)?,
@@ -1006,6 +1058,23 @@ impl Player {
         let prop = vs.props.iter().position(|p| p.name == property)?;
         let value = bool_value(&vs.props[prop].values, on)?;
         variant::switch_target(&self.doc, main, prop, &value)
+    }
+}
+
+/// Whether `action` can run once its holder's row is gone: it writes no
+/// *This row* and reaches no layer through the holder (*Change to*, *Set
+/// mode*, *Scroll to*, a branch's actions, a script's selection).
+fn row_free(action: &Action) -> bool {
+    match action {
+        Action::EditRow { row, .. } | Action::DeleteRow { row, .. } => {
+            !matches!(row, prototype::WhichRow::This)
+        }
+        Action::ChangeState { .. }
+        | Action::SetMode { .. }
+        | Action::ScrollTo { .. }
+        | Action::Conditional { .. }
+        | Action::RunScript { .. } => false,
+        _ => true,
     }
 }
 

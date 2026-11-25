@@ -271,6 +271,15 @@ pub struct Player {
     /// When a click on nothing last flashed the hints.
     pub(crate) flash: Option<f64>,
     pub(crate) depth: u32,
+    /// How many lists play has made again: a row path made since none was
+    /// finds its layer still standing ([`Player::still`]).
+    pub(crate) remade: u64,
+    /// The rows *Add row* and *Delete row* moved while a row path was held,
+    /// each a table and its row inserted (`true`) or removed, so the path
+    /// follows its row ([`Player::hold_path`]).
+    pub(crate) row_shifts: Vec<(mastik_core::list::DataSetId, usize, bool)>,
+    /// How many row paths are held; the shifts are dropped when none is.
+    pub(crate) paths_held: usize,
 }
 
 impl Player {
@@ -326,6 +335,9 @@ impl Player {
             recording: None,
             flash: None,
             depth: 0,
+            remade: 0,
+            row_shifts: Vec::new(),
+            paths_held: 0,
         };
         p.prepare();
         // A flow's starting modes are set as *Set mode* sets them everywhere.
@@ -781,6 +793,7 @@ impl Player {
     /// List `l` made again on the copy from its description and data set.
     pub(crate) fn regenerate_list(&mut self, l: NodeId) {
         use mastik_core::list;
+        self.remade += 1;
         let (doc, res, ids, dirty) = (&mut self.doc, &mut self.res, &mut self.ids, &mut self.dirty);
         // A regeneration the rules refuse leaves the list showing its last rows.
         let _ = list::regenerate(doc, l, ids, |doc, tx| {

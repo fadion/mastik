@@ -282,9 +282,12 @@ out both ends.
   fire (*Triggers*). *Restart* puts every table back.
   A write makes its lists again with new copies, so the rest of the reaction, and the layer's
   further reactions, run on the layer at the holder's place in the row drawing the same table row
-  (`Player::row_path`, `Player::still`); once a filter or a sort takes that row out of the list,
-  the actions left are skipped with `Missing` and the reactions left do not run, rather than land
-  on the row now drawn in its place. A list made again in play takes up its new copies as a frame's
+  (`Player::row_path`, `Player::still`). *Add row at start* and *Delete row* move the table rows
+  after them, and the row is followed through the move. Once the row is deleted, or a filter or a
+  sort takes it out of the list, the actions left that act on the row (*This row*, *Change to*,
+  *Set mode*, *Scroll to*, *Conditional*, *Run script*) are skipped with `Missing` and the rest
+  still run, so *Delete row; Back* goes back; the reactions left do not run. Nothing lands on the
+  row now drawn in its place. A list made again in play takes up its new copies as a frame's
   opening does (`take_up_copies`): their inputs and scroll effects are found, and in a shown frame
   their *After* reactions start, at least `MIN_LOOP_MS` out, so a looping row state goes on
   looping and a row *After* that writes its own table lets time move. Every copy's *After* starts
