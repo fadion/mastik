@@ -173,14 +173,6 @@ place, saved in the same shape so existing files load. It is matched in about 60
 
 ## Next · MCP
 
-- **`get_prototype` once per interaction, with its settings.** It lists an interaction once per
-  list copy (a list of ten rows repeats each of its row's interactions ten times) and repeats
-  every interaction for every flow that reaches its frame (`reads::prototype` over
-  `flow_map::plans`, each plan's `written`). It also leaves out what an agent walking its flows
-  needs: overlay settings (position, backdrop, close outside), a flow's start values and modes,
-  input bindings, and tied variant states. Collapse list copies to one line *on each row of
-  ‹list›*, list each frame's interactions once with the flows naming their frames, and add those
-  settings to the words.
 - **A list sorted by a date column.** Every cell is text, so a sort on *Due* puts *Dec 12*
   before *Dec 2*; a sort that reads dates (or a date column kind) would let a task list sort by
   due date.

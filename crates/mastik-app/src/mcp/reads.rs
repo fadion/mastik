@@ -326,40 +326,150 @@ fn holds_said(doc: &Document) -> Vec<String> {
         .collect()
 }
 
-/// `get_prototype`: every flow with the frames it reaches, starting frame
-/// first, and every interaction on them in words by its frame and layer, as the
-/// flow map writes them; and what holds the export.
+/// `get_prototype`: every flow with its starting modes and values and the
+/// frames it reaches, starting frame first; each of those frames once, with its
+/// interactions and inputs in the flow map's words, a list's row read once for
+/// all its copies; the sets whose hover and pressed states play live; and what
+/// holds the export.
 pub(super) fn prototype(doc: &Document) -> Value {
+    use mastik_export::flow_map;
     let name = |id: NodeId| doc.get(id).map(|n| n.name().to_owned()).unwrap_or_default();
-    let flows: Vec<Value> = mastik_export::flow_map::plans(doc)
-        .into_iter()
-        .map(|p| {
-            let frames: Vec<Value> = p
-                .frames
+    let named = |id: NodeId| json!({ "id": id.to_wire(), "name": name(id) });
+    let mut reached: Vec<NodeId> = Vec::new();
+    let mut flows = Vec::new();
+    for page in doc.pages() {
+        for flow in &page.flows {
+            let frames = flow_map::reached(doc, flow.value.start);
+            for f in &frames {
+                if !reached.contains(f) {
+                    reached.push(*f);
+                }
+            }
+            let mut out = json!({
+                "page": page.id.to_wire(),
+                "name": flow.value.name,
+                "frames": frames.iter().map(|f| named(*f)).collect::<Vec<_>>(),
+            });
+            let modes: Vec<String> = flow
+                .value
+                .modes
                 .iter()
-                .map(|f| json!({ "id": f.to_wire(), "name": name(*f) }))
+                .filter_map(|m| flow_map::mode_names(doc, *m))
+                .map(|(c, m)| format!("{c}: {m}"))
                 .collect();
-            let interactions: Vec<Value> = p
-                .written
-                .iter()
-                .map(|w| {
-                    json!({
-                        "frame": w.frame.to_wire(),
-                        "layer": w.layer.to_wire(),
-                        "layer_name": name(w.layer),
-                        "does": w.text,
-                    })
-                })
-                .collect();
-            json!({
-                "page": p.page.to_wire(),
-                "name": p.name,
-                "frames": frames,
-                "interactions": interactions,
-            })
+            if !modes.is_empty() {
+                out["modes"] = json!(modes);
+            }
+            if !flow.value.values.is_empty() {
+                let values: serde_json::Map<String, Value> = flow
+                    .value
+                    .values
+                    .iter()
+                    .map(|(v, cell)| (var_name(doc, *v), cell_json(doc, cell)))
+                    .collect();
+                out["values"] = Value::Object(values);
+            }
+            flows.push(out);
+        }
+    }
+    let mut live: Vec<NodeId> = Vec::new();
+    let mut live_states = Vec::new();
+    let frames: Vec<Value> = reached
+        .iter()
+        .map(|&frame| {
+            let mut interactions = Vec::new();
+            for layer in mastik_core::subtree_nodes(doc, &[frame]) {
+                if mastik_core::list::copy_owner(doc, layer).is_some() {
+                    continue;
+                }
+                let Some(n) = doc.get(layer) else { continue };
+                let row = row_template_of(doc, layer);
+                let mut push = |does: String| {
+                    let mut e = json!({
+                        "layer": layer.to_wire(),
+                        "layer_name": name(layer),
+                        "does": does,
+                    });
+                    if let Some(list) = row {
+                        e["on_each_row_of"] = named(list);
+                    }
+                    interactions.push(e);
+                };
+                for r in n.reactions() {
+                    push(flow_map::describe(doc, layer, &r.value));
+                }
+                if let Some(input) = &n.play().input {
+                    push(input_words(doc, input));
+                }
+                let set = n
+                    .link()
+                    .filter(|_| mastik_core::component::instance_root(doc, layer) == Some(layer))
+                    .and_then(|m| mastik_core::variant::set_of(doc, m));
+                if let Some(set) = set.filter(|s| !live.contains(s)) {
+                    let states = mastik_core::prototype::live_states(doc, layer);
+                    if !states.is_empty() {
+                        live.push(set);
+                        let mut e = named(set);
+                        for (state, value) in states {
+                            e[state.to_lowercase()] = json!(value);
+                        }
+                        live_states.push(e);
+                    }
+                }
+            }
+            let mut out = named(frame);
+            out["interactions"] = json!(interactions);
+            out
         })
         .collect();
-    json!({ "flows": flows, "holds": holds_said(doc) })
+    json!({
+        "flows": flows,
+        "frames": frames,
+        "live_states": live_states,
+        "holds": holds_said(doc),
+    })
+}
+
+/// The list whose template holds `id`, `id` itself or a layer above it, so its
+/// interactions play on each of the list's rows.
+fn row_template_of(doc: &Document, id: NodeId) -> Option<NodeId> {
+    let mut at = Some(id);
+    while let Some(n) = at.and_then(|a| doc.get(a)) {
+        if let Some((list, 0)) = mastik_core::list::row_of(doc, n.id()) {
+            return Some(list);
+        }
+        at = n.parent();
+    }
+    None
+}
+
+/// A variable by its name, or its id where it is gone.
+fn var_name(doc: &Document, v: mastik_core::VarId) -> String {
+    doc.variables()
+        .get(v)
+        .map_or_else(|| v.0.to_wire(), |x| x.name.clone())
+}
+
+/// A flow's starting value as `set_flows` takes one: bare, a colour as
+/// `#rrggbbaa`, an alias as the variable it names.
+fn cell_json(doc: &Document, cell: &mastik_core::variable::Cell) -> Value {
+    use mastik_core::variable::Cell;
+    match cell {
+        Cell::Color(c) => hex(*c),
+        Cell::Number(n) => json!(n),
+        Cell::Boolean(b) => json!(b),
+        Cell::String(s) => json!(s),
+        Cell::Alias(v) => json!({ "Alias": var_name(doc, *v) }),
+    }
+}
+
+/// A layer bound as an input, in words: what playing it writes.
+fn input_words(doc: &Document, input: &mastik_core::prototype::Input) -> String {
+    let var = format!("“{}”", var_name(doc, input.var));
+    match &input.property {
+        Some(p) => format!("Input: a click toggles {var}, which its “{p}” shows"),
+        None => format!("Input: typing sets {var}"),
+    }
 }
 
 /// Why `export_prototype` cannot run on `s`: no flow, or an interaction holding

@@ -1637,6 +1637,33 @@ pub fn state_instance(doc: &Document, id: NodeId) -> Option<NodeId> {
     None
 }
 
+/// The states the player switches `id` into with nothing authored: Hover and
+/// Pressed, where `id` is a main in a set (or an instance of one) whose
+/// interaction-state property ties them, each with the value tied.
+pub fn live_states(doc: &Document, id: NodeId) -> Vec<(&'static str, String)> {
+    use crate::variant::{self, Interaction};
+    let Some(n) = doc.get(id) else {
+        return Vec::new();
+    };
+    let main = match n.link() {
+        Some(m) if crate::component::instance_root(doc, id) == Some(id) => m,
+        _ => id,
+    };
+    let Some(vs) = variant::set_of(doc, main).and_then(|s| doc.get(s)?.set()) else {
+        return Vec::new();
+    };
+    let Some(p) = vs.interaction().map(|i| &vs.props[i]) else {
+        return Vec::new();
+    };
+    [Interaction::Hover, Interaction::Active]
+        .into_iter()
+        .filter_map(|s| {
+            let value = p.values.iter().find(|v| p.state_of(v) == Some(s))?;
+            Some((s.label(), value.clone()))
+        })
+        .collect()
+}
+
 /// The variants an instance may change to: its main's set's, in order.
 pub fn states_of(doc: &Document, instance: NodeId) -> Vec<NodeId> {
     crate::component::main_of(doc, instance)

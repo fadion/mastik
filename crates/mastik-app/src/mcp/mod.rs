@@ -3544,7 +3544,8 @@ mod tests {
             .map(|f| &f["id"])
             .collect();
         assert_eq!(frames, [&json!(a), &json!(b)], "B is reached: {read}");
-        let first = &browse["interactions"][0];
+        assert_eq!(read["frames"][0]["id"], json!(a));
+        let first = &read["frames"][0]["interactions"][0];
         assert_eq!(
             (first["layer"].clone(), first["layer_name"].clone()),
             (next, json!("Next"))
@@ -3558,6 +3559,116 @@ mod tests {
             Some(1),
             "the hold: {read}"
         );
+    }
+
+    /// `get_prototype` reads each frame once though two flows reach it, a list's
+    /// row once for all its copies, an overlay's settings and an input in words,
+    /// a flow's starting values by name, and a set's live hover state.
+    ///
+    /// flip: `prototype` not skipping a list's copies → fails at "one line for
+    /// the rows"; it listing a frame per flow → fails at "each frame once".
+    #[test]
+    fn get_prototype_reads_each_frame_and_row_once_with_its_settings() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let home = screen(&mut engine, &mut docs, 1, "Home");
+        let sheet = screen(&mut engine, &mut docs, 1, "Sheet");
+        let mut mains = Vec::new();
+        for name in ["Rest", "Lit"] {
+            let id = rect(&mut engine, &mut docs, 1, name);
+            let args = json!({ "nodes": [id] });
+            let made = call(&mut engine, &mut docs, 1, "make_component", args);
+            mains.push(ok(&made)["created"][0].clone());
+        }
+        let made = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "combine_as_variants",
+            json!({ "nodes": mains }),
+        );
+        let set = ok(&made)["created"][0].clone();
+        let id = NodeId::from_wire(set.as_str().unwrap()).unwrap();
+        let prop = docs.session.doc.get(id).unwrap().set().unwrap().props[0].clone();
+        let rest = mastik_core::variant::rest_value(&docs.session.doc, id, 0).unwrap();
+        let lit = prop.values.iter().find(|v| **v != rest).unwrap().clone();
+        let args = json!({ "node": set, "property": prop.name, "value": lit, "state": "hover" });
+        let tool = json!({ "tool": "tie_state", "args": args });
+        ok(&call(&mut engine, &mut docs, 1, "call", tool));
+        let args = json!({ "main": mains[0], "parent": home, "x": 0, "y": 0 });
+        let made = call(&mut engine, &mut docs, 1, "create_instance", args);
+        let row = ok(&made)["created"][0].clone();
+        let args = json!({ "name": "People", "columns": ["Name"], "rows": [["Ada"], ["Alan"], ["Grace"]] });
+        ok(&call(&mut engine, &mut docs, 1, "add_table", args));
+        let tool = json!({ "tool": "make_list", "args": { "node": row, "table": "People" } });
+        ok(&call(&mut engine, &mut docs, 1, "call", tool));
+        let open_sheet = json!({ "OpenOverlay": { "overlay": sheet, "settings": {
+            "position": "BottomCentre", "close_outside": false } } });
+        let props = json!({ "reactions": [{ "trigger": "Click", "actions": [open_sheet] }] });
+        let args = json!({ "nodes": [row], "props": props });
+        ok(&call(&mut engine, &mut docs, 1, "set", args));
+        let args = json!({ "kind": "string", "name": "Filter", "value": "" });
+        ok(&call(&mut engine, &mut docs, 1, "add_variable", args));
+        let args = json!({ "parent": home, "text": "Search" });
+        let field = ok(&call(&mut engine, &mut docs, 1, "create_text", args))["created"][0].clone();
+        let props = json!({ "play": { "input": { "var": "Filter" } } });
+        let args = json!({ "nodes": [field], "props": props });
+        ok(&call(&mut engine, &mut docs, 1, "set", args));
+        let page = docs.session.doc.first_page().to_wire();
+        let props = json!({ "flows": [
+            { "name": "Browse", "start": home, "values": { "Filter": "Fix" } },
+            { "name": "Again", "start": home },
+        ] });
+        let args = json!({ "nodes": [page], "props": props });
+        ok(&call(&mut engine, &mut docs, 1, "set", args));
+        let doc = &docs.session.doc;
+        let list = doc
+            .get(NodeId::from_wire(row.as_str().unwrap()).unwrap())
+            .and_then(|n| n.parent())
+            .unwrap();
+        assert_eq!(
+            doc.get(list).and_then(|l| l.list()).map(|l| l.copies.len()),
+            Some(2),
+            "the fixture's list draws three rows"
+        );
+        let list = json!(list.to_wire());
+
+        let read = ok(&call(&mut engine, &mut docs, 1, "get_prototype", json!({}))).clone();
+        assert_eq!(
+            read["flows"][0]["values"],
+            json!({ "Filter": "Fix" }),
+            "{read}"
+        );
+        assert!(read["flows"][1].get("values").is_none(), "{read}");
+        let frames: Vec<&Value> = read["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| &f["id"])
+            .collect();
+        assert_eq!(frames, [&home, &sheet], "each frame once: {read}");
+        let on_home = read["frames"][0]["interactions"].as_array().unwrap();
+        let rows: Vec<&Value> = on_home
+            .iter()
+            .filter(|i| i["does"].as_str().unwrap().contains("as an overlay"))
+            .collect();
+        assert_eq!(rows.len(), 1, "one line for the rows: {read}");
+        assert_eq!(rows[0]["layer"], row);
+        assert_eq!(rows[0]["on_each_row_of"]["id"], list, "{read}");
+        let does = rows[0]["does"].as_str().unwrap();
+        assert!(
+            does.contains("at the bottom centre") && does.contains("kept open by a click outside"),
+            "the overlay's settings: {does}"
+        );
+        assert!(
+            on_home
+                .iter()
+                .any(|i| i["does"] == "Input: typing sets “Filter”"),
+            "the input: {read}"
+        );
+        let live = read["live_states"].as_array().unwrap();
+        assert_eq!(live.len(), 1, "{read}");
+        assert_eq!((&live[0]["id"], &live[0]["hover"]), (&set, &json!(lit)));
     }
 
     /// An export's file packs on a worker: the call is kept waiting, not

@@ -263,7 +263,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "get_prototype",
-        doc: "The prototype as data, to check it without playing it: each flow with the frames it reaches and every interaction on them in words, by layer; `holds`, what keeps `export_prototype` from running.",
+        doc: "The prototype as data: each flow with its start values and the frames it reaches; each frame once, its interactions and inputs in words by layer, a list's row once; `live_states`; `holds`, what stops `export_prototype`.",
         params: &[],
     },
     Tool {

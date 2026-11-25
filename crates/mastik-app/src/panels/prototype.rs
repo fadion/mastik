@@ -1342,37 +1342,11 @@ fn pickable_under(doc: &Document, root: NodeId) -> Vec<NodeId> {
         .collect()
 }
 
+use mastik_core::prototype::live_states;
 pub(crate) use mastik_core::prototype::{state_instance, states_of};
 
 fn name(doc: &Document, id: NodeId) -> String {
     crate::private::layer(doc, id).into_owned()
-}
-
-/// The states the player switches `id` into with nothing authored: Hover and
-/// Pressed, where `id` is a main in a set (or an instance of one) whose
-/// interaction-state property ties them, each with the value tied.
-fn live_states(doc: &Document, id: NodeId) -> Vec<(&'static str, String)> {
-    use mastik_core::variant::{self, Interaction};
-    let Some(n) = doc.get(id) else {
-        return Vec::new();
-    };
-    let main = match n.link() {
-        Some(m) if mastik_core::component::instance_root(doc, id) == Some(id) => m,
-        _ => id,
-    };
-    let Some(vs) = variant::set_of(doc, main).and_then(|s| doc.get(s)?.set()) else {
-        return Vec::new();
-    };
-    let Some(p) = vs.interaction().map(|i| &vs.props[i]) else {
-        return Vec::new();
-    };
-    [Interaction::Hover, Interaction::Active]
-        .into_iter()
-        .filter_map(|s| {
-            let value = p.values.iter().find(|v| p.state_of(v) == Some(s))?;
-            Some((s.label(), value.clone()))
-        })
-        .collect()
 }
 
 /// What an action names, as its row writes it, and the word for it gone when

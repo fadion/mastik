@@ -48,7 +48,8 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
 
 ## Interactions
 
-- **The *Interaction states* card** (`live_states_card`) stands before *Interactions* on a main
+- **The *Interaction states* card** (`live_states_card`, reading
+  `mastik_core::prototype::live_states`, which `get_prototype` answers too) stands before *Interactions* on a main
   in a set, or an instance of one, whose interaction-state property ties *Hover* and/or
   *Pressed*: a row each, *plays live*, its tooltip naming the value shown. The player switches
   those states with nothing authored (`play.md`), and the card says so, so no one writes *While

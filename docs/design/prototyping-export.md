@@ -262,7 +262,11 @@ flows picked, every flow when none is) a page of its frames as they sit on
 the canvas, drawn by the PDF export's path, with an arrow from each layer that moves the screen
 and a numbered badge for each reaction at its layer's corner (one that would cover an earlier
 badge, a layer's second reaction or a layer at its frame's corner, steps right past it), then
-pages writing those reactions out in words, for review and sign-off. A flow with no frame on its
+pages writing those reactions out in words (`flow_map::describe`, which `get_prototype` answers
+too), for review and sign-off. An overlay's words name its settings only where not the default
+(centred, no backdrop, closed by a click outside): its place (*at the bottom centre*, or *at x, y
+from the layer opening it* for *Manual*), *over a #rrggbbaa backdrop*, *kept open by a click
+outside*. A flow with no frame on its
 page, its start gone or on another page, gets its words pages alone; it never costs the other
 flows their pages. The file fails only when there is no flow or the converter refuses a page,
 and the app and the CLI say which.

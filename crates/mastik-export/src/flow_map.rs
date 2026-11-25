@@ -14,8 +14,8 @@ use krilla_svg::SurfaceExt;
 use mastik_core::kurbo::{Point, Rect};
 use mastik_core::peniko::{Blob, FontData};
 use mastik_core::prototype::{
-    Action, Direction, Easing, FlowRef, Reaction, Timing, Transition, TransitionKind, Trigger,
-    VarChange,
+    Action, Direction, Easing, FlowRef, OverlayPosition, OverlaySettings, Reaction, Timing,
+    Transition, TransitionKind, Trigger, VarChange,
 };
 use mastik_core::{Document, ExportText, Keyed, NodeId, NodeKind, Resolved, subtree_nodes};
 
@@ -474,11 +474,12 @@ fn action_words(doc: &Document, holder: NodeId, a: &Action) -> String {
         Action::Back => "go back".into(),
         Action::OpenOverlay {
             overlay,
+            settings,
             transition,
-            ..
         } => format!(
-            "open {} as an overlay{}",
+            "open {} as an overlay{}{}",
             layer(*overlay),
+            overlay_words(settings),
             transition_words(transition)
         ),
         Action::CloseOverlay { transition } => {
@@ -486,11 +487,12 @@ fn action_words(doc: &Document, holder: NodeId, a: &Action) -> String {
         }
         Action::SwapOverlay {
             overlay,
+            settings,
             transition,
-            ..
         } => format!(
-            "swap the overlay for {}{}",
+            "swap the overlay for {}{}{}",
             layer(*overlay),
+            overlay_words(settings),
             transition_words(transition)
         ),
         Action::ScrollTo {
@@ -544,17 +546,7 @@ fn action_words(doc: &Document, holder: NodeId, a: &Action) -> String {
             out
         }
         Action::SetMode { mode, scope } => {
-            let t = doc.variables();
-            let words = t
-                .collection_of_mode(*mode)
-                .and_then(|c| {
-                    let m = c.modes.iter().find(|m| m.id == *mode)?;
-                    Some((c.name.clone(), m.name.clone()))
-                })
-                .or_else(|| {
-                    let (kit, m) = t.kit_mode_of(*mode)?;
-                    Some((kit.to_owned(), m.name.clone()))
-                });
+            let words = mode_names(doc, *mode);
             let here = match scope {
                 mastik_core::prototype::ModeScope::Everywhere => "",
                 mastik_core::prototype::ModeScope::Screen => " on this screen",
@@ -592,6 +584,52 @@ fn action_words(doc: &Document, holder: NodeId, a: &Action) -> String {
         ),
         Action::DeleteRow { table, row } => format!("delete {}", row_words(doc, *table, row)),
     }
+}
+
+/// Mode `mode` by its collection's name (a kit's name for a kit's mode) and
+/// its own; `None` when it is gone.
+pub fn mode_names(doc: &Document, mode: mastik_core::variable::ModeId) -> Option<(String, String)> {
+    let t = doc.variables();
+    t.collection_of_mode(mode)
+        .and_then(|c| {
+            let m = c.modes.iter().find(|m| m.id == mode)?;
+            Some((c.name.clone(), m.name.clone()))
+        })
+        .or_else(|| {
+            let (kit, m) = t.kit_mode_of(mode)?;
+            Some((kit.to_owned(), m.name.clone()))
+        })
+}
+
+/// Where an overlay shows and what a click outside it does, each said only
+/// where it is not the default: centred, no backdrop, closing.
+fn overlay_words(s: &OverlaySettings) -> String {
+    let mut out = String::new();
+    let at = match s.position {
+        OverlayPosition::Centre => None,
+        OverlayPosition::TopLeft => Some("at the top left".to_owned()),
+        OverlayPosition::TopCentre => Some("at the top centre".to_owned()),
+        OverlayPosition::TopRight => Some("at the top right".to_owned()),
+        OverlayPosition::BottomLeft => Some("at the bottom left".to_owned()),
+        OverlayPosition::BottomCentre => Some("at the bottom centre".to_owned()),
+        OverlayPosition::BottomRight => Some("at the bottom right".to_owned()),
+        OverlayPosition::Manual { x, y } => Some(format!(
+            "at {}, {} from the layer opening it",
+            number(x),
+            number(y)
+        )),
+    };
+    if let Some(at) = at {
+        let _ = write!(out, " {at}");
+    }
+    if let Some(c) = s.backdrop {
+        let [r, g, b, a] = c.to_rgba8().to_u8_array();
+        let _ = write!(out, " over a #{r:02x}{g:02x}{b:02x}{a:02x} backdrop");
+    }
+    if !s.close_outside {
+        out.push_str(", kept open by a click outside");
+    }
+    out
 }
 
 /// How a move animates, as a parenthesis after it; nothing for *Instant*.
