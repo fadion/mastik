@@ -1998,6 +1998,20 @@ mod tests {
         ok(&out)["created"][0].as_str().unwrap().to_owned()
     }
 
+    /// A new top-level frame named `name`: what a link or a flow goes to.
+    pub(in crate::mcp) fn screen(
+        engine: &mut Engine,
+        docs: &mut One,
+        conn: Conn,
+        name: &str,
+    ) -> String {
+        let page = docs.session.doc.first_page().to_wire();
+        let kind = json!({ "Artboard": { "size": { "width": 390, "height": 844 } } });
+        let args = json!({ "parent": page, "kind": kind, "name": name });
+        let out = call(engine, docs, conn, "create_node", args);
+        ok(&out)["created"][0].as_str().unwrap().to_owned()
+    }
+
     /// A client that asked for short ids is answered in them and writes with
     /// them, a name that reads like one is kept as written, and a fresh host
     /// with no memory of the client, having shown another actor first, reads
@@ -3321,8 +3335,8 @@ mod tests {
 
     /// Two flows, `Browse` and `Checkout`, on the first page, and the page's id.
     fn two_flows(engine: &mut Engine, docs: &mut One) -> String {
-        let a = rect(engine, docs, 1, "A");
-        let b = rect(engine, docs, 1, "B");
+        let a = screen(engine, docs, 1, "A");
+        let b = screen(engine, docs, 1, "B");
         let page = docs.session.doc.first_page().to_wire();
         let props = json!({ "flows": [
             { "name": "Browse", "start": a },
@@ -3401,7 +3415,7 @@ mod tests {
         open(&mut engine, &mut docs, 1);
         two_flows(&mut engine, &mut docs);
         let a = rect(&mut engine, &mut docs, 1, "Button");
-        let gone = rect(&mut engine, &mut docs, 1, "Gone");
+        let gone = screen(&mut engine, &mut docs, 1, "Gone");
         let props = json!({
             "reactions": [{ "trigger": "Click", "actions": [{ "Navigate": { "to": gone } }] }],
         });

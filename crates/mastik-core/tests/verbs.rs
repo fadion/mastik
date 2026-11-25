@@ -8029,6 +8029,179 @@ fn set_play_gives_snap_points_their_ids() {
     assert_eq!(points.len(), 2, "the tree's points");
 }
 
+/// `set_reactions` and `set_flows` take a variable, mode, script, table or
+/// column by its name where they take its id, as a top-level id parameter does;
+/// a name that is none is refused naming its path, and an id is kept as it is.
+///
+/// flip: `by_names` not reading a `[Reaction]` → fails at the first `run`;
+/// `reaction_names` not reading a row action's cells → the same `run`, at
+/// `cells[0].column`; `by_names` not reading a `[Flow]` → fails at the flows'
+/// `run`.
+#[test]
+fn reactions_and_flows_take_names_for_ids() {
+    use mastik_core::prototype::{Action, Trigger};
+    let (mut doc, mut ids, page) = blank();
+    let a = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame(100.0, 100.0) }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "add_variable",
+        json!({ "kind": "number", "name": "Count" }),
+    );
+    run(&mut doc, &mut ids, "add_mode", json!({ "name": "Dark" }));
+    run(
+        &mut doc,
+        &mut ids,
+        "add_script",
+        json!({ "name": "Shuffle", "source": "" }),
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "add_table",
+        json!({ "name": "Cart", "columns": ["Item", "Qty"], "rows": [] }),
+    );
+    let count = doc.variables().ids_named("Count")[0];
+    let cart = doc.data_sets()[0].id;
+    let qty = doc.data_sets()[0].table.columns[1].id;
+    let reactions = json!([
+        { "trigger": { "VariableChanges": { "var": "Count" } }, "actions": [
+            { "SetMode": { "mode": "Dark" } },
+        ] },
+        { "trigger": "Click", "actions": [
+            { "SetVariable": { "var": "Count", "change": "Toggle" } },
+            { "RunScript": { "script": "Shuffle" } },
+            { "AddRow": { "table": "Cart", "cells": [{ "column": "Qty", "to": "1" }] } },
+            { "Conditional": { "branches": [{ "when": "true", "actions": [
+                { "DeleteRow": { "table": "Cart", "row": "Opened" } },
+            ] }] } },
+        ] },
+    ]);
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [a.to_wire()], "reactions": reactions }),
+    );
+    let held = doc.get(a).unwrap().reactions().to_vec();
+    assert!(matches!(held[0].trigger, Trigger::VariableChanges { var } if var == count));
+    let actions: Vec<&Action> = held[1].actions.iter().map(|k| &k.value).collect();
+    assert!(matches!(actions[0], Action::SetVariable { var, .. } if *var == count));
+    assert!(
+        matches!(actions[2], Action::AddRow { table, cells, .. } if *table == cart && cells[0].column == qty),
+        "the column: {:?}",
+        actions[2]
+    );
+    let Action::Conditional { branches, .. } = actions[3] else {
+        panic!()
+    };
+    assert!(
+        matches!(branches[0].actions[0].value, Action::DeleteRow { table, .. } if table == cart)
+    );
+
+    let wrong = json!([{ "trigger": "Click", "actions": [{ "RunScript": { "script": "Nope" } }] }]);
+    let why = format!(
+        "{:?}",
+        answer(
+            &doc,
+            &mut ids,
+            "set_reactions",
+            json!({ "nodes": [a.to_wire()], "reactions": wrong })
+        )
+        .err()
+    );
+    assert!(
+        why.contains("[0].actions[0]") && why.contains("Nope"),
+        "{why}"
+    );
+
+    run(
+        &mut doc,
+        &mut ids,
+        "set_flows",
+        json!({ "page": page.to_wire(), "flows": [
+            { "name": "Main", "start": a.to_wire(), "modes": ["Dark"], "values": [["Count", { "number": 3 }]] },
+        ] }),
+    );
+    let flow = &doc.page(page).unwrap().flows[0];
+    assert_eq!(flow.values[0].0, count, "the flow's variable");
+}
+
+/// A screen action or a flow's start naming a layer that is there but is no
+/// frame is refused at its path, and so is *Change to* naming a layer that is
+/// no component main, since play would pass over each; a target that is gone is
+/// kept, since targets dangle.
+///
+/// flip: `targets_checked` not called from `set_reactions` → fails at "Navigate
+/// to a rectangle"; its `ChangeState` arm left out → fails at "Change to a
+/// rectangle"; `set_flows` without its start check → fails at "a flow".
+#[test]
+fn a_link_to_the_wrong_kind_of_layer_is_refused() {
+    let (mut doc, mut ids, page) = blank();
+    let a = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame(100.0, 100.0) }),
+    )[0];
+    let r = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": a.to_wire(), "kind": rect(10.0, 10.0) }),
+    )[0];
+    let refused = |doc: &Document, ids: &mut IdSource, action: Value| {
+        let reactions = json!([{ "trigger": "Click", "actions": [action] }]);
+        let out = answer(
+            doc,
+            ids,
+            "set_reactions",
+            json!({ "nodes": [r.to_wire()], "reactions": reactions }),
+        );
+        format!("{:?}", out.err())
+    };
+    let why = refused(&doc, &mut ids, json!({ "Navigate": { "to": r.to_wire() } }));
+    assert!(
+        why.contains("[0].actions[0].Navigate.to") && why.contains("frame"),
+        "Navigate to a rectangle: {why}"
+    );
+    let why = refused(
+        &doc,
+        &mut ids,
+        json!({ "OpenOverlay": { "overlay": r.to_wire() } }),
+    );
+    assert!(why.contains("overlay"), "an overlay of a rectangle: {why}");
+    let why = refused(
+        &doc,
+        &mut ids,
+        json!({ "ChangeState": { "instance": r.to_wire(), "to": r.to_wire() } }),
+    );
+    assert!(why.contains("ChangeState"), "Change to a rectangle: {why}");
+    for kept in [
+        json!({ "Navigate": { "to": a.to_wire() } }),
+        json!({ "Navigate": { "to": "7e5b:999" } }),
+    ] {
+        assert_eq!(
+            refused(&doc, &mut ids, kept.clone()),
+            "None",
+            "kept: {kept}"
+        );
+    }
+    let out = answer(
+        &doc,
+        &mut ids,
+        "set_flows",
+        json!({ "page": page.to_wire(), "flows": [{ "name": "Main", "start": r.to_wire() }] }),
+    );
+    let why = format!("{:?}", out.err());
+    assert!(why.contains("[0].start"), "a flow: {why}");
+}
+
 /// A link's transition reads back as it is: a smart animate's side survives
 /// `reactions_value` and `set_reactions` on a page whose default shares it,
 /// and a tree read on one page and inserted on another whose default differs

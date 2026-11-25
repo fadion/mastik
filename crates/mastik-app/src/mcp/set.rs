@@ -499,7 +499,7 @@ const TEXTS_LISTED: usize = 8;
 mod tests {
     use super::*;
     use crate::mcp::Engine;
-    use crate::mcp::tests::{One, call, ok, open, rect};
+    use crate::mcp::tests::{One, call, ok, open, rect, screen};
 
     /// `set`'s `rotation` on a line is the angle the Rotation field shows, its
     /// start-to-end: a line drawn at 45° set to 0 lies flat.
@@ -766,8 +766,8 @@ mod tests {
     fn set_writes_the_prototype_and_get_node_reads_it() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
         open(&mut engine, &mut docs, 1);
-        let a = rect(&mut engine, &mut docs, 1, "A");
-        let b = rect(&mut engine, &mut docs, 1, "B");
+        let a = screen(&mut engine, &mut docs, 1, "A");
+        let b = screen(&mut engine, &mut docs, 1, "B");
         let depth = docs.session.history.undo_depth();
         let props = json!({
             "reactions": [{ "trigger": "Click", "actions": [{ "Navigate": { "to": b } }] }],

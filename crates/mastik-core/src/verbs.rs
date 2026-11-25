@@ -1629,6 +1629,27 @@ fn by_names(doc: &Document, verb: &'static Verb, args: &Value) -> Result<Value, 
         })?;
         map.insert(p.name.into(), id);
     }
+    for p in verb.params {
+        let named: fn(&Document, &mut Value) -> Result<(), String> = match p.kind {
+            ParamKind::Model("[Reaction]") => reaction_names,
+            ParamKind::Model("[Flow]") => flow_names,
+            _ => continue,
+        };
+        let Some(v) = map.get_mut(p.name) else {
+            continue;
+        };
+        // Some clients send a parameter with no schema type as JSON text.
+        if let Value::String(s) = v
+            && let Ok(parsed) = serde_json::from_str::<Value>(s.trim())
+        {
+            *v = parsed;
+        }
+        named(doc, v).map_err(|why| VerbError::Invalid {
+            verb: verb.name,
+            param: p.name,
+            why,
+        })?;
+    }
     if let Some(value) = map.get("value")
         && !value.is_object()
         && !value.is_null()
@@ -1652,6 +1673,144 @@ fn by_names(doc: &Document, verb: &'static Verb, args: &Value) -> Result<Value, 
         }
     }
     Ok(args)
+}
+
+/// `field`, a variable, mode or script (`what`) given by its name, as its id;
+/// an id is left as it is, since a target may dangle.
+fn id_field(doc: &Document, what: &str, field: &mut Value) -> Result<(), String> {
+    if let Value::String(name) = field
+        && NodeId::from_wire(name).is_none()
+    {
+        *field = id_named(doc, what, name)?;
+    }
+    Ok(())
+}
+
+/// The list of reactions `v` with each variable, mode, script, table and column
+/// its triggers and actions name by name written as its id, as a top-level id
+/// parameter takes a name; or the first that names nothing, by its path.
+fn reaction_names(doc: &Document, v: &mut Value) -> Result<(), String> {
+    for (i, r) in v.as_array_mut().into_iter().flatten().enumerate() {
+        if let Some(t) = r.get_mut("trigger") {
+            tagged_names(doc, t, &format!("[{i}].trigger"))?;
+        }
+        if let Some(actions) = r.get_mut("actions") {
+            action_names(doc, actions, &format!("[{i}].actions"))?;
+        }
+    }
+    Ok(())
+}
+
+/// [`reaction_names`] over a list of actions at `path`, a conditional's too.
+fn action_names(doc: &Document, v: &mut Value, path: &str) -> Result<(), String> {
+    for (j, a) in v.as_array_mut().into_iter().flatten().enumerate() {
+        tagged_names(doc, a, &format!("{path}[{j}]"))?;
+    }
+    Ok(())
+}
+
+/// [`reaction_names`] over one trigger or action at `at`, its kind in any case.
+fn tagged_names(doc: &Document, v: &mut Value, at: &str) -> Result<(), String> {
+    let Value::Object(map) = v else {
+        return Ok(());
+    };
+    for (kind, body) in map.iter_mut() {
+        let Value::Object(fields) = body else {
+            continue;
+        };
+        let at = format!("{at}.{kind}");
+        let field = |name: &str| format!("at `{at}.{name}`");
+        let what = match plain(kind).as_str() {
+            "variablechanges" | "setvariable" => Some(("var", "variable")),
+            "setmode" => Some(("mode", "mode")),
+            "runscript" => Some(("script", "script")),
+            _ => None,
+        };
+        if let Some((name, what)) = what
+            && let Some(f) = fields.get_mut(name)
+        {
+            id_field(doc, what, f).map_err(|why| format!("{}: {why}", field(name)))?;
+        }
+        if let Some(t) = fields.get_mut("table") {
+            if let Value::String(name) = t
+                && NodeId::from_wire(name).is_none()
+            {
+                let set = tables::find_table(doc, name)
+                    .map_err(|why| format!("{}: {why}", field("table")))?;
+                *t = serde_json::to_value(set.id).unwrap_or_default();
+            }
+            let set = serde_json::from_value::<crate::list::DataSetId>(t.clone())
+                .ok()
+                .and_then(|id| doc.data_set(id));
+            for (c, cell) in fields
+                .get_mut("cells")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+                .enumerate()
+            {
+                if let (Some(set), Some(Value::String(name))) = (set, cell.get("column")) {
+                    let column = set
+                        .table
+                        .columns
+                        .iter()
+                        .find(|col| col.name == *name)
+                        .ok_or_else(|| {
+                            format!(
+                                "{}: `{}` has no column `{name}`",
+                                field(&format!("cells[{c}].column")),
+                                set.name
+                            )
+                        })?;
+                    cell["column"] = serde_json::to_value(column.id).unwrap_or_default();
+                }
+            }
+        }
+        for (b, branch) in fields
+            .get_mut("branches")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            if let Some(actions) = branch.get_mut("actions") {
+                action_names(doc, actions, &format!("{at}.branches[{b}].actions"))?;
+            }
+        }
+        if let Some(otherwise) = fields.get_mut("otherwise") {
+            action_names(doc, otherwise, &format!("{at}.otherwise"))?;
+        }
+    }
+    Ok(())
+}
+
+/// The list of flows `v` with each starting mode and each starting value's
+/// variable given by its name written as its id.
+fn flow_names(doc: &Document, v: &mut Value) -> Result<(), String> {
+    for (i, flow) in v.as_array_mut().into_iter().flatten().enumerate() {
+        for (m, mode) in flow
+            .get_mut("modes")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            id_field(doc, "mode", mode).map_err(|why| format!("at `[{i}].modes[{m}]`: {why}"))?;
+        }
+        for (n, pair) in flow
+            .get_mut("values")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            if let Some(var) = pair.get_mut(0) {
+                id_field(doc, "variable", var)
+                    .map_err(|why| format!("at `[{i}].values[{n}]`: {why}"))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The id of the `what` (variable, style, collection, mode, script) called `name`, or
@@ -5012,6 +5171,21 @@ pub static VERBS: &[Verb] = &[
                 let why = format!("two flows share the id `{}`", twice.0.to_wire());
                 return Err(a.invalid("flows", why));
             }
+            // A start that is gone is kept, as a target is; one that is there but
+            // no frame would never open.
+            for (i, f) in flows.iter().enumerate() {
+                if ctx
+                    .doc
+                    .get(f.start)
+                    .is_some_and(|n| !matches!(n.kind(), NodeKind::Artboard { .. }))
+                {
+                    let why = format!(
+                        "at `[{i}].start`: `{}` is no frame; a flow starts on a frame",
+                        f.start.to_wire()
+                    );
+                    return Err(a.invalid("flows", why));
+                }
+            }
             Ok(Done::ops(vec![Operation::SetFlows { id: page, flows }]))
         },
     },
@@ -6128,6 +6302,7 @@ pub static VERBS: &[Verb] = &[
                 for (i, r) in reactions.iter_mut().enumerate() {
                     let at = format!("reactions[{i}].actions");
                     exprs_stored(ctx.doc, &mut r.value.actions, &at)
+                        .and_then(|()| targets_checked(ctx.doc, &r.value.actions, &at))
                         .map_err(|why| a.invalid("reactions", why))?;
                 }
                 if let Some(twice) = crate::item::first_duplicate(&reactions) {
@@ -7701,6 +7876,7 @@ fn tree_reactions(
     // Every layer below the root has a parent the document does not hold yet.
     let base = page_transition(ctx.doc, a.node("parent")?);
     let mut v = written.clone();
+    reaction_names(ctx.doc, &mut v).map_err(refused)?;
     loosen_model("[Reaction]", "", &mut v).map_err(refused)?;
     let ids = &mut *ctx.ids;
     reactions_in(&mut v, &base, &mut || ids.mint_item()).map_err(refused)?;
@@ -7709,7 +7885,9 @@ fn tree_reactions(
         serde_json::from_value(v).map_err(|e| refused(e.to_string()))?;
     for (i, r) in read.iter_mut().enumerate() {
         let at = format!("reactions[{i}].actions");
-        exprs_stored(ctx.doc, &mut r.value.actions, &at).map_err(|why| a.invalid("tree", why))?;
+        exprs_stored(ctx.doc, &mut r.value.actions, &at)
+            .and_then(|()| targets_checked(ctx.doc, &r.value.actions, &at))
+            .map_err(|why| a.invalid("tree", why))?;
     }
     if let Some(twice) = crate::item::first_duplicate(&read) {
         return Err(refused(format!(
@@ -8653,6 +8831,61 @@ fn exprs_stored(
                 cells(c, false, Reads::Tables(Some(*table)), &at)?;
             }
             Action::DeleteRow { table, row: r } => row(r, *table, &at)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// Each action in `actions` (at `path`) whose target is there but would never
+/// play refused: a screen action going to a layer that is no frame, *Change to*
+/// switching a layer that is no instance or main, or to one that is no main. A
+/// target that is gone is let through, since targets dangle.
+fn targets_checked(
+    doc: &Document,
+    actions: &[Keyed<crate::prototype::Action>],
+    path: &str,
+) -> Result<(), String> {
+    use crate::prototype::Action;
+    for (j, k) in actions.iter().enumerate() {
+        let at = format!("{path}[{j}]");
+        let frame = |id: NodeId, field: &str| match doc.get(id) {
+            Some(n) if !matches!(n.kind(), NodeKind::Artboard { .. }) => Err(format!(
+                "at `{at}.{field}`: `{}` is no frame; a screen action goes to a frame",
+                id.to_wire()
+            )),
+            _ => Ok(()),
+        };
+        match &k.value {
+            Action::Navigate { to, .. } => frame(*to, "Navigate.to")?,
+            Action::OpenOverlay { overlay, .. } => frame(*overlay, "OpenOverlay.overlay")?,
+            Action::SwapOverlay { overlay, .. } => frame(*overlay, "SwapOverlay.overlay")?,
+            Action::ChangeState { instance, to, .. } => {
+                if let Some(n) = doc.get(*instance)
+                    && n.link().is_none()
+                    && !n.component
+                {
+                    return Err(format!(
+                        "at `{at}.ChangeState.instance`: `{}` is no instance; Change to switches an instance to another variant",
+                        instance.to_wire()
+                    ));
+                }
+                if doc.get(*to).is_some_and(|n| !n.component) {
+                    return Err(format!(
+                        "at `{at}.ChangeState.to`: `{}` is no component main; Change to switches to a variant of the instance's set",
+                        to.to_wire()
+                    ));
+                }
+            }
+            Action::Conditional {
+                branches,
+                otherwise,
+            } => {
+                for (b, branch) in branches.iter().enumerate() {
+                    targets_checked(doc, &branch.actions, &format!("{at}.branches[{b}].actions"))?;
+                }
+                targets_checked(doc, otherwise, &format!("{at}.otherwise"))?;
+            }
             _ => {}
         }
     }
