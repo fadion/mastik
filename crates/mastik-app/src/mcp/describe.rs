@@ -329,7 +329,9 @@ mod tests {
     /// A model a schema names is answered with its shape: every action with its
     /// fields, a struct's fields, the example beside them.
     ///
-    /// flip: `describe_tools` without its `models` → fails at "the actions".
+    /// flip: `describe_tools` without its `models` → fails at "the actions";
+    /// `model_shape` without its variant-name arm → fails at "an action by its
+    /// own name".
     #[test]
     fn describe_tools_answers_a_model_by_its_shape() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
@@ -338,7 +340,7 @@ mod tests {
             &mut docs,
             1,
             "describe_tools",
-            json!({ "names": ["Action", "[Reaction]", "OverlaySettings"] }),
+            json!({ "names": ["Action", "[Reaction]", "OverlaySettings", "EditRow", "Timing"] }),
         );
         let answer = ok(&found);
         let models = &answer["models"];
@@ -357,6 +359,15 @@ mod tests {
                 .to_string()
                 .contains("close_outside"),
             "a struct's fields"
+        );
+        assert_eq!(
+            models["EditRow"],
+            json!({ "variant_of": "Action", "fields": ["table", "row", "cells"] }),
+            "an action by its own name"
+        );
+        assert!(
+            models["Timing"]["variants"].get("Ease").is_some(),
+            "an enum's words"
         );
         assert!(answer.get("not_found").is_none(), "{answer}");
     }

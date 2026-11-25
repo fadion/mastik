@@ -1080,6 +1080,12 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
     if without_fields && let Some(form) = named.as_deref().and_then(|n| kind_example(&plain(n))) {
         return format!("{said}; write it with its fields, as `{}`", compact(&form));
     }
+    // A word written as a key with a value (`{"visible": true}`) is the word alone.
+    if miss.why.contains("expected unit")
+        && let Some(word) = named.as_deref()
+    {
+        return format!("{said}; `{word}` takes no value: write it as the word \"{word}\"");
+    }
     // A prototype struct or variant missing a field lists them all, as no example
     // shows every action.
     if miss.why.contains("missing field")
@@ -1339,10 +1345,11 @@ fn enum_capture<T: serde::de::DeserializeOwned>(
 }
 
 /// The shape of the prototype model `name` (`Reaction`, `Action`, `Trigger`,
-/// `Flow`, `LayerPlay` and the structs they hold), for `describe_tools`: a
-/// struct's `fields`, or an enum's `variants`, each with its fields or `null`
-/// for a word or a single value; with the model's example where it has one.
-/// `None` for a name that is no such model.
+/// `Flow`, `LayerPlay` and the structs and enums they hold), for
+/// `describe_tools`: a struct's `fields`, or an enum's `variants`, each with its
+/// fields or `null` for a word or a single value; with the model's example where
+/// it has one. An action's or trigger's own name (`EditRow`) answers its fields.
+/// `None` for a name that is none of these.
 pub fn model_shape(name: &str) -> Option<Value> {
     use crate::prototype as p;
     use serde_json::json;
@@ -1375,7 +1382,30 @@ pub fn model_shape(name: &str) -> Option<Value> {
         "Input" => fields::<p::Input>(),
         "PagePlay" => fields::<p::PagePlay>(),
         "PlayExport" => fields::<p::PlayExport>(),
-        _ => None,
+        "TransitionKind" => variants::<p::TransitionKind>(),
+        "Direction" => variants::<p::Direction>(),
+        "Timing" => variants::<p::Timing>(),
+        "Easing" => variants::<p::Easing>(),
+        "OverlayPosition" => variants::<p::OverlayPosition>(),
+        "Side" => variants::<p::Side>(),
+        "ScrollAxis" => variants::<p::ScrollAxis>(),
+        "Snap" => variants::<p::Snap>(),
+        "SnapAlign" => variants::<p::SnapAlign>(),
+        "Pin" => variants::<p::Pin>(),
+        "FollowRange" => variants::<p::FollowRange>(),
+        "Release" => variants::<p::Release>(),
+        // An action's or trigger's own name answers its fields.
+        v => {
+            let of = |names: Option<&[&str]>| names.is_some_and(|n| n.contains(&v));
+            let (of, fields) = if of(enum_variants::<p::Action>()) {
+                ("Action", variant_fields::<p::Action>(v))
+            } else if of(enum_variants::<p::Trigger>()) {
+                ("Trigger", variant_fields::<p::Trigger>(v))
+            } else {
+                return None;
+            };
+            return Some(json!({ "variant_of": of, "fields": fields }));
+        }
     }?;
     let model = match bare {
         "Reaction" | "Flow" => format!("[{bare}]"),

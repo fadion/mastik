@@ -8388,6 +8388,41 @@ fn prototype_fields_are_refused_by_name_and_values_take_names() {
     );
 }
 
+/// A word written as a key with a value (`{"visible": true}`) is refused saying
+/// to write the word alone.
+///
+/// flip: `explain` without its `expected unit` arm → fails at "the word alone".
+#[test]
+fn a_word_written_with_a_value_is_refused_with_the_word() {
+    let (mut doc, mut ids, page) = blank();
+    let a = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame(100.0, 100.0) }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "add_variable",
+        json!({ "name": "Shown", "kind": "boolean" }),
+    );
+    let why = format!(
+        "{:?}",
+        answer(
+            &doc,
+            &mut ids,
+            "bind_variable",
+            json!({ "nodes": [a.to_wire()], "field": { "visible": true }, "variable": "Shown" }),
+        )
+        .err()
+    );
+    assert!(
+        why.contains("the word \\\"visible\\\""),
+        "the word alone: {why}"
+    );
+}
+
 /// A link's transition reads back as it is: a smart animate's side survives
 /// `reactions_value` and `set_reactions` on a page whose default shares it,
 /// and a tree read on one page and inserted on another whose default differs
