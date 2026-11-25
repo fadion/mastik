@@ -959,6 +959,69 @@ fn reverting_a_table_deletion_under_a_later_one_puts_it_back() {
     );
 }
 
+/// Tables `[A, B, C, D]`: commits the step `first` builds from their ids, then
+/// deletes B, then reverts the first step. Answers the tables after the revert,
+/// or its refusal, and the four tables' ids.
+fn revert_under_a_deletion(
+    first: impl FnOnce(&[list::DataSetId], &mut IdSource) -> Transaction,
+) -> (Result<Vec<list::DataSetId>, String>, Vec<list::DataSetId>) {
+    let (mut doc, mut ids, _) = blank();
+    let sets: Vec<DataSet> = (0..4).map(|_| data(&mut ids, &[("A", "1")])).collect();
+    let order: Vec<_> = sets.iter().map(|s| s.id).collect();
+    let add = sets
+        .into_iter()
+        .map(|s| Operation::SetDataSet {
+            id: s.id,
+            set: Some(Box::new(s)),
+        })
+        .collect();
+    let mut history = History::default();
+    commit(&mut history, &mut doc, &mut ids, Transaction(add));
+    let step = first(&order, &mut ids);
+    commit(&mut history, &mut doc, &mut ids, step);
+    let serial = history.last_serial();
+    let delete_b = Transaction(vec![Operation::SetDataSet {
+        id: order[1],
+        set: None,
+    }]);
+    commit(&mut history, &mut doc, &mut ids, delete_b);
+    let now = history
+        .revert(&mut doc, serial, StepNote::default())
+        .map(|_| doc.data_sets().iter().map(|d| d.id).collect())
+        .map_err(|e| e.to_string());
+    (now, order)
+}
+
+/// Reverting a step that put back two tables places each after the one before
+/// it, in either order the step deleted them; and a step that deleted a table
+/// and inserted a new one ahead of it reverts to the replay's order.
+/// flip: `tables_placed_as` not inserting into `present` → fails at "A and C";
+/// its `SetDataSet` arm left out → fails at "the inserted table".
+#[test]
+fn reverting_a_step_of_several_tables_under_a_later_one_puts_each_back() {
+    let gone = |id| Operation::SetDataSet { id, set: None };
+    for flip in [false, true] {
+        let (now, o) = revert_under_a_deletion(|o, _| {
+            let mut ops = vec![gone(o[0]), gone(o[2])];
+            if flip {
+                ops.reverse();
+            }
+            Transaction(ops)
+        });
+        assert_eq!(now, Ok(vec![o[0], o[2], o[3]]), "A and C, reversed {flip}");
+    }
+    let (now, o) = revert_under_a_deletion(|o, ids| {
+        Transaction(vec![
+            gone(o[2]),
+            Operation::InsertDataSet {
+                set: Box::new(data(ids, &[("A", "1")])),
+                index: 0,
+            },
+        ])
+    });
+    assert_eq!(now, Ok(vec![o[0], o[2], o[3]]), "the inserted table");
+}
+
 /// A picture `n` (its bytes `[n]`) added to the document; answers its id.
 fn picture(doc: &mut Document, n: u8) -> mastik_core::ImageId {
     let id = mastik_core::ImageId(format!("sha256:{n:064x}"));
