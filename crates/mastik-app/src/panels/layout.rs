@@ -1687,12 +1687,12 @@ impl MastikApp {
             for (sides, glyph, word) in [
                 (
                     [LEFT, RIGHT],
-                    icon::SIDES_SEPARATE,
+                    icon::SIDES_LEFT_RIGHT,
                     "Left and right padding",
                 ),
                 (
                     [TOP, BOTTOM],
-                    icon::SIDES_SEPARATE,
+                    icon::SIDES_TOP_BOTTOM,
                     "Top and bottom padding",
                 ),
             ] {
@@ -4776,6 +4776,21 @@ mod tests {
         for (glyph, value) in glyphs.into_iter().zip(["16", "8", "4", "12"]) {
             on_row(&mut p, glyph, value);
         }
+    }
+
+    /// The two paired padding fields wear different glyphs, left and right one,
+    /// top and bottom the other, so neither needs its tooltip to be told apart.
+    ///
+    /// flip: `padding_rows` giving both pairs `SIDES_LEFT_RIGHT` → fails at "left
+    /// and right" (two fields wear it).
+    #[test]
+    fn the_padding_pairs_wear_their_own_glyphs() {
+        let s = scene();
+        let frame_id = s.frame;
+        let mut p = Panel::new(s.app, MastikApp::inspector_container);
+        p.app.session.selection.set(vec![frame_id]);
+        assert_eq!(p.runs(icon::SIDES_LEFT_RIGHT).len(), 1, "left and right");
+        assert_eq!(p.runs(icon::SIDES_TOP_BOTTOM).len(), 1, "top and bottom");
     }
 
     /// Each Container mark's ↺ resets its own field, through the production

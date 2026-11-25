@@ -783,6 +783,12 @@ pub mod icon {
     /// Anything set per side (a stroke's sides, a container's padding): four
     /// sides that do not meet, [`CORNERS_SEPARATE`]'s twin.
     pub const SIDES_SEPARATE: &str = "\u{f011}";
+    /// Left and right padding as one value: the [`SIDE_LEFT`] box with both
+    /// upright sides solid. [`SIDES_TOP_BOTTOM`] is it turned.
+    pub const SIDES_LEFT_RIGHT: &str = "\u{f095}";
+    /// Top and bottom padding as one value: [`SIDES_LEFT_RIGHT`] turned a
+    /// quarter.
+    pub const SIDES_TOP_BOTTOM: &str = "\u{f096}";
     /// *Pad out to a square*: a picture centred in a square drawn in dots.
     pub const PAD_SQUARE: &str = "\u{f012}";
     /// Transparency, in both its places: a layer's opacity (the field, its badge
@@ -1494,6 +1500,8 @@ pub mod icon {
         ("side-bottom", SIDE_BOTTOM),
         ("side-left", SIDE_LEFT),
         ("sides-separate", SIDES_SEPARATE),
+        ("sides-left-right", SIDES_LEFT_RIGHT),
+        ("sides-top-bottom", SIDES_TOP_BOTTOM),
         ("pad-square", PAD_SQUARE),
         ("checkerboard", CHECKERBOARD),
         ("square-fill", SQUARE_FILL),

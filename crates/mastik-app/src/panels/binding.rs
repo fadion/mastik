@@ -256,6 +256,8 @@ impl FieldKey {
                 PAD_RIGHT => icon::SIDE_RIGHT,
                 PAD_BOTTOM => icon::SIDE_BOTTOM,
                 PAD_LEFT => icon::SIDE_LEFT,
+                s if s == PAD_LEFT | PAD_RIGHT => icon::SIDES_LEFT_RIGHT,
+                s if s == PAD_TOP | PAD_BOTTOM => icon::SIDES_TOP_BOTTOM,
                 _ => icon::SIDES_SEPARATE,
             },
         }
