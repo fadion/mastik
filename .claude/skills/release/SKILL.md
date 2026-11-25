@@ -136,8 +136,16 @@ so this is not optional.
 cargo check --workspace
 ```
 
+`crates/mastik-web` is its own workspace with its own lock, which records the
+path crates' version; the Release workflow's player build is `--locked`, so a
+stale one fails the tag. Refresh it:
+
 ```bash
-git add Cargo.toml Cargo.lock
+(cd crates/mastik-web && cargo metadata --format-version 1 > /dev/null)
+```
+
+```bash
+git add Cargo.toml Cargo.lock crates/mastik-web/Cargo.lock
 ```
 
 ```bash
