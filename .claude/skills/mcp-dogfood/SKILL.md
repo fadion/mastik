@@ -22,7 +22,8 @@ the tools of the build it was started on.
 - **"all tools":** the tester's proxy lists every tool (`--tools all`), not the core set. By
   default it sees what a person's agent sees.
 - **A brief** in quotes is used for every run instead of the pool. Write it to a file in the
-  scratchpad and pass `-BriefFile`.
+  scratchpad and pass `-BriefFile`. Under "prototypes" it needs both halves, the surface then
+  `Prototype:` and the prototype, as the pool's entries have; the script refuses one without.
 - **"prototypes":** the runs dogfood prototyping instead of page design, on a surface built
   first. Follow *Prototypes* below; everything else in this file holds.
 

@@ -136,11 +136,13 @@ if ($BriefFile) {
 } else {
     Stop-Run 1 'give -BriefIndex <n> or -BriefFile <path>'
 }
-# A prototype entry is its surface, then its prototype after `Prototype:`.
+# A prototype entry is its surface, then its prototype after `Prototype:`; a
+# brief file under -Prototypes must carry both halves too.
 $surface = ''
-if ($Prototypes -and -not $BriefFile) {
+if ($Prototypes) {
     $halves = $brief -split '\s*Prototype:\s*', 2
-    if ($halves.Count -lt 2) { Stop-Run 1 "brief $BriefIndex has no 'Prototype:' half" }
+    $which = if ($BriefFile) { $BriefFile } else { "brief $BriefIndex" }
+    if ($halves.Count -lt 2) { Stop-Run 1 "$which has no 'Prototype:' half" }
     $surface = ($halves[0] -replace '^Surface:\s*', '').Trim()
     $brief = "The document already holds this design, made in an earlier session: $surface " +
         "Don't redesign it: read it, then make it play. $($halves[1].Trim())"
