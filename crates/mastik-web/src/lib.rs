@@ -20,18 +20,13 @@ use mastik_core::prototype::FlowRef;
 use mastik_core::{Document, NodeId};
 use mastik_play::{Input, Request, Scene, Start};
 use mastik_render::{ImageStore, VelloCpuRenderer, VelloGpuRenderer, Viewport};
-use shell::Placement;
+use shell::{CANVAS_AREA, CANVAS_SIDE, Placement};
 use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 /// The actor the page's player mints ids from. Any value serves: the engine
 /// reserves every id the document already holds under it.
 const ACTOR: u64 = 0x6d61_7374_696b_7765;
-
-/// The 2D canvas's limits: Chrome's and Firefox's longest side, and Mobile
-/// Safari's largest area, past which the canvas stays blank.
-const CANVAS_SIDE: u32 = 32_767;
-const CANVAS_AREA: f64 = 16_777_216.0;
 
 /// Panics reach the browser's console; std's own hook writes to a stderr the page
 /// does not have. A panic core catches is reported too, as on the desktop.
@@ -279,7 +274,7 @@ impl Player {
             self.draw(&scene, &vp, scale)?;
         }
         let flash = f64::from(scene.hint_flash.unwrap_or(0.0));
-        let hint_density = shell::draw_scale(p.screen, dpr.max(0.1), CANVAS_SIDE, CANVAS_AREA);
+        let hint_density = shell::hint_density(&p, dpr);
         self.drawn = Some((scene, vp.pixel_size));
         Ok(vec![
             p.scale,

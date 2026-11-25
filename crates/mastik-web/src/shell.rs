@@ -286,6 +286,18 @@ pub fn draw_scale(screen: Size, scale: f64, side: u32, area: f64) -> f64 {
     scale.min(side / w).min(side / h).min(within_area)
 }
 
+/// The 2D canvas's limits: Chrome's and Firefox's longest side, and Mobile
+/// Safari's largest area, past which the canvas stays blank.
+pub const CANVAS_SIDE: u32 = 32_767;
+pub const CANVAS_AREA: f64 = 16_777_216.0;
+
+/// The device pixels per CSS pixel of the hints canvas, which the page sizes
+/// as the placed screen (`p.screen`, CSS pixels) times this: `dpr`, lowered so
+/// the canvas stays within the 2D canvas's limits.
+pub fn hint_density(p: &Placement, dpr: f64) -> f64 {
+    draw_scale(p.screen, dpr.max(0.1), CANVAS_SIDE, CANVAS_AREA)
+}
+
 /// The text a DOM key types into a focused field: one printable character, or
 /// `None` for a named key (`"Enter"`, `"Backspace"`).
 pub fn typed(key: &str) -> Option<&str> {
@@ -429,6 +441,25 @@ mod tests {
         let (w, h) = ((tall.width * s).round(), (tall.height * s).round());
         assert!(w * h <= area, "rounded area: {w} × {h} = {}", w * h);
         assert!(s > 2.93, "lowered no more than it must: {s}");
+    }
+
+    /// The hints canvas the page sizes from the placed screen and its density
+    /// stays within Mobile Safari's area on an iPad at *Fill width*, where the
+    /// screen is drawn larger than its units.
+    /// flip: `hint_density` solving for the unscaled screen → fails at "area".
+    #[test]
+    fn the_hints_canvas_stays_within_the_area_at_fill_width() {
+        let p = place(
+            Scaling::FillWidth,
+            Size::new(390.0, 5000.0),
+            Size::new(1024.0, 1366.0),
+            false,
+        );
+        assert!(p.scale > 2.0, "fixture: drawn larger than its units");
+        let d = hint_density(&p, 2.0);
+        let (w, h) = ((p.screen.width * d).round(), (p.screen.height * d).round());
+        assert!(w * h <= CANVAS_AREA, "area: {w} × {h} = {}", w * h);
+        assert!(d > 1.0, "lowered no more than it must: {d}");
     }
 
     /// One printable character types; a named key does not.
