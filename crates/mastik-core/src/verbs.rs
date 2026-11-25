@@ -8255,7 +8255,7 @@ fn put_prototype(doc: &Document, v: &mut Value, layers: &mut impl Iterator<Item 
     let Some(id) = layers.next() else { return };
     let Value::Object(map) = v else { return };
     if let Some(reactions) = own_reactions(doc, id) {
-        map.insert("reactions".into(), reactions_json(reactions, None));
+        map.insert("reactions".into(), reactions_json(doc, reactions, None));
     }
     if let Some(n) = doc.get(id) {
         let source = n.link().and_then(|s| doc.get(s));
@@ -8409,14 +8409,16 @@ pub fn guides_value(doc: &Document, owner: NodeId) -> Vec<Value> {
 /// is written keeps its side unless it has none, since one named without a side
 /// takes none (`transition_in`).
 pub fn reactions_value(
+    doc: &Document,
     reactions: &[Keyed<crate::prototype::Reaction>],
     base: &crate::prototype::Transition,
 ) -> Value {
-    reactions_json(reactions, Some(base))
+    reactions_json(doc, reactions, Some(base))
 }
 
 /// [`reactions_value`], each transition written whole when `base` is `None`.
 fn reactions_json(
+    doc: &Document,
     reactions: &[Keyed<crate::prototype::Reaction>],
     base: Option<&crate::prototype::Transition>,
 ) -> Value {
@@ -8439,7 +8441,11 @@ fn reactions_json(
             _ => {}
         }
     }
-    let mut v = serde_json::to_value(reactions).unwrap_or_default();
+    let mut named = reactions.to_vec();
+    for r in &mut named {
+        exprs_shown(doc, &mut r.value.actions);
+    }
+    let mut v = serde_json::to_value(named).unwrap_or_default();
     if let Some(Value::Object(base)) = base.map(|b| serde_json::to_value(b).unwrap_or_default()) {
         tighten(&mut v, &base);
     }
@@ -8577,15 +8583,7 @@ fn exprs_stored(
                  reads: Reads,
                  at: &str|
      -> Result<(), String> {
-        use crate::prototype::expr::{Ref, Unread, table_kind};
-        let gone = |r: &Ref| match r {
-            Ref::Var(v) => doc.variables().get(*v).is_none(),
-            r => matches!(
-                table_kind(doc.data_sets(), reads.row(), r),
-                Err(Unread::Missing)
-            ),
-        };
-        if e.check().is_ok() && e.refs().iter().any(gone) {
+        if dangles(doc, e, reads.row()) {
             return Ok(());
         }
         let text = std::mem::take(&mut e.0);
@@ -8659,6 +8657,65 @@ fn exprs_stored(
         }
     }
     Ok(())
+}
+
+/// Whether `e`, in the stored form, reads a variable, table or column `doc` no
+/// longer has, `row` being the table a `{row.…}` reads.
+fn dangles(
+    doc: &Document,
+    e: &crate::prototype::Expr,
+    row: Option<crate::list::DataSetId>,
+) -> bool {
+    use crate::prototype::expr::{Ref, Unread, table_kind};
+    let gone = |r: &Ref| match r {
+        Ref::Var(v) => doc.variables().get(*v).is_none(),
+        r => matches!(table_kind(doc.data_sets(), row, r), Err(Unread::Missing)),
+    };
+    e.check().is_ok() && e.refs().iter().any(gone)
+}
+
+/// Each expression in `actions` written with names, as the Prototype tab's
+/// fields show it, each read against the row [`exprs_stored`] stores it with: the
+/// inverse of that store, so what is read writes back as it was. One that
+/// [`dangles`] stays whole in the stored form, which the store lets through; a
+/// name two variables share stays its id.
+fn exprs_shown(doc: &Document, actions: &mut [Keyed<crate::prototype::Action>]) {
+    use crate::prototype::{Action, VarChange, WhichRow, expr_shown};
+    let show = |e: &mut crate::prototype::Expr, row| {
+        if !dangles(doc, e, row) {
+            *e = crate::prototype::Expr(expr_shown(doc, e, row));
+        }
+    };
+    let which = |r: &mut WhichRow, table| {
+        if let WhichRow::FirstWhere { when } = r {
+            show(when, Some(table));
+        }
+    };
+    for k in actions {
+        match &mut k.value {
+            Action::SetVariable {
+                change: VarChange::Set { to },
+                ..
+            } => show(to, None),
+            Action::Conditional {
+                branches,
+                otherwise,
+            } => {
+                for b in branches.iter_mut() {
+                    show(&mut b.when, None);
+                    exprs_shown(doc, &mut b.actions);
+                }
+                exprs_shown(doc, otherwise);
+            }
+            Action::AddRow { cells, .. } => cells.iter_mut().for_each(|c| show(&mut c.to, None)),
+            Action::EditRow { table, row, cells } => {
+                which(row, *table);
+                cells.iter_mut().for_each(|c| show(&mut c.to, Some(*table)));
+            }
+            Action::DeleteRow { table, row } => which(row, *table),
+            _ => {}
+        }
+    }
 }
 
 /// The list of actions `v`, at `path` in the list of reactions, in its serde

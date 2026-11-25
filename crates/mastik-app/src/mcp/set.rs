@@ -565,6 +565,66 @@ mod tests {
         assert!(why.contains(&inst), "names the template: {why}");
     }
 
+    /// `get_node` reads a list's rows, filter and sort back in the shapes
+    /// `set_list` takes, a filter's variable by name, and what it reads writes
+    /// back as it was.
+    ///
+    /// flip: `list_summary` leaving out the filter → fails at "the filter".
+    #[test]
+    fn get_node_reads_a_list_as_set_list_takes_it() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let page = docs.session.doc.first_page().to_wire();
+        let row = rect(&mut engine, &mut docs, 1, "Row");
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "make_component",
+            json!({ "nodes": [row] }),
+        );
+        let main = ok(&out)["created"][0].as_str().map_or(row, str::to_owned);
+        let args = json!({ "main": main, "parent": page });
+        let out = call(&mut engine, &mut docs, 1, "create_instance", args);
+        let inst = ok(&out)["created"][0].as_str().unwrap().to_owned();
+        let args = json!({ "name": "People", "columns": ["Name"], "rows": [["Ana"], ["Ben"]] });
+        ok(&call(&mut engine, &mut docs, 1, "add_table", args));
+        let args = json!({ "kind": "string", "name": "Query", "value": "a" });
+        ok(&call(&mut engine, &mut docs, 1, "add_variable", args));
+        let out = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "make_list",
+            json!({ "node": inst, "table": "People" }),
+        );
+        let list = ok(&out)["created"][0].clone();
+        let written = json!({
+            "rows": { "first": 2 },
+            "filter": { "tests": [{ "column": "Name", "op": "contains", "value": "{Query}" }] },
+            "sort": [{ "column": "Name", "descending": true }],
+        });
+        let mut args = written.clone();
+        args["node"] = list.clone();
+        ok(&call(&mut engine, &mut docs, 1, "set_list", args));
+        let id = NodeId::from_wire(list.as_str().unwrap()).unwrap();
+        let held = docs.session.doc.get(id).unwrap().list().unwrap().clone();
+        let out = call(&mut engine, &mut docs, 1, "get_node", json!({ "id": list }));
+        let read = ok(&out)["nodes"][0]["list"].clone();
+        assert_eq!(read["filter"], written["filter"], "the filter: {read}");
+        assert_eq!(read["sort"], written["sort"], "{read}");
+        assert_eq!(read["rows_mode"], written["rows"], "{read}");
+        let back = json!({
+            "node": list, "rows": read["rows_mode"], "filter": read["filter"], "sort": read["sort"],
+        });
+        ok(&call(&mut engine, &mut docs, 1, "set_list", back));
+        assert_eq!(
+            docs.session.doc.get(id).unwrap().list(),
+            Some(&held),
+            "what is read writes back as it was"
+        );
+    }
+
     /// `set`'s `at`, and `set_transform` by name or through `call`, on a layer
     /// its container lays out is refused, naming the layout, rather than dropped
     /// and answered as done; new fills through a

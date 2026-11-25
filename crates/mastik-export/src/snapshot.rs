@@ -402,6 +402,15 @@ pub struct ListSummary {
     /// Each filled property, by name, and the column filling it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fill: Vec<ListFillSummary>,
+    /// Which rows it shows, as `set_list`'s `rows` takes it; absent for every row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows_mode: Option<mastik_core::list::Rows>,
+    /// Which rows pass, as `set_list`'s `filter` takes it; absent for none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<ListFilterSummary>,
+    /// The columns its rows are sorted by, as `set_list`'s `sort` takes them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sort: Vec<ListSortSummary>,
 }
 
 /// One filled property of a list.
@@ -409,6 +418,32 @@ pub struct ListSummary {
 pub struct ListFillSummary {
     pub property: String,
     pub column: String,
+}
+
+/// A list's filter: its tests by column name, all passing unless `any`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListFilterSummary {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub any: bool,
+    pub tests: Vec<ListTestSummary>,
+}
+
+/// One filter test: a column, the test's word, and its value with variables by
+/// name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListTestSummary {
+    pub column: String,
+    pub op: mastik_core::list::TestOp,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<String>,
+}
+
+/// One sort key of a list.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ListSortSummary {
+    pub column: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub descending: bool,
 }
 
 /// One column of a chart's table.
@@ -1024,7 +1059,7 @@ fn node_snapshot(
                 .page(page)
                 .map(|p| p.play.transition)
                 .unwrap_or_default();
-            mastik_core::verbs::reactions_value(node.reactions(), &base)
+            mastik_core::verbs::reactions_value(doc, node.reactions(), &base)
         }),
         play: (!node.play().is_empty()).then(|| mastik_core::verbs::play_value(node.play())),
     }
@@ -1286,6 +1321,11 @@ fn list_summary(doc: &Document, id: NodeId, l: &mastik_core::list::List) -> List
             Some(ListFillSummary { property, column })
         })
         .collect();
+    // A column the table no longer has, or a table the document lacks, by its id.
+    let column = |c: mastik_core::chart::ColumnId| {
+        set.and_then(|s| s.table.column(c))
+            .map_or_else(|| c.0.to_string(), |col| col.name.clone())
+    };
     ListSummary {
         data: set.map(|s| s.name.clone()),
         table_id: set.map(|s| s.id.0.to_wire()),
@@ -1294,6 +1334,29 @@ fn list_summary(doc: &Document, id: NodeId, l: &mastik_core::list::List) -> List
         rows: set.map_or(1 + l.copies.len(), |_| list::shown(doc, id).len()),
         table_rows: set.map(|s| s.table.rows.len()),
         fill,
+        rows_mode: (l.rows != list::Rows::All).then_some(l.rows),
+        filter: (!l.filter.is_empty()).then(|| ListFilterSummary {
+            any: l.filter.any,
+            tests: l
+                .filter
+                .tests
+                .iter()
+                .map(|t| ListTestSummary {
+                    column: column(t.column),
+                    op: t.op,
+                    value: (!t.value.0.is_empty())
+                        .then(|| mastik_core::prototype::expr_shown(doc, &t.value, None)),
+                })
+                .collect(),
+        }),
+        sort: l
+            .sort
+            .iter()
+            .map(|k| ListSortSummary {
+                column: column(k.column),
+                descending: k.descending,
+            })
+            .collect(),
     }
 }
 

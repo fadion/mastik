@@ -539,6 +539,27 @@ pub(super) fn tables(doc: &Document) -> Value {
     json!({ "tables": tables })
 }
 
+/// Every document script: its id, name and source, and the names of the inputs
+/// its header asks for, which keep it from running under *Run script*.
+pub(super) fn scripts(doc: &Document) -> Value {
+    let scripts: Vec<Value> = doc
+        .scripts()
+        .iter()
+        .map(|s| {
+            let inputs: Vec<String> = mastik_vm::header(&s.source)
+                .map(|h| h.inputs.into_iter().map(|i| i.name).collect())
+                .unwrap_or_default();
+            json!({
+                "id": s.id.0.to_wire(),
+                "name": s.name,
+                "source": s.source,
+                "inputs": inputs,
+            })
+        })
+        .collect();
+    json!({ "scripts": scripts })
+}
+
 /// The most rows `get_table` answers unless asked for more.
 const TABLE_ROWS: u64 = 200;
 
@@ -962,5 +983,39 @@ mod tests {
             (row["rows"].clone(), row["read_by"]["lists"].clone()),
             (json!(250), json!(0))
         );
+    }
+
+    /// `list_scripts` answers each stored script's id, name, source and the
+    /// inputs its header asks for, narrowed by `query`.
+    ///
+    /// flip: `scripts` answering no `inputs` → fails at "the header's inputs".
+    #[test]
+    fn list_scripts_reads_each_script_and_its_inputs() {
+        use crate::mcp::Engine;
+        use crate::mcp::tests::{One, call, ok, open};
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        let asks = "---@input cols integer = 3 -- Columns\nlocal n = param.cols\n";
+        for (name, source) in [("Grid", asks), ("Add to cart", "play.vars.Count += 1\n")] {
+            let args = json!({ "name": name, "source": source });
+            ok(&call(&mut engine, &mut docs, 1, "add_script", args));
+        }
+        let listed = ok(&call(&mut engine, &mut docs, 1, "list_scripts", json!({}))).clone();
+        let all = listed["scripts"].as_array().unwrap();
+        assert_eq!(all.len(), 2, "{listed}");
+        assert_eq!(all[0]["inputs"], json!(["cols"]), "the header's inputs");
+        assert_eq!(all[1]["inputs"], json!([]));
+        assert_eq!(all[1]["source"], json!("play.vars.Count += 1\n"));
+        assert!(all[0]["id"].is_string() && all[0]["id"] != all[1]["id"]);
+        let one = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "list_scripts",
+            json!({ "query": "cart" }),
+        );
+        let one = ok(&one)["scripts"].as_array().unwrap().clone();
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0]["name"], "Add to cart");
     }
 }

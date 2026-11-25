@@ -307,6 +307,11 @@ pub static TOOLS: &[Tool] = &[
         ],
     },
     Tool {
+        name: "list_scripts",
+        doc: "Every document script: id, name, source and the inputs its header asks for; Run script plays only one asking for none.",
+        params: &[QUERY_NAME],
+    },
+    Tool {
         name: "export_tokens",
         doc: "The document's own variables and styles as a design tokens (DTCG) file, with a note for each left out or changed on the way. Nothing is written to disk.",
         params: &[],
@@ -1242,7 +1247,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 28_700;
-        const ALL_BUDGET: usize = 127_000;
+        const ALL_BUDGET: usize = 127_300;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

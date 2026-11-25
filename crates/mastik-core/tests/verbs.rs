@@ -7539,7 +7539,7 @@ fn set_reactions_reads_the_short_forms_and_refuses_an_unasked_script() {
         actions[1]
     );
     assert_eq!(actions[2], &Action::Back);
-    let read = verbs::reactions_value(&held, &push);
+    let read = verbs::reactions_value(&doc, &held, &push);
     assert!(
         read[0]["actions"][0]["Navigate"]
             .get("transition")
@@ -7576,11 +7576,13 @@ fn set_reactions_reads_the_short_forms_and_refuses_an_unasked_script() {
 /// `set_reactions` stores an expression written with names in the id form, as the
 /// Prototype tab's field does, and refuses one that names nothing, does not read
 /// or comes to the variable's wrong kind; a blank cell is dropped from Add row
-/// and refused by Edit row; an expression read back naming a variable since
+/// and refused by Edit row; `reactions_value` reads it back by name, which
+/// writes back as it was; an expression read back naming a variable since
 /// deleted is written back as it was.
 ///
 /// flip: `exprs_stored` not called from `set_reactions` → fails at "stored by
-/// id"; its cells keeping a blank one for Add row → fails at "Add row";
+/// id"; `reactions_json` without `exprs_shown` → fails at "read by name"; its
+/// cells keeping a blank one for Add row → fails at "Add row";
 /// `exprs_stored` without its pass for a stored read of what is gone → the
 /// dangling write back is refused at its `run`.
 #[test]
@@ -7635,6 +7637,27 @@ fn set_reactions_stores_names_by_id_and_refuses_what_does_not_read() {
             Action::SetVariable { change: VarChange::Set { to }, .. } if to.0 == format!("{{{c}}} + 1")),
         "the nested Set variable stored by id: {:?}",
         branches[0].actions
+    );
+    let read = verbs::reactions_value(&doc, &held, &Default::default());
+    let branch = &read[0]["actions"][0]["Conditional"]["branches"][0];
+    assert_eq!(
+        branch["when"], "{Count} < {Products.rows}",
+        "read by name: {read}"
+    );
+    assert_eq!(
+        branch["actions"][0]["SetVariable"]["change"]["Set"]["to"],
+        "{Count} + 1"
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [a.to_wire()], "reactions": read }),
+    );
+    assert_eq!(
+        doc.get(a).unwrap().reactions(),
+        &held[..],
+        "the named read writes back as it was"
     );
 
     for (when, to, says) in [
@@ -7693,7 +7716,6 @@ fn set_reactions_stores_names_by_id_and_refuses_what_does_not_read() {
         "insert_subtree stores a tree's reactions by id too"
     );
 
-    let read = verbs::reactions_value(&held, &Default::default());
     run(
         &mut doc,
         &mut ids,
@@ -7701,6 +7723,7 @@ fn set_reactions_stores_names_by_id_and_refuses_what_does_not_read() {
         json!({ "variable": c }),
     );
     assert!(doc.variables().get(count).is_none(), "the variable is gone");
+    let read = verbs::reactions_value(&doc, &held, &Default::default());
     run(
         &mut doc,
         &mut ids,
@@ -8060,7 +8083,7 @@ fn transitions_read_back_as_they_are() {
     assert_eq!(start[0].direction, Direction::Left, "fixture: a side");
     assert_eq!(start[1], Transition::default(), "fixture: the page's");
 
-    let read = verbs::reactions_value(&held, &Transition::default());
+    let read = verbs::reactions_value(&doc, &held, &Transition::default());
     run(
         &mut doc,
         &mut ids,
