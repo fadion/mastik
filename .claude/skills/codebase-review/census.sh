@@ -279,7 +279,12 @@ clippy_filter() {
 range_clippy() {
   git diff --name-only "$1" HEAD -- 'crates/*.rs' > "$WORK/changed"
   { cargo clippy --workspace --all-targets --message-format=short -- -W clippy::pedantic -W clippy::nursery 2>&1
-    for p in $(ls crates); do cargo clippy -p "$p" --all-targets --message-format=short -- -W clippy::pedantic -W clippy::nursery 2>&1; done
+    # A crate the root manifest excludes (`mastik-web`, its own workspace) `-p` cannot name.
+    for d in crates/*/; do
+      p=$(basename "$d")
+      grep -q "^exclude = .*\"crates/$p\"" Cargo.toml && continue
+      cargo clippy -p "$p" --all-targets --message-format=short -- -W clippy::pedantic -W clippy::nursery 2>&1
+    done
   } | clippy_filter "$WORK/changed"
 }
 
