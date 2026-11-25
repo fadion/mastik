@@ -1150,6 +1150,14 @@ fn model_fields(
             Some(Some(k)) if k == "Grid" => struct_fields::<Grid>(),
             _ => None,
         },
+        // A trigger or action is settled alone, its variant the value's one key.
+        ("[Reaction]", []) => match at.and_then(Value::as_object) {
+            Some(map) if map.len() == 1 => {
+                let kind = map.keys().next()?.clone();
+                play_fields(&[Some(Step::Key(kind))])
+            }
+            _ => None,
+        },
         ("[Reaction]" | "[Flow]" | "LayerPlay" | "PagePlay", _) => play_fields(below),
         _ => None,
     }
@@ -4056,7 +4064,12 @@ pub static VERBS: &[Verb] = &[
                 }
             };
             crate::variant::add_value(ctx.doc, set, prop, &value)
-                .map(Done::edit)
+                .map(|tx| {
+                    Done::edit(tx).saying(format!(
+                        "no variant holds “{value}” yet: `add_variant` copies one, and \
+                         `set_variant_value` gives the copy this value"
+                    ))
+                })
                 .ok_or_else(|| a.invalid("value", VALUE_NAME_TAKEN))
         },
     },

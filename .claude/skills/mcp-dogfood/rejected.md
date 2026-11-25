@@ -50,3 +50,5 @@ decision belongs in `docs/non-goals.md` or `docs/decisions.md` instead.
   (`lists.md`); braces in a text are its content, which a person may well write.
 - **A list of every global a stored script can reach.** Command Mode's names and their order
   are its design (`command-mode.md`); the Luau sandbox leaves out `_G` and `getfenv` on purpose.
+- **A "self" target for *Change to* across several layers.** `set_reactions` writes the same
+  reactions to every layer it names; layers whose targets differ take a call each.

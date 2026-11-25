@@ -181,6 +181,9 @@ place, saved in the same shape so existing files load. It is matched in about 60
   input bindings, and tied variant states. Collapse list copies to one line *on each row of
   ‹list›*, list each frame's interactions once with the flows naming their frames, and add those
   settings to the words.
+- **A list sorted by a date column.** Every cell is text, so a sort on *Due* puts *Dec 12*
+  before *Dec 2*; a sort that reads dates (or a date column kind) would let a task list sort by
+  due date.
 
 ## Later · Platform and dependencies
 

@@ -233,7 +233,12 @@ impl Names<'_> {
                     Some(c) => push(&mut found, Ref::Row(c)),
                     None => hint = Some(format!("{} has no column “{rest}”", t.name)),
                 },
-                None => hint = Some("row is read only inside a row action".into()),
+                None => {
+                    hint = Some(format!(
+                        "row is read only inside a row action; a tap inside a list's row \
+                         opens that row, which `{{Table.opened.{rest}}}` reads in any action"
+                    ))
+                }
             }
         }
         for t in self.tables {
@@ -1612,7 +1617,8 @@ mod tests {
         let (_, err) = Expr::from_names_in("{row.Name}", &Names { row: None, ..names });
         assert_eq!(
             err.unwrap().to_string(),
-            "row is read only inside a row action"
+            "row is read only inside a row action; a tap inside a list's row opens that row, \
+             which `{Table.opened.Name}` reads in any action"
         );
     }
 

@@ -227,7 +227,10 @@ model it edits is `prototyping-model.md`; the player is `play.md`. Code:
   it is never refused here) is kept as typed, ringed, with the reason on the
   warning glyph inside the field's right end (`ui::refusable_field`, as an address and a flow's
   starting value are refused) and the range `ExprError::at` names underlined
-  (`ui::field_underline`), and nothing is written until it reads. Its hint ends *{ picks a
+  (`ui::field_underline`), and nothing is written until it reads. `{row.…}` outside a row action
+  is refused with the way to the same cell: a tap inside a list's row opens that row, which
+  `{Table.opened.…}` reads in any action (`Expr::from_names_in`, whose refusal an agent's write
+  gets too). Its hint ends *{ picks a
   name* (*{ picks a variable* where only variables are read, as in a list's filter), and an empty
   field's tooltip is the hint, which a narrow field cuts short. The brace is the one way to name
   something, typed or picked; `@` opens nothing. While the focused field ends in a `{` still open

@@ -3528,6 +3528,7 @@ fn variant_properties_are_added_renamed_and_deleted() {
 /// set on a variant, and deleted with the variants holding them, which it says.
 ///
 /// flip: `delete_variant_value` dropping its `saying` → fails at "says what went";
+/// `add_variant_value` dropping its `saying` → fails at "points to add_variant";
 /// `move_variant_value` ignoring `index` (moving to 0) → fails at "Value 2 moves
 /// to the middle".
 #[test]
@@ -3541,6 +3542,14 @@ fn variant_values_are_added_moved_renamed_set_and_deleted() {
             .extend(extra.as_object().unwrap().clone());
         args
     };
+    let said = answer(&doc, &mut ids, "add_variant_value", on(json!({})))
+        .unwrap()
+        .said
+        .unwrap_or_default();
+    assert!(
+        said.contains("add_variant"),
+        "points to add_variant: {said}"
+    );
     run(&mut doc, &mut ids, "add_variant_value", on(json!({})));
     let values = |doc: &Document| variant_props(doc, set)[0].1.clone();
     assert_eq!(values(&doc), ["Small", "Large", "Value 2"]);
@@ -8210,7 +8219,9 @@ fn a_link_to_the_wrong_kind_of_layer_is_refused() {
 /// flip: `keyed_arg` without `keyed_extra` → fails at "a flow's unknown field";
 /// `tree_reactions` without it → fails at "a tree's reaction";
 /// `flow_names` without the object arm → the `set_flows` run is refused;
-/// `play_fields` answering `None` → fails at "the overlay's fields".
+/// `play_fields` answering `None` → fails at "the overlay's fields";
+/// `model_fields` without its one-key arm → fails at "a field right under an
+/// action".
 #[test]
 fn prototype_fields_are_refused_by_name_and_values_take_names() {
     let (mut doc, mut ids, page) = blank();
@@ -8316,6 +8327,27 @@ fn prototype_fields_are_refused_by_name_and_values_take_names() {
     assert!(
         why.contains("`table`") && why.contains("`cells`"),
         "an action's fields: {why}"
+    );
+
+    run(
+        &mut doc,
+        &mut ids,
+        "add_table",
+        json!({ "name": "Tasks", "columns": ["Status"] }),
+    );
+    let edit = |body: Value| {
+        json!({ "nodes": [a.to_wire()], "reactions": [{ "trigger": "Click",
+            "actions": [{ "EditRow": body }] }] })
+    };
+    let why = refusal(
+        &doc,
+        &mut ids,
+        "set_reactions",
+        edit(json!({ "table": "Tasks", "row": "Opened", "values": {} })),
+    );
+    assert!(
+        why.contains("`values`") && why.contains("`cells`"),
+        "a field right under an action: {why}"
     );
 }
 
