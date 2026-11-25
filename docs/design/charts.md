@@ -718,7 +718,9 @@ window the name opens for typing, the next thing to write.
   the column that already is, its tooltip saying so),
   *Show as series* (ticked), *Insert column left* / *right*, *Sort ascending* / *descending*
   (numbers by value in a number column, text ignoring case, empty cells last: `list::sort_order`,
-  a list's sort order), *Delete column*, which leaves the
+  a list's sort order; the sorted header wears that row's `ARROW_UP` / `ARROW_DOWN` after its
+  name, tooltip *Sorted ascending* / *descending*, until an edit takes the rows out of that
+  order, `chart_data::sort_holds`), *Delete column*, which leaves the
   mapping and the series styles with it. **Row menu** on the gutter: *Insert row above* /
   *below*, *Delete row*. Both are placed by `ui::menu_place`. A header menu and a rename hold
   their column by id, so a table changed from outside never moves them onto another column; a

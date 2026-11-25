@@ -29,15 +29,19 @@ const GRID_CHROME_H: f32 = 124.0;
 const PAD: f32 = crate::settings::CANVAS_CARD_PAD;
 /// Between the toolbar, the linked line and the grid: Clean up's.
 const GAP: f32 = 10.0;
-/// A cell's width and height, the row-number gutter's width.
-const COL_W: f32 = 112.0;
+/// A cell's width and height, the row-number gutter's width. A header holds
+/// the type tag, the name, the sort arrow and a list's property word.
+const COL_W: f32 = 124.0;
 const ROW_H: f32 = ui::MENU_ROW_H;
 const GUTTER: f32 = 40.0;
 /// The space a cell's text keeps from its edges: a [`ui::label_edit_set`]'s,
 /// so a cell typed into keeps its text where it was.
 const CELL_PAD: f32 = ui::INLINE_EDIT_PAD_X;
-/// The category's key mark in a header.
+/// The category's key mark in a header, and the sorted column's arrow.
 const KEY_PT: f32 = 11.0;
+/// Between a header's name and its sort arrow: the gap the name keeps from a
+/// role mark.
+const SORT_GAP: f32 = 4.0;
 /// The grid's focus id.
 const GRID_ID: &str = "chart-data-grid";
 /// The undo step every edit makes.
@@ -75,6 +79,9 @@ pub(crate) struct ChartData {
     reveal: bool,
     /// The grid's height this pass, from the canvas ([`grid_h`]).
     grid_h: f32,
+    /// The column the header menu last sorted by, ascending or not: its header
+    /// wears the arrow while the rows still stand in that order ([`sort_holds`]).
+    sort: Option<(ColumnId, bool)>,
 }
 
 /// A cell being typed into: its text, its cell by row and column id, and the
@@ -155,6 +162,7 @@ impl ChartData {
             focus: true,
             reveal: true,
             grid_h: GRID_H,
+            sort: None,
         }
     }
 
@@ -502,6 +510,20 @@ fn sorted(table: &chart::Table, col: usize, ascending: bool) -> chart::Table {
     t.rows
         .sort_by(|a, b| mastik_core::list::sort_order(&a[col], &b[col], numeric, ascending));
     t
+}
+
+/// Whether `table`'s rows still stand in the order [`sorted`] by `col` gave
+/// them: an edit since that moved a row or changed a cell out of place answers
+/// `false`.
+fn sort_holds(table: &chart::Table, col: usize, ascending: bool) -> bool {
+    let numeric = table
+        .columns
+        .get(col)
+        .is_some_and(|c| table.is_numeric(c.id));
+    table.rows.windows(2).all(|w| {
+        mastik_core::list::sort_order(&w[0][col], &w[1][col], numeric, ascending)
+            != std::cmp::Ordering::Greater
+    })
 }
 
 impl MastikApp {
@@ -1619,6 +1641,14 @@ fn grid(
         let hairline = egui::Stroke::new(1.0, theme::color::field_border());
         let font = egui::FontId::proportional(ui::CONTROL_PT);
         let numeric: Vec<bool> = t.columns.iter().map(|c| t.is_numeric(c.id)).collect();
+        // The sorted column's arrow, gone for good once the rows leave its order.
+        let sorted_by = s.sort.and_then(|(id, up)| {
+            let c = t.columns.iter().position(|col| col.id == id)?;
+            sort_holds(t, c, up).then_some((c, up))
+        });
+        if sorted_by.is_none() {
+            s.sort = None;
+        }
         let typing_at = s.edit.as_ref().and_then(|e| e.at(t));
         // The dim grid past the table: the cells' own lines on the card's ground,
         // only those in view.
@@ -1810,6 +1840,20 @@ fn grid(
                 }
                 name_right = mark_rect.left() - 4.0;
             }
+            // The sorted column's arrow follows its name, the header menu's
+            // *Sort ascending* or *Sort descending* glyph.
+            let arrow = sorted_by.filter(|(sc, _)| *sc == c).map(|(_, up)| {
+                let glyph = if up { icon::ARROW_UP } else { icon::ARROW_DOWN };
+                let g = clip.layout_no_wrap(
+                    glyph.into(),
+                    theme::icon_font(KEY_PT),
+                    theme::text::muted(),
+                );
+                (g, up)
+            });
+            if let Some((g, _)) = &arrow {
+                name_right -= g.size().x + SORT_GAP;
+            }
             // The name stops short of the mark, an ellipsis where it is cut and
             // the whole name its tooltip.
             let mut job = egui::text::LayoutJob::simple_singleline(
@@ -1822,11 +1866,24 @@ fn grid(
             if name_g.elided {
                 tips.push((hr, column.name.clone()));
             }
+            let name_end = x + name_g.size().x;
             clip.galley(
                 egui::pos2(x, hr.center().y - name_g.size().y / 2.0),
                 name_g,
                 ink,
             );
+            if let Some((g, up)) = arrow {
+                let at = egui::pos2(name_end + SORT_GAP, hr.center().y - g.size().y / 2.0);
+                let arrow_rect = egui::Rect::from_min_size(at, g.size());
+                clip.galley(at, g, theme::text::muted());
+                let tip = if up {
+                    "Sorted ascending"
+                } else {
+                    "Sorted descending"
+                };
+                // Ahead of the cut name's tooltip, which spans the whole header.
+                tips.insert(0, (arrow_rect.expand(2.0), tip.to_string()));
+            }
         }
         if let Some(at) = resp.hover_pos()
             && let Some((_, tip)) = tips.iter().find(|(r, _)| r.contains(at))
@@ -2262,6 +2319,7 @@ fn menus(
                             let glyph = if up { icon::ARROW_UP } else { icon::ARROW_DOWN };
                             if row(ui, ui::MenuRow::new(glyph, label), None) {
                                 act.push(Act::Table(sorted(&with_typed(t, s), c, up)));
+                                s.sort = t.columns.get(c).map(|col| (col.id, up));
                                 s.menu = None;
                             }
                         }
@@ -2568,6 +2626,71 @@ mod tests {
         assert!(
             matches!(menu(&app), Some(Menu::Header(ColumnId(0), _))),
             "a right-click opens it"
+        );
+    }
+
+    /// *Sort descending* in a header's menu puts the down arrow on that header,
+    /// and an edit that takes the rows out of that order takes it off.
+    /// flip: the header menu's sort rows leaving `ChartData::sort` unset → fails
+    /// at "the sorted header wears the arrow".
+    #[test]
+    fn the_sorted_column_wears_its_arrow_while_the_order_holds() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = opened(&ctx);
+        let grid = ctx
+            .read_response(egui::Id::new(GRID_ID))
+            .expect("the grid is drawn")
+            .rect;
+        let header = egui::pos2(grid.left() + GUTTER + COL_W * 1.5, grid.top() + ROW_H / 2.0);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: header,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        pass(&ctx, &mut app, vec![egui::Event::PointerMoved(header)]);
+        pass(&ctx, &mut app, vec![press(true)]);
+        pass(&ctx, &mut app, vec![press(false)]);
+        let row = text_pos(&ctx, &mut app, "Sort descending");
+        click(&ctx, &mut app, row);
+        let t = table_of(&app, id);
+        assert!(sort_holds(&t, 1, false), "the rows went descending");
+        let drawn = |ctx: &egui::Context, app: &mut MastikApp, s: &str| {
+            let mut frame = eframe::Frame::_new_kittest();
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1320.0, 820.0),
+                )),
+                ..Default::default()
+            };
+            let out = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
+            fn has(shape: &egui::Shape, s: &str) -> bool {
+                match shape {
+                    egui::Shape::Text(t) => t.galley.text() == s,
+                    egui::Shape::Vec(v) => v.iter().any(|x| has(x, s)),
+                    _ => false,
+                }
+            }
+            out.shapes.iter().any(|c| has(&c.shape, s))
+        };
+        assert!(
+            drawn(&ctx, &mut app, icon::ARROW_DOWN),
+            "the sorted header wears the arrow"
+        );
+
+        // The first two rows swapped from outside: no longer in that order.
+        let mut next = app.session.doc.get(id).unwrap().chart().unwrap().clone();
+        next.table.rows.swap(0, 1);
+        assert!(
+            !sort_holds(&next.table, 1, false),
+            "the swap breaks the order"
+        );
+        app.commit_chart(id, next);
+        pass(&ctx, &mut app, Vec::new());
+        assert!(
+            !drawn(&ctx, &mut app, icon::ARROW_DOWN),
+            "out of order, the arrow goes"
         );
     }
 
