@@ -1648,6 +1648,7 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
         "list_tables" => json(reads::tables(&s.doc)),
         "get_table" => json(reads::table(&s.doc, args)?),
         "list_scripts" => json(reads::named(reads::scripts(&s.doc), "scripts", args)),
+        "get_prototype" => json(reads::prototype(&s.doc)),
         tool if inspect::TOOLS.contains(&tool) => inspect::run(s, tool, args),
         tool if context::TOOLS.contains(&tool) => context::run(s, tool, args),
         "run_script" => run_script(conn, s, &call.client, args),
@@ -3456,6 +3457,67 @@ mod tests {
         let (name, bytes) = only_file(&out);
         assert_eq!(name, "Prototype — Flow map.pdf");
         assert!(bytes.starts_with(b"%PDF"), "a PDF");
+    }
+
+    /// `get_prototype` answers each flow with the frames its links reach and
+    /// each interaction in words by its layer, and names what holds the export.
+    ///
+    /// flip: `prototype` answering only each flow's start → fails at "B is
+    /// reached"; `holds` left out → fails at "the hold".
+    #[test]
+    fn get_prototype_reads_each_flow_and_what_holds_it() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        two_flows(&mut engine, &mut docs);
+        let page = docs.session.doc.first_page();
+        let flows = docs.session.doc.page(page).unwrap().flows.clone();
+        let (a, b) = (flows[0].start.to_wire(), flows[1].start.to_wire());
+        let kind = mastik_core::verbs::example("NodeKind").unwrap();
+        let args = json!({ "parent": a, "kind": kind, "name": "Next" });
+        let next = ok(&call(&mut engine, &mut docs, 1, "create_node", args))["created"][0].clone();
+        let gone = screen(&mut engine, &mut docs, 1, "Gone");
+        let props = json!({ "reactions": [
+            { "trigger": "Click", "actions": [{ "Navigate": { "to": b } }] },
+            { "trigger": "DoubleClick", "actions": [{ "OpenOverlay": { "overlay": gone } }] },
+        ] });
+        ok(&call(
+            &mut engine,
+            &mut docs,
+            1,
+            "set",
+            json!({ "nodes": [next], "props": props }),
+        ));
+        ok(&call(
+            &mut engine,
+            &mut docs,
+            1,
+            "delete_node",
+            json!({ "nodes": [gone] }),
+        ));
+        let read = ok(&call(&mut engine, &mut docs, 1, "get_prototype", json!({}))).clone();
+        let browse = &read["flows"][0];
+        assert_eq!(browse["name"], "Browse", "{read}");
+        let frames: Vec<&Value> = browse["frames"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| &f["id"])
+            .collect();
+        assert_eq!(frames, [&json!(a), &json!(b)], "B is reached: {read}");
+        let first = &browse["interactions"][0];
+        assert_eq!(
+            (first["layer"].clone(), first["layer_name"].clone()),
+            (next, json!("Next"))
+        );
+        assert!(
+            first["does"].as_str().unwrap().contains("B"),
+            "in words: {first}"
+        );
+        assert_eq!(
+            read["holds"].as_array().map(Vec::len),
+            Some(1),
+            "the hold: {read}"
+        );
     }
 
     /// An export's file packs on a worker: the call is kept waiting, not

@@ -43,7 +43,12 @@ A small edit to layers you know needs only the write and one `export_png` of its
 Edit layers with `set`; run several writes as one step with `batch`, or between \
 `group_steps` begin and end. Values take short forms: a colour as \"#rrggbb\" or \"#rrggbbaa\", a fill or stroke as \
 a colour, a length as \"22px\", enum words in any case, a text's sizing and a stroke's width \
-left out. A refusal names the path of the value refused and the form to write.";
+left out. A refusal names the path of the value refused and the form to write.\n\n\
+A prototype is fields: `set` writes a layer's `reactions` and `play` and a page's `flows`; the \
+table, list, script and prototype export tools are reached through `describe_tools` and \
+`call`. A reaction names a variable, mode, script, table or column by its name. There is no \
+play tool: check a prototype with `get_prototype`, which writes every link out in words and \
+names what holds the export.";
 
 /// One piece of a tool's answer.
 #[derive(Debug, Clone, PartialEq)]

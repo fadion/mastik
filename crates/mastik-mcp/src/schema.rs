@@ -262,6 +262,11 @@ pub static TOOLS: &[Tool] = &[
         params: &[],
     },
     Tool {
+        name: "get_prototype",
+        doc: "The prototype as data, to check it without playing it: each flow with the frames it reaches and every interaction on them in words, by layer; `holds`, what keeps `export_prototype` from running.",
+        params: &[],
+    },
+    Tool {
         name: "list_components",
         doc: "Every main component and variant set: id, name, page, description and documentation link; a variant's set and values, a set's properties.",
         params: &[QUERY_NAME],
@@ -418,7 +423,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "review",
-        doc: "Design checks past `check_layout`, each with its layers, a code, a line and what fits `instead`: `overlap`, `busy_ground` (text on a busy ground), `rhythm` and `off_scale` (gaps), `raw_value` and `raw_style` (a variable's or style's value written raw), `near_duplicate_colours`, `radius` and `low_contrast`",
+        doc: "Design checks past `check_layout`, each with its layers, a code, a line and what fits `instead`: `overlap`, `busy_ground` (text on a busy ground), `rhythm` and `off_scale` (gaps), `raw_value` and `raw_style` (a variable's or style's value written raw), `near_duplicate_colours`, `radius`, `low_contrast` and `dangling_target` (a link to what is gone)",
         params: &[
             param(
                 "ids",
@@ -1156,6 +1161,21 @@ mod tests {
         );
     }
 
+    /// The instructions tell an agent where a prototype is written and checked,
+    /// naming tools that exist.
+    ///
+    /// flip: the prototype paragraph dropped from `INSTRUCTIONS` → fails at
+    /// "named".
+    #[test]
+    fn the_instructions_send_a_prototype_to_real_tools() {
+        for name in ["set", "describe_tools", "call", "get_prototype"] {
+            let named = format!("`{name}`");
+            assert!(crate::wire::INSTRUCTIONS.contains(&named), "named: {name}");
+            assert!(definition(name).is_some(), "`{name}` is no tool");
+        }
+        assert!(crate::wire::INSTRUCTIONS.contains("no play tool"), "named");
+    }
+
     /// A typed model's example has the type its schema says (a model with no
     /// example, such as `Region`, is checked by its handler alone), every
     /// annotation says the tools stay within the person's documents, and a
@@ -1247,7 +1267,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 28_700;
-        const ALL_BUDGET: usize = 127_300;
+        const ALL_BUDGET: usize = 127_700;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

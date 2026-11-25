@@ -306,18 +306,11 @@ pub(super) fn export_work(tool: &str, s: &EditorSession) -> Option<Result<Export
 
 const NO_FLOW_TO_MAP: &str = "No page has a flow to map: add one with `set_flows`";
 
-/// Why `export_prototype` cannot run on `s`: no flow, or an interaction holding
-/// it, each named by its layer, as the card is held.
-fn prototype_held(s: &EditorSession) -> Result<(), String> {
+/// Each interaction holding the export, by its layer and in words, as the card
+/// names it.
+fn holds_said(doc: &Document) -> Vec<String> {
     use mastik_export::prototype::HoldWhy;
-    if crate::prototype_export::every_flow(&s.doc).is_empty() {
-        return Err("No page has a flow to export: add one with `set_flows`".into());
-    }
-    let holds = mastik_export::prototype::holds(&s.doc);
-    if holds.is_empty() {
-        return Ok(());
-    }
-    let each: Vec<String> = holds
+    mastik_export::prototype::holds(doc)
         .iter()
         .map(|h| match &h.why {
             HoldWhy::Missing => format!(
@@ -328,7 +321,55 @@ fn prototype_held(s: &EditorSession) -> Result<(), String> {
                 format!("`{}`'s expression doesn't read: {e}", h.layer.to_wire())
             }
         })
+        .collect()
+}
+
+/// `get_prototype`: every flow with the frames it reaches, starting frame
+/// first, and every interaction on them in words by its frame and layer, as the
+/// flow map writes them; and what holds the export.
+pub(super) fn prototype(doc: &Document) -> Value {
+    let name = |id: NodeId| doc.get(id).map(|n| n.name().to_owned()).unwrap_or_default();
+    let flows: Vec<Value> = mastik_export::flow_map::plans(doc)
+        .into_iter()
+        .map(|p| {
+            let frames: Vec<Value> = p
+                .frames
+                .iter()
+                .map(|f| json!({ "id": f.to_wire(), "name": name(*f) }))
+                .collect();
+            let interactions: Vec<Value> = p
+                .written
+                .iter()
+                .map(|w| {
+                    json!({
+                        "frame": w.frame.to_wire(),
+                        "layer": w.layer.to_wire(),
+                        "layer_name": name(w.layer),
+                        "does": w.text,
+                    })
+                })
+                .collect();
+            json!({
+                "page": p.page.to_wire(),
+                "name": p.name,
+                "frames": frames,
+                "interactions": interactions,
+            })
+        })
         .collect();
+    json!({ "flows": flows, "holds": holds_said(doc) })
+}
+
+/// Why `export_prototype` cannot run on `s`: no flow, or an interaction holding
+/// it, each named by its layer, as the card is held.
+fn prototype_held(s: &EditorSession) -> Result<(), String> {
+    if crate::prototype_export::every_flow(&s.doc).is_empty() {
+        return Err("No page has a flow to export: add one with `set_flows`".into());
+    }
+    let each = holds_said(&s.doc);
+    if each.is_empty() {
+        return Ok(());
+    }
     Err(format!(
         "The export is held until these interactions are fixed with `set_reactions`: {}",
         each.join("; ")
