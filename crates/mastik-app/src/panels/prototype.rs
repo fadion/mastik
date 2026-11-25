@@ -128,7 +128,7 @@ pub(crate) enum DraftKey {
     Expr(ItemId, usize),
     /// A conditional's branch condition, by its action and [`branch_mark`]: not
     /// by place, so a branch removed, restored or reordered never hands its
-    /// draft to another.
+    /// draft to another; between empty twins the draft is dropped instead.
     Branch(ItemId, u64),
     /// A row action's cell, by its column.
     Cell(ItemId, mastik_core::chart::ColumnId),
@@ -1470,14 +1470,20 @@ fn row_short(row: &WhichRow) -> &'static str {
 }
 
 /// Branch `i` of `branches` told apart from the others without its place: its
-/// stored condition, and which of the branches with that condition it is.
+/// stored condition and its first action's id. Branches alike in both (empty
+/// ones with one condition, as *Add else if* makes them) add which of them it
+/// is and how many there are, so removing one changes the mark and its draft
+/// is dropped rather than handed to a twin.
 fn branch_mark(branches: &[Branch], i: usize) -> u64 {
     use std::hash::{Hash, Hasher};
-    let when = &branches[i].when;
-    let nth = branches[..i].iter().filter(|b| b.when == *when).count();
+    let first = |b: &Branch| b.actions.first().map(|a| a.id);
+    let alike = |b: &&Branch| b.when == branches[i].when && first(b) == first(&branches[i]);
+    let nth = branches[..i].iter().filter(alike).count();
+    let twins = branches.iter().filter(alike).count();
     let mut h = rustc_hash::FxHasher::default();
-    when.0.hash(&mut h);
-    nth.hash(&mut h);
+    branches[i].when.0.hash(&mut h);
+    first(&branches[i]).hash(&mut h);
+    (nth, twins).hash(&mut h);
     h.finish()
 }
 
@@ -10352,6 +10358,133 @@ mod tests {
             Some(Cell::Number(2.0)),
             "first mode"
         );
+    }
+
+    /// Branches sharing one condition keep a refused draft with its own branch
+    /// when the one above is removed, told apart by their actions; empty twins,
+    /// alike in everything, drop it rather than hand it on.
+    /// flip: `branch_mark` without the first action's id → fails at "the second
+    /// keeps its own"; without the twin count → fails at "dropped, not moved".
+    #[test]
+    fn a_refused_draft_stays_with_its_branch_among_equal_conditions() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut f = fixture(&ctx);
+        let with = |n| Branch {
+            when: Expr("1 == 1".into()),
+            actions: vec![keyed(n, Action::Back)],
+        };
+        let open = one_action(
+            &mut f,
+            Action::Conditional {
+                branches: vec![with(21), with(22), with(23)],
+                otherwise: Vec::new(),
+            },
+        );
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 2400.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                ui.set_max_width(280.0);
+                app.inspector_ui(ui)
+            })
+        };
+        let at = |out: &egui::FullOutput, text: &str| -> Vec<egui::Pos2> {
+            out.shapes
+                .iter()
+                .filter_map(|s| match &s.shape {
+                    egui::Shape::Text(t) if t.galley.job.text == text => {
+                        Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                    }
+                    _ => None,
+                })
+                .collect()
+        };
+        let settle = |app: &mut MastikApp| {
+            let mut out = frame(app, vec![]);
+            for _ in 0..3 {
+                out = frame(app, vec![]);
+            }
+            out
+        };
+        let remove_first = |app: &mut MastikApp, out: &egui::FullOutput| {
+            let first = at(out, "IF")[0];
+            let mut xs: Vec<egui::Pos2> = at(out, icon::X)
+                .into_iter()
+                .filter(|p| p.x > first.x && p.y > first.y)
+                .collect();
+            xs.sort_by(|a, b| a.y.total_cmp(&b.y));
+            let press = |pressed| egui::Event::PointerButton {
+                pos: xs[0],
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            };
+            frame(app, vec![egui::Event::PointerMoved(xs[0]), press(true)]);
+            frame(app, vec![press(false)]);
+        };
+        let refuse = |app: &mut MastikApp, marked: &[Branch]| {
+            let key = DraftKey::Branch(open.action, branch_mark(marked, 1));
+            app.proto.draft =
+                Some(ui::Draft::new(&ctx, key, "zz(".into()).refuse("Not read".into()));
+        };
+        let add = f.add;
+        let branches = move |app: &MastikApp| {
+            let n = app.session.doc.get(add).unwrap();
+            let Action::Conditional { branches, .. } = &n.reactions()[0].actions[0].value else {
+                panic!("fixture: the conditional");
+            };
+            branches.clone()
+        };
+
+        f.app.session.selection.set_one(f.add);
+        f.app.proto.open = Some(open);
+        let stored = branches(&f.app);
+        refuse(&mut f.app, &stored);
+        let out = settle(&mut f.app);
+        assert_eq!(at(&out, "zz(").len(), 1, "fixture: the refused draft shows");
+        assert_eq!(
+            at(&out, "1 == 1").len(),
+            2,
+            "fixture: the others show theirs"
+        );
+        remove_first(&mut f.app, &out);
+        let out = settle(&mut f.app);
+        assert_eq!(
+            branches(&f.app).len(),
+            2,
+            "fixture: the first branch removed"
+        );
+        assert_eq!(at(&out, "zz(").len(), 1, "it stays with its branch");
+        assert_eq!(at(&out, "1 == 1").len(), 1, "the second keeps its own");
+
+        let empty = Branch {
+            when: Expr("1 == 1".into()),
+            actions: Vec::new(),
+        };
+        let all = vec![empty.clone(), empty.clone(), empty];
+        let open = one_action(
+            &mut f,
+            Action::Conditional {
+                branches: all.clone(),
+                otherwise: Vec::new(),
+            },
+        );
+        f.app.proto.open = Some(open);
+        refuse(&mut f.app, &all);
+        let out = settle(&mut f.app);
+        assert_eq!(at(&out, "zz(").len(), 1, "fixture: the twin's draft shows");
+        remove_first(&mut f.app, &out);
+        let out = settle(&mut f.app);
+        assert_eq!(branches(&f.app).len(), 2, "fixture: a twin removed");
+        assert_eq!(at(&out, "zz(").len(), 0, "dropped, not moved");
+        assert_eq!(at(&out, "1 == 1").len(), 2, "both twins show their own");
     }
 
     /// A refused branch condition stays with its branch when a branch above it
