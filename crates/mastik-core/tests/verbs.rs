@@ -8202,6 +8202,123 @@ fn a_link_to_the_wrong_kind_of_layer_is_refused() {
     assert!(why.contains("[0].start"), "a flow: {why}");
 }
 
+/// A flow's or reaction's field it has no place for is refused listing the
+/// fields, never dropped; a flow's `values` take an object of bare values by
+/// variable name; an input names its variable by name; and a prototype struct
+/// or action's unknown or missing field lists that place's fields.
+///
+/// flip: `keyed_arg` without `keyed_extra` → fails at "a flow's unknown field";
+/// `tree_reactions` without it → fails at "a tree's reaction";
+/// `flow_names` without the object arm → the `set_flows` run is refused;
+/// `play_fields` answering `None` → fails at "the overlay's fields".
+#[test]
+fn prototype_fields_are_refused_by_name_and_values_take_names() {
+    let (mut doc, mut ids, page) = blank();
+    let a = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame(100.0, 100.0) }),
+    )[0];
+    let t = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": a.to_wire(), "kind": { "Text": { "content": "", "style": { "font_size": 16 } } } }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "add_variable",
+        json!({ "name": "Filter", "kind": "string" }),
+    );
+    let filter = doc
+        .variables()
+        .iter()
+        .find(|v| v.name == "Filter")
+        .unwrap()
+        .id;
+    let refusal = |doc: &Document, ids: &mut IdSource, verb: &str, args: Value| {
+        format!("{:?}", answer(doc, ids, verb, args).err())
+    };
+
+    let why = refusal(
+        &doc,
+        &mut ids,
+        "set_flows",
+        json!({ "page": page.to_wire(), "flows": [{ "name": "Main", "start": a.to_wire(), "variables": {} }] }),
+    );
+    assert!(
+        why.contains("[0].variables") && why.contains("`values`"),
+        "a flow's unknown field: {why}"
+    );
+    let why = refusal(
+        &doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [a.to_wire()], "reactions": [{ "trigger": "Click", "when": 1, "actions": [] }] }),
+    );
+    assert!(
+        why.contains("[0].when") && why.contains("`trigger`"),
+        "a reaction's unknown field: {why}"
+    );
+    let tree = json!({ "kind": frame(10.0, 10.0),
+        "reactions": [{ "trigger": "Click", "when": 1, "actions": [] }] });
+    let why = refusal(
+        &doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": tree }),
+    );
+    assert!(why.contains("[0].when"), "a tree's reaction: {why}");
+
+    run(
+        &mut doc,
+        &mut ids,
+        "set_flows",
+        json!({ "page": page.to_wire(), "flows": [
+            { "name": "Main", "start": a.to_wire(), "values": { "Filter": "Fix" } },
+        ] }),
+    );
+    let flow = &doc.page(page).unwrap().flows[0];
+    assert_eq!(flow.values.len(), 1, "values by name");
+    assert_eq!(flow.values[0].0, filter);
+
+    run(
+        &mut doc,
+        &mut ids,
+        "set_play",
+        json!({ "nodes": [t.to_wire()], "play": { "input": { "var": "Filter" } } }),
+    );
+    let input = doc.get(t).unwrap().play().input.clone();
+    assert_eq!(input.unwrap().var, filter, "an input by name");
+
+    let why = refusal(
+        &doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [a.to_wire()], "reactions": [{ "trigger": "Click", "actions": [
+            { "OpenOverlay": { "overlay": a.to_wire(), "settings": { "close_on_outside": true } } },
+        ] }] }),
+    );
+    assert!(
+        why.contains("`close_outside`"),
+        "the overlay's fields: {why}"
+    );
+    let why = refusal(
+        &doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [a.to_wire()], "reactions": [{ "trigger": "Click", "actions": [
+            { "EditRow": { "row": "This" } },
+        ] }] }),
+    );
+    assert!(
+        why.contains("`table`") && why.contains("`cells`"),
+        "an action's fields: {why}"
+    );
+}
+
 /// A link's transition reads back as it is: a smart animate's side survives
 /// `reactions_value` and `set_reactions` on a page whose default shares it,
 /// and a tree read on one page and inserted on another whose default differs

@@ -45,3 +45,8 @@ decision belongs in `docs/non-goals.md` or `docs/decisions.md` instead.
   main's layers may share a name.
 - **`@@` collapsed anywhere in a batch string.** Only a string starting with `@` is a reference,
   and the batch's `steps` says to double that leading `@`; a mid-string `@@` stays as written.
+- **A text layer showing an expression such as `{Tasks.opened.Title}`.** The opened row is
+  shown by a list whose rows are `opened`, filling a component's text properties
+  (`lists.md`); braces in a text are its content, which a person may well write.
+- **A list of every global a stored script can reach.** Command Mode's names and their order
+  are its design (`command-mode.md`); the Luau sandbox leaves out `_G` and `getfenv` on purpose.

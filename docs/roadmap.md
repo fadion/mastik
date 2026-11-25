@@ -171,6 +171,17 @@ place, saved in the same shape so existing files load. It is matched in about 60
     through crop and orientation, and re-encodes in the picture's own format (a JPEG as JPEG).
     Spot heal is a Poisson blend of a small area, tens of milliseconds on the CPU. Medium.
 
+## Next · MCP
+
+- **`get_prototype` once per interaction, with its settings.** It lists an interaction once per
+  list copy (a list of ten rows repeats each of its row's interactions ten times) and repeats
+  every interaction for every flow that reaches its frame (`reads::prototype` over
+  `flow_map::plans`, each plan's `written`). It also leaves out what an agent walking its flows
+  needs: overlay settings (position, backdrop, close outside), a flow's start values and modes,
+  input bindings, and tied variant states. Collapse list copies to one line *on each row of
+  ‹list›*, list each frame's interactions once with the flows naming their frames, and add those
+  settings to the words.
+
 ## Later · Platform and dependencies
 
 - **egui 0.36** is blocked by vello requiring wgpu 29 (check — last asked 2026-09-03). Re-derive

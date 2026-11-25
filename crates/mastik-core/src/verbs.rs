@@ -1080,6 +1080,16 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
     if without_fields && let Some(form) = named.as_deref().and_then(|n| kind_example(&plain(n))) {
         return format!("{said}; write it with its fields, as `{}`", compact(&form));
     }
+    // A prototype struct or variant missing a field lists them all, as no example
+    // shows every action.
+    if miss.why.contains("missing field")
+        && matches!(model, "[Reaction]" | "[Flow]" | "LayerPlay" | "PagePlay")
+        && let Some(fields) = named
+            .as_deref()
+            .and_then(|n| play_fields(&[Some(Step::Key(n.to_owned()))]))
+    {
+        return format!("{said}; the fields there are `{}`", fields.join("`, `"));
+    }
     // A kind missing a field is shown that kind, not the model's example of another.
     // Kinds alone, named as the model spells a variant: a style's `text` is no kind.
     if miss.why.contains("missing field")
@@ -1140,7 +1150,30 @@ fn model_fields(
             Some(Some(k)) if k == "Grid" => struct_fields::<Grid>(),
             _ => None,
         },
+        ("[Reaction]" | "[Flow]" | "LayerPlay" | "PagePlay", _) => play_fields(below),
         _ => None,
+    }
+}
+
+/// Every field serde reads at the place `below` names inside a prototype model,
+/// by the last key on the way there: a struct the prototype holds under that
+/// key, or a trigger's or action's variant.
+fn play_fields(below: &[Option<Step>]) -> Option<&'static [&'static str]> {
+    use crate::prototype as p;
+    let key = below.iter().rev().find_map(|s| match s {
+        Some(Step::Key(k)) => Some(k.as_str()),
+        _ => None,
+    })?;
+    match key {
+        "settings" => struct_fields::<p::OverlaySettings>(),
+        "transition" => struct_fields::<p::Transition>(),
+        "follow" => struct_fields::<p::Follow>(),
+        "scroll_effect" => struct_fields::<p::ScrollEffect>(),
+        "input" => struct_fields::<p::Input>(),
+        k => variant_fields::<p::Action>(k)
+            .or_else(|| variant_fields::<p::Trigger>(k))
+            .or_else(|| variant_fields::<p::VarChange>(k))
+            .or_else(|| variant_fields::<p::WhichRow>(k)),
     }
 }
 
@@ -1188,6 +1221,91 @@ fn struct_fields<T: serde::de::DeserializeOwned>() -> Option<&'static [&'static 
     let capture = Capture(Cell::new(None));
     let _ = T::deserialize(&capture);
     capture.0.get()
+}
+
+/// The field names the enum `T`'s struct variant `variant` is read by, as
+/// [`struct_fields`] reads a struct's; `None` for a variant of another shape or
+/// no such variant.
+pub fn variant_fields<T: serde::de::DeserializeOwned>(
+    variant: &str,
+) -> Option<&'static [&'static str]> {
+    use serde::de::{
+        DeserializeSeed, Deserializer, EnumAccess, IntoDeserializer, VariantAccess, Visitor,
+    };
+    use std::cell::Cell;
+
+    #[derive(Debug)]
+    struct Stop;
+    impl std::fmt::Display for Stop {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("stop")
+        }
+    }
+    impl std::error::Error for Stop {}
+    impl serde::de::Error for Stop {
+        fn custom<M: std::fmt::Display>(_: M) -> Self {
+            Stop
+        }
+    }
+    /// Hands the enum `variant` by name, then notes its fields and stops.
+    struct Capture<'a> {
+        variant: &'a str,
+        fields: Cell<Option<&'static [&'static str]>>,
+    }
+    impl<'de> Deserializer<'de> for &Capture<'_> {
+        type Error = Stop;
+        fn deserialize_any<V: Visitor<'de>>(self, _: V) -> Result<V::Value, Stop> {
+            Err(Stop)
+        }
+        fn deserialize_enum<V: Visitor<'de>>(
+            self,
+            _: &'static str,
+            _: &'static [&'static str],
+            visitor: V,
+        ) -> Result<V::Value, Stop> {
+            visitor.visit_enum(self)
+        }
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple
+            tuple_struct map struct identifier ignored_any
+        }
+    }
+    impl<'de> EnumAccess<'de> for &Capture<'_> {
+        type Error = Stop;
+        type Variant = Self;
+        fn variant_seed<S: DeserializeSeed<'de>>(self, seed: S) -> Result<(S::Value, Self), Stop> {
+            let name: serde::de::value::StrDeserializer<'_, Stop> =
+                self.variant.into_deserializer();
+            Ok((seed.deserialize(name)?, self))
+        }
+    }
+    impl<'de> VariantAccess<'de> for &Capture<'_> {
+        type Error = Stop;
+        fn unit_variant(self) -> Result<(), Stop> {
+            Err(Stop)
+        }
+        fn newtype_variant_seed<S: DeserializeSeed<'de>>(self, _: S) -> Result<S::Value, Stop> {
+            Err(Stop)
+        }
+        fn tuple_variant<V: Visitor<'de>>(self, _: usize, _: V) -> Result<V::Value, Stop> {
+            Err(Stop)
+        }
+        fn struct_variant<V: Visitor<'de>>(
+            self,
+            fields: &'static [&'static str],
+            _: V,
+        ) -> Result<V::Value, Stop> {
+            self.fields.set(Some(fields));
+            Err(Stop)
+        }
+    }
+    let capture = Capture {
+        variant,
+        fields: Cell::new(None),
+    };
+    let _ = T::deserialize(&capture);
+    capture.fields.get()
 }
 
 /// The model a field of that name holds, wherever it sits.
@@ -1633,6 +1751,7 @@ fn by_names(doc: &Document, verb: &'static Verb, args: &Value) -> Result<Value, 
         let named: fn(&Document, &mut Value) -> Result<(), String> = match p.kind {
             ParamKind::Model("[Reaction]") => reaction_names,
             ParamKind::Model("[Flow]") => flow_names,
+            ParamKind::Model("LayerPlay") => play_names,
             _ => continue,
         };
         let Some(v) = map.get_mut(p.name) else {
@@ -1785,9 +1904,20 @@ fn tagged_names(doc: &Document, v: &mut Value, at: &str) -> Result<(), String> {
 }
 
 /// The list of flows `v` with each starting mode and each starting value's
-/// variable given by its name written as its id.
+/// variable given by its name written as its id, `values` written as an object
+/// of values by variable taken as its pairs, and a value given bare (`"Fix"`,
+/// `true`) written as the cell of its variable's kind.
 fn flow_names(doc: &Document, v: &mut Value) -> Result<(), String> {
     for (i, flow) in v.as_array_mut().into_iter().flatten().enumerate() {
+        if let Some(values) = flow.get_mut("values")
+            && let Value::Object(map) = values
+        {
+            let pairs = map
+                .iter()
+                .map(|(var, value)| serde_json::json!([var, value]))
+                .collect();
+            *values = Value::Array(pairs);
+        }
         for (m, mode) in flow
             .get_mut("modes")
             .and_then(Value::as_array_mut)
@@ -1808,9 +1938,36 @@ fn flow_names(doc: &Document, v: &mut Value) -> Result<(), String> {
                 id_field(doc, "variable", var)
                     .map_err(|why| format!("at `[{i}].values[{n}]`: {why}"))?;
             }
+            if let Some([var, value]) = pair.as_array_mut().map(Vec::as_mut_slice)
+                && let Some(cell) = bare_cell(doc, var, value)
+            {
+                *value = cell;
+            }
         }
     }
     Ok(())
+}
+
+/// A layer's play settings `v` with its input's variable given by its name
+/// written as its id.
+fn play_names(doc: &Document, v: &mut Value) -> Result<(), String> {
+    match v.pointer_mut("/input/var") {
+        Some(var) => id_field(doc, "variable", var).map_err(|why| format!("at `input.var`: {why}")),
+        None => Ok(()),
+    }
+}
+
+/// `value` given bare (`"#ff7a1a"`, `16`, `true`) as the cell of the kind of the
+/// variable `var`; `None` for a value already a cell, or a variable not there.
+fn bare_cell(doc: &Document, var: &Value, value: &Value) -> Option<Value> {
+    if value.is_object() || value.is_null() {
+        return None;
+    }
+    let kind = serde_json::from_value::<crate::variable::VarId>(var.clone())
+        .ok()
+        .and_then(|id| doc.variables().get(id))
+        .and_then(|var| serde_json::to_value(var.kind).ok())?;
+    Some(serde_json::json!({ kind.as_str()?: value.clone() }))
 }
 
 /// The id of the `what` (variable, style, collection, mode, script) called `name`, or
@@ -3878,7 +4035,7 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "add_variant_value",
-        doc: "Add a value to a variant property, last",
+        doc: "Add a value to a variant property; makes no variant",
         params: &[
             req("node", NODE, "the set, or one of its variants"),
             req("property", TEXT, "the variant property, by name"),
@@ -7881,6 +8038,9 @@ fn tree_reactions(
     let ids = &mut *ctx.ids;
     reactions_in(&mut v, &base, &mut || ids.mint_item()).map_err(refused)?;
     let v = settle::<Vec<Keyed<crate::prototype::Reaction>>>("[Reaction]", v).map_err(refused)?;
+    if let Some(why) = keyed_extra("[Reaction]", &v) {
+        return Err(refused(why));
+    }
     let mut read: Vec<Keyed<crate::prototype::Reaction>> =
         serde_json::from_value(v).map_err(|e| refused(e.to_string()))?;
     for (i, r) in read.iter_mut().enumerate() {
@@ -8675,7 +8835,31 @@ fn keyed_arg<T: serde::de::DeserializeOwned>(
     loosen_model(model, "", &mut v).map_err(|e| a.invalid(name, e))?;
     prepare(&mut v).map_err(|e| a.invalid(name, e))?;
     let v = settle::<T>(model, v).map_err(|e| a.invalid(name, e))?;
+    if let Some(why) = keyed_extra(model, &v) {
+        return Err(a.invalid(name, why));
+    }
     serde_json::from_value(v).map_err(|e| a.invalid(name, e))
+}
+
+/// The first key of an item of the keyed list `v` that its model has no field
+/// for, refused listing the fields: `Keyed` flattens its value, which hides such
+/// a key from `read_model`'s check, so it would be dropped without a word.
+fn keyed_extra(model: &str, v: &Value) -> Option<String> {
+    let fields = match model {
+        "[Flow]" => struct_fields::<crate::prototype::Flow>()?,
+        "[Reaction]" => struct_fields::<crate::prototype::Reaction>()?,
+        _ => return None,
+    };
+    v.as_array()?.iter().enumerate().find_map(|(i, item)| {
+        let key = item
+            .as_object()?
+            .keys()
+            .find(|k| *k != "id" && !fields.contains(&k.as_str()))?;
+        Some(format!(
+            "at `[{i}].{key}`: no such field; the fields there are `id`, `{}`",
+            fields.join("`, `")
+        ))
+    })
 }
 
 /// An `id` given to each item of the list `v` written without one.
