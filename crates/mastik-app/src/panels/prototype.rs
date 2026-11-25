@@ -39,10 +39,8 @@ pub(crate) struct ProtoState {
     /// A number field being scrubbed or typed: the saved model is never previewed
     /// (its operations draw nothing), so the field shows the value held here.
     pub scrub: Option<(egui::Id, f64)>,
-    /// A scrub that commits as it goes (the List card's *Rows*): its field, the
-    /// undo depth before its first step and the redo steps held aside, so a
-    /// cancel can take the run back and leave the history as it found it.
-    pub live_scrub: Option<(egui::Id, usize, mastik_core::history::RedoStack)>,
+    /// A scrub that commits as it goes (the List card's *Rows*).
+    pub live_scrub: Option<crate::panels::list::LiveScrub>,
     /// Where in a refused expression's typed text the fault is, for its field's
     /// underline.
     pub expr_fault: Option<(DraftKey, std::ops::Range<usize>)>,

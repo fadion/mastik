@@ -3361,6 +3361,9 @@ impl MastikApp {
         self.in_flight.scale_scrub = None;
         self.in_flight.vision_scrub = None;
         self.in_flight.track_drag = None;
+        // A live scrub whose field was not drawn on its release frame keeps the
+        // steps it made; a stale record would take back a later gesture's.
+        self.proto.live_scrub = None;
         self.end_picker_lch();
     }
 
@@ -3520,11 +3523,9 @@ impl MastikApp {
         // And prototype mode's held number: its field shows the saved one again.
         self.proto.scrub = None;
         // And a scrub that commits as it goes (the List card's *Rows*): its steps
-        // are taken back and the redo it held aside put back.
-        if let Some((_, depth, redo)) = self.proto.live_scrub.take() {
-            self.session.take_back_to(depth);
-            self.session.history.restore_redo(redo);
-        }
+        // are taken back and the redo it held aside put back, unless another step
+        // landed over them.
+        self.take_back_live_scrub();
         // And *Generate scale…*'s step count.
         if let Some(steps) = self.in_flight.scale_scrub.take() {
             self.restore_scale_steps(steps);

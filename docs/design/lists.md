@@ -307,9 +307,12 @@ step.
   (*Row*'s tooltip *One row of the table, the same in play*). *First* starts at 3 and shows a
   full-width *Rows* count field (1 to 200). A list's description has no preview, so a scrub
   commits each whole step as it lands (`commit_run`) and the copies follow it live. Its steps
-  are held as tentative (`ProtoState::live_scrub`, the undo depth and the redo set aside):
-  `Escape` or a right-click takes them back (`cancel_gesture`), and a release takes them back
-  and commits where the scrub ended as one step. A typed value is held and committed once
+  are held as tentative (`panels::list::LiveScrub`: its tab, the undo depth, the redo set aside
+  and the serials of the steps it made): `Escape` or a right-click takes them back
+  (`cancel_gesture`), and a release takes them back and commits where the scrub ended as one
+  step. Only the scrub's own steps are taken back: a step someone else commits over the run (an
+  agent's call landing mid-drag) ends it where it stands, its steps kept, and a scrub whose
+  field is not drawn on its release frame keeps its steps too. A typed value is held and committed once
   (`proto_valve`). *Row* starts
   at 1 and shows a full-width `ui::fitted_combo` of the table's rows as *N · first cell*, its face
   *Row 3 · Linen shirt*, up to `list_data::ROWS_LISTED` (200) listed and then a menu note

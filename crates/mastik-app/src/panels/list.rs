@@ -12,6 +12,59 @@ use mastik_core::list::{self, List, Rows, Target};
 use mastik_core::variant::PropKind;
 use mastik_core::{NodeId, Operation, Transaction};
 
+/// A scrub that commits as it goes (the List card's *Rows*): its field, the tab
+/// it runs on, the undo depth before its first step, the redo steps held aside,
+/// and the serials of the steps it committed, so a cancel or release takes back
+/// only its own steps and leaves the history as it found it.
+pub(crate) struct LiveScrub {
+    pub field: egui::Id,
+    pub tab: Option<crate::tabs::TabId>,
+    pub depth: usize,
+    pub redo: mastik_core::history::RedoStack,
+    pub steps: Vec<u64>,
+}
+
+impl MastikApp {
+    /// Whether the live scrub still stands on top of the active tab's history:
+    /// its tab is in front and the step on top is one it committed.
+    pub(crate) fn live_scrub_holds(&self) -> bool {
+        self.proto.live_scrub.as_ref().is_some_and(|s| {
+            s.tab == self.tabs.active
+                && self
+                    .session
+                    .history
+                    .current()
+                    .is_some_and(|c| s.steps.contains(&c))
+        })
+    }
+
+    /// End the live scrub, taking back its steps and putting back the redo it
+    /// held aside when it still holds; a scrub that no longer holds keeps its
+    /// steps. Answers whether it was taken back.
+    pub(crate) fn take_back_live_scrub(&mut self) -> bool {
+        let holds = self.live_scrub_holds();
+        let Some(s) = self.proto.live_scrub.take() else {
+            return false;
+        };
+        if !holds {
+            return false;
+        }
+        while self.session.history.undo_depth() > s.depth
+            && self
+                .session
+                .history
+                .current()
+                .is_some_and(|c| s.steps.contains(&c))
+            && self.session.take_back()
+        {}
+        if self.session.history.undo_depth() != s.depth {
+            return false;
+        }
+        self.session.history.restore_redo(s.redo);
+        true
+    }
+}
+
 /// The rows modes in the segmented control's order, with their words.
 const ROWS: [(&str, &str); 4] = [
     ("All", ALL_TIP),
@@ -309,15 +362,18 @@ impl MastikApp {
                 // (`cancel_gesture`). A release takes them back too and commits
                 // where the scrub ended as one step, however the run's time
                 // window split them.
-                let mine =
-                    |s: &Option<(egui::Id, usize, _)>| matches!(s, Some((r, _, _)) if *r == rid);
+                let mine = |s: &Option<LiveScrub>| s.as_ref().is_some_and(|s| s.field == rid);
+                // A step someone else committed over the run (an agent's call) ends
+                // it where it stands: its steps stay, and nothing under the foreign
+                // step is taken back.
+                if mine(&self.proto.live_scrub) && !self.live_scrub_holds() {
+                    self.proto.live_scrub = None;
+                }
                 if !resp.dragged()
                     && !self.gesture_cancelled
                     && mine(&self.proto.live_scrub)
-                    && let Some((_, depth, redo)) = self.proto.live_scrub.take()
+                    && self.take_back_live_scrub()
                 {
-                    self.session.take_back_to(depth);
-                    self.session.history.restore_redo(redo);
                     // Onto the list as the take-back left it: `now` was read from
                     // the scrubbed document, whose template the take-back replaced.
                     let back = self.session.doc.get(id).and_then(|n| n.list()).cloned();
@@ -328,13 +384,24 @@ impl MastikApp {
                 }
                 let tx = if resp.dragged() && !self.gesture_cancelled && !tx.0.is_empty() {
                     if !mine(&self.proto.live_scrub) {
-                        let depth = self.session.history.undo_depth();
-                        let redo = self.session.history.take_redo();
-                        self.proto.live_scrub = Some((rid, depth, redo));
+                        self.proto.live_scrub = Some(LiveScrub {
+                            field: rid,
+                            tab: self.tabs.active,
+                            depth: self.session.history.undo_depth(),
+                            redo: self.session.history.take_redo(),
+                            steps: Vec::new(),
+                        });
                     }
                     self.session.name_step("List rows", icon::TABLE);
                     self.note_edit(Some(&resp), &tx);
                     self.session.commit_run(tx, "list-first-rows");
+                    if let (Some(s), Some(step)) = (
+                        self.proto.live_scrub.as_mut(),
+                        self.session.history.current(),
+                    ) && !s.steps.contains(&step)
+                    {
+                        s.steps.push(step);
+                    }
                     Transaction::default()
                 } else {
                     tx
@@ -1606,6 +1673,140 @@ mod tests {
         assert_eq!(app.session.history.undo_depth(), depth, "no step");
         assert!(app.session.redo(), "the redo it found is kept");
         assert_eq!(rows(&app), Rows::First(3), "and redoes to 3");
+    }
+
+    /// A live *Rows* scrub takes back only its own steps: an agent's step landed
+    /// mid-scrub survives the release and a cancel, a release over a split run
+    /// still leaves one step, and no record outlives the release.
+    /// flip: `take_back_live_scrub` and `live_scrub_holds` not checking the step
+    /// on top → fails at "the agent's rename survives the release"; the release
+    /// block left out → fails at "one step".
+    #[test]
+    fn a_first_count_scrub_takes_back_only_its_own_steps() {
+        use mastik_core::list::Rows;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, inst) = with_row(&ctx);
+        let (l, _) = listed(&mut app, inst, &["A", "B", "C", "D", "E", "F", "G"]);
+        let mut next = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        next.rows = Rows::First(2);
+        app.list_commit(l, "List rows", next);
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                ui.set_max_width(280.0);
+                let now = app.session.doc.get(l).unwrap().list().unwrap().clone();
+                app.list_rows_rows(ui, l, &now);
+            })
+        };
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let rows = |app: &MastikApp| app.session.doc.get(l).unwrap().list().unwrap().rows;
+        let page = app.session.doc.first_page();
+        let name = |app: &MastikApp| app.session.doc.get(page).unwrap().name().to_owned();
+        // Press on the field showing `n`, scrub three frames, run `between`, scrub
+        // three more; then release, or cancel. Answers the depth before the press.
+        let scrub =
+            |app: &mut MastikApp, n: u32, between: &dyn Fn(&mut MastikApp), cancel: bool| {
+                let mut out = frame(app, vec![]);
+                for _ in 0..3 {
+                    out = frame(app, vec![]);
+                }
+                let text = n.to_string();
+                let field = out
+                    .shapes
+                    .iter()
+                    .find_map(|s| match &s.shape {
+                        egui::Shape::Text(t) if t.galley.job.text == text => {
+                            Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                        }
+                        _ => None,
+                    })
+                    .expect("fixture: the field shows its count");
+                let depth = app.session.history.undo_depth();
+                frame(app, vec![egui::Event::PointerMoved(field)]);
+                frame(app, vec![press(field, true)]);
+                let mut x = field.x;
+                for _ in 0..6 {
+                    x += 2.0;
+                    frame(app, vec![egui::Event::PointerMoved(egui::pos2(x, field.y))]);
+                }
+                let before = rows(app);
+                assert!(
+                    matches!(before, Rows::First(m) if m > n),
+                    "fixture: live before `between`"
+                );
+                between(app);
+                for _ in 0..6 {
+                    x += 2.0;
+                    frame(app, vec![egui::Event::PointerMoved(egui::pos2(x, field.y))]);
+                }
+                assert_ne!(rows(app), before, "fixture: live after `between`");
+                if cancel {
+                    assert!(app.cancel_gesture(&ctx), "fixture: the scrub is cancelled");
+                    frame(app, vec![]);
+                }
+                frame(app, vec![press(egui::pos2(x, field.y), false)]);
+                app.end_released_gestures();
+                for _ in 0..3 {
+                    frame(app, vec![]);
+                }
+                depth
+            };
+        let rename = |to: &str| {
+            let to = to.to_owned();
+            move |app: &mut MastikApp| {
+                app.session
+                    .name_mcp_step("agent", "set", crate::theme::icon::TABLE);
+                assert!(app.session.commit(mastik_core::Transaction(vec![
+                    mastik_core::Operation::SetName {
+                        id: page,
+                        name: to.clone(),
+                    }
+                ])));
+            }
+        };
+
+        // A run the time window split: the release still leaves one step.
+        let depth = scrub(&mut app, 2, &|app| app.session.end_edit_run(), false);
+        assert_eq!(app.session.history.undo_depth() - depth, 1, "one step");
+        assert!(app.proto.live_scrub.is_none(), "live_scrub cleared");
+
+        // An agent's step between two scrub frames: kept by the release.
+        let n = match rows(&app) {
+            Rows::First(n) => n,
+            other => panic!("fixture: {other:?}"),
+        };
+        scrub(&mut app, n, &rename("Agent one"), false);
+        assert_eq!(
+            name(&app),
+            "Agent one",
+            "the agent's rename survives the release"
+        );
+        assert!(app.proto.live_scrub.is_none(), "cleared after the release");
+
+        // And by a cancel, which takes back only the steps above it.
+        let n = match rows(&app) {
+            Rows::First(n) => n,
+            other => panic!("fixture: {other:?}"),
+        };
+        scrub(&mut app, n, &rename("Agent two"), true);
+        assert_eq!(
+            name(&app),
+            "Agent two",
+            "the agent's rename survives a cancel"
+        );
     }
 
     /// The layers tree offers no drop that takes a list's template out of its
