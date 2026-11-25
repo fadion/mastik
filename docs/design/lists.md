@@ -488,11 +488,15 @@ MCP's Phase 3 (`mcp.md`), each acting as its door in the app.
 - **Every table edit is one `SetDataSet`**, so its commit regenerates the lists over the table and
   brings the charts over it along, as the data window's edits do.
 - **`make_list(node, table, fill?)`** is *Make a list from data* over a table there is: filled by
-  name unless `fill` maps property names to column names. Answers the frame.
+  name unless `fill` maps property names to column names. Answers the frame, and `said` *A list of
+  N rows from People*, N the rows it draws.
 - **`set_list(node, table?, rows?, fill?, filter?, sort?)`** is the List card: `node` the list
   frame or its template, `rows` `"all"`, `{first}`, `{row}` or `"opened"`, columns named in the
   table the list reads after the call, and a `{Variable}` in a filter value stored in the id form
-  (`Expr::from_names`). `table` moves the list as the Data dropdown does.
+  (`Expr::from_names`). `table` moves the list as the Data dropdown does. It answers `said` as
+  `make_list` does, N the rows the list draws with the variables as they stand
+  (`List::shown_rows`), adding *; no row passes the filter as the variables stand* when a filter
+  leaves none: an empty list otherwise reads as done.
 - **`detach_list(nodes)`** is *Detach list* (`list::detach`), one step for every list; a layer
   that is no list's frame is refused, so `make_component`'s refusal of a list (*detach it first
   with `detach_list`*) names a step an agent can take.

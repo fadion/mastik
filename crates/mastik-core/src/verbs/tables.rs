@@ -830,10 +830,30 @@ pub(super) fn set_list(ctx: &mut Ctx<'_>, a: &Args<'_>) -> Result<Done, VerbErro
             .collect::<Result<_, VerbError>>()?;
     }
     next.validate(id).map_err(|rule| a.invalid("node", rule))?;
-    Ok(Done::ops(vec![Operation::SetList {
+    // What it draws now, as `make_list` says it: a filter passing no row as the
+    // variables stand otherwise reads as done.
+    let said = set.map(|set| {
+        let rows = next
+            .shown_rows(&set.table, &|v| doc.resolve_var(id, v))
+            .len();
+        let none = match rows == 0 && !next.filter.tests.is_empty() {
+            true => "; no row passes the filter as the variables stand",
+            false => "",
+        };
+        format!(
+            "A list of {} from {}{none}",
+            plural(rows, "row", "rows"),
+            set.name
+        )
+    });
+    let done = Done::ops(vec![Operation::SetList {
         id,
         list: Some(Box::new(next)),
-    }]))
+    }]);
+    Ok(match said {
+        Some(said) => done.saying(said),
+        None => done,
+    })
 }
 
 /// `set_chart_data`: a chart pointed at a table of the document's (`data`), or

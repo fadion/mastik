@@ -460,8 +460,9 @@ fn a_list_follows_its_table_and_holds_it() {
 
 /// `set_list` sets the rows mode, a filter reading a variable by name (stored
 /// as its id) and a sort, and moves the list onto another table keeping the
-/// fill on the column of its name.
-/// flip: `set_list` storing the filter value as written → fails at "stored by id".
+/// fill on the column of its name, saying how many rows it draws.
+/// flip: `set_list` storing the filter value as written → fails at "stored by id";
+/// `set_list` without its `said` → fails at "what it draws".
 #[test]
 fn set_list_edits_the_list_card() {
     let (mut doc, mut ids, page) = blank();
@@ -495,7 +496,12 @@ fn set_list_edits_the_list_card() {
         "filter": { "tests": [{ "column": "Age", "op": "at most", "value": "{limit}" }] },
         "sort": [{ "column": "Age", "descending": true }],
     });
-    run(&mut h, &mut doc, &mut ids, "set_list", args);
+    let said = run(&mut h, &mut doc, &mut ids, "set_list", args).said;
+    assert_eq!(
+        said.as_deref(),
+        Some("A list of 2 rows from People"),
+        "what it draws"
+    );
     let now = doc.get(l).unwrap().list().unwrap().clone();
     assert_eq!(now.rows, Rows::First(2));
     assert_eq!(
@@ -504,6 +510,13 @@ fn set_list_edits_the_list_card() {
         "stored by id"
     );
     assert_eq!(titles(&doc, l), ["Ana", "Cy"]);
+    let args = json!({ "node": l.to_wire(),
+        "filter": { "tests": [{ "column": "Age", "op": "at most", "value": "1" }] } });
+    let said = run(&mut h, &mut doc, &mut ids, "set_list", args).said;
+    assert!(
+        said.is_some_and(|s| s.contains("no row passes")),
+        "a filter passing none"
+    );
 
     let other = run(
         &mut h,
