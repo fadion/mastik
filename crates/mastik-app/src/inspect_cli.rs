@@ -1,5 +1,5 @@
 //! `mastik inspect` — the MCP's reads of one document, as JSON on stdout:
-//! `get_outline`, `design_context` and the `list_*` reads, answered by the MCP's
+//! `get_outline`, `design_context`, `get_prototype` and the `list_*` reads, answered by the MCP's
 //! own code (`mcp::run_offline`) without its answer budget.
 
 use crate::session::EditorSession;

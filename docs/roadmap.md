@@ -191,6 +191,13 @@ place, saved in the same shape so existing files load. It is matched in about 60
   an off/on pair (a switch's two looks) needs a second variable kept in step by every toggle. A
   negated binding, or a boolean choosing between two values, would drop it.
 
+## Later · Player
+
+- **Draw only the room a tall screen shows.** The player renders a screen whole, and one past the
+  device's largest texture side is scaled down and drawn softer (`design/prototyping-player.md`).
+  Rendering only the part of the screen the stage shows, at full density, bounds both the texture
+  and the per-frame cost. Needs a GPU-attended change and a check on a device.
+
 ## Later · Platform and dependencies
 
 - **egui 0.36** is blocked by vello requiring wgpu 29 (check — last asked 2026-09-03). Re-derive

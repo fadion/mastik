@@ -6781,7 +6781,8 @@ pub fn claim_popup_escape(ctx: &egui::Context) {
 /// `Escape` is its when no popup is open, and never a popover's under it. Call it
 /// on every frame the surface ends still up, never on the one it closes on, or
 /// the next press is lost to it. The press stays in the input for it to read.
-/// `MastikApp::frame_body` calls it for every modal `modal_is_up` names.
+/// `MastikApp::frame_body` calls it for every modal `dialog_is_up` names and
+/// the palette; the publish popover takes `Escape` as a popover does.
 pub fn keep_modal_escape(ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp(kept_modal_escape_id(), true));
 }

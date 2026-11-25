@@ -195,7 +195,10 @@ keeps every key, Escape included (`Playing::take_keys` asks `text_edit_focused` 
   like any other.
 - **Private mode** masks the flow's and page's names in the card's head and the window's title.
 - Its texture is the player's own `CanvasRenderer`, drawn whole through
-  `mastik_render::play` whenever the scene or the copy changed.
+  `mastik_render::play` whenever the scene or the copy changed. A screen whose drawn size passes
+  the device's largest texture side (`player::screen_pixels`) is drawn scaled down as a whole and
+  stretched over its rect, so a very tall *Fill width* or *Actual size* screen draws softer
+  rather than failing; drawing only the room the stage shows is open (`docs/roadmap.md`).
 
 ## Exports from the player
 

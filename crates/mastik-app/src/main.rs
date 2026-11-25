@@ -460,7 +460,7 @@ commands:
   export     a page or some layers to a file, or the document's own export settings
   render     a component once per CSV row, or every frame once per mode
   check      contrast, code, review, health or layout checks, for CI
-  inspect    a document's outline, context, components, variables or styles, as JSON
+  inspect    a document's outline, context, components, variables, styles, tables or prototype, as JSON
   diff       what changed from one document to another
   merge      a three-way merge, as git's merge driver
   tokens     DTCG design tokens out of a document, or into one
