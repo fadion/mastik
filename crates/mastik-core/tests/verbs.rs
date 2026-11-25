@@ -8232,6 +8232,94 @@ fn reactions_and_flows_take_names_for_ids() {
     );
 }
 
+/// A main's `set_reactions` moving an action, id kept, to another reaction lands
+/// when a copy overrode the reaction it left: the moved action takes a fresh id,
+/// so the copy, keeping its own version of that reaction, holds no id twice.
+///
+/// flip: `set_reactions` without `moved_actions_reminted` → the move's `run`
+/// is refused with two actions sharing an id.
+#[test]
+fn a_main_moving_an_action_between_reactions_lands_past_a_copys_override() {
+    use mastik_core::prototype::Action;
+    let (mut doc, mut ids, page) = blank();
+    let screen = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame(100.0, 100.0) }),
+    )[0];
+    let shape = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame(20.0, 20.0) }),
+    )[0];
+    let main = run(
+        &mut doc,
+        &mut ids,
+        "make_component",
+        json!({ "nodes": [shape.to_wire()] }),
+    )[0];
+    let inst = run(
+        &mut doc,
+        &mut ids,
+        "create_instance",
+        json!({ "main": main.to_wire(), "parent": page.to_wire(), "x": 300, "y": 0 }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [main.to_wire()], "reactions": [
+            { "trigger": "Click", "actions": [{ "Navigate": { "to": screen.to_wire() } }, "Back"] },
+            { "trigger": "HoverEnter", "actions": ["Back"] },
+        ] }),
+    );
+    let mut own = doc.get(inst).unwrap().reactions().to_vec();
+    assert_eq!(own.len(), 2, "the copy has the main's reactions");
+    let Action::Navigate { keep_scroll, .. } = &mut own[0].value.actions[0].value else {
+        panic!("a navigate first")
+    };
+    *keep_scroll = true;
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [inst.to_wire()], "reactions": serde_json::to_value(&own).unwrap() }),
+    );
+
+    let mut moved = doc.get(main).unwrap().reactions().to_vec();
+    let x = moved[0].value.actions.remove(0);
+    moved[1].value.actions.push(x);
+    run(
+        &mut doc,
+        &mut ids,
+        "set_reactions",
+        json!({ "nodes": [main.to_wire()], "reactions": serde_json::to_value(&moved).unwrap() }),
+    );
+    let on_main = doc.get(main).unwrap().reactions();
+    assert_eq!(
+        (on_main[0].actions.len(), on_main[1].actions.len()),
+        (1, 2),
+        "the main's action moved"
+    );
+    let on_copy = doc.get(inst).unwrap().reactions();
+    assert!(
+        mastik_core::prototype::check(on_copy).is_ok(),
+        "the copy holds no id twice"
+    );
+    assert!(
+        matches!(
+            on_copy[0].actions[0].value,
+            Action::Navigate {
+                keep_scroll: true,
+                ..
+            }
+        ),
+        "the copy keeps its override"
+    );
+}
+
 /// A screen action or a flow's start naming a layer that is there but is no
 /// frame is refused at its path, and so is *Change to* naming a layer that is
 /// no component main, since play would pass over each; a target that is gone is

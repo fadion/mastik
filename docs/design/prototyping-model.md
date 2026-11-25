@@ -113,9 +113,12 @@ page's flows and play settings, so the inverse of a removal brings them back.
   number is not finite, or whose snap points repeat an id (`LayerPlay::is_usable`;
   `OpError::BadPlay`). Here the loader drops the node's follow and scroll effect instead of
   refusing the file.
-- A repeated id: an action id anywhere in one reaction, its branches included, since the
-  Prototype tab finds an action by id in the whole tree (`ReactionError::DuplicateAction`), a
-  reaction id on a layer (`Node::check_item_ids`), a flow id on a page.
+- A repeated id: an action id anywhere in a layer's reactions, branches included, since the
+  Prototype tab finds an action by id across all of them (`ReactionError::DuplicateAction`), a
+  reaction id on a layer (`Node::check_item_ids`), a flow id on a page. `set_reactions` gives
+  an action that keeps its id but moves to another reaction a fresh one
+  (`prototype::moved_actions_reminted`): a copy merges each reaction's actions whole, so a copy
+  that overrode the reaction it left would otherwise hold the id twice and refuse the main's edit.
 
 **Targets dangle by design.** Neither the door nor the loader checks that an action's target, a
 flow's start, a scroll effect's frame, an input's variable, a *Set mode*'s mode, a named

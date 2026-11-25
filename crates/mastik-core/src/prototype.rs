@@ -32,7 +32,7 @@ use crate::list::DataSetId;
 use crate::script::ScriptId;
 use crate::variable::{Cell, ModeId, VarId};
 use peniko::Color;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
 /// A layer id in its wire form, `"<actor-hex>:<seq>"`, as every other saved id.
@@ -1567,6 +1567,54 @@ pub fn fresh_ids(list: &[Keyed<Action>], mint: &mut impl FnMut() -> ItemId) -> V
             Keyed::new(mint(), value)
         })
         .collect()
+}
+
+/// `new`, a layer's reactions replacing `old`, with each action that keeps its id
+/// but now sits in another reaction given a fresh one. A copy merges a reaction's
+/// actions whole, so a copy that overrode the reaction the action left would
+/// otherwise hold that id in two reactions, which [`check`] refuses.
+pub fn moved_actions_reminted(
+    old: &[Keyed<Reaction>],
+    new: &mut [Keyed<Reaction>],
+    mint: &mut impl FnMut() -> ItemId,
+) {
+    fn homes(list: &[Keyed<Action>], r: ItemId, out: &mut FxHashMap<ItemId, ItemId>) {
+        for k in list {
+            out.insert(k.id, r);
+            if let Action::Conditional {
+                branches,
+                otherwise,
+            } = &k.value
+            {
+                for b in branches {
+                    homes(&b.actions, r, out);
+                }
+                homes(otherwise, r, out);
+            }
+        }
+    }
+    fn remint(
+        list: &mut [Keyed<Action>],
+        r: ItemId,
+        home: &FxHashMap<ItemId, ItemId>,
+        mint: &mut impl FnMut() -> ItemId,
+    ) {
+        for k in list {
+            if home.get(&k.id).is_some_and(|h| *h != r) {
+                k.id = mint();
+            }
+            for l in nested_lists_mut(&mut k.value) {
+                remint(l, r, home, mint);
+            }
+        }
+    }
+    let mut home = FxHashMap::default();
+    for r in old {
+        homes(&r.actions, r.id, &mut home);
+    }
+    for r in new {
+        remint(&mut r.value.actions, r.id, &home, mint);
+    }
 }
 
 /// The instance *Change to* switches from a layer: the instance it is or is in,

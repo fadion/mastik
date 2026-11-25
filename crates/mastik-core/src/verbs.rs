@@ -6610,6 +6610,11 @@ pub static VERBS: &[Verb] = &[
                     let why = format!("two reactions share the id `{}`", twice.0.to_wire());
                     return Err(a.invalid("reactions", why));
                 }
+                let own = node(ctx, id)?.reactions().to_vec();
+                let ids = &mut *ctx.ids;
+                crate::prototype::moved_actions_reminted(&own, &mut reactions, &mut || {
+                    ids.mint_item()
+                });
                 for (i, r) in reactions.iter().enumerate() {
                     crate::prototype::check(std::slice::from_ref(r))
                         .map_err(|e| a.invalid("reactions", format!("at `reactions[{i}]`: {e}")))?;
