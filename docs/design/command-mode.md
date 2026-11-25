@@ -288,7 +288,8 @@ sandbox. What is left is an escape through a bug in Luau or `mlua`.
   argument to the host once per layer, so its bytes count once per layer; and the clock and the
   steps are read between those per-layer host calls, which no interrupt separates. A budget with
   no clock charges host work to its steps instead (`Budget::host`: per layer read or written, per
-  operation committed, per `play` call); the others charge none. The
+  operation committed, per `play` call, and a fraction per table cell copied, layer handle built
+  or layer passed over in a bare name's lookup); the others charge none. The
   editor's output pane lays out only the rows in view, and cuts a printed line past 2,000
   characters:
 

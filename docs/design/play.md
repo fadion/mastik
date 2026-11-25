@@ -251,8 +251,11 @@ out both ends.
   `play`. A run goes under `PLAY_BUDGET`, steps and memory with no clock, so the app, the
   exported page and a take's replay stop a runaway at the same step. Host work, which runs in
   Rust between interrupts, is charged to the steps (`Budget::host`): each layer a call reads or
-  writes, each operation committed and each `play` call costs 1,000, so a loop of layer or
-  `play.vars` writes ends at the budget rather than holding the UI thread for minutes. The memory
+  writes, each operation committed and each `play` call costs 1,000, and each table cell copied
+  or layer passed over when a bare name is looked up costs 10 and each layer handle built 100.
+  So a loop of layer or `play.vars` writes, of `children` reads or of a table's `column` ends at
+  the budget rather than holding the UI thread for minutes. A bare name's lookup is kept until the
+  run's next write. The memory
   limit counts the allocator's bytes, which depend on the target's pointer width, so a run near it
   may stop on the desktop and finish in the exported page (wasm32); that is the one bound not
   shared, and a take's replay on the same machine still agrees. The copy, its resolve and

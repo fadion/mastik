@@ -70,14 +70,23 @@ pub const RUN_BUDGET: Budget = Budget {
 /// the same step. Five million steps take from about 50 ms (a bare loop) to
 /// about 1.3 s (a loop building strings) natively. Host work is charged in
 /// steps, so 5,000 layer reads or `play` calls, or about half as many layer
-/// writes, spend it: a write costs from about 10 µs on a small page to about
-/// 1 ms among 2,000 siblings.
+/// writes, spend it (a write costs about 10 µs to 1 ms). Table cells copied,
+/// layers walked for a name and handles built cost a fraction each
+/// ([`CELLS_PER_UNIT`], [`HANDLES_PER_UNIT`]).
 pub const PLAY_BUDGET: Budget = Budget {
     time: Duration::MAX,
     steps: 5_000_000,
     host: 1_000,
     memory: 64 << 20,
 };
+
+/// Cells copied, or layers passed over in a walk, charged as one unit of host
+/// work: each is about a hundredth of a layer write's cost.
+const CELLS_PER_UNIT: usize = 100;
+
+/// Layer handles built (a table and a userdata each) charged as one unit of
+/// host work.
+const HANDLES_PER_UNIT: usize = 10;
 
 /// The budget of a run on a worker, which a stop flag can end at any step: a
 /// line run with Enter, a script. Only a runaway the person leaves running
@@ -797,6 +806,9 @@ struct State<'h> {
     stop: Option<Arc<AtomicBool>>,
     /// The tables `tables` has read, with the writes gathered for the run's end.
     tables: Vec<tables::Working>,
+    /// The layers each bare name found on the page, until the next commit,
+    /// so a loop naming a layer walks the page once ([`State::named`]).
+    names: rustc_hash::FxHashMap<(NodeId, String), Vec<NodeId>>,
 }
 
 impl State<'_> {
@@ -805,6 +817,34 @@ impl State<'_> {
     fn charge(&self, units: usize) {
         let cost = self.budget.host.saturating_mul(units as u64);
         self.steps.set(self.steps.get().saturating_add(cost));
+    }
+
+    /// Charge `items` of light host work, `per_unit` of them to one unit: a
+    /// cell copied or a layer passed over ([`CELLS_PER_UNIT`]), a layer handle
+    /// built ([`HANDLES_PER_UNIT`]). One Rust call doing thousands of these
+    /// passes no interrupt, so only the charge bounds a loop of them.
+    fn charge_items(&self, items: usize, per_unit: usize) {
+        let cost = self.budget.host.saturating_mul(items as u64) / per_unit.max(1) as u64;
+        self.steps.set(self.steps.get().saturating_add(cost));
+    }
+
+    /// The layers on the page called `name`, kept until the next commit; a
+    /// walk of the page is charged by the layers it passes.
+    fn named(&mut self, name: &str) -> Vec<NodeId> {
+        let page = self.host.page();
+        let key = (page, name.to_owned());
+        if let Some(found) = self.names.get(&key) {
+            return found.clone();
+        }
+        let doc = self.host.doc();
+        let mut walked = 0;
+        let found: Vec<NodeId> = crate::layers_under(doc, page)
+            .inspect(|_| walked += 1)
+            .filter(|id| doc.get(*id).is_some_and(|n| n.name() == name))
+            .collect();
+        self.charge_items(walked, CELLS_PER_UNIT);
+        self.names.insert(key, found.clone());
+        found
     }
 
     /// Charge one layer's host work, then stop as stopped once the stop flag is
@@ -837,6 +877,7 @@ impl State<'_> {
         }
         self.hosted.set(true);
         self.charge(tx.0.len());
+        self.names.clear();
         self.host.commit(tx)
     }
 
@@ -1045,6 +1086,7 @@ pub(crate) fn run(
         steps: spent,
         stop,
         tables: Vec::new(),
+        names: rustc_hash::FxHashMap::default(),
     });
     let outer = &state;
     let value = lua
@@ -1366,11 +1408,7 @@ fn resolve(
         n if STDLIB.contains(&n) => return Ok((lua.globals().get(n)?, true)),
         _ => {}
     }
-    let found = {
-        let st = state.borrow();
-        let page = st.host.page();
-        named(st.host.doc(), page, name)
-    };
+    let found = state.borrow_mut().named(name);
     match found.as_slice() {
         [one] => Ok((Value::Table(coll(lua, &[*one])?), false)),
         [] => {
@@ -1594,6 +1632,7 @@ fn read_shared(
                 all.extend(kids);
             }
         }
+        st.charge_items(all.len(), HANDLES_PER_UNIT);
         drop(st);
         return Ok(Value::Table(coll(lua, &all)?));
     }

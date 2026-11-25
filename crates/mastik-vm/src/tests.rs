@@ -986,6 +986,26 @@ fn names_resolve_in_order() {
     );
 }
 
+/// A bare name is looked up again after a write: a layer the run renamed is
+/// no longer found by its old name.
+///
+/// flip: `State::commit` not clearing `names` → fails at the `unwrap_err`
+/// (the run finds the renamed layer).
+#[test]
+fn a_bare_name_follows_the_runs_writes() {
+    let (mut h, ids) = three();
+    let labels = FxHashMap::default();
+    let e = env(&ids, &labels);
+    let err = run_script(&mut h, &e, "local x = A.x\nA.name = \"Z\"\nreturn A.x")
+        .map(|o| o.value)
+        .unwrap_err();
+    assert!(
+        err.message.starts_with("No name “A”"),
+        "renamed away: {}",
+        err.message
+    );
+}
+
 /// `50%` sizes a laid-out item through its layout item, and anywhere else says why not.
 #[test]
 fn percent_sizes_only_a_laid_out_layer() {

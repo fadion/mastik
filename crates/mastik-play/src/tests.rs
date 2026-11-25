@@ -2505,6 +2505,117 @@ fn host_work_in_a_play_script_spends_its_steps() {
     assert_eq!(x(r), 5.0);
 }
 
+/// Each kind of host work a play script can loop over is charged on its own:
+/// a write that changes nothing, a layer read, a `children` read, a table's
+/// column and a table row. Each loop takes under a million Luau steps, so only
+/// its charge stops it.
+///
+/// flips, one at a time, each failing at its own "stopped" assertion:
+/// `State::host_step` not charging → *Still*; `read_shared` not charging its
+/// layers → *Look*; the `children` arm not charging its handles → *Kids*; the
+/// table handle's `column` not charging its cells → *Column*; its row read not
+/// charging → *Row*.
+#[cfg(feature = "scripts")]
+#[test]
+fn every_kind_of_host_work_in_a_play_script_spends_its_steps() {
+    use mastik_core::chart::{Column, ColumnId, Table};
+    use mastik_core::list::DataSet;
+    let (mut fx, a, _, _) = two_screens(Transition::INSTANT);
+    let field = fx.frame("Field", 1000.0, 400.0, 400.0);
+    let dots: Vec<NodeId> = (0..200).map(|_| fx.ids.mint()).collect();
+    fx.apply(
+        dots.iter()
+            .enumerate()
+            .map(|(i, id)| Operation::CreateNode {
+                id: *id,
+                parent: field,
+                index: i,
+                kind: NodeKind::Rect {
+                    size: Size::new(2.0, 2.0),
+                    corner_radii: RoundedRectRadii::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((5.0, 5.0))),
+                name: Some("Dot".into()),
+            })
+            .collect(),
+    );
+    let tasks = fx.ids.mint_data_set();
+    fx.apply(vec![Operation::SetDataSet {
+        id: tasks,
+        set: Some(Box::new(DataSet {
+            id: tasks,
+            name: "Tasks".into(),
+            table: Table {
+                columns: ["Name", "Done", "Due"]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| Column {
+                        id: ColumnId(i as u32),
+                        name: (*n).into(),
+                    })
+                    .collect(),
+                rows: (0..2000)
+                    .map(|i| vec![format!("Task {i}"), "false".into(), "Monday".into()])
+                    .collect(),
+            },
+            source: None,
+            pictures: Vec::new(),
+        })),
+    }]);
+    let runs = [
+        (
+            "Still",
+            "local f = Field for i = 1, 300000 do f.rotation = 0 end",
+        ),
+        (
+            "Look",
+            "local f = Field for i = 1, 300000 do local x = f.x end",
+        ),
+        ("Kids", "for i = 1, 3000 do local c = Field.children end"),
+        (
+            "Column",
+            "local t = tables.Tasks for i = 1, 3000 do local c = t:column(\"Done\") end",
+        ),
+        (
+            "Row",
+            "local t = tables.Tasks for i = 1, 100000 do local r = t[1] end",
+        ),
+    ];
+    for (i, (name, source)) in runs.iter().enumerate() {
+        let id = fx.ids.mint_script();
+        fx.apply(vec![Operation::AddScript {
+            script: mastik_core::Script {
+                id,
+                name: (*name).into(),
+                source: (*source).into(),
+            },
+            index: 0,
+        }]);
+        let b = fx.rect(a, name, 5.0 + 38.0 * i as f64, 55.0, 30.0, 30.0);
+        fx.on(b, Trigger::Click, vec![Action::RunScript { script: id }]);
+    }
+    let stopped = format!("Stopped after {} steps", mastik_vm::PLAY_BUDGET.steps);
+    let mut p = fx.play(a);
+    for (i, (name, _)) in runs.iter().enumerate() {
+        p.tick(16.0);
+        click(&mut p, 15.0 + 38.0 * i as f64, 65.0);
+        p.tick(16.0);
+        let said: Vec<String> = p
+            .take_notices()
+            .into_iter()
+            .map(|n| match n {
+                Notice::Script { message, .. } => message,
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert!(
+            matches!(said.as_slice(), [m] if m.ends_with(&stopped)),
+            "{name} stopped by its steps: {said:?}"
+        );
+    }
+}
+
 /// A script adding a row to a table in play makes the list over it again on
 /// the copy, so the new row shows; the document keeps its one row.
 ///

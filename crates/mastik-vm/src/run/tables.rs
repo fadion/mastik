@@ -13,7 +13,7 @@ use mastik_core::list::DataSetId;
 use mlua::{IntoLua, Lua, Table, Value};
 use serde_json::json;
 
-use super::{State, raise, writable};
+use super::{CELLS_PER_UNIT, State, raise, writable};
 
 /// A table a run has touched: its cells as the run has written them, and
 /// whether to write them back at its end.
@@ -49,6 +49,8 @@ fn with_cells<R>(
     };
     if !st.tables.iter().any(|w| w.id == id) {
         let cells = st.host.doc().data_set(id).map(|d| d.table.clone());
+        let copied = cells.as_ref().map_or(0, |c| c.rows.len() * c.columns.len());
+        st.charge_items(copied, CELLS_PER_UNIT);
         st.tables.push(Working {
             id,
             cells: cells.unwrap_or_default(),
@@ -202,6 +204,7 @@ pub(super) fn install<'s>(
                 .map(|r| r[c].clone())
                 .collect::<Vec<_>>())
         })?;
+        state.borrow().charge_items(cells.len(), CELLS_PER_UNIT);
         lua.create_sequence_from(cells)
     })?;
     let methods = [
@@ -221,7 +224,12 @@ pub(super) fn install<'s>(
                     for (c, cell) in w.cells.columns.iter().zip(&w.cells.rows[at]) {
                         row.raw_set(c.name.as_str(), cell.as_str())?;
                     }
-                    Ok(Value::Table(row))
+                    Ok((Value::Table(row), w.cells.columns.len()))
+                })
+                .map(|(row, cells)| {
+                    // The row's table costs about ten cells of its own.
+                    state.borrow().charge_items(cells + 10, CELLS_PER_UNIT);
+                    row
                 }),
                 Value::String(s) => match s.to_str()?.as_ref() {
                     "rows" => with_cells(lua, state, id, |w, _| w.cells.rows.len().into_lua(lua)),
