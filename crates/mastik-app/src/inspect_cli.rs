@@ -9,7 +9,8 @@ use serde_json::{Value, json};
 pub(crate) const USAGE: &str = "usage: mastik inspect <file.mastik> outline [--page <name|n>] [--layer <name|id>] \
      [--depth <n>] [--limit <n>]\n       \
      mastik inspect <file.mastik> context [--page <name|n>] [--layer <name|id>]\n       \
-     mastik inspect <file.mastik> components|variables|styles [--query <text>]";
+     mastik inspect <file.mastik> components|variables|styles [--query <text>]\n       \
+     mastik inspect <file.mastik> tables|prototype";
 
 /// A parsed `mastik inspect` command line.
 #[derive(Debug, PartialEq)]
@@ -36,6 +37,8 @@ pub(crate) fn parse(args: &[String]) -> Result<Inspect, String> {
         "components" => "list_components",
         "variables" => "list_variables",
         "styles" => "list_styles",
+        "tables" => "list_tables",
+        "prototype" => "get_prototype",
         other => return Err(format!("no read {other:?}\n{USAGE}")),
     };
     let on_page = matches!(tool, "get_outline" | "design_context");
@@ -52,7 +55,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Inspect, String> {
         let takes = match flag {
             "--page" | "--layer" => on_page,
             "--depth" | "--limit" => tool == "get_outline",
-            "--query" => !on_page,
+            "--query" => matches!(tool, "list_components" | "list_variables" | "list_styles"),
             _ => false,
         };
         if !takes {
@@ -125,6 +128,15 @@ mod tests {
         assert!(inspect(&["a.mastik", "context", "--limit", "2"]).is_err());
         assert!(inspect(&["a.mastik", "outline", "--depth", "two"]).is_err());
         assert!(inspect(&["a.mastik", "fonts"]).is_err());
+        assert_eq!(
+            inspect(&["a.mastik", "tables"]).unwrap().tool,
+            "list_tables"
+        );
+        assert_eq!(
+            inspect(&["a.mastik", "prototype"]).unwrap().tool,
+            "get_prototype"
+        );
+        assert!(inspect(&["a.mastik", "tables", "--query", "x"]).is_err());
         assert!(inspect(&["a.mastik"]).is_err());
     }
 
@@ -153,6 +165,27 @@ mod tests {
         let i = inspect(&[file.to_str().unwrap(), "outline"]).unwrap();
         let answer: Value = serde_json::from_str(&run(&i).unwrap()).unwrap();
         assert!(answer.to_string().contains("\"Card\""), "{answer}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `tables` and `prototype` answer from a file, as the MCP reads them.
+    ///
+    /// flip: `mcp::run_offline` without its `get_prototype` arm → fails at "the
+    /// prototype".
+    #[test]
+    fn inspect_reads_the_tables_and_the_prototype() {
+        let dir = std::env::temp_dir().join(format!("mastik-inspect-proto-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = mastik_core::Document::new(mastik_core::IdSource::new(1).mint());
+        let file = dir.join("a.mastik");
+        std::fs::write(&file, mastik_core::io::save(&doc).unwrap()).unwrap();
+        let path = file.to_str().unwrap();
+        let read = |what: &str| run(&inspect(&[path, what]).unwrap());
+        let tables: Value = serde_json::from_str(&read("tables").unwrap()).unwrap();
+        assert_eq!(tables["tables"], json!([]), "the tables");
+        let prototype = read("prototype").expect("the prototype");
+        let prototype: Value = serde_json::from_str(&prototype).unwrap();
+        assert_eq!(prototype["flows"], json!([]), "{prototype}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

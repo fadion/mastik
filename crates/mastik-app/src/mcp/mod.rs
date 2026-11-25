@@ -1718,6 +1718,8 @@ pub(crate) fn run_offline(
         }
         "list_variables" => return Ok(reads::named(reads::variables(&s.doc), "variables", args)),
         "list_styles" => return Ok(reads::named(reads::styles(&s.doc), "styles", args)),
+        "list_tables" => return Ok(reads::tables(&s.doc)),
+        "get_prototype" => return Ok(reads::prototype(&s.doc)),
         other => return Err(format!("`{other}` is not run outside a connection")),
     };
     match answer {
