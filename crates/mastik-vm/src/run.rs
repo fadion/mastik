@@ -907,10 +907,7 @@ impl State<'_> {
             .tx
             .0
             .iter()
-            .filter_map(|op| match op {
-                mastik_core::Operation::SetDataSet { id, .. } => Some(*id),
-                _ => None,
-            })
+            .filter_map(mastik_core::Operation::data_set)
             .collect();
         if let Some(w) = self
             .tables
