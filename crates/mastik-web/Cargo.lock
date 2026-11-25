@@ -981,7 +981,7 @@ dependencies = [
 
 [[package]]
 name = "mastik-core"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "base64",
  "flo_curves",
@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "mastik-play"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "mastik-core",
  "mastik-vm",
@@ -1017,7 +1017,7 @@ dependencies = [
 
 [[package]]
 name = "mastik-render"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "image",
  "kurbo",
@@ -1033,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "mastik-vm"
-version = "0.17.0"
+version = "0.18.0"
 dependencies = [
  "mastik-core",
  "mlua",
