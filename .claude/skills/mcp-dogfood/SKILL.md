@@ -24,11 +24,14 @@ the tools of the build it was started on.
 - **A brief** in quotes is used for every run instead of the pool. Write it to a file in the
   scratchpad and pass `-BriefFile`. Under "prototypes" it needs both halves, the surface then
   `Prototype:` and the prototype, as the pool's entries have; the script refuses one without.
+- **"brief N":** the pool's entry numbered *N* in its briefs file, for every run, as
+  `-BriefIndex <N - 1>`. It replaces the start offset of Phase 0.
 - **"prototypes":** the runs dogfood prototyping instead of page design, on a surface built
   first. Follow *Prototypes* below; everything else in this file holds.
 
-Without "no commits", invoking this skill is the ask to commit. Each validated fix is committed
-on its own through the `commit` skill, so a later run never tests a half-finished change.
+Without "no commits", invoking this skill is the ask to commit. A run's fixes are committed
+through the `commit` skill before the next run starts, so a later run never tests a
+half-finished change.
 
 ## Phase 0: the ground (once)
 
@@ -41,8 +44,11 @@ on its own through the `commit` skill, so a later run never tests a half-finishe
    stale copy in `%LOCALAPPDATA%\Mastik-mcp`.
 4. **Read `rejected.md`.** Its findings were judged and declined. A run that reports one again
    does not count it as new.
-5. **Pick a start offset**, a random number from 0 to 7 kept for this invocation. Run *n* uses
-   brief `offset + n - 1`, so runs rotate and a second invocation does not replay the first.
+5. **Pick a start offset**, unless "brief N" was given: a random number from 0 to one less than
+   the pool's size (8 entries in `briefs.md`, 5 in `briefs-prototype.md`), kept for this
+   invocation. Run *n* uses brief `offset + n - 1`, so runs rotate and a second invocation does
+   not replay the first. The script wraps an index past the pool's end, so a larger offset
+   repeats an entry rather than reaching a new one.
 
 ## Phase 1: one run
 
@@ -96,10 +102,13 @@ Validate every finding in `findings.json`:
 
 1. **Find its call in `calls.jsonl`.** The tester's account can be wrong, so read the exact
    arguments and answer. If no call matches, the finding is rejected.
-2. **Reproduce it on the fresh build.** The normal route is a small headless run, with
-   `-BriefFile` holding two or three lines that make only that call. This session's MCP is
-   stale, and the transcript's ids are short ids (`n48c_36`), which only the proxy's connection
-   reads.
+2. **Reproduce it on the fresh build.** The normal route is a test: the call's arguments put
+   through the verb or handler in `mastik-core/tests/verbs.rs` or `mastik-app`'s `mcp` tests,
+   asserting the answer the tester saw. Once flip-checked it is the fix's test as well. Keep a
+   small headless run, with `-BriefFile` holding two or three lines that make only that call,
+   for a finding that needs a live session: the tool list, the proxy, short ids, a host's
+   state. This session's MCP is stale, and the transcript's ids are short ids (`n48c_36`),
+   which only the proxy's connection reads.
 
    For a batch write there is an offline route: `target\release\mastik.exe run <steps.json> --in
    <copy of page.mastik> -o out.mastik`. It needs full ids from `mastik inspect <file> outline`.
@@ -111,8 +120,10 @@ Validate every finding in `findings.json`:
 
    It is **rejected** when any of these is true:
    - the tester misread a description that is clear;
-   - it asks for something `docs/non-goals.md` declines;
-   - it contradicts the design (ask `design-oracle` when unsure);
+   - it contradicts the design: what `docs/design/mcp.md` and the subsystem's design file say
+     the tools do or leave out, a line of `docs/non-goals.md` or `docs/decisions.md`. Ask
+     `design-oracle` rather than judging from `non-goals.md` alone: most of what the tools
+     deliberately leave out is stated in the design files, not there;
    - it is one sentence of wording with no failure behind it.
 
    Before agreeing to a merge or a rename, read `docs/design/mcp.md` *Core*: a rename breaks
@@ -144,18 +155,26 @@ For each finding that holds, most damaging first:
    comments.
 2. **Update the design docs** when a fix changes a rule that `docs/design/mcp.md` states. Brief
    `arch-scribe` with what changed and why.
-3. **Run the gates** with `rust-verify`.
-4. **Re-test the fix** with the Phase 2 reproduction, on a build that has it.
-   `run-tester.ps1 -NoBuild` skips the build when you have just built.
-5. **Commit it on its own** with the `commit` skill, as `fix(mcp): …` or `feat(mcp): …`, unless
-   "no commits" was given. A `rejected.md` change goes in that run's last commit, or in a
-   `chore(claude): …` commit of its own if nothing else was committed.
+3. **Run the gates once per run**, with `rust-verify`, after the run's fixes are all in. A red
+   gate sends you back to the fix it names, then the gates run again.
+4. **Re-test a fix that needed a headless reproduction** on a build that has it.
+   `run-tester.ps1 -NoBuild` skips the build when you have just built. A fix whose
+   reproduction is its test was re-tested by the gates.
+5. **Commit the run's fixes** with the `commit` skill, unless "no commits" was given: grouped
+   into two or three logical commits (one per tool or subsystem the fixes touch), each
+   `fix(mcp): …` or `feat(mcp): …`, not one commit per finding. A `rejected.md` change goes in
+   the run's last commit, or in a `chore(claude): …` commit of its own if nothing else was
+   committed.
 
 A finding too large for the loop goes to `docs/roadmap.md` as open work, not into a rushed fix.
 
 ## Phase 4: next or stop
 
 - **Stop** after a clean run, or after the last run.
+- **Stop or switch the brief** when most of a run's meaningful findings repeat what earlier runs
+  of this invocation fixed or deferred: the brief has stopped reaching new ground. Without
+  "brief N", the next run moves the offset on to an entry not yet run; with it, stop and say
+  so.
 - **Otherwise**, go back to Phase 1 with *n + 1*. The script rebuilds, so the next tester sees
   this run's fixes.
 
@@ -196,7 +215,8 @@ make on it. Pass `-Prototypes` to every `run-tester.ps1` call.
 **Each run** uses the same brief, `-BriefIndex <offset>`, and starts from the surface,
 `-Seed <setup>\page.mastik`, so a finding that goes away after a fix went away because of the
 fix, not because of a different design. The script rebuilds before each run; the surface is a
-saved document, which the new build reads.
+saved document, which the new build reads. Switching the brief (Phase 4) means a new setup run
+for the new entry, in its own folder, and the runs after it seed from that surface.
 
 **A finished run** is judged by the prototype, which `page.png` does not show. Read it with
 `mastik.exe inspect <run>\page.mastik prototype` (`get_prototype`): every flow reaches the
