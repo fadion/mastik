@@ -6795,8 +6795,10 @@ pub fn modal_escaped(ctx: &egui::Context) -> bool {
 }
 
 /// Marks a popup whose open state the app holds (not egui's memory) as open, so
-/// next frame's `Escape` is [`claim_popup_escape`]'s. Call it every frame the
-/// popup shows, and close it when [`popup_escaped`] says so.
+/// next frame's `Escape` is [`claim_popup_escape`]'s. Call it on every frame the
+/// popup ends still open, never on one it closes on (a pick, a press away), or
+/// the next press is spent on a popup no longer there. Close it when
+/// [`popup_escaped`] says so.
 pub fn keep_escape(ctx: &egui::Context) {
     ctx.data_mut(|d| d.insert_temp(kept_escape_id(), true));
 }

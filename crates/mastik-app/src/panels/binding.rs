@@ -1220,7 +1220,6 @@ impl MastikApp {
         c.highlight = c.highlight.min(list.len().saturating_sub(1));
         // One Escape closes the list alone, never the popover hosting its field.
         let escape = ui::popup_escaped(ctx);
-        ui::keep_escape(ctx);
         let (down, up, enter) = ctx.input(|i| {
             (
                 i.key_pressed(egui::Key::ArrowDown),
@@ -1456,6 +1455,9 @@ impl MastikApp {
             }
             None => self.session.clear_gesture_preview(),
         }
+        // Claimed only by a list still open, so a press after a pick or an
+        // Escape reaches what lies under it.
+        ui::keep_escape(ctx);
         self.var_complete = Some(c);
     }
 
@@ -1529,7 +1531,6 @@ impl MastikApp {
             self.field_menu = None;
             return;
         }
-        ui::keep_escape(ctx);
         let bound = self.field_var(key).is_some();
         let mut close = false;
         let rows = if bound { 3.0 } else { 2.0 };
@@ -1589,8 +1590,12 @@ impl MastikApp {
         let away = ctx.input(|i| {
             i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p| !rect.contains(p))
         });
+        // The next frame's Escape is claimed only by a menu still open, so a
+        // press after a pick reaches what lies under it.
         if close || away {
             self.field_menu = None;
+        } else {
+            ui::keep_escape(ctx);
         }
     }
 
@@ -2671,6 +2676,102 @@ mod tests {
             repeat: false,
             modifiers: Default::default(),
         }
+    }
+
+    /// A whole app frame at a fixed window size, so `frame_body` runs.
+    fn app_frame(ctx: &egui::Context, app: &mut MastikApp, events: Vec<egui::Event>) {
+        let mut frame = eframe::Frame::_new_kittest();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1320.0, 820.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let _ = ctx.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
+    }
+
+    /// A field menu closed by a pick leaves the next frame's Escape to what lies
+    /// under it: the selection clears on that press.
+    /// flip: `field_menu_ui` calling `keep_escape` before it decides to close →
+    /// fails at "heard".
+    #[test]
+    fn a_field_menu_closed_by_a_pick_leaves_the_next_escape_alone() {
+        let (ctx, mut app, rect, _, radius) = fixture();
+        crate::theme::install(&ctx);
+        let k = FieldKey::Radius { id: rect };
+        app.bind_field(k, radius);
+        app.session.selection.set_one(rect);
+        for _ in 0..3 {
+            app_frame(&ctx, &mut app, Vec::new());
+        }
+        let under = egui::Rect::from_min_size(egui::pos2(480.0, 190.0), egui::vec2(120.0, 28.0));
+        app.field_menu = Some((k, egui::pos2(500.0, 200.0), under));
+        app_frame(&ctx, &mut app, Vec::new());
+        app_frame(&ctx, &mut app, Vec::new());
+        let area = ctx.memory(|m| m.area_rect(egui::Id::new("field-menu")));
+        let area = area.expect("fixture: the menu is open");
+        // *Detach variable*, the third row.
+        let row = ui::MENU_PAD + 2.0 * (ui::MENU_ROW_H + 1.0) + ui::MENU_ROW_H / 2.0;
+        let at = egui::pos2(area.center().x, area.top() + row);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        app_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        app_frame(&ctx, &mut app, vec![press(true)]);
+        app_frame(&ctx, &mut app, vec![press(false)]);
+        assert!(app.field_menu.is_none(), "fixture: the pick closed it");
+        assert!(app.field_var(k).is_none(), "fixture: Detach detached");
+        app_frame(&ctx, &mut app, vec![key(egui::Key::Escape)]);
+        assert!(app.session.selection.ids().is_empty(), "heard");
+    }
+
+    /// Inside a popover, the `--` list closed by `Enter` leaves the next frame's
+    /// Escape to the popover hosting its field.
+    /// flip: `var_complete_ui` calling `keep_escape` before it decides to close
+    /// → fails at "the popover hears it".
+    #[test]
+    fn a_list_closed_by_enter_leaves_the_next_escape_to_its_popover() {
+        let (ctx, mut app, rect, ..) = fixture();
+        let k = FieldKey::Paint {
+            id: rect,
+            slot: PaintSlot::Fill(0),
+        };
+        let under = egui::Rect::from_min_size(egui::pos2(960.0, 200.0), egui::vec2(200.0, 28.0));
+        // Each frame in `frame_body`'s order, the field asking for its list
+        // while it still shows one.
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut popover = false;
+            let _ = ctx.run_ui(input, |ui| {
+                crate::ui::claim_popup_escape(ui.ctx());
+                if app.var_complete.is_some() {
+                    app.bind_typing(ui.ctx(), k, "--br", under);
+                    app.var_complete_ui(ui.ctx());
+                }
+                crate::ui::keep_popover_escape(ui.ctx());
+                popover = crate::ui::popover_escaped(ui.ctx());
+            });
+            popover
+        };
+        let _ = ctx.run_ui(Default::default(), |_| {
+            app.bind_typing(&ctx, k, "--br", under)
+        });
+        frame(&mut app, Vec::new());
+        assert!(app.var_complete.is_some(), "fixture: the list is open");
+        frame(&mut app, vec![key(egui::Key::Enter)]);
+        assert!(app.var_complete.is_none(), "fixture: Enter closed it");
+        assert!(
+            frame(&mut app, vec![key(egui::Key::Escape)]),
+            "the popover hears it"
+        );
     }
 
     /// **Typing `--br` and `Enter` binds the fill to the one match, keeping its

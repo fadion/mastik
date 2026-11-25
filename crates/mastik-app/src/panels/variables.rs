@@ -5600,7 +5600,6 @@ impl MastikApp {
             self.mode_menu = None;
             return;
         }
-        ui::keep_escape(ctx);
         let doc = &self.session.doc;
         let Some(node) = doc.get(id) else {
             self.mode_menu = None;
@@ -5761,8 +5760,12 @@ impl MastikApp {
                     .interact_pos()
                     .is_some_and(|p| !rect.contains(p) && !under.contains(p))
         });
+        // Claimed only by a menu still open, so a press after a pick reaches
+        // what lies under it.
         if away {
             self.mode_menu = None;
+        } else {
+            ui::keep_escape(ctx);
         }
     }
 }

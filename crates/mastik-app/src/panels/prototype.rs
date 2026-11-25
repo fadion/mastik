@@ -6533,8 +6533,8 @@ impl MastikApp {
         }
         // While the list shows, `Escape` and `Tab` are its: egui neither drops the
         // field's focus on the one nor moves it on the other, and the surface's
-        // ring leaves `Tab` with the field.
-        ui::keep_escape(ctx);
+        // ring leaves `Tab` with the field. Next frame's `Escape` is claimed at
+        // the end, only when no row was picked.
         ui::keep_tab(ctx, resp.id);
         ctx.memory_mut(|m| {
             m.set_focus_lock_filter(
@@ -6578,7 +6578,11 @@ impl MastikApp {
             ui.ctx()
                 .data_mut(|d| d.insert_temp(at_id, (s.response.rect, resp.id)));
         }
-        picked.or(clicked)
+        let chosen = picked.or(clicked);
+        if chosen.is_none() {
+            ui::keep_escape(ctx);
+        }
+        chosen
     }
 
     /// *Open link*'s address, refused unless it is `http` or `https`.
