@@ -277,8 +277,8 @@ impl MastikApp {
         match now.rows {
             Rows::First(n) => {
                 // A list's description has no preview: a scrub commits each whole
-                // step as a run, one undo step, so the copies follow it live;
-                // a typed value waits for the valve.
+                // step, so the copies follow it live, and the steps stand as one
+                // undo step once released; a typed value waits for the valve.
                 let rid = ui.id().with(("list-first", id));
                 let mut v = self
                     .proto
@@ -305,7 +305,33 @@ impl MastikApp {
                     }]),
                     false => Transaction::default(),
                 };
+                // Escape or a right-click takes the scrub's steps back
+                // (`cancel_gesture`). A release takes them back too and commits
+                // where the scrub ended as one step, however the run's time
+                // window split them.
+                let mine =
+                    |s: &Option<(egui::Id, usize, _)>| matches!(s, Some((r, _, _)) if *r == rid);
+                if !resp.dragged()
+                    && !self.gesture_cancelled
+                    && mine(&self.proto.live_scrub)
+                    && let Some((_, depth, redo)) = self.proto.live_scrub.take()
+                {
+                    self.session.take_back_to(depth);
+                    self.session.history.restore_redo(redo);
+                    // Onto the list as the take-back left it: `now` was read from
+                    // the scrubbed document, whose template the take-back replaced.
+                    let back = self.session.doc.get(id).and_then(|n| n.list()).cloned();
+                    if let Some(back) = back {
+                        let rows = now.rows;
+                        self.list_commit(id, "List rows", List { rows, ..back });
+                    }
+                }
                 let tx = if resp.dragged() && !self.gesture_cancelled && !tx.0.is_empty() {
+                    if !mine(&self.proto.live_scrub) {
+                        let depth = self.session.history.undo_depth();
+                        let redo = self.session.history.take_redo();
+                        self.proto.live_scrub = Some((rid, depth, redo));
+                    }
                     self.session.name_step("List rows", icon::TABLE);
                     self.note_edit(Some(&resp), &tx);
                     self.session.commit_run(tx, "list-first-rows");
@@ -1495,6 +1521,91 @@ mod tests {
         }
         assert_eq!(rows(&app), held, "the release keeps it");
         assert_eq!(app.session.history.undo_depth() - depth, 1, "one step");
+    }
+
+    /// A cancel mid-scrub (`cancel_gesture`, Escape's and a right-click's) puts
+    /// *First*'s count back, leaves no undo step and keeps the redo it found.
+    /// flip: `cancel_gesture` leaving `live_scrub` alone → fails at "back to 2".
+    #[test]
+    fn a_cancelled_first_count_scrub_puts_the_count_back() {
+        use mastik_core::list::Rows;
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let (mut app, inst) = with_row(&ctx);
+        let (l, _) = listed(&mut app, inst, &["A", "B", "C", "D", "E", "F", "G"]);
+        let rows = |app: &MastikApp| app.session.doc.get(l).unwrap().list().unwrap().rows;
+        let mut next = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        next.rows = Rows::First(2);
+        app.list_commit(l, "List rows", next);
+        // Read again: the commit made the copies anew.
+        let mut next = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        next.rows = Rows::First(3);
+        app.list_commit(l, "List rows", next);
+        // One step undone, so there is a redo for the scrub to keep.
+        assert!(app.session.undo());
+        assert_eq!(rows(&app), Rows::First(2), "fixture: undone to 2");
+        let frame = |app: &mut MastikApp, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(400.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(input, |ui| {
+                ui.set_max_width(280.0);
+                let now = app.session.doc.get(l).unwrap().list().unwrap().clone();
+                app.list_rows_rows(ui, l, &now);
+            })
+        };
+        let mut out = frame(&mut app, vec![]);
+        for _ in 0..3 {
+            out = frame(&mut app, vec![]);
+        }
+        let field = out
+            .shapes
+            .iter()
+            .find_map(|s| match &s.shape {
+                egui::Shape::Text(t) if t.galley.job.text == "2" => {
+                    Some(t.galley.rect.translate(t.pos.to_vec2()).center())
+                }
+                _ => None,
+            })
+            .expect("fixture: the field shows 2");
+        let press = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        let depth = app.session.history.undo_depth();
+        frame(&mut app, vec![egui::Event::PointerMoved(field)]);
+        frame(&mut app, vec![press(field, true)]);
+        let mut x = field.x;
+        for _ in 0..6 {
+            x += 2.0;
+            frame(
+                &mut app,
+                vec![egui::Event::PointerMoved(egui::pos2(x, field.y))],
+            );
+        }
+        assert!(
+            matches!(rows(&app), Rows::First(n) if n > 2),
+            "fixture: live while scrubbing"
+        );
+        assert!(app.cancel_gesture(&ctx), "fixture: the scrub is cancelled");
+        assert_eq!(rows(&app), Rows::First(2), "back to 2");
+        frame(&mut app, vec![]);
+        frame(&mut app, vec![press(egui::pos2(x, field.y), false)]);
+        app.end_released_gestures();
+        for _ in 0..3 {
+            frame(&mut app, vec![]);
+        }
+        assert_eq!(rows(&app), Rows::First(2), "the release adds nothing");
+        assert_eq!(app.session.history.undo_depth(), depth, "no step");
+        assert!(app.session.redo(), "the redo it found is kept");
+        assert_eq!(rows(&app), Rows::First(3), "and redoes to 3");
     }
 
     /// The layers tree offers no drop that takes a list's template out of its

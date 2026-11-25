@@ -306,8 +306,11 @@ step.
 - **Rows** (a `ui::fold_rule` section) — `ui::segmented` *All* / *First* / *Row* / *Opened*
   (*Row*'s tooltip *One row of the table, the same in play*). *First* starts at 3 and shows a
   full-width *Rows* count field (1 to 200). A list's description has no preview, so a scrub
-  commits each whole step as it lands, folded into one undo step (`commit_run`), and the copies
-  follow it live; a typed value is held and committed once (`proto_valve`). *Row* starts
+  commits each whole step as it lands (`commit_run`) and the copies follow it live. Its steps
+  are held as tentative (`ProtoState::live_scrub`, the undo depth and the redo set aside):
+  `Escape` or a right-click takes them back (`cancel_gesture`), and a release takes them back
+  and commits where the scrub ended as one step. A typed value is held and committed once
+  (`proto_valve`). *Row* starts
   at 1 and shows a full-width `ui::fitted_combo` of the table's rows as *N · first cell*, its face
   *Row 3 · Linen shirt*, up to `list_data::ROWS_LISTED` (200) listed and then a menu note
   *Showing 200 of N rows: pick in the data window*; the words are `list_data::row_words`, which

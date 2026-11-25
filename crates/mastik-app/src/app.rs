@@ -3511,6 +3511,12 @@ impl MastikApp {
         }
         // And prototype mode's held number: its field shows the saved one again.
         self.proto.scrub = None;
+        // And a scrub that commits as it goes (the List card's *Rows*): its steps
+        // are taken back and the redo it held aside put back.
+        if let Some((_, depth, redo)) = self.proto.live_scrub.take() {
+            self.session.take_back_to(depth);
+            self.session.history.restore_redo(redo);
+        }
         // And *Generate scale…*'s step count.
         if let Some(steps) = self.in_flight.scale_scrub.take() {
             self.restore_scale_steps(steps);
