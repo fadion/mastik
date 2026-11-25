@@ -1570,8 +1570,9 @@ impl crate::app::MastikApp {
                 return;
             }
             // The editor is hidden, so of its keymap only what reaches the
-            // document passes: undo, redo and save. A text field keeps its keys.
-            if !ctx.text_edit_focused() {
+            // document passes: undo, redo and save. A text field keeps its keys,
+            // and none pass while another document is in front behind the player.
+            if !ctx.text_edit_focused() && plays_front(&p, &self.tabs) {
                 for action in crate::input::passing_keys(&ctx, self.prefs.nudge) {
                     self.dispatch(&ctx, action);
                 }
@@ -2552,6 +2553,49 @@ mod tests {
             app.playing.as_ref().map(|p| p.place),
             Some(Place::Fullscreen),
             "fullscreen"
+        );
+    }
+
+    /// Fullscreen play passes no key to a document brought in front behind it,
+    /// as a file opened from outside the app is.
+    /// flip: `player_fullscreen_ui` passing keys without `plays_front` → fails
+    /// at "the hidden document keeps its step".
+    #[test]
+    fn fullscreen_passes_no_key_to_a_document_behind_it() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = fixture(&ctx, true);
+        let played = app.tabs.active.expect("fixture: a tab in front");
+        app.play(&ctx, Place::Fullscreen, false);
+        whole_frame(&ctx, &mut app, Vec::new());
+        let (_, other) = open_another_document(&ctx, &mut app);
+        assert_ne!(
+            app.tabs.active,
+            Some(played),
+            "fixture: another tab in front"
+        );
+        let p = app.playing.as_ref().expect("fixture: still playing");
+        assert_eq!(p.place, Place::Fullscreen, "fixture: still fullscreen");
+        let moved = Transaction(vec![Operation::SetTransform {
+            id: other,
+            transform: Affine::translate((5.0, 5.0)),
+        }]);
+        assert!(
+            app.session.commit(moved),
+            "fixture: a step on the front tab"
+        );
+        let depth = app.session.history.undo_depth();
+        let undo = egui::Event::Key {
+            key: egui::Key::Z,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        whole_frame(&ctx, &mut app, vec![undo]);
+        assert_eq!(
+            app.session.history.undo_depth(),
+            depth,
+            "the hidden document keeps its step"
         );
     }
 

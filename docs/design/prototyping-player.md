@@ -69,7 +69,8 @@ While the player holds the keyboard, plain and Shift-ed keys and typed text go t
 (`Input::Key` by egui's key name, the name a key trigger stores; `Input::Text`); chords with
 Ctrl or Alt go to the editor's keymap, so `Ctrl+S` and `Ctrl+Z` work mid-play. Fullscreen, where
 the editor is hidden, only the chords that reach the document pass: undo, redo and save
-(`input::passing_keys`). An Escape the
+(`input::passing_keys`), and only while the played document is the one in front: a file opened
+from outside the app brings its tab forward behind the player, and no key reaches it. An Escape the
 prototype does not use gives the keyboard back; fullscreen, it leaves (present mode stops,
 otherwise the player returns over the canvas). A text field holding focus, the state card's,
 keeps every key, Escape included (`Playing::take_keys` asks `text_edit_focused` first).
