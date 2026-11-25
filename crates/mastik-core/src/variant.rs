@@ -1075,14 +1075,19 @@ pub fn add_variant(
     let source = from.or_else(|| variants(doc, set).last().copied())?;
     let template = doc.capture_subtree(source)?;
     let index = s.children.iter().position(|c| *c == source)? + 1;
-    let height = crate::query::local_box(doc, res, source)?.height();
-    // Below the lowest variant rather than its source, so the copy covers none.
-    let top = res.world_bounds(source).map_or(0.0, |r| r.y0);
+    // Below the lowest variant rather than its source, so the copy covers none;
+    // measured in the set's space, where the copy's offset is applied.
+    let in_set = |v: NodeId| {
+        let b = crate::query::local_box(doc, res, v)?;
+        Some(res.used_local(doc, v)?.transform_rect_bbox(b))
+    };
+    let own = in_set(source)?;
+    let top = own.y0;
     let lowest = variants(doc, set)
         .iter()
-        .filter_map(|v| res.world_bounds(*v))
+        .filter_map(|v| in_set(*v))
         .map(|r| r.y1)
-        .fold(top + height, f64::max);
+        .fold(own.y1, f64::max);
     let (mut tx, made) = crate::build::insert_subtrees_as(
         doc,
         ids,
@@ -1137,20 +1142,14 @@ pub fn add_variant(
             .collect();
         tx.0.push(Operation::SetProperties { id: set, props });
     }
-    // Grow the set to hold the copy, where it is a frame with a size of its own —
-    // **`SET_PAD` under it, the air `combine` leaves** (§15 D1000). It was
-    // `VARIANT_GAP` again, so a set of two variants had 24 under the last where a
-    // set of one had 10, which the maintainer read as the padding doubling.
-    // **From the size it is drawn at** (§15 D1061): a set whose width is bound
-    // holds 0 there, and growing from that shrank it to the new variant's edge;
-    // an axis that need not grow is written as drawn, which keeps its binding.
+    // Grow the set to hold the copy, where it is a frame with a size of its own,
+    // with `SET_PAD` under it, the air `combine` leaves. From the size it is drawn
+    // at: a set whose width is bound holds 0 there, and growing from that would
+    // shrink it; an axis that need not grow is written as drawn, keeping its binding.
     let drawn = res.used_kind(doc, set).and_then(NodeKind::box_size);
     if let (NodeKind::Artboard { .. }, Some(size)) = (&s.kind, drawn.as_ref()) {
-        let src = doc.get(source)?;
-        let local = crate::query::local_box(doc, res, source)?;
-        let placed = crate::geometry::transform_rect(src.transform, local);
-        let bottom = placed.y1 + height + VARIANT_GAP;
-        let right = placed.x1;
+        let bottom = lowest + VARIANT_GAP + own.height();
+        let right = own.x1;
         let want = kurbo::Size::new(
             size.width.max(right + SET_PAD),
             size.height.max(bottom + SET_PAD),

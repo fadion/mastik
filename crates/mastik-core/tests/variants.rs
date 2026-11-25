@@ -1435,6 +1435,77 @@ fn a_new_set_pads_its_variants_and_moves_nothing() {
     );
 }
 
+/// *Add variant* from the top of three variants, in a set turned 90°, lands its
+/// copy below every variant in the set's own space, covering none, and the set
+/// grows to hold it.
+///
+/// flip: `add_variant` measuring in world bounds, or offsetting by the source's
+/// height and a gap → fails at "covers none"; growing from the source's bottom →
+/// fails at "the set grows".
+#[test]
+fn a_variant_added_from_the_top_of_a_turned_set_covers_none() {
+    let mut ids = IdSource::new(0xBD);
+    let root = ids.mint();
+    let mut doc = Document::new(root);
+    let a = ids.mint();
+    doc.apply(&Transaction(vec![
+        Operation::CreateNode {
+            id: a,
+            parent: root,
+            index: 0,
+            kind: frame(100.0, 40.0),
+            transform: Some(Affine::translate((100.0, 50.0))),
+            name: Some("Card".into()),
+        },
+        Operation::SetComponent {
+            id: a,
+            component: true,
+        },
+    ]))
+    .unwrap();
+    let res = Resolved::rebuild(&doc);
+    let (tx, set) = variant::combine(&doc, &res, &mut ids, &[a]).unwrap();
+    doc.apply(&tx).unwrap();
+    let mut from = a;
+    for _ in 0..2 {
+        let res = Resolved::rebuild(&doc);
+        let (tx, new) = variant::add_variant(&doc, &res, &mut ids, set, Some(from)).unwrap();
+        doc.apply(&tx).unwrap();
+        from = new;
+    }
+    let turned = Affine::rotate(std::f64::consts::FRAC_PI_2) * doc.get(set).unwrap().transform();
+    doc.apply(&Transaction(vec![Operation::SetTransform {
+        id: set,
+        transform: turned,
+    }]))
+    .unwrap();
+    let in_set = |doc: &Document, v: NodeId| {
+        let res = Resolved::rebuild(doc);
+        let b = mastik_core::query::local_box(doc, &res, v).unwrap();
+        res.used_local(doc, v).unwrap().transform_rect_bbox(b)
+    };
+    let before: Vec<NodeId> = variant::variants(&doc, set).to_vec();
+    assert_eq!(before.len(), 3, "three variants");
+    let res = Resolved::rebuild(&doc);
+    let (tx, copy) = variant::add_variant(&doc, &res, &mut ids, set, Some(before[0])).unwrap();
+    doc.apply(&tx).unwrap();
+    let made = in_set(&doc, copy);
+    for v in before {
+        let other = in_set(&doc, v);
+        assert!(
+            made.intersect(other).area() <= 0.0,
+            "covers none: the copy {made:?} over {other:?}"
+        );
+    }
+    let res = Resolved::rebuild(&doc);
+    let size = mastik_core::query::local_box(&doc, &res, set).unwrap();
+    assert_eq!(
+        size.y1,
+        made.y1 + variant::SET_PAD,
+        "the set grows to hold the copy"
+    );
+}
+
 /// *Add variant* takes the first free combination and extends every binding to
 /// the copy.
 #[test]
