@@ -334,6 +334,19 @@ pub(crate) fn html_name(doc: &Document, settings: &PlayExport, stem: &str) -> St
     }
 }
 
+/// Each flow that goes in under `settings`, as *Page · Flow*: what the HTML's
+/// name, which names the opening flow alone, does not say.
+pub(crate) fn flows_in(doc: &Document, settings: &PlayExport) -> Vec<String> {
+    let every = every_flow(doc);
+    let refs: Vec<FlowRef> = every.iter().map(|(r, _)| *r).collect();
+    let chosen = live_flows(&settings.flows, &refs);
+    every
+        .into_iter()
+        .filter(|(r, _)| chosen.is_empty() || chosen.contains(r))
+        .map(|(_, label)| label)
+        .collect()
+}
+
 /// The flow map's file name.
 pub(crate) fn flow_map_name(stem: &str) -> String {
     format!("{stem} — Flow map.pdf")

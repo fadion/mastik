@@ -3371,10 +3371,11 @@ mod tests {
 
     /// `export_prototype` refuses a document with no flow, then answers the HTML
     /// file the document's own export settings ask for: opening on the flow
-    /// they name, in its name and title.
+    /// they name, in its name and title, with every flow that goes in listed.
     ///
     /// flip: `html_name` not finding the flow `opens` names → fails at the
-    /// file's name.
+    /// file's name; `flows_in` keeping the opening flow alone → fails at "every
+    /// flow goes in".
     #[test]
     fn export_prototype_answers_the_file_its_settings_open_on() {
         let (mut engine, mut docs) = (Engine::default(), One::new());
@@ -3401,6 +3402,11 @@ mod tests {
         let out = call(&mut engine, &mut docs, 1, "export_prototype", json!({}));
         let report = ok(&out);
         assert!(!report["settings"]["opens"].is_null(), "{report}");
+        assert_eq!(
+            report["flows"].as_array().map(Vec::len),
+            Some(2),
+            "every flow goes in, though the name says one: {report}"
+        );
         let (name, bytes) = only_file(&out);
         assert_eq!(name, "Prototype — Checkout.html");
         assert_eq!(report["files"][0]["path"], json!(name));

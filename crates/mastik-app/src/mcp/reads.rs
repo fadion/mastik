@@ -280,8 +280,10 @@ pub(super) fn export_work(tool: &str, s: &EditorSession) -> Option<Result<Export
                 let html = crate::prototype_export::html(&doc, PLAYER)?;
                 let settings = doc.play_export();
                 let name = crate::prototype_export::html_name(&doc, settings, &stem);
+                let flows = crate::prototype_export::flows_in(&doc, settings);
                 let settings = serde_json::to_value(settings).unwrap_or(Value::Null);
-                one_file(json!({ "settings": settings }), name, html.into_bytes())
+                let report = json!({ "settings": settings, "flows": flows });
+                one_file(report, name, html.into_bytes())
             }) as ExportWork
         })),
         "export_flow_map" => {
