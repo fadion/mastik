@@ -865,8 +865,8 @@ override. Kit mains not yet vendored are offered to a swap only (`kit::swap_offe
 - **A set** gets a *Variants* card in the Component card's place (`MastikApp::set_body`): glyph and name
   via `component::name_line` with its instances' count as the select link; variant count in the title
   (`MastikApp::panel_head`'s `size`); the clash note with a warning glyph; each variant property as a
-  name field, a menu button and a × (disabled for the last), and its values as chips, a hairline
-  (`variants::card_rule`) between properties. A chip's popup renames, moves and deletes its value;
+  name field, a menu button and a × (disabled for the last), and its values as chips, a second
+  `ui::CARD_ROW_GAP` between properties and no rule, as between two strokes. A chip's popup renames, moves and deletes its value;
   deleting a used value confirms in a modal (`MastikApp::value_delete_confirmation`: *N variants use it
   and are deleted with it. M instances will detach.*; a value changed meanwhile deletes nothing).
 - **Interaction state on the Variants card.** Every value chip's popup has a *State ▸* row

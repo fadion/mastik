@@ -6614,11 +6614,12 @@ mod tests {
         );
     }
 
-    /// **The Variants card rules off one property from the next**: one `card_rule`
-    /// hairline between *Size* and *Style*, none above *Size*. Flip, run: the rule
-    /// drawn above every property (`pi > 0` dropped) fails *"none above the first"*.
+    /// The Variants card sets one property apart from the next with a gap, not a
+    /// hairline: no rule between *Size* and *Style*, none above *Size*.
+    /// flip: `ui::card_rule` between properties again → fails at "no rule between
+    /// Size and Style". The gap itself is not pinned.
     #[test]
-    fn the_variants_card_rules_between_its_properties() {
+    fn the_variants_card_draws_no_rule_between_its_properties() {
         let ctx = egui::Context::default();
         crate::theme::install(&ctx);
         let mut v = variants_fixture(&ctx);
@@ -6654,8 +6655,8 @@ mod tests {
         let between = |a: f32, b: f32| rules.iter().filter(|y| **y > a && **y < b).count();
         assert_eq!(
             between(size.bottom(), style.top()),
-            1,
-            "one rule between Size and Style: {rules:?}"
+            0,
+            "no rule between Size and Style: {rules:?}"
         );
         assert_eq!(
             between(counts.bottom(), size.top()),
