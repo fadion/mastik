@@ -711,13 +711,14 @@ impl MastikApp {
             );
         });
         ui::labelled(ui, "Player", |ui| {
-            if ui::switch_row(ui, "Device frame", s.device_frame, ui::CONTROL_H).clicked() {
+            let h = settings::SWITCH_H;
+            if ui::switch_row(ui, "Device frame", s.device_frame, h).clicked() {
                 s.device_frame = !s.device_frame;
             }
-            if ui::switch_row(ui, "Player bar", s.player_bar, ui::CONTROL_H).clicked() {
+            if ui::switch_row(ui, "Player bar", s.player_bar, h).clicked() {
                 s.player_bar = !s.player_bar;
             }
-            if ui::switch_row(ui, "Hotspots", s.hotspot_hints, ui::CONTROL_H).clicked() {
+            if ui::switch_row(ui, "Hotspots", s.hotspot_hints, h).clicked() {
                 s.hotspot_hints = !s.hotspot_hints;
             }
         });
@@ -1078,10 +1079,10 @@ fn video_body(
             });
         });
     });
-    if ui::switch_row(ui, "Show clicks", v.clicks, ui::CONTROL_H).clicked() {
+    if ui::switch_row(ui, "Show clicks", v.clicks, settings::SWITCH_H).clicked() {
         v.clicks = !v.clicks;
     }
-    if ui::switch_row(ui, "Device frame", v.device, ui::CONTROL_H).clicked() {
+    if ui::switch_row(ui, "Device frame", v.device, settings::SWITCH_H).clicked() {
         v.device = !v.device;
     }
     let w = ui.available_width();

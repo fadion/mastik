@@ -5083,9 +5083,14 @@ impl MastikApp {
                         icon::ARROW_RIGHT,
                     ));
                 }
-                if ui::switch_row(ui, "Keep scroll position", *keep_scroll, h)
-                    .on_hover_text("Open the frame scrolled where it was last left, not at its top")
-                    .clicked()
+                if ui::switch_row(
+                    ui,
+                    "Keep scroll position",
+                    *keep_scroll,
+                    crate::settings::SWITCH_H,
+                )
+                .on_hover_text("Open the frame scrolled where it was last left, not at its top")
+                .clicked()
                 {
                     out = Some((
                         Action::Navigate {
@@ -6177,7 +6182,7 @@ impl MastikApp {
             ui,
             "Close on a click outside",
             o.close_outside,
-            ui::CONTROL_H,
+            crate::settings::SWITCH_H,
         )
         .clicked()
         {
@@ -6186,9 +6191,14 @@ impl MastikApp {
                 ..o
             });
         }
-        if ui::switch_row(ui, "Darken behind it", o.backdrop.is_some(), ui::CONTROL_H)
-            .on_hover_text("Draw a shade over the screen beneath the overlay")
-            .clicked()
+        if ui::switch_row(
+            ui,
+            "Darken behind it",
+            o.backdrop.is_some(),
+            crate::settings::SWITCH_H,
+        )
+        .on_hover_text("Draw a shade over the screen beneath the overlay")
+        .clicked()
         {
             out = Some(OverlaySettings {
                 backdrop: match o.backdrop {
@@ -6863,7 +6873,7 @@ impl MastikApp {
         ui.scope(|ui| {
             ui.spacing_mut().item_spacing.y = ui::CARD_ROW_GAP;
             let on = play.follow.is_some();
-            if ui::switch_row(ui, "Follows the drag", on, ui::CONTROL_H)
+            if ui::switch_row(ui, "Follows the drag", on, crate::settings::SWITCH_H)
                 .on_hover_text("While playing, the layer moves with a drag that starts on it")
                 .clicked()
             {
