@@ -9,7 +9,8 @@
 
 use crate::app::MastikApp;
 use crate::batch_rename::row;
-use crate::clean_up_box::{SWITCH_GAP, layer_name};
+use crate::clean_up_box::layer_name;
+use crate::settings::{ROW_GAP, SWITCH_H};
 use crate::theme::{self, color, icon};
 use crate::ui::{self, FieldButton, MenuRow};
 use eframe::egui;
@@ -520,9 +521,9 @@ impl MastikApp {
                     locale_row(ui, &mut b);
                     content_row(ui, doc, &mut b);
                     table_rows_row(ui, doc, &mut b);
-                    // The switches stand closer, as Clean up's do; the gap above
-                    // them was laid with the Content row.
-                    ui.spacing_mut().item_spacing.y = SWITCH_GAP;
+                    // The switches stand at every switch column's pitch, as Clean
+                    // up's do; the gap above them was laid with the Content row.
+                    ui.spacing_mut().item_spacing.y = ROW_GAP;
                     records_row(ui, doc, &mut b);
                     emails_row(ui, &mut b);
                     avatars_row(ui, &mut b);
@@ -1056,9 +1057,9 @@ fn refused_cells(plan: &Plan, doc: &Document) -> Vec<String> {
 fn records_row(ui: &mut egui::Ui, doc: &Document, b: &mut FillBox) {
     let noun = record_noun(&b.every, doc);
     let note = records_label(&b.every, doc).unwrap_or_default();
-    row(ui, "Records", ui::CONTROL_H, |ui| {
+    row(ui, "Records", SWITCH_H, |ui| {
         let label = format!("Keep each {noun}'s values together");
-        if ui::switch_row_noted(ui, &label, &note, b.opts.records, ui::CONTROL_H)
+        if ui::switch_row_noted(ui, &label, &note, b.opts.records, SWITCH_H)
             .on_hover_text("A row's email is built from its name, its city from its postcode")
             .clicked()
         {
@@ -1068,13 +1069,13 @@ fn records_row(ui: &mut egui::Ui, doc: &Document, b: &mut FillBox) {
 }
 
 fn emails_row(ui: &mut egui::Ui, b: &mut FillBox) {
-    row(ui, "Emails", ui::CONTROL_H, |ui| {
+    row(ui, "Emails", SWITCH_H, |ui| {
         if ui::switch_row_noted(
             ui,
             "Use example.com addresses",
             "",
             b.opts.example_emails,
-            ui::CONTROL_H,
+            SWITCH_H,
         )
         .on_hover_text("A domain reserved for examples, which reaches no one")
         .clicked()
@@ -1092,10 +1093,10 @@ fn avatars_row(ui: &mut egui::Ui, b: &mut FillBox) {
         .filter(|r| r.shape && r.kind == Some(Kind::Avatar))
         .count();
     // Each shape's style is picked on its own row in the preview.
-    row(ui, "Avatars", ui::CONTROL_H, |ui| {
+    row(ui, "Avatars", SWITCH_H, |ui| {
         let on = b.opts.avatars.is_some();
         let label = ui::count(shapes, "shape");
-        if ui::switch_row_noted(ui, &label, "", on, ui::CONTROL_H)
+        if ui::switch_row_noted(ui, &label, "", on, SWITCH_H)
             .on_hover_text("Shapes named Avatar or Headshot, or just Photo or Profile picture")
             .clicked()
         {

@@ -779,7 +779,7 @@ impl MastikApp {
                                 ui,
                                 "First row is the header",
                                 t.header,
-                                ui::CONTROL_H,
+                                crate::settings::SWITCH_H,
                             )
                             .clicked()
                         {

@@ -1782,10 +1782,15 @@ impl MastikApp {
             1 => format!("{} appears on every {owner_name}", names[0]),
             _ => format!("{} appear on every {owner_name}", names.join(", ")),
         };
-        let resp = ui::switch_row(ui, "Show properties on instances", on, ui::CONTROL_H)
-            .on_hover_text(
-                "Show this instance's own properties on the card of every instance of its main",
-            );
+        let resp = ui::switch_row(
+            ui,
+            "Show properties on instances",
+            on,
+            crate::settings::SWITCH_H,
+        )
+        .on_hover_text(
+            "Show this instance's own properties on the card of every instance of its main",
+        );
         ui.label(
             egui::RichText::new(caption)
                 .size(ui::SMALL_PT)

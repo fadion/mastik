@@ -8,7 +8,8 @@
 //! the scope, a switch, the page, the document or the selection changes.
 
 use crate::app::MastikApp;
-use crate::batch_rename::{Scope, row, scope_segments};
+use crate::batch_rename::{Scope, row, row_lines, scope_segments};
+use crate::settings::{ROW_GAP, SWITCH_H};
 use crate::theme::{self, color, icon};
 use crate::ui::{self, FieldButton};
 use eframe::egui;
@@ -25,8 +26,6 @@ const COL_GAP: f32 = 16.0;
 const ROW_H: f32 = ui::MENU_ROW_H;
 /// The preview scrolls past this many rows.
 const ROWS_SHOWN: f32 = 12.0;
-/// The space between two lines of switches, here and in Fill with content.
-pub(crate) const SWITCH_GAP: f32 = 2.0;
 /// The switches two to a line, paint rules on the left and layer rules on the right.
 const GRID: [[Rule; 2]; 3] = [
     [Rule::HiddenPaint, Rule::HiddenLayers],
@@ -359,7 +358,7 @@ fn switch(ui: &mut egui::Ui, label: &str, count: Option<usize>, on: &mut bool, h
         .filter(|n| *n > 0)
         .map(|n| n.to_string())
         .unwrap_or_default();
-    if ui::switch_row_noted(ui, label, &note, *on, ui::CONTROL_H)
+    if ui::switch_row_noted(ui, label, &note, *on, SWITCH_H)
         .on_hover_text(hint)
         .clicked()
     {
@@ -373,16 +372,16 @@ fn switches(ui: &mut egui::Ui, b: &mut CleanUpBox) {
     let every = &b.every;
     let rules = &mut b.rules;
     let lines = GRID.len() as f32 + 1.0;
-    let h = ui::CONTROL_H * lines + SWITCH_GAP * (lines - 1.0);
-    row(ui, "Remove", h, |ui| {
+    let h = SWITCH_H * lines + ROW_GAP * (lines - 1.0);
+    row_lines(ui, "Remove", h, SWITCH_H, |ui| {
         let col = (ui.available_width() - COL_GAP) / 2.0;
         ui.vertical(|ui| {
-            ui.spacing_mut().item_spacing.y = SWITCH_GAP;
+            ui.spacing_mut().item_spacing.y = ROW_GAP;
             for pair in GRID {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = COL_GAP;
                     for rule in pair {
-                        ui.allocate_ui(egui::vec2(col, ui::CONTROL_H), |ui| {
+                        ui.allocate_ui(egui::vec2(col, SWITCH_H), |ui| {
                             let mut on = rules.is_on(rule);
                             switch(
                                 ui,
@@ -396,7 +395,7 @@ fn switches(ui: &mut egui::Ui, b: &mut CleanUpBox) {
                     }
                 });
             }
-            ui.allocate_ui(egui::vec2(col, ui::CONTROL_H), |ui| {
+            ui.allocate_ui(egui::vec2(col, SWITCH_H), |ui| {
                 switch(
                     ui,
                     "Skip locked layers",

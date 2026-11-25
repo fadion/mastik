@@ -1170,12 +1170,42 @@ pub(crate) fn row<R>(
     h: f32,
     add: impl FnOnce(&mut egui::Ui) -> R,
 ) -> R {
+    row_lines(ui, label, h, h.min(ui::CONTROL_H), add)
+}
+
+/// A [`row`] whose label is level with a first line `first` tall: a column of
+/// switch rows, whose lines are shorter than a control.
+pub(crate) fn row_lines<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    h: f32,
+    first: f32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    // A line shorter than egui's least line height (a switch row's) would be
+    // grown to it, here and in every line `add` lays out.
+    ui.scope(|ui| {
+        let least = &mut ui.spacing_mut().interact_size.y;
+        *least = least.min(first);
+        row_inner(ui, label, h, first, add)
+    })
+    .inner
+}
+
+/// The row [`row_lines`] lays out, once the least line height is set.
+fn row_inner<R>(
+    ui: &mut egui::Ui,
+    label: &str,
+    h: f32,
+    first: f32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let (rect, _) = ui.allocate_exact_size(egui::vec2(LABEL_W, h), egui::Sense::hover());
-        // Level with the first line of a row taller than one control.
+        // Level with the first line of a row taller than one line.
         ui.painter().text(
-            egui::pos2(rect.left(), rect.top() + h.min(ui::CONTROL_H) / 2.0),
+            egui::pos2(rect.left(), rect.top() + first / 2.0),
             egui::Align2::LEFT_CENTER,
             label,
             egui::FontId::proportional(ui::CONTROL_PT),

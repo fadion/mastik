@@ -794,7 +794,9 @@ a `Finding` with `kept: Some(Kept)` and its reason.
 - **Remove**: the six rules as `ui::switch_row_noted`, two to a line (left *Hidden paint*, *Covered
   fills*, *One-layer groups*; right *Hidden layers*, *Empty layers*, *Guides*), each noted with its
   count from a second plan with every switch on, so an off switch still says what it would take;
-  `Rule::hint` is its tooltip. Then *Skip locked layers* on a fourth line at the same pitch. The
+  `Rule::hint` is its tooltip. Then *Skip locked layers* on a fourth line at the same pitch,
+  every switch column's (`settings::SWITCH_H` tall, `settings::ROW_GAP` apart), the row's label
+  level with the first line (`batch_rename::row_lines`). The
   *Remove* label sits level with the first line (`batch_rename::row` puts its label on a tall row's
   first control-height line).
 - **Planning** is synchronous, and only when the scope, a switch, the page, the document's revision
@@ -1018,8 +1020,9 @@ ImageSink>)` is the edit.
   for a file found but refused, its reason the tooltip). *Records*, a `switch_row_noted`
   *Keep each {noun}'s values together* noted *3 rows*. *Emails*, a switch *Use example.com
   addresses*. *Avatars*, a `switch_row_noted` labelled with the shape count; each shape's style is
-  picked on its preview row. Locale and Content stand 10pt apart; the three switch rows 2pt, Clean
-  up's `SWITCH_GAP`. While records or avatars is
+  picked on its preview row. Locale and Content stand 10pt apart; the three switch rows stand at
+  every switch column's pitch, `settings::SWITCH_H` tall and `settings::ROW_GAP` apart, as Clean
+  up's do. While records or avatars is
   off, both counts come from `content_fill::outline` with both on (the rows and records, no value
   drawn), so an off switch still says what it would act on without a second full plan.
 - **Preview**: the eyebrow *Preview*, *13 layers in 3 rows · 1 left as is* and a `DICE` button,
