@@ -29,7 +29,8 @@ const LANDS_INLINE: Duration = Duration::from_millis(50);
 #[cfg(test)]
 thread_local! {
     /// `LANDS_INLINE` in tests: long, so a run lands where it starts and a
-    /// test reads its result at once; a test of a run in flight sets it to zero.
+    /// test reads its result at once; a test of a run in flight sets it to zero,
+    /// which `begin_run` never polls, so even an instant run stays in flight.
     pub(crate) static INLINE: std::cell::Cell<Duration> =
         const { std::cell::Cell::new(Duration::from_secs(120)) };
 }
@@ -232,7 +233,14 @@ impl MastikApp {
         let started = Instant::now();
         let revision = self.session.revision();
         let job = Job::spawn("mastik-script", &self.egui_ctx, move || work(order, flag));
-        let landed = job.wait_for(inline_wait());
+        // A zero wait does not poll: `recv_timeout(0)` still takes a result the
+        // worker already sent, and a test holding a run in flight needs it held.
+        let wait = inline_wait();
+        let landed = if wait.is_zero() {
+            Ok(None)
+        } else {
+            job.wait_for(wait)
+        };
         let run = Running {
             name,
             started,
