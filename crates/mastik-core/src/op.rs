@@ -338,6 +338,9 @@ pub enum Operation {
         parts: Vec<(crate::chart::PartKey, NodeId)>,
         /// The size they were generated at (`Chart::generated`).
         at: Option<[f64; 2]>,
+        /// The ground they were generated on (`Chart::grounded`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ground: Option<peniko::Color>,
     },
     /// A frame's list description (`crate::list`); `None` detaches it, leaving
     /// its copies as plain instances. Refused on anything but a frame.
@@ -1265,10 +1268,15 @@ impl Operation {
                     (a, b) => a == b,
                 })
             }
-            Operation::SetChartParts { id, parts, at } => node(id).is_some_and(|n| {
-                n.chart
-                    .as_ref()
-                    .is_some_and(|c| c.parts == *parts && c.generated == *at)
+            Operation::SetChartParts {
+                id,
+                parts,
+                at,
+                ground,
+            } => node(id).is_some_and(|n| {
+                n.chart.as_ref().is_some_and(|c| {
+                    c.parts == *parts && c.generated == *at && c.grounded == *ground
+                })
             }),
             Operation::SetList { id, list } => node(id).is_some_and(|n| n.list == *list),
             Operation::SetDataSet { id, set } => doc.data_set(*id) == set.as_deref(),

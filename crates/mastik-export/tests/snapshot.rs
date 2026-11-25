@@ -845,8 +845,10 @@ fn a_chart_reports_its_description_and_its_parts_their_roles() {
     chart.options.bars.stacking = Stacking::Stacked;
     chart.series.push(SeriesStyle {
         column: ColumnId(2),
-        fill: mastik_core::Brush::Solid(mastik_core::peniko::Color::from_rgb8(0x11, 0x22, 0x33))
-            .into(),
+        fill: Some(
+            mastik_core::Brush::Solid(mastik_core::peniko::Color::from_rgb8(0x11, 0x22, 0x33))
+                .into(),
+        ),
         visible: false,
         dash: Default::default(),
         point: Default::default(),

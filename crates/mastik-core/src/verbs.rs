@@ -319,6 +319,12 @@ impl<'a> Args<'a> {
         self.map.get(name).filter(|v| !v.is_null())
     }
 
+    /// Whether `name` was given as `null`, which some parameters read as
+    /// "clear it".
+    fn nulled(&self, name: &'static str) -> bool {
+        self.map.get(name).is_some_and(Value::is_null)
+    }
+
     /// The `Node` parameter `name`.
     pub fn node(&self, name: &'static str) -> Result<NodeId, VerbError> {
         let v = self.get(name).ok_or(VerbError::Missing {
@@ -597,9 +603,16 @@ fn settled_model(model: &str, v: &Value) -> Result<Value, String> {
         "ChartMapping" => {
             checked(read_model::<crate::chart::Mapping>(&without_nulls(v)).map(|_| ()))
         }
-        "ChartOptions" => {
-            checked(settle::<crate::chart::Options>(model, without_nulls(v)).map(|_| ()))
-        }
+        "ChartOptions" => checked(
+            settle::<crate::chart::Options>(model, without_nulls(&dark_as_theme(v))).map(|_| ()),
+        ),
+        // Whole values, each replacing the chart's own.
+        "ChartHighlight" => checked(
+            settle::<crate::chart::Highlight>(model, hex_colours(v, &["muted"])).map(|_| ()),
+        ),
+        "[ChartReference]" => checked(
+            settle::<Vec<crate::chart::Reference>>(model, hex_colours(v, &["colour"])).map(|_| ()),
+        ),
         "TableRows" => checked(read_model::<Vec<Vec<tables::CellIn>>>(v).map(|_| ())),
         "[ColumnName]" => checked(read_model::<Vec<String>>(v).map(|_| ())),
         "[TableCell]" => checked(read_model::<Vec<tables::CellEdit>>(v).map(|_| ())),
@@ -1714,6 +1727,13 @@ pub fn example(model: &str) -> Option<Value> {
             "legend": { "position": "Bottom" },
         }),
         "ChartColours" => serde_json::json!({ "Revenue": "#3b82f6" }),
+        "ChartHighlight" => serde_json::json!({
+            "target": { "Categories": ["Apr"] }, "others": "Muted",
+        }),
+        "[ChartReference]" => serde_json::json!([
+            { "id": 1, "at": { "Value": 2600 }, "label": "Target {value}", "colour": "#c0392b" },
+            { "id": 2, "at": { "Stat": { "stat": "Average", "of": null } }, "label": "Average" },
+        ]),
         "[Reaction]" => serde_json::json!([
             { "trigger": "Click", "actions": [{ "Navigate": { "to": "7e5b:40" } }] },
             { "trigger": "HoverWhile", "actions": [{ "ChangeState": {
@@ -7243,24 +7263,33 @@ pub static VERBS: &[Verb] = &[
             }
             let at = kurbo::Vec2::new(a.number("x").unwrap_or(0.0), a.number("y").unwrap_or(0.0));
             let id = ctx.ids.mint();
-            let tx = Transaction(vec![
-                Operation::CreateNode {
-                    id,
-                    parent,
-                    index: a.index("index").unwrap_or(count).min(count),
-                    kind: NodeKind::Artboard {
-                        size: kurbo::Size::new(size[0], size[1]),
-                        corner_radii: Default::default(),
-                        corner_smoothing: 0.0,
-                    },
-                    transform: Some(Affine::translate(at)),
-                    name: Some(a.text("name").unwrap_or("Chart").to_owned()),
+            let mut ops = vec![Operation::CreateNode {
+                id,
+                parent,
+                index: a.index("index").unwrap_or(count).min(count),
+                kind: NodeKind::Artboard {
+                    size: kurbo::Size::new(size[0], size[1]),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
                 },
-                Operation::SetChart {
+                transform: Some(Affine::translate(at)),
+                name: Some(a.text("name").unwrap_or("Chart").to_owned()),
+            }];
+            // On white, as the chart tool makes one, but none inside a painted frame.
+            if let Some(ground) = crate::chart::starting_ground(ctx.doc, parent) {
+                ops.push(Operation::SetFills {
                     id,
-                    chart: Some(Box::new(chart)),
-                },
-            ]);
+                    fills: crate::item::keyed_by_position([crate::node::Fill {
+                        brush: crate::Brush::Solid(ground).into(),
+                        visible: true,
+                    }]),
+                });
+            }
+            ops.push(Operation::SetChart {
+                id,
+                chart: Some(Box::new(chart)),
+            });
+            let tx = Transaction(ops);
             Ok(Done::made(tx, vec![id]))
         },
     },
@@ -7285,15 +7314,33 @@ pub static VERBS: &[Verb] = &[
                 ParamKind::Model("ChartColours"),
                 "by series, slice, group or node name: \"#rrggbb\" or a colour variable",
             ),
+            opt(
+                "highlight",
+                ParamKind::Model("ChartHighlight"),
+                "categories or series by name, the rest muted; null clears",
+            ),
+            opt(
+                "references",
+                ParamKind::Model("[ChartReference]"),
+                "every reference line and band, at most 16",
+            ),
         ],
         run: |ctx, a| {
             let (id, mut chart) = chart_of(ctx, a)?;
-            if ["kind", "mapping", "options", "colours"]
-                .iter()
-                .all(|p| a.get(p).is_none())
+            if [
+                "kind",
+                "mapping",
+                "options",
+                "colours",
+                "highlight",
+                "references",
+            ]
+            .iter()
+            .all(|p| a.get(p).is_none())
+                && !a.nulled("highlight")
             {
                 return Err(VerbError::Nothing(
-                    "`set_chart` changes `kind`, `mapping`, `options` or `colours`",
+                    "`set_chart` changes `kind`, `mapping`, `options`, `colours`, `highlight` or `references`",
                 ));
             }
             if let Some(word) = a.choice("kind") {
@@ -7303,20 +7350,31 @@ pub static VERBS: &[Verb] = &[
                 chart.mapping = patched(a, "mapping", &chart.mapping, patch)?;
             }
             if let Some(patch) = a.get("options") {
-                let (palette, dark) = (chart.options.palette, chart.options.dark);
-                chart.options = patched(a, "options", &chart.options, patch)?;
-                // A palette pick and a theme switch carry the colours with them,
-                // as the card's do.
-                let dark = std::mem::replace(&mut chart.options.dark, dark);
+                let palette = chart.options.palette;
+                let patch = dark_as_theme(patch);
+                chart.options = patched(a, "options", &chart.options, &patch)?;
+                // A palette pick puts every colour back on it, as the card's does.
                 if chart.options.palette != palette {
                     chart = crate::chart::with_palette(&chart, chart.options.palette);
                 }
-                chart = crate::chart::with_dark(&chart, dark);
             }
             if let Some(Value::Object(colours)) = a.get("colours") {
                 for (mark, colour) in colours {
                     chart = chart_colour(ctx.doc, a, &chart, mark, colour)?;
                 }
+            }
+            // Checked against the chart as the call leaves it, kind included.
+            if a.nulled("highlight") {
+                chart.highlight = Default::default();
+            }
+            if let Some(v) = a.get("highlight") {
+                chart.highlight = serde_json::from_value(hex_colours(v, &["muted"]))
+                    .map_err(|e| a.invalid("highlight", e))?;
+                chart_names_known(a, &chart)?;
+            }
+            if let Some(v) = a.get("references") {
+                chart.references = serde_json::from_value(hex_colours(v, &["colour"]))
+                    .map_err(|e| a.invalid("references", e))?;
             }
             chart_valid(a, &chart)?;
             Ok(Done::ops(vec![Operation::SetChart {
@@ -7521,7 +7579,17 @@ pub static VERBS: &[Verb] = &[
 ];
 
 /// The chart kinds by the word a verb takes, in [`crate::chart::ChartKind::ALL`]'s order.
-const CHART_KINDS: &[&str] = &["column", "bar", "line", "area", "pie", "scatter", "sankey"];
+const CHART_KINDS: &[&str] = &[
+    "column",
+    "bar",
+    "line",
+    "area",
+    "pie",
+    "scatter",
+    "sankey",
+    "waterfall",
+    "radar",
+];
 
 /// The chart kind a [`CHART_KINDS`] word names; Column for none.
 fn chart_kind(word: &str) -> crate::chart::ChartKind {
@@ -7592,7 +7660,7 @@ fn chart_colour(
                 names.join(", ")
             )));
         }
-        return Ok(crate::chart::with_node_fill(chart, mark, fill));
+        return Ok(crate::chart::with_node_fill(chart, mark, Some(fill)));
     }
     let column = chart
         .mapping
@@ -7615,7 +7683,7 @@ fn chart_colour(
                 names.join(", ")
             ))
         })?;
-    Ok(crate::chart::with_series_fill(chart, column, fill))
+    Ok(crate::chart::with_series_fill(chart, column, Some(fill)))
 }
 
 /// `chart`, refused as `SetChart` would refuse it, the reason said as a fault of
@@ -7635,6 +7703,99 @@ fn chart_valid(a: &Args<'_>, chart: &crate::chart::Chart) -> Result<(), VerbErro
         };
         a.invalid(param, rule)
     })
+}
+
+/// `v` with each `"#rrggbb"` string under one of `keys` (in it, or in each
+/// item of a list) written as the literal colour a chart's brush reads.
+fn hex_colours(v: &Value, keys: &[&str]) -> Value {
+    let mut v = v.clone();
+    let fix = |m: &mut serde_json::Map<String, Value>| {
+        for k in keys {
+            if let Some(Value::String(s)) = m.get(*k)
+                && let Ok(c) = peniko::color::parse_color(s)
+            {
+                let c = c.to_alpha_color::<peniko::color::Srgb>();
+                let b = crate::variable::BrushSource::Literal(crate::Brush::Solid(c));
+                m.insert(
+                    (*k).to_string(),
+                    serde_json::to_value(b).unwrap_or_default(),
+                );
+            }
+        }
+    };
+    match &mut v {
+        Value::Object(m) => fix(m),
+        Value::Array(items) => items
+            .iter_mut()
+            .filter_map(Value::as_object_mut)
+            .for_each(fix),
+        _ => {}
+    }
+    v
+}
+
+/// Refuse a highlight naming a category or series `chart` draws nothing under,
+/// listing the ones it does.
+fn chart_names_known(a: &Args<'_>, chart: &crate::chart::Chart) -> Result<(), VerbError> {
+    use crate::chart::Highlighted;
+    let t = &chart.table;
+    let (asked, known, what): (&Vec<String>, Vec<String>, &str) = match &chart.highlight.target {
+        Highlighted::None => return Ok(()),
+        Highlighted::Categories(n) => {
+            let at = chart.mapping.category.and_then(|c| t.index_of(c));
+            let known = t
+                .rows
+                .iter()
+                .filter_map(|r| at.map(|c| r[c].trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect();
+            (n, known, "categories")
+        }
+        Highlighted::Series(n) => {
+            let known = chart
+                .mapping
+                .series
+                .iter()
+                .filter_map(|c| t.column(*c).map(|c| c.name.clone()))
+                .chain(
+                    crate::chart::named_marks(chart)
+                        .into_iter()
+                        .flatten()
+                        .map(|(n, _)| n),
+                )
+                .collect();
+            (n, known, "series")
+        }
+    };
+    if let Some(bad) = asked.iter().find(|n| !known.contains(n)) {
+        let list: Vec<String> = known.iter().map(|n| format!("`{n}`")).collect();
+        return Err(a.invalid(
+            "highlight",
+            format!("`{bad}` is none of the chart's {what}: {}", list.join(", ")),
+        ));
+    }
+    Ok(())
+}
+
+/// A chart options patch with the old names still read written under the new
+/// ones: `dark` as the theme it names (a patch naming `theme` too keeps that),
+/// `outline` as the mark stroke, a pie's `sort` as its order.
+fn dark_as_theme(patch: &Value) -> Value {
+    let mut wrapped = serde_json::json!({ "options": patch });
+    crate::io::migrate::renamed_chart_options(&mut wrapped);
+    let mut patch = wrapped["options"].take();
+    if let Some(o) = patch.as_object_mut()
+        && let Some(dark) = o.remove("dark")
+        && !o.contains_key("theme")
+    {
+        let theme = if dark.as_bool() == Some(true) {
+            "Dark"
+        } else {
+            "Light"
+        };
+        o.insert("theme".into(), Value::from(theme));
+    }
+    patch
 }
 
 /// `own` with `patch` merged over it as a JSON merge patch (RFC 7396): an object

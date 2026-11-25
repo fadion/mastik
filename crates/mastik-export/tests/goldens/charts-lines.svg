@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="480" height="1720" viewBox="0 0 480 1720">
   <clipPath id="clip-c7_2"><rect x="0" y="0" width="480" height="280"/></clipPath>
   <g data-name="Chart 1" clip-path="url(#clip-c7_2)">
+    <rect x="0" y="0" width="480" height="280" fill="#ffffff"/>
     <g data-name="Legend" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Legend · Revenue">
         <rect data-name="Swatch · Revenue" transform="matrix(1 0 0 1 0 2.265625)" x="0" y="0" width="10" height="10" rx="2" fill="#3b6fe0"/>
@@ -34,13 +35,13 @@
       </g>
       <g data-name="Plot" transform="matrix(1 0 0 1 24.34375 0)">
         <g data-name="Grid">
-          <rect data-name="Gridline -20" transform="matrix(1 0 0 1 0 201.670898)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 0" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 20" transform="matrix(1 0 0 1 0 120.802539)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 40" transform="matrix(1 0 0 1 0 80.368359)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 60" transform="matrix(1 0 0 1 0 39.93418)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 80" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#bfbfbf"/>
+          <rect data-name="Gridline -20" transform="matrix(1 0 0 1 0 201.670898)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 0" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 20" transform="matrix(1 0 0 1 0 120.802539)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 40" transform="matrix(1 0 0 1 0 80.368359)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 60" transform="matrix(1 0 0 1 0 39.93418)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 80" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#cdcdcd"/>
         </g>
         <g data-name="Series Revenue">
           <path data-name="Line · Revenue" d="M35.3053,76.8249 L105.9158,64.6947 L176.5263,70.7598 L247.1368,48.521 L317.7473,38.4125 L388.3578,24.2605" fill="none" stroke="#3b6fe0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
@@ -73,6 +74,7 @@
   </g>
   <clipPath id="clip-c7_3"><rect x="0" y="0" width="480" height="280"/></clipPath>
   <g data-name="Chart 2" transform="matrix(1 0 0 1 0 320)" clip-path="url(#clip-c7_3)">
+    <rect x="0" y="0" width="480" height="280" fill="#ffffff"/>
     <g data-name="Legend" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Legend · Revenue">
         <rect data-name="Swatch · Revenue" transform="matrix(1 0 0 1 0 2.265625)" x="0" y="0" width="10" height="10" rx="2" fill="#3b6fe0"/>
@@ -106,13 +108,13 @@
       </g>
       <g data-name="Plot" transform="matrix(1 0 0 1 24.34375 0)">
         <g data-name="Grid">
-          <rect data-name="Gridline -20" transform="matrix(1 0 0 1 0 201.670898)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 0" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 20" transform="matrix(1 0 0 1 0 120.802539)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 40" transform="matrix(1 0 0 1 0 80.368359)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 60" transform="matrix(1 0 0 1 0 39.93418)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 80" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#bfbfbf"/>
+          <rect data-name="Gridline -20" transform="matrix(1 0 0 1 0 201.670898)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 0" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 20" transform="matrix(1 0 0 1 0 120.802539)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 40" transform="matrix(1 0 0 1 0 80.368359)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 60" transform="matrix(1 0 0 1 0 39.93418)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 80" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#cdcdcd"/>
         </g>
         <g data-name="Series Revenue">
           <path data-name="Line · Revenue" d="M35.3053,76.8249 C58.8421,72.7815 82.3789,64.6947 105.9158,64.6947 C129.4526,64.6947 152.9894,70.7598 176.5263,70.7598 C200.0631,70.7598 223.6,53.9122 247.1368,48.521 C270.6736,43.1298 294.2105,42.4559 317.7473,38.4125 C341.2842,34.3691 364.821,28.9778 388.3578,24.2605" fill="none" stroke="#3b6fe0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
@@ -164,6 +166,7 @@
   </g>
   <clipPath id="clip-c7_4"><rect x="0" y="0" width="320" height="200"/></clipPath>
   <g data-name="Chart 3" transform="matrix(1 0 0 1 0 640)" clip-path="url(#clip-c7_4)">
+    <rect x="0" y="0" width="320" height="200" fill="#ffffff"/>
     <g data-name="Legend" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Legend · Revenue">
         <rect data-name="Swatch · Revenue" transform="matrix(1 0 0 1 0 2.265625)" x="0" y="0" width="10" height="10" rx="2" fill="#3b6fe0"/>
@@ -195,11 +198,11 @@
       </g>
       <g data-name="Plot" transform="matrix(1 0 0 1 24.53125 0)">
         <g data-name="Grid">
-          <rect data-name="Gridline -50" transform="matrix(1 0 0 1 0 121.670898)" x="0" y="0" width="263.4751" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 0" transform="matrix(1 0 0 1 0 80.947266)" x="0" y="0" width="263.4751" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 50" transform="matrix(1 0 0 1 0 40.223633)" x="0" y="0" width="263.4751" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 100" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="263.4751" height="1" fill="#e6e6e6"/>
-          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 80.947266)" x="0" y="0" width="263.4751" height="1" fill="#bfbfbf"/>
+          <rect data-name="Gridline -50" transform="matrix(1 0 0 1 0 121.670898)" x="0" y="0" width="263.4751" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 0" transform="matrix(1 0 0 1 0 80.947266)" x="0" y="0" width="263.4751" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 50" transform="matrix(1 0 0 1 0 40.223633)" x="0" y="0" width="263.4751" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 100" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="263.4751" height="1" fill="#ebebeb"/>
+          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 80.947266)" x="0" y="0" width="263.4751" height="1" fill="#cdcdcd"/>
         </g>
         <g data-name="Series Revenue">
           <path data-name="Line · Revenue" d="M21.9563,47.2394 L43.9125,47.2394 L43.9125,42.3526 L65.8688,42.3526 L87.825,42.3526 L87.825,44.796 L109.7813,44.796 L131.7375,44.796 L131.7375,35.8368 L153.6938,35.8368 L175.6501,35.8368 L175.6501,31.7644 L197.6063,31.7644 L219.5626,31.7644 L219.5626,26.0631 L241.5188,26.0631" fill="none" stroke="#3b6fe0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
@@ -215,6 +218,7 @@
   </g>
   <clipPath id="clip-c7_5"><rect x="0" y="0" width="480" height="280"/></clipPath>
   <g data-name="Chart 4" transform="matrix(1 0 0 1 0 880)" clip-path="url(#clip-c7_5)">
+    <rect x="0" y="0" width="480" height="280" fill="#ffffff"/>
     <g data-name="Legend" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Legend · Revenue">
         <rect data-name="Swatch · Revenue" transform="matrix(1 0 0 1 0 2.265625)" x="0" y="0" width="10" height="10" rx="2" fill="#3b6fe0"/>
@@ -248,13 +252,13 @@
       </g>
       <g data-name="Plot" transform="matrix(1 0 0 1 24.34375 0)">
         <g data-name="Grid">
-          <rect data-name="Gridline -20" transform="matrix(1 0 0 1 0 201.670898)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 0" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 20" transform="matrix(1 0 0 1 0 120.802539)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 40" transform="matrix(1 0 0 1 0 80.368359)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 60" transform="matrix(1 0 0 1 0 39.93418)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 80" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="423.6631" height="1" fill="#e6e6e6"/>
-          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#bfbfbf"/>
+          <rect data-name="Gridline -20" transform="matrix(1 0 0 1 0 201.670898)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 0" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 20" transform="matrix(1 0 0 1 0 120.802539)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 40" transform="matrix(1 0 0 1 0 80.368359)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 60" transform="matrix(1 0 0 1 0 39.93418)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 80" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="423.6631" height="1" fill="#ebebeb"/>
+          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#cdcdcd"/>
         </g>
         <g data-name="Series Revenue">
           <path data-name="Area · Revenue" d="M35.3053,76.8249 L105.9158,64.6947 L176.5263,70.7598 L247.1368,48.521 L317.7473,38.4125 L388.3578,24.2605 L388.3578,161.7367 L317.7473,161.7367 L247.1368,161.7367 L176.5263,161.7367 L105.9158,161.7367 L35.3053,161.7367 Z" fill="#3b6fe0" opacity="0.3"/>
@@ -273,6 +277,7 @@
   </g>
   <clipPath id="clip-c7_6"><rect x="0" y="0" width="480" height="280"/></clipPath>
   <g data-name="Chart 5" transform="matrix(1 0 0 1 0 1200)" clip-path="url(#clip-c7_6)">
+    <rect x="0" y="0" width="480" height="280" fill="#ffffff"/>
     <g data-name="Legend" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Legend · Revenue">
         <rect data-name="Swatch · Revenue" transform="matrix(1 0 0 1 0 2.265625)" x="0" y="0" width="10" height="10" rx="2" fill="#3b6fe0"/>
@@ -305,12 +310,12 @@
       </g>
       <g data-name="Plot" transform="matrix(1 0 0 1 24.53125 0)">
         <g data-name="Grid">
-          <rect data-name="Gridline -50" transform="matrix(1 0 0 1 0 201.670898)" x="0" y="0" width="423.4751" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 0" transform="matrix(1 0 0 1 0 151.128174)" x="0" y="0" width="423.4751" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 50" transform="matrix(1 0 0 1 0 100.585449)" x="0" y="0" width="423.4751" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 100" transform="matrix(1 0 0 1 0 50.042725)" x="0" y="0" width="423.4751" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 150" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="423.4751" height="1" fill="#e6e6e6"/>
-          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 151.128174)" x="0" y="0" width="423.4751" height="1" fill="#bfbfbf"/>
+          <rect data-name="Gridline -50" transform="matrix(1 0 0 1 0 201.670898)" x="0" y="0" width="423.4751" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 0" transform="matrix(1 0 0 1 0 151.128174)" x="0" y="0" width="423.4751" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 50" transform="matrix(1 0 0 1 0 100.585449)" x="0" y="0" width="423.4751" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 100" transform="matrix(1 0 0 1 0 50.042725)" x="0" y="0" width="423.4751" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 150" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="423.4751" height="1" fill="#ebebeb"/>
+          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 151.128174)" x="0" y="0" width="423.4751" height="1" fill="#cdcdcd"/>
         </g>
         <g data-name="Series Revenue">
           <path data-name="Area · Revenue" d="M35.2896,109.1723 L105.8688,103.1072 L176.448,106.1397 L247.0271,95.0203 L317.6063,89.966 L388.1855,82.8901 L388.1855,151.6282 L317.6063,151.6282 L247.0271,151.6282 L176.448,151.6282 L105.8688,151.6282 L35.2896,151.6282 Z" fill="#3b6fe0" opacity="0.3"/>
@@ -329,6 +334,7 @@
   </g>
   <clipPath id="clip-c7_7"><rect x="0" y="0" width="320" height="200"/></clipPath>
   <g data-name="Chart 6" transform="matrix(1 0 0 1 0 1520)" clip-path="url(#clip-c7_7)">
+    <rect x="0" y="0" width="320" height="200" fill="#ffffff"/>
     <g data-name="Legend" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Legend · Revenue">
         <rect data-name="Swatch · Revenue" transform="matrix(1 0 0 1 0 2.265625)" x="0" y="0" width="10" height="10" rx="2" fill="#3b6fe0"/>
@@ -359,10 +365,10 @@
       </g>
       <g data-name="Plot" transform="matrix(1 0 0 1 40.21875 0)">
         <g data-name="Grid">
-          <rect data-name="Gridline -100%" transform="matrix(1 0 0 1 0 121.670898)" x="0" y="0" width="247.7861" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 0%" transform="matrix(1 0 0 1 0 60.585449)" x="0" y="0" width="247.7861" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 100%" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="247.7861" height="1" fill="#e6e6e6"/>
-          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 60.585449)" x="0" y="0" width="247.7861" height="1" fill="#bfbfbf"/>
+          <rect data-name="Gridline -100%" transform="matrix(1 0 0 1 0 121.670898)" x="0" y="0" width="247.7861" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 0%" transform="matrix(1 0 0 1 0 60.585449)" x="0" y="0" width="247.7861" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 100%" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="247.7861" height="1" fill="#ebebeb"/>
+          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 60.585449)" x="0" y="0" width="247.7861" height="1" fill="#cdcdcd"/>
         </g>
         <g data-name="Series Revenue">
           <path data-name="Area · Revenue" d="M20.6488,30.5427 C34.4147,30.5427 48.1806,30.5427 61.9465,30.5427 C75.7124,30.5427 89.4783,11.9989 103.2442,11.9989 C117.0101,11.9989 130.776,30.5427 144.5419,30.5427 C158.3078,30.5427 172.0737,30.5427 185.8396,30.5427 C199.6055,30.5427 213.3714,30.5427 227.1373,30.5427 L227.1373,61.0854 C213.3714,61.0854 199.6055,61.0854 185.8396,61.0854 C172.0737,61.0854 158.3078,61.0854 144.5419,61.0854 C130.776,61.0854 117.0101,61.0854 103.2442,61.0854 C89.4783,61.0854 75.7124,61.0854 61.9465,61.0854 C48.1806,61.0854 34.4147,61.0854 20.6488,61.0854 Z" fill="#3b6fe0" opacity="0.3"/>

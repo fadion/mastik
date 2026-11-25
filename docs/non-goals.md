@@ -138,7 +138,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 
 ## Charts
 
-- **Chart kinds past the seven** (radar, heatmap, treemap, funnel, gauge, candlestick, maps) — a flattened chart or plain shapes draw them (`charts.md`).
+- **Chart kinds past the nine** (heatmap, treemap, funnel, gauge, candlestick, maps) — a flattened chart or plain shapes draw them (`charts.md`).
 - **Sankey loops** (flows back to a node already passed) — refused with the loop named; a loop needs ribbons that turn backwards.
 - **Combo charts and a second value axis** — two charts stacked in one frame do it without a dual-scale design.
 - **A time scale** — the category axis is categorical; dates read as labels in table order.

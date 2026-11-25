@@ -9,80 +9,22 @@ true.
 
 ## Now · Chart improvements
 
-Charts that serve more than the default look: a background the chart follows, the card rows the
-model hides or lacks, emphasis and annotation, house styles, and three kinds dashboards ask for.
-In order: *Background and derived theme* is the model the later items lean on. Two rules hold for
-all of it. **One save-format version bump and one MCP snapshot bump** cover the batch: new
-`ChartKind` and `PartRole` values are plain serde enums an older reader cannot parse, and
-`chart::Options` does not deny unknown fields, so an older reader would drop new options on
-save. **Every new colour joins `Chart::brushes` and `brushes_mut`**, so it binds, detaches and
-pastes with the rest.
+Charts that serve more than the default look: house styles, built on the chart's ground and
+derived colours (`charts.md`, *Ground and theme*). Two rules hold for all of it. **One save-format
+version bump and one MCP snapshot bump** cover the batch: new `ChartKind` and `PartRole` values
+are plain serde enums an older reader cannot parse, and `chart::Options` does not deny unknown
+fields, so an older reader would drop new options on save. Schema v22 and snapshot 30 are the
+batch's bumps; the remaining items ride on them until release. **Every new
+colour joins `Chart::brushes` and `brushes_mut`**, so it binds, detaches and pastes with the
+rest.
 
-- **Card rows.** Settings the model has or nearly has, each in the section that owns its subject.
-  *Padding* and *Gap* (`Options::padding`, `gap`, today MCP-only) as Style's last row; no canvas
-  handles, since padding is one value. *Text by role*: tick labels, values, legend and axis titles
-  each a size (as now), a weight and a colour, unset meaning the chart's; Sankey node labels stay
-  on the legend role, leader lines on the text ink. *Mark stroke* (`Solid` or `Outline`, width,
-  colour whose unset chip is *Background* or *Series*) replaces `Options::outline`; Soft gains a
-  background-coloured separator. Axis line and gridline widths as their own half-width fields under
-  their colour rows (a colour row is one `field_row_pressable`). Legend swatch shape (Square,
-  Circle, Line) and a *Label line ends* switch for lines and areas, a switch rather than a legend
-  position because every preset writes `legend.position` (`Preset::apply`); line-end labels relax
-  apart as Sankey nodes do. *Order* (Table order, Largest first, Smallest first) for columns and
-  bars, by the first series shown or a stack's total, replacing the pie's *Sort by value*;
-  `chart_data::cell_of` maps through it. *Totals* on stacked columns and bars (`PartRole::Total`),
-  owned by Bold. Presets own the stroke, totals and the value role's weight, nothing else new.
-- **Background and derived theme.** The background is the chart frame's top solid fill; the Chart
-  card's *Background* row (Solid and Variables only; disabled, naming why, over a gradient or a
-  fill style) edits it. *Theme* becomes Auto, Light or Dark (`Options::theme`, `dark: true` read
-  as Dark), Auto for new charts. The text ink, axis and gridline colours, a series on the palette
-  and a named mark on it become `Option`: unset, `chart::generate` derives them from a ground it is
-  passed and the theme, Auto picking the theme by WCAG contrast and tinting grid (12%) and axes
-  (30%) toward the ground. Nothing is rewritten at commit, so `with_dark` retires (its exact-match
-  swap could not follow modes, width picks, the page ground or a moved parent); `with_palette` puts
-  colours back to unset; the loader maps colours still at their theme's start value to unset. A
-  transparent chart reads the nearest painted ancestor, else the page (`chart::ground_of`); settle
-  regenerates when a ground stamp kept beside `generated` differs, and it joins `chart::stale`. The
-  frame's own fill passes its binding through; an ancestor's passes as its literal colour, so the
-  chart frame stays the only user of its variables. Hollow points and an *Inside ink: Auto* choice
-  (text ink or ground, per mark) read the ground. A plot background (`Options::plot`, fill and
-  radius) is the plot's `PartRole::Ground` rect, the progress ring's track moving to `Track`. A
-  chart drawn inside a solid-filled frame starts with no fill.
-- **Highlight, negatives and references.** A highlight names categories or series by name (a
-  grouped scatter's groups have no column), others *Muted* (an unset colour derived from the ground)
-  or *Faded*, with a *Highlighted only* values switch; doors are the context menu (*Highlight
-  ‹name›*, *Clear highlight*, through `query::chart_part_at`) and a Series dropdown. Per chart,
-  not per data set. *Colour by category* for one-series columns and bars, through `named_marks` as
-  pies do. *Colour below zero*: one chart-wide colour for bars and for line and area runs split at
-  their zero crossings. *References*: up to 16 lines or bands per chart on the value or category
-  axis, at a typed value, a category, or a statistic (average, median, min, max) over the series
-  shown or one; label with `{value}`, colour, width, dash, label place, *Take into the range*.
-  Bands under the marks, lines over them. Their own section after Values, headed by a
-  `ui::fold_rule` variant with a trailing `+`, rows opening a popover. Not on pies, Sankeys or
-  radars.
-- **Lollipops and waterfall.** Lollipops are `Bars.shape`: stem, head size, `PointShape`, filled or
-  hollow, and *Connect series* for a dumbbell. Grouped only (`Chart::validate` refuses lollipops
-  with stacking); not preset-owned. *Waterfall* is `ChartKind::Waterfall` (Column or Bar): a
-  category and one value column of changes walked from zero, totals picked by category name plus
-  an optional final total, signed value labels, dashed or solid connectors, and *Increase*,
-  *Decrease*, *Total* colours defaulting to blue, orange and slate (green and red fail
-  deuteranopia). A total row's own cell is ignored, and the card says when it disagrees with the
-  walk. New glyph `CHART_WATERFALL`; palette aliases *waterfall*, *bridge*, *lollipop*,
-  *dumbbell*.
-- **Radar.** `ChartKind::Radar` (Lines or Filled), reading what a line chart reads, in a square
-  centred in the plot as a pie's is. Polygon or circle rings from the value axis's ticks, spokes as
-  category gridlines, a start angle, the Lines options; straight sides only; gaps always joined; 3
-  to 36 categories. Labels anchored by angle, the square shrinking to fit them. New glyph
-  `CHART_RADAR`. Landing it drops radar from the non-goal *Chart kinds past the seven*.
-- **Fade and chart styles.** *Fade* (`Options::fade`): areas and bars from their colour to a
-  share of it at the baseline, a generated linear gradient; a bound series draws flat until gradient
-  stops can bind. *Chart styles*: a sixth style slot (`StyleValue::Chart`, `StyleRefs::chart`,
+- **Chart styles.** A sixth style slot (`StyleValue::Chart`, `StyleRefs::chart`,
   `SetChartStyle`) under the slots' rules, carrying the look (options, palette with a stored
-  `Options::palette_group`, theme choice, text, stroke, fade, totals) and never the kind, stacking,
-  order, shape, data, series colours, highlight, references, axis titles or typed ranges. Styled,
-  the card's look sections collapse into the styled capsule; *Flatten* unbinds the style; kits carry
-  them. Needs *Background and derived theme* first. Every five-slot enumeration grows a sixth.
-  Landing it removes the non-goal *Saved user presets*.
+  `Options::palette_group`, theme choice, text, stroke, `Options::fade`, totals) and never the
+  kind, stacking, order, shape, data, series colours, highlight, references, axis titles or typed
+  ranges. Styled, the card's look sections collapse into the styled capsule; *Flatten* unbinds the
+  style; kits carry them. Every five-slot enumeration grows a sixth. Landing it removes the
+  non-goal *Saved user presets*.
 
 ## Next · Editing parity
 

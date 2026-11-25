@@ -67,7 +67,9 @@ use std::collections::BTreeMap;
 ///   when empty or at its default.
 /// - **29** `NodeSnapshot::list` (`ListSummary`) on a list frame and
 ///   `list_copy` on a copy and every layer inside one; `ChartSummary::data_id`.
-pub const SNAPSHOT_VERSION: u32 = 29;
+/// - **30** `ChartSummary::kind` may read *Waterfall* or *Radar*; a chart's parts take the
+///   new roles (stems, heads, connectors, totals, line ends, references).
+pub const SNAPSHOT_VERSION: u32 = 30;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {
@@ -356,7 +358,7 @@ pub struct PropertySummary {
 /// columns, without the table's cells.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ChartSummary {
-    /// `"Column"`, `"Bar"`, `"Line"`, `"Area"`, `"Pie"`, `"Scatter"` or `"Sankey"`.
+    /// The kind's name (`ChartKind::label`): `"Column"`, `"Waterfall"`, `"Radar"`….
     pub kind: String,
     /// The kind's variant as the Chart card names it (`"Stacked"`, `"Donut"`),
     /// absent for a Sankey.
@@ -1287,7 +1289,9 @@ fn chart_summary(doc: &Document, id: NodeId, c: &mastik_core::chart::Chart) -> C
                     column: col.0,
                     name: t.column(*col).map_or_else(String::new, |x| x.name.clone()),
                     visible: style.is_none_or(|s| s.visible),
-                    fill: style.map(|s| paint_summary(doc, &doc.resolve_brush(id, &s.fill))),
+                    fill: style
+                        .and_then(|s| s.fill.as_ref())
+                        .map(|f| paint_summary(doc, &doc.resolve_brush(id, f))),
                 }
             })
             .collect(),

@@ -4637,7 +4637,7 @@ mod tests {
             Affine::IDENTITY,
             Point::new(-4000.0, 0.0),
             Point::new(-3520.0, 280.0),
-            mastik_core::peniko::Color::WHITE,
+            Some(mastik_core::peniko::Color::WHITE),
             Chart::sample(ChartKind::Column),
         );
         assert!(s.commit(tx));
@@ -4678,7 +4678,7 @@ mod tests {
                 Affine::IDENTITY,
                 Point::new(x, 0.0),
                 Point::new(x + 480.0, 280.0),
-                mastik_core::peniko::Color::WHITE,
+                Some(mastik_core::peniko::Color::WHITE),
                 Chart::sample(kind),
             );
             assert!(s.commit(tx));

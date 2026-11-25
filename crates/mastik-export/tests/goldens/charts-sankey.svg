@@ -1,6 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="560" height="640" viewBox="0 0 560 640">
   <clipPath id="clip-c7_2"><rect x="0" y="0" width="560" height="300"/></clipPath>
   <g data-name="Chart 1" clip-path="url(#clip-c7_2)">
+    <rect x="0" y="0" width="560" height="300" fill="#ffffff"/>
     <g data-name="Body" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Flows">
         <path data-name="Flow · Search → Signup" d="M57.8203,73.4667 C122.0029,73.4667 122.0029,82.103 186.1855,82.103 L186.1855,177.303 C122.0029,177.303 122.0029,168.6667 57.8203,168.6667 Z" fill="#3b6fe0" opacity="0.4"/>
@@ -36,6 +37,7 @@
   </g>
   <clipPath id="clip-c7_3"><rect x="0" y="0" width="560" height="300"/></clipPath>
   <g data-name="Chart 2" transform="matrix(1 0 0 1 0 340)" clip-path="url(#clip-c7_3)">
+    <rect x="0" y="0" width="560" height="300" fill="#ffffff"/>
     <g data-name="Body" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Flows">
         <path data-name="Flow · Search → Signup" d="M91.2246,0 C145.5166,0 145.5166,0 199.8086,0 L199.8086,95.2 C145.5166,95.2 145.5166,95.2 91.2246,95.2 Z" fill="#e06c1e" opacity="0.4"/>

@@ -4597,7 +4597,7 @@ fn set_chart_colours_series_and_slices() {
         got.series
             .iter()
             .find(|s| s.column == col)
-            .map(|s| s.fill.clone())
+            .and_then(|s| s.fill.clone())
     };
     let red = BrushSource::Literal(Brush::Solid(Color::from_rgb8(255, 0, 0)));
     assert_eq!(fill(first), Some(red), "the series' hex");
@@ -4700,15 +4700,15 @@ fn create_instance_takes_an_index() {
     assert_eq!(doc.get(row).unwrap().children().last(), Some(&top));
 }
 
-/// `set_chart` turning a chart dark moves its starting ink with it, as the
-/// card's *Dark* does, and a palette patch recolours a stored series colour
+/// `set_chart` still reads `dark` as the theme it names, the ink following it
+/// unset, and a palette patch puts a stored series colour back on the palette
 /// as the card's pick does.
-/// flip: `set_chart` writing the patched `dark` as it is → fails at "the ink
-/// follows"; skipping `with_palette` → fails at "the palette pick recolours".
+/// flip: `set_chart` dropping the `dark` alias → fails at "dark is the Dark
+/// theme"; skipping `with_palette` → fails at "the palette pick recolours".
 #[test]
 fn set_chart_dark_and_palette_move_the_colours() {
     use mastik_core::Brush;
-    use mastik_core::chart::{Palette, chrome, palette, series_fill};
+    use mastik_core::chart::{Palette, Theme, chrome, palette, series_fill};
     let (mut doc, mut ids, page) = blank();
     let c = run(
         &mut doc,
@@ -4723,9 +4723,9 @@ fn set_chart_dark_and_palette_move_the_colours() {
         json!({ "node": c.to_wire(), "options": { "dark": true } }),
     );
     let got = chart_of(&doc, c);
-    assert!(got.options.dark);
+    assert_eq!(got.options.theme, Theme::Dark, "dark is the Dark theme");
     assert_eq!(
-        got.options.text.ink,
+        got.ink(),
         Brush::Solid(chrome(true).ink).into(),
         "the ink follows"
     );
@@ -4733,7 +4733,7 @@ fn set_chart_dark_and_palette_move_the_colours() {
     let painted = mastik_core::chart::with_series_fill(
         &got,
         first,
-        Brush::Solid(Color::from_rgb8(1, 2, 3)).into(),
+        Some(Brush::Solid(Color::from_rgb8(1, 2, 3)).into()),
     );
     assert!(
         doc.apply(&mastik_core::Transaction(vec![
@@ -4756,6 +4756,49 @@ fn set_chart_dark_and_palette_move_the_colours() {
         Some(Brush::Solid(Color::from_rgb8(r, g, b)).into()),
         "the palette pick recolours, in the dark set"
     );
+}
+
+/// `set_chart` takes a highlight by name and a whole references list; a name
+/// the chart lacks is refused, and a null clears the highlight.
+/// flip: `chart_names_known` answering `Ok` always → fails at the refusal.
+#[test]
+fn set_chart_highlights_and_references() {
+    use mastik_core::chart::{At, Highlighted};
+    let (mut doc, mut ids, page) = blank();
+    let c = run(
+        &mut doc,
+        &mut ids,
+        "insert_chart",
+        json!({ "parent": page.to_wire(), "kind": "column" }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "set_chart",
+        json!({ "node": c.to_wire(),
+            "highlight": { "target": { "Categories": ["Apr"] } },
+            "references": [{ "id": 1, "at": { "Value": 50 }, "label": "Target", "colour": "#c0392b" }] }),
+    );
+    let got = chart_of(&doc, c);
+    assert_eq!(
+        got.highlight.target,
+        Highlighted::Categories(vec!["Apr".into()])
+    );
+    assert_eq!(got.references.len(), 1);
+    assert_eq!(got.references[0].at, At::Value(50.0));
+    let typo =
+        json!({ "node": c.to_wire(), "highlight": { "target": { "Categories": ["Nope"] } } });
+    assert_eq!(
+        refused_param(&doc, &mut ids, "set_chart", typo),
+        "highlight"
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "set_chart",
+        json!({ "node": c.to_wire(), "highlight": null }),
+    );
+    assert_eq!(chart_of(&doc, c).highlight.target, Highlighted::None);
 }
 
 /// `set_chart` switching to or from a Sankey re-reads the mapping off the
@@ -4860,7 +4903,7 @@ fn set_chart_data_keeps_the_columns_whose_names_survive() {
     });
     linked.series.push(SeriesStyle {
         column: ColumnId(1),
-        fill: mastik_core::Brush::Solid(Color::BLACK).into(),
+        fill: Some(mastik_core::Brush::Solid(Color::BLACK).into()),
         visible: true,
         dash: Default::default(),
         point: Default::default(),

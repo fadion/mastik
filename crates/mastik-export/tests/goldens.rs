@@ -960,6 +960,14 @@ fn chart_page(charts: Vec<(mastik_core::chart::Chart, f64, f64)>) -> (Document, 
             transform: Some(Affine::translate((0.0, y))),
             name: Some(format!("Chart {}", i + 1)),
         });
+        // On white, as a chart is made.
+        ops.push(Operation::SetFills {
+            id,
+            fills: mastik_core::item::keyed_by_position([mastik_core::Fill {
+                brush: Brush::Solid(Color::WHITE).into(),
+                visible: true,
+            }]),
+        });
         ops.push(Operation::SetChart {
             id,
             chart: Some(Box::new(chart)),
@@ -1014,7 +1022,10 @@ fn sample_chart(kind: mastik_core::chart::ChartKind) -> mastik_core::chart::Char
         data: None,
         parts: vec![],
         generated: None,
+        grounded: None,
         minted: 0,
+        highlight: Default::default(),
+        references: Vec::new(),
     }
 }
 
@@ -1160,8 +1171,8 @@ fn chart_options_match_their_golden() {
         let [r, g, b] = mastik_core::chart::palette(Default::default(), false)[col as usize - 1];
         SeriesStyle {
             column: ColumnId(col),
-            fill: mastik_core::variable::BrushSource::Literal(Brush::Solid(Color::from_rgb8(
-                r, g, b,
+            fill: Some(mastik_core::variable::BrushSource::Literal(Brush::Solid(
+                Color::from_rgb8(r, g, b),
             ))),
             visible: true,
             dash: Dash::Solid,
@@ -1213,7 +1224,7 @@ fn pie_charts_match_their_golden() {
     pie.options.values.position = ValuePosition::Inside;
     let mut donut = sample_chart(ChartKind::Pie);
     donut.options.slices.donut = true;
-    donut.options.slices.sort = true;
+    donut.options.slices.order = mastik_core::chart::Order::Descending;
     donut.options.slices.pad_angle = 1.5;
     donut.options.slices.group_below = Some(15.0);
     donut.options.values.position = ValuePosition::Inside;
@@ -1284,7 +1295,10 @@ fn charts_match_their_golden() {
             data: None,
             parts: vec![],
             generated: None,
+            grounded: None,
             minted: 0,
+            highlight: Default::default(),
+            references: Vec::new(),
         };
         c.options.bars.stacking = stacking;
         c.options.values.position = values;
@@ -1335,6 +1349,14 @@ fn charts_match_their_golden() {
             },
             transform: Some(Affine::translate((0.0, 320.0 * i as f64))),
             name: Some(format!("Chart {}", i + 1)),
+        });
+        // On white, as a chart is made.
+        ops.push(Operation::SetFills {
+            id,
+            fills: mastik_core::item::keyed_by_position([mastik_core::Fill {
+                brush: Brush::Solid(Color::WHITE).into(),
+                visible: true,
+            }]),
         });
         ops.push(Operation::SetChart {
             id,

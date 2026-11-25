@@ -11970,6 +11970,31 @@ impl MastikApp {
                 ("Neutral flow colour", icon::CHART)
             }
             PaintSlot::Chart(super::paint::ChartColour::Track) => ("Track colour", icon::CHART),
+            PaintSlot::Chart(super::paint::ChartColour::Plot) => ("Plot background", icon::CHART),
+            PaintSlot::Chart(super::paint::ChartColour::Stroke) => {
+                ("Mark stroke colour", icon::CHART)
+            }
+            PaintSlot::Chart(super::paint::ChartColour::Muted) => ("Muted colour", icon::CHART),
+            PaintSlot::Chart(super::paint::ChartColour::Stem) => ("Stem colour", icon::CHART),
+            PaintSlot::Chart(super::paint::ChartColour::Step(i)) => (
+                ["Increase colour", "Decrease colour", "Total colour"][usize::from(i).min(2)],
+                icon::CHART,
+            ),
+            PaintSlot::Chart(super::paint::ChartColour::BelowZero) => {
+                ("Below-zero colour", icon::CHART)
+            }
+            PaintSlot::Chart(super::paint::ChartColour::Reference(_)) => {
+                ("Reference colour", icon::CHART)
+            }
+            PaintSlot::Chart(super::paint::ChartColour::Role(r)) => (
+                [
+                    "Tick labels colour",
+                    "Values colour",
+                    "Legend colour",
+                    "Axis titles colour",
+                ][usize::from(r).min(3)],
+                icon::CHART,
+            ),
             PaintSlot::Backdrop(_) => ("Overlay", icon::OVERLAY_OPEN),
         };
         self.session.name_step(label, glyph);

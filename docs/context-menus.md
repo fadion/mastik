@@ -238,6 +238,9 @@ A chart (a frame carrying a chart description, `design/charts.md`) has its own h
 
 | Row | Shown / enabled |
 |---|---|
+| Highlight ‹category› | one chart, right-clicked on a mark that names a category (`panels::chart::mark_names`); dims on lock |
+| Highlight ‹series› | one chart, right-clicked on a mark that names a series or group; dims on lock |
+| Clear highlight | when a Highlight row shows or the chart has a highlight; dims with *Nothing is highlighted*, and on lock |
 | Edit data… | one chart; opens the data window |
 | Import chart data… | one chart; dims on lock |
 | Update chart data | while its linked file changed on disk; dims on lock |

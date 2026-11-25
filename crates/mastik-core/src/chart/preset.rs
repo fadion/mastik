@@ -21,8 +21,8 @@ pub enum Preset {
     Outline,
 }
 
-/// The stroke the *Outline* preset gives marks and lines, and the one the
-/// card's *Outline marks* starts at.
+/// The stroke the *Outline* preset gives marks and lines, and *Soft*'s
+/// separators.
 pub const OUTLINE_WIDTH: f64 = 1.5;
 
 impl Preset {
@@ -76,7 +76,9 @@ impl Preset {
         o.legend.position = clean.legend.position;
         o.values.position = clean.values.position;
         o.text.value_size = clean.text.value_size;
-        o.outline = clean.outline;
+        o.text.value.weight = clean.text.value.weight;
+        o.stroke = clean.stroke.clone();
+        o.values.totals = clean.values.totals;
         match self {
             Preset::Clean => {}
             Preset::Soft => {
@@ -87,6 +89,8 @@ impl Preset {
                 o.slices.radius = 4.0;
                 o.flows.node_radius = 6.0;
                 o.value_axis.grid.dashed = true;
+                // Rounded marks kept apart by a line of the background.
+                o.stroke.width = OUTLINE_WIDTH;
             }
             Preset::Bold => {
                 o.bars.group_gap = 15.0;
@@ -94,7 +98,9 @@ impl Preset {
                 o.value_axis.grid.show = false;
                 o.category_axis.grid.show = false;
                 o.values.position = ValuePosition::Outside;
+                o.values.totals = true;
                 o.text.value_size = 14.0;
+                o.text.value.weight = Some(600);
                 o.flows.node_width = 18.0;
                 o.flows.opacity = 0.6;
             }
@@ -107,13 +113,16 @@ impl Preset {
                 o.flows.labels = NodeLabels::Off;
             }
             Preset::Outline => {
-                o.outline = Some(OUTLINE_WIDTH);
+                o.stroke.style = super::StrokeStyle::Outline;
+                o.stroke.width = OUTLINE_WIDTH;
                 o.lines.width = OUTLINE_WIDTH;
             }
         }
         if kind == ChartKind::Scatter {
             o.values.position = options.values.position;
+            o.values.totals = options.values.totals;
             o.text.value_size = options.text.value_size;
+            o.text.value.weight = options.text.value.weight;
         }
         o
     }
@@ -191,7 +200,7 @@ mod tests {
     fn every_preset_changes_what_a_sankey_draws() {
         let flows = |p: Preset| {
             let o = p.apply(ChartKind::Sankey, &Options::default());
-            format!("{:?}{:?}", o.flows, o.outline)
+            format!("{:?}{:?}", o.flows, o.stroke)
         };
         for (i, a) in Preset::ALL.iter().enumerate() {
             for b in &Preset::ALL[i + 1..] {

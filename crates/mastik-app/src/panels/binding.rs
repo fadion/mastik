@@ -3338,7 +3338,7 @@ mod tests {
             mastik_core::kurbo::Affine::IDENTITY,
             mastik_core::kurbo::Point::new(-4000.0, 0.0),
             mastik_core::kurbo::Point::new(-3520.0, 280.0),
-            Color::WHITE,
+            Some(Color::WHITE),
             mastik_core::chart::Chart::sample(mastik_core::chart::ChartKind::Column),
         );
         assert!(app.session.commit(tx));

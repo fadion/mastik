@@ -349,6 +349,23 @@ pub enum ChartColour {
     Neutral,
     /// A progress ring's track, which draws in the value gridlines' colour.
     Track,
+    /// The plot's own background (`Options::plot`).
+    Plot,
+    /// The marks' stroke (`Options::stroke`).
+    Stroke,
+    /// One kind of label's ink (`ChartText`'s roles): tick labels, values,
+    /// the legend, axis titles, in that order.
+    Role(u8),
+    /// The colour a highlight's other marks draw in (`Highlight::muted`).
+    Muted,
+    /// The colour values under the baseline draw in (`Options::below_zero`).
+    BelowZero,
+    /// A reference's colour, by its id.
+    Reference(u32),
+    /// A lollipop chart's stems (`Bars::stem_colour`).
+    Stem,
+    /// A waterfall step's colour: increase, decrease, total.
+    Step(u8),
 }
 
 /// Which Settings colour a [`PaintSlot::Pref`] edits (`prefs::CanvasPrefs`).

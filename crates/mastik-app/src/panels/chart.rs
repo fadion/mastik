@@ -45,6 +45,165 @@ const FORMAT_SAMPLE: f64 = 12_345.6;
 const FORMAT_POPUP_W: f32 = 220.0;
 /// The series style menu's width, past its longest row.
 const SERIES_MENU_W: f32 = 140.0;
+
+/// The category and the series of chart `id`'s mark at world point `world`,
+/// as a highlight names them: a bar's both (a one-series chart's category
+/// only), a line's or legend entry's series, a slice's category. A scatter
+/// names its series or group.
+pub(crate) fn mark_names(
+    app: &MastikApp,
+    id: NodeId,
+    world: kurbo::Point,
+) -> (Option<String>, Option<String>) {
+    use chart::PartRole as R;
+    let doc = &app.session.doc;
+    let Some(chart) = doc.get(id).and_then(|n| n.chart()) else {
+        return (None, None);
+    };
+    let Some(key) =
+        mastik_core::chart_part_at(&app.session.resolved, doc, app.session.page, id, world)
+    else {
+        return (None, None);
+    };
+    let t = &chart.table;
+    let series_name = |col: u32| t.column(chart::ColumnId(col)).map(|c| c.name.clone());
+    // The categories as drawn, in the order the chart draws them.
+    let cat_col = chart.mapping.category.and_then(|c| t.index_of(c));
+    let read: Vec<String> = t
+        .rows
+        .iter()
+        .filter_map(|r| cat_col.map(|c| r[c].trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .collect();
+    let drawn = |i: u32| -> Option<String> {
+        let i = i as usize;
+        let at = chart::category_order(chart).map_or(i, |o| o.get(i).copied().unwrap_or(i));
+        read.get(at).cloned()
+    };
+    let many = chart.mapping.series.len() > 1;
+    match (chart.kind, key.role) {
+        (ChartKind::Pie, R::Slice | R::ValueLabel) => (read.get(key.index as usize).cloned(), None),
+        (ChartKind::Scatter, R::Point | R::LegendSwatch | R::LegendLabel | R::LegendItem) => {
+            let name = series_name(key.series).or_else(|| {
+                chart::named_marks(chart).and_then(|m| {
+                    m.into_iter()
+                        .nth(key.series.checked_sub(chart::MAX_COLUMNS as u32)? as usize)
+                        .map(|(n, _)| n)
+                })
+            });
+            (None, name)
+        }
+        (ChartKind::Column | ChartKind::Bar, R::Bar | R::ValueLabel | R::Total) => (
+            drawn(key.index),
+            if many && key.role != R::Total {
+                series_name(key.series)
+            } else {
+                None
+            },
+        ),
+        (_, R::CategoryLabel) => (drawn(key.index), None),
+        (
+            ChartKind::Line | ChartKind::Area,
+            R::Line
+            | R::Area
+            | R::Point
+            | R::EndLabel
+            | R::LegendSwatch
+            | R::LegendLabel
+            | R::LegendItem,
+        ) => (None, series_name(key.series)),
+        (_, R::LegendSwatch | R::LegendLabel | R::LegendItem) if many => {
+            (None, series_name(key.series))
+        }
+        _ => (None, None),
+    }
+}
+
+impl MastikApp {
+    /// Chart `id`'s highlight set to `target`, as *Highlight ‹name›* or *Clear
+    /// highlight*.
+    pub(crate) fn highlight_chart(&mut self, id: NodeId, target: chart::Highlighted) {
+        let Some(chart) = self.session.doc.get(id).and_then(|n| n.chart()) else {
+            return;
+        };
+        let mut next = chart.clone();
+        let label = if target == chart::Highlighted::None {
+            "Clear highlight"
+        } else {
+            "Highlight"
+        };
+        next.highlight.target = target;
+        self.chart_commit(id, label, next);
+    }
+}
+
+/// A reference popover's width.
+const REFERENCE_POPOVER_W: f32 = 240.0;
+
+/// Where a reference stands, in a row's words.
+fn at_words(a: &chart::At) -> String {
+    use chart::{At, Stat};
+    match a {
+        At::Value(v) => chart::scale::format(
+            *v,
+            &chart::NumberFormat::default(),
+            chart::scale::decimals_of(*v).min(3),
+        ),
+        At::Category(c) => c.clone(),
+        At::Stat { stat, .. } => match stat {
+            Stat::Average => "Average",
+            Stat::Median => "Median",
+            Stat::Min => "Minimum",
+            Stat::Max => "Maximum",
+        }
+        .to_string(),
+        At::AxisStart => "Start".into(),
+        At::AxisEnd => "End".into(),
+    }
+}
+
+/// `now` with one name picked in the Highlight dropdown: a category (`Ok`) or
+/// a series (`Err`) turned on or off, a pick of the other kind starting over;
+/// `None` clears it.
+fn toggled(now: &chart::Highlighted, pick: Option<Result<String, String>>) -> chart::Highlighted {
+    use chart::Highlighted as H;
+    let flip = |list: &[String], name: String| {
+        let mut l = list.to_vec();
+        match l.iter().position(|n| *n == name) {
+            Some(i) => {
+                l.remove(i);
+            }
+            None => l.push(name),
+        }
+        l
+    };
+    let next = match (now, pick) {
+        (_, None) => H::None,
+        (H::Categories(l), Some(Ok(n))) => H::Categories(flip(l, n)),
+        (_, Some(Ok(n))) => H::Categories(vec![n]),
+        (H::Series(l), Some(Err(n))) => H::Series(flip(l, n)),
+        (_, Some(Err(n))) => H::Series(vec![n]),
+    };
+    match next {
+        H::Categories(l) | H::Series(l) if l.is_empty() => H::None,
+        other => other,
+    }
+}
+
+/// Each label role's undo steps: its colour, its weight.
+const ROLE_STEPS: [(&str, &str); 4] = [
+    ("Tick labels colour", "Tick labels weight"),
+    ("Values colour", "Values weight"),
+    ("Legend colour", "Legend weight"),
+    ("Axis titles colour", "Axis titles weight"),
+];
+
+/// The orders a column, bar or pie chart draws its categories in.
+const ORDERS: &[(chart::Order, &str)] = &[
+    (chart::Order::Table, "Table order"),
+    (chart::Order::Descending, "Largest first"),
+    (chart::Order::Ascending, "Smallest first"),
+];
 /// What the card measured of its chart, kept while the description stays the same:
 /// the Style cells' pictures and the generator's left-out values.
 pub(crate) struct ChartCardCache {
@@ -99,6 +258,15 @@ fn variant_table(kind: ChartKind) -> &'static [Variant] {
             ("Pie", |o| o.slices.donut = false),
             ("Donut", |o| o.slices.donut = true),
         ],
+        // The variant is the orientation, as Column and Bar are one model.
+        ChartKind::Waterfall => &[
+            ("Column", |o| o.waterfall.horizontal = false),
+            ("Bar", |o| o.waterfall.horizontal = true),
+        ],
+        ChartKind::Radar => &[
+            ("Lines", |o| o.radar.filled = false),
+            ("Filled", |o| o.radar.filled = true),
+        ],
         ChartKind::Scatter | ChartKind::Sankey => &[],
     }
 }
@@ -139,29 +307,107 @@ pub(crate) fn named_mark_noun(chart: &Chart) -> Option<(&'static str, &'static s
         ChartKind::Sankey => Some(("Nodes", "Node colour")),
         ChartKind::Pie => Some(("Slices", "Slice colour")),
         ChartKind::Scatter if chart.mapping.group.is_some() => Some(("Groups", "Group colour")),
+        ChartKind::Column | ChartKind::Bar if chart::by_category(chart) => {
+            Some(("Categories", "Category colour"))
+        }
         _ => None,
     }
 }
 
-/// The paint a chart slot holds, bound or not.
+/// The paint a chart slot draws in, bound or not: its own, else what it
+/// derives (the palette's, the theme's); `None` for an unset plot ground.
 pub(crate) fn fill_of(chart: &Chart, colour: ChartColour) -> Option<mastik_core::BrushSource> {
     match colour {
         ChartColour::Series(col) => chart::series_fill(chart, col),
         ChartColour::Node(i) => Some(chart::named_marks(chart)?.into_iter().nth(i)?.1),
-        ChartColour::Ink => Some(chart.options.text.ink.clone()),
-        ChartColour::Axis(value) => Some(axis_of(chart, value).colour.clone()),
-        ChartColour::Grid(value) => Some(axis_of(chart, value).grid.colour.clone()),
-        ChartColour::Neutral => Some(chart.options.value_axis.colour.clone()),
-        ChartColour::Track => Some(chart.options.value_axis.grid.colour.clone()),
+        ChartColour::Ink => Some(chart.ink()),
+        ChartColour::Axis(value) => Some(chart.axis_colour(value)),
+        ChartColour::Grid(value) => Some(chart.grid_colour(value)),
+        ChartColour::Neutral => Some(chart.axis_colour(true)),
+        ChartColour::Track => Some(chart.grid_colour(true)),
+        ChartColour::Plot => chart.options.plot.fill.clone(),
+        // Unset under *Solid* it is the ground; under *Outline* each mark's own.
+        ChartColour::Stroke => match (&chart.options.stroke.colour, chart.options.stroke.style) {
+            (Some(c), _) => Some(c.clone()),
+            (None, chart::StrokeStyle::Solid) => Some(Brush::Solid(chart.chrome().ground).into()),
+            (None, chart::StrokeStyle::Outline) => None,
+        },
+        ChartColour::Role(r) => Some(role_of(chart, r).ink.clone().unwrap_or_else(|| chart.ink())),
+        ChartColour::Muted => Some(chart.muted()),
+        ChartColour::BelowZero => chart.options.below_zero.clone(),
+        ChartColour::Reference(id) => chart
+            .references
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.colour.clone()),
+        // Unset, each series' own: no one colour.
+        ChartColour::Stem => chart.options.bars.stem_colour.clone(),
+        ChartColour::Step(i) => {
+            let w = &chart.options.waterfall;
+            let (own, step) = step_slot(w, i);
+            Some(own.clone().unwrap_or_else(|| {
+                Brush::Solid(chart::Waterfall::starting(step, chart.drawn_dark())).into()
+            }))
+        }
     }
 }
 
-/// The value axis when `value`, else the category axis.
-fn axis_of(chart: &Chart, value: bool) -> &chart::Axis {
-    if value {
-        &chart.options.value_axis
-    } else {
-        &chart.options.category_axis
+/// A waterfall step colour's slot and kind, by [`ChartColour::Step`]'s number.
+fn step_slot(w: &chart::Waterfall, i: u8) -> (&Option<mastik_core::BrushSource>, chart::Step) {
+    match i {
+        0 => (&w.increase, chart::Step::Increase),
+        1 => (&w.decrease, chart::Step::Decrease),
+        _ => (&w.total, chart::Step::Total),
+    }
+}
+
+/// One kind of label's own type (`ChartText`'s roles), by [`ChartColour::Role`]'s
+/// number.
+fn role_of(chart: &Chart, r: u8) -> &chart::RoleText {
+    let t = &chart.options.text;
+    match r {
+        0 => &t.tick,
+        1 => &t.value,
+        2 => &t.legend,
+        _ => &t.title,
+    }
+}
+
+fn role_of_mut(chart: &mut Chart, r: u8) -> &mut chart::RoleText {
+    let t = &mut chart.options.text;
+    match r {
+        0 => &mut t.tick,
+        1 => &mut t.value,
+        2 => &mut t.legend,
+        _ => &mut t.title,
+    }
+}
+
+/// Whether a chart slot holds a colour of its own rather than one it derives.
+pub(crate) fn is_set(chart: &Chart, colour: ChartColour) -> bool {
+    let o = &chart.options;
+    match colour {
+        ChartColour::Series(col) => chart::series_fill_set(chart, col),
+        ChartColour::Node(i) => chart::named_marks(chart)
+            .and_then(|m| m.into_iter().nth(i))
+            .is_some_and(|(name, _)| {
+                chart
+                    .nodes
+                    .iter()
+                    .any(|s| s.name == name && s.fill.is_some())
+            }),
+        ChartColour::Ink => o.text.ink.is_some(),
+        ChartColour::Axis(true) | ChartColour::Neutral => o.value_axis.colour.is_some(),
+        ChartColour::Axis(false) => o.category_axis.colour.is_some(),
+        ChartColour::Grid(true) | ChartColour::Track => o.value_axis.grid.colour.is_some(),
+        ChartColour::Grid(false) => o.category_axis.grid.colour.is_some(),
+        ChartColour::Plot => o.plot.fill.is_some(),
+        ChartColour::Stroke => o.stroke.colour.is_some(),
+        ChartColour::Role(r) => role_of(chart, r).ink.is_some(),
+        ChartColour::Muted => chart.highlight.muted.is_some(),
+        ChartColour::BelowZero | ChartColour::Reference(_) => true,
+        ChartColour::Stem => o.bars.stem_colour.is_some(),
+        ChartColour::Step(i) => step_slot(&o.waterfall, i).0.is_some(),
     }
 }
 
@@ -209,6 +455,16 @@ pub(crate) fn with_fill(
     colour: ChartColour,
     fill: mastik_core::BrushSource,
 ) -> Chart {
+    with_paint(chart, colour, Some(fill))
+}
+
+/// `chart` with the slot's paint set to `fill`; `None` puts it back to what it
+/// derives (*From the theme*), or takes the plot ground away.
+pub(crate) fn with_paint(
+    chart: &Chart,
+    colour: ChartColour,
+    fill: Option<mastik_core::BrushSource>,
+) -> Chart {
     match colour {
         ChartColour::Series(col) => chart::with_series_fill(chart, col, fill),
         ChartColour::Node(i) => {
@@ -217,11 +473,50 @@ pub(crate) fn with_fill(
                 None => chart.clone(),
             }
         }
+        ChartColour::Role(r) => {
+            let mut next = chart.clone();
+            role_of_mut(&mut next, r).ink = fill;
+            next
+        }
+        ChartColour::Muted => {
+            let mut next = chart.clone();
+            next.highlight.muted = fill;
+            next
+        }
+        ChartColour::BelowZero => {
+            let mut next = chart.clone();
+            next.options.below_zero = fill;
+            next
+        }
+        ChartColour::Reference(id) => {
+            let mut next = chart.clone();
+            if let (Some(r), Some(f)) = (next.references.iter_mut().find(|r| r.id == id), fill) {
+                r.colour = f;
+            }
+            next
+        }
+        ChartColour::Stem => {
+            let mut next = chart.clone();
+            next.options.bars.stem_colour = fill;
+            next
+        }
+        ChartColour::Step(i) => {
+            let mut next = chart.clone();
+            let w = &mut next.options.waterfall;
+            *match i {
+                0 => &mut w.increase,
+                1 => &mut w.decrease,
+                _ => &mut w.total,
+            } = fill;
+            next
+        }
         ChartColour::Ink
         | ChartColour::Axis(_)
         | ChartColour::Grid(_)
         | ChartColour::Neutral
-        | ChartColour::Track => {
+        | ChartColour::Track
+        | ChartColour::Plot
+        | ChartColour::Stroke => {
             let mut next = chart.clone();
             let o = &mut next.options;
             *match colour {
@@ -229,6 +524,8 @@ pub(crate) fn with_fill(
                 ChartColour::Axis(false) => &mut o.category_axis.colour,
                 ChartColour::Grid(true) | ChartColour::Track => &mut o.value_axis.grid.colour,
                 ChartColour::Grid(false) => &mut o.category_axis.grid.colour,
+                ChartColour::Plot => &mut o.plot.fill,
+                ChartColour::Stroke => &mut o.stroke.colour,
                 _ => &mut o.text.ink,
             } = fill;
             next
@@ -248,6 +545,7 @@ fn description_key(id: NodeId, chart: &Chart, size: kurbo::Size, ppp: f32) -> u6
     format!("{:?}", chart.series).hash(&mut h);
     format!("{:?}", chart.nodes).hash(&mut h);
     format!("{:?}", chart.options).hash(&mut h);
+    format!("{:?}", chart.grounded).hash(&mut h);
     chart.table.rows.hash(&mut h);
     for c in &chart.table.columns {
         c.name.hash(&mut h);
@@ -305,7 +603,11 @@ impl MastikApp {
     /// chart's own, as the card's other edits write each; only `id` for a
     /// series or node colour, which belongs to that chart's table.
     pub(crate) fn chart_slot_targets(&self, id: NodeId, colour: ChartColour) -> Vec<NodeId> {
-        if matches!(colour, ChartColour::Series(_) | ChartColour::Node(_)) {
+        // A series', a mark's or a reference's colour belongs to that chart.
+        if matches!(
+            colour,
+            ChartColour::Series(_) | ChartColour::Node(_) | ChartColour::Reference(_)
+        ) {
             return vec![id];
         }
         match self.selected_charts() {
@@ -431,9 +733,16 @@ impl MastikApp {
             if !several {
                 // A chart coloured by name lists its named marks here.
                 let series = named_mark_noun(&chart).map_or("Series", |(plural, _)| plural);
-                app.chart_section(ui, "Chart series", series, |app, ui| {
-                    app.chart_series_rows(ui, id, &chart);
-                });
+                if chart.kind == ChartKind::Waterfall {
+                    // A waterfall's colours belong to the step, not the series.
+                    app.chart_section(ui, "Chart steps", "Steps", |app, ui| {
+                        app.chart_step_rows(ui, id, &chart);
+                    });
+                } else {
+                    app.chart_section(ui, "Chart series", series, |app, ui| {
+                        app.chart_series_rows(ui, id, &chart);
+                    });
+                }
             }
             app.chart_section(ui, "Chart marks", "Marks", |app, ui| {
                 app.chart_mark_rows(ui, id, &chart);
@@ -447,16 +756,23 @@ impl MastikApp {
                 app.chart_section(ui, "Chart values", "Values", |app, ui| {
                     // A scatter draws no value labels: its rows stay, dimmed, under
                     // the reason.
-                    let scatter = chart.kind == ChartKind::Scatter;
-                    if scatter {
-                        ui::selection_note(ui, "A scatter draws no value labels");
+                    let none = match chart.kind {
+                        ChartKind::Scatter => Some("A scatter draws no value labels"),
+                        ChartKind::Radar => Some("A radar draws no value labels"),
+                        _ => None,
+                    };
+                    if let Some(why) = none {
+                        ui::selection_note(ui, why);
                     }
-                    ui::disable_unless(ui, !scatter, |ui| app.chart_value_rows(ui, id, &chart));
+                    ui::disable_unless(ui, none.is_none(), |ui| {
+                        app.chart_value_rows(ui, id, &chart)
+                    });
                 });
                 app.chart_section(ui, "Chart legend", "Legend", |app, ui| {
                     app.chart_legend_rows(ui, id, &chart);
                 });
             }
+            app.chart_references_section(ui, id, &chart, several);
             app.chart_section(ui, "Chart text", "Text", |app, ui| {
                 app.chart_text_rows(ui, id, &chart);
             });
@@ -930,10 +1246,35 @@ impl MastikApp {
         if let Some(kind) = pick.filter(|k| *k != chart.kind) {
             self.chart_commit(id, "Chart type", chart.with_kind(kind));
         }
+        let lollipops = matches!(chart.kind, ChartKind::Column | ChartKind::Bar)
+            && chart.options.bars.shape == chart::BarShape::Lollipops;
         if let Some((names, at)) = variants(chart) {
-            self.chart_segments(ui, id, chart, "Chart type", &names, at, |c, i| {
-                *c = with_variant(c, i);
-            });
+            // Lollipops don't stack: only Grouped is offered while they show.
+            let pick = ui::segmented_tipped(
+                ui,
+                ui.available_width(),
+                ui::SEGMENT_CELL_H,
+                names.len(),
+                at,
+                |i| !lollipops || i == 0,
+                |i| {
+                    if lollipops && i > 0 {
+                        "Lollipops don't stack"
+                    } else {
+                        "Chart type"
+                    }
+                },
+                |p, i, r, on| {
+                    if lollipops && i > 0 {
+                        ui::segment_label_disabled(p, r, names[i]);
+                    } else {
+                        ui::segment_label(p, r, names[i], on);
+                    }
+                },
+            );
+            if let Some(i) = pick {
+                self.chart_pick(id, chart, "Chart type", i, |c, i| *c = with_variant(c, i));
+            }
         }
     }
 
@@ -975,16 +1316,271 @@ impl MastikApp {
                 c.options = p.apply(c.kind, &c.options);
             });
         }
-        // The ground the chart is drawn for: its palette's colours and chrome
-        // follow, a colour of the user's own stays (`chart::with_dark`).
+        self.chart_background_row(ui, id);
+        // The theme the unset colours are derived for; a colour of the
+        // person's own stays whatever it is.
         self.chart_segments_of(
             ui,
             id,
             chart,
             "Chart theme",
-            &[(false, "Light"), (true, "Dark")],
-            chart.options.dark,
-            |c, dark| *c = chart::with_dark(c, dark),
+            &[
+                (chart::Theme::Auto, "Auto"),
+                (chart::Theme::Light, "Light"),
+                (chart::Theme::Dark, "Dark"),
+            ],
+            chart.options.theme,
+            |c, t| c.options.theme = t,
+        );
+        if chart.options.theme == chart::Theme::Auto {
+            let doc = &self.session.doc;
+            let ground = chart::ground_of(doc, id);
+            let picked = if chart::dark_on(ground.colour) {
+                "Dark"
+            } else {
+                "Light"
+            };
+            let from = match ground.from {
+                chart::GroundFrom::Own => "the background".to_string(),
+                chart::GroundFrom::Ancestor(a) => doc
+                    .get(a)
+                    .map_or_else(|| "the frame".to_string(), |n| n.name().to_string()),
+                chart::GroundFrom::Page => "the page".to_string(),
+            };
+            ui::selection_note(ui, &format!("{picked}, read from {from}"));
+        }
+        self.chart_plot_rows(ui, id, chart);
+        // Padding round the chart and the gap between its legend and body.
+        self.chart_pair(ui, |app, ui, w| {
+            app.chart_number(
+                ui,
+                id,
+                chart,
+                w,
+                "Padding",
+                "Chart padding",
+                Scrub::whole(0.25).range(0.0..=400.0),
+                0,
+                |c| c.options.padding,
+                |c, v| c.options.padding = v.max(0.0),
+            );
+            app.chart_number(
+                ui,
+                id,
+                chart,
+                w,
+                "Gap",
+                "Chart gap",
+                Scrub::whole(0.25).range(0.0..=400.0),
+                0,
+                |c| c.options.gap,
+                |c, v| c.options.gap = v.max(0.0),
+            );
+        });
+    }
+
+    /// *Background*: the chart frame's own fill, edited where it is one plain
+    /// colour (a single visible solid or bound fill, no fill style); otherwise
+    /// disabled, naming why. With no fill it reads *None*, and a click gives the
+    /// frame a white one to edit.
+    fn chart_background_row(&mut self, ui: &mut egui::Ui, id: NodeId) {
+        let doc = &self.session.doc;
+        let Some(node) = doc.get(id) else { return };
+        let fills: Vec<(usize, &mastik_core::BrushSource)> = node
+            .paint()
+            .fills
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.visible)
+            .map(|(i, f)| (i, &f.brush))
+            .collect();
+        let style = node
+            .styles()
+            .fills
+            .and_then(|s| doc.styles().get(s))
+            .map(|s| s.name.clone());
+        let why: Option<String> = match (&style, fills.as_slice()) {
+            (Some(name), _) => Some(format!("The background is the style {name}")),
+            (None, [_, _, ..]) => Some("The background has several fills: edit it in Fill".into()),
+            (None, [(_, b)]) => match &*doc.resolve_brush(id, b) {
+                Brush::Solid(_) => None,
+                Brush::Gradient(_) => Some("The background is a gradient: edit it in Fill".into()),
+                _ => Some("The background is an image: edit it in Fill".into()),
+            },
+            (None, []) => None,
+        };
+        let shown = fills
+            .first()
+            .map(|(_, b)| doc.resolve_brush(id, b).into_owned());
+        let (swatch, hex) = match &shown {
+            Some(Brush::Solid(c)) => (ui::Swatch::Solid(ui::color_to_egui(*c)), ui::hex_of(*c)),
+            Some(_) => (ui::Swatch::Mixed, String::new()),
+            None => (
+                ui::Swatch::Solid(egui::Color32::TRANSPARENT),
+                "None".to_string(),
+            ),
+        };
+        let slot = fills.first().map(|(i, _)| PaintSlot::Fill(*i));
+        let open = self
+            .picker
+            .as_ref()
+            .is_some_and(|p| Some(p.slot) == slot && self.session.selection.ids() == [id]);
+        let size = egui::vec2(ui.available_width(), ui::CONTROL_H);
+        let live = why.is_none();
+        let (_, resp) = ui::field_row_pressable(ui, size, open, live, |ui, ground| {
+            ui.spacing_mut().item_spacing.x = 7.0;
+            let (chip, _) = ui.allocate_exact_size(egui::Vec2::splat(14.0), egui::Sense::hover());
+            ui::paint_swatch(ui.painter(), chip, ground, swatch);
+            let ink = if live {
+                color::text()
+            } else {
+                theme::text::off()
+            };
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(&hex)
+                        .size(ui::CONTROL_PT)
+                        .color(theme::text::muted()),
+                );
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    ui.label(
+                        egui::RichText::new("Background")
+                            .size(ui::CONTROL_PT)
+                            .color(ink),
+                    );
+                });
+            });
+        });
+        if let Some(why) = why {
+            resp.on_hover_text(why);
+            return;
+        }
+        if !resp.clicked() {
+            return;
+        }
+        let at = resp.rect.left_top();
+        match slot {
+            Some(slot) => self.open_picker(ui, id, slot, at),
+            None => {
+                let fill = mastik_core::Fill {
+                    brush: Brush::Solid(mastik_core::peniko::Color::WHITE).into(),
+                    visible: true,
+                };
+                let fills = mastik_core::item::keyed_by_position([fill]);
+                self.session.name_step("Chart background", icon::CHART);
+                self.commit_edit(Transaction(vec![Operation::SetFills { id, fills }]));
+                self.open_picker(ui, id, PaintSlot::Fill(0), at);
+            }
+        }
+    }
+
+    /// *Plot background*: a colour row that starts at *None* and a click gives
+    /// a light grey to edit, a way back to none, and the radius beside it.
+    fn chart_plot_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        let rect_plot = chart.kind.rect_plot();
+        let slot = ChartColour::Plot;
+        let set = chart.options.plot.fill.is_some();
+        let swatch = colour_of(&self.session.doc, id, chart, slot)
+            .map_or(ui::Swatch::Solid(egui::Color32::TRANSPARENT), |c| {
+                ui::Swatch::Solid(ui::color_to_egui(c))
+            });
+        let full = ui.available_width();
+        let width = if set {
+            full - ui::CONTROL_H - ui::CARD_COL_GAP
+        } else {
+            full
+        };
+        let why = "Only a chart with a rectangular plot has a plot background";
+        let mut clear = false;
+        let disabled = ui::disable_unless(ui, rect_plot, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                if set {
+                    self.chart_colour_row(
+                        ui,
+                        id,
+                        slot,
+                        width,
+                        swatch,
+                        "Plot background",
+                        true,
+                        None,
+                    );
+                    clear = ui::field_button(ui, icon::X, ui::CONTROL_H, ui::FieldButton::Off)
+                        .on_hover_text("No plot background")
+                        .clicked();
+                    None
+                } else {
+                    let (_, resp) = ui::field_row_pressable(
+                        ui,
+                        egui::vec2(width, ui::CONTROL_H),
+                        false,
+                        true,
+                        |ui, ground| {
+                            ui.spacing_mut().item_spacing.x = 7.0;
+                            let (chip, _) = ui
+                                .allocate_exact_size(egui::Vec2::splat(14.0), egui::Sense::hover());
+                            ui::paint_swatch(ui.painter(), chip, ground, swatch);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(
+                                        egui::RichText::new("None")
+                                            .size(ui::CONTROL_PT)
+                                            .color(theme::text::muted()),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            ui.label(
+                                                egui::RichText::new("Plot background")
+                                                    .size(ui::CONTROL_PT)
+                                                    .color(color::text()),
+                                            );
+                                        },
+                                    );
+                                },
+                            );
+                        },
+                    );
+                    Some(resp)
+                }
+            })
+            .inner
+        });
+        if !rect_plot {
+            disabled.response.on_disabled_hover_text(why);
+        } else if let Some(resp) = disabled.inner
+            && resp.clicked()
+        {
+            let grey = Brush::Solid(mastik_core::peniko::Color::from_rgb8(0xF2, 0xF3, 0xF5));
+            self.chart_each(id, chart, "Plot background", |c| {
+                c.options.plot.fill = Some(grey.clone().into());
+            });
+            self.open_picker(ui, id, PaintSlot::Chart(slot), resp.rect.left_top());
+        }
+        if clear {
+            self.chart_each(id, chart, "Plot background", |c| c.options.plot.fill = None);
+        }
+        let radius_live = if !rect_plot {
+            Err(why)
+        } else if !set {
+            Err("No plot background to round")
+        } else {
+            Ok(())
+        };
+        self.chart_number_if(
+            ui,
+            radius_live,
+            id,
+            chart,
+            ui.available_width(),
+            "Radius",
+            "Plot radius",
+            Scrub::whole(0.25).range(0.0..=100.0),
+            0,
+            |c| c.options.plot.radius,
+            |c, v| c.options.plot.radius = v.max(0.0),
         );
     }
 
@@ -1228,7 +1824,7 @@ impl MastikApp {
         let w = ui.available_width();
         let styled = matches!(
             chart.kind,
-            ChartKind::Line | ChartKind::Area | ChartKind::Scatter
+            ChartKind::Line | ChartKind::Area | ChartKind::Scatter | ChartKind::Radar
         );
         for (slot, name, shown) in rows {
             let colour = colour_of(&self.session.doc, id, chart, slot).map(ui::color_to_egui);
@@ -1261,7 +1857,9 @@ impl MastikApp {
                     swatch,
                     &name,
                     shown != Some(false),
-                    total.as_deref(),
+                    total
+                        .as_deref()
+                        .map(|t| (t, "The node's total: the larger of what flows in and out")),
                 );
                 if let (true, ChartColour::Series(col)) = (style_button, slot) {
                     self.chart_series_style(ui, id, chart, col);
@@ -1283,6 +1881,824 @@ impl MastikApp {
                 }
             });
         }
+        if matches!(chart.kind, ChartKind::Column | ChartKind::Bar) {
+            let shown = chart
+                .mapping
+                .series
+                .iter()
+                .filter(|c| !chart.series.iter().any(|s| s.column == **c && !s.visible))
+                .count();
+            let live = if shown == 1 {
+                Ok(())
+            } else {
+                Err("Colour by category needs one series")
+            };
+            let on = chart.options.by_category;
+            self.chart_switch_if(ui, live, id, chart, "Colour by category", on, |c, on| {
+                c.options.by_category = on;
+            });
+        }
+        self.chart_highlight_rows(ui, id, chart);
+    }
+
+    /// *Highlight*: the categories or series drawn as they are, picked by name
+    /// from a dropdown (each pick turns one on or off); the others *Muted* or
+    /// *Faded*, the muted colour, and *Highlighted only* for the value labels.
+    fn chart_highlight_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        use chart::Highlighted;
+        let t = &chart.table;
+        let cat_col = chart.mapping.category.and_then(|c| t.index_of(c));
+        let mut categories: Vec<String> = Vec::new();
+        for r in &t.rows {
+            if let Some(c) = cat_col {
+                let name = r[c].trim();
+                if !name.is_empty() && !categories.iter().any(|n| n == name) {
+                    categories.push(name.to_string());
+                }
+            }
+        }
+        let mut series: Vec<String> = match chart.kind {
+            ChartKind::Scatter if chart.mapping.group.is_some() => chart::named_marks(chart)
+                .into_iter()
+                .flatten()
+                .map(|(n, _)| n)
+                .collect(),
+            _ => chart
+                .mapping
+                .series
+                .iter()
+                .filter_map(|c| t.column(*c).map(|c| c.name.clone()))
+                .collect(),
+        };
+        // A one-series chart lists categories only; a line or scatter series only;
+        // a pie its slices.
+        match chart.kind {
+            ChartKind::Line | ChartKind::Area | ChartKind::Scatter | ChartKind::Radar => {
+                categories.clear();
+            }
+            ChartKind::Pie => series.clear(),
+            _ if series.len() == 1 => series.clear(),
+            _ => {}
+        }
+        if chart.kind == ChartKind::Sankey {
+            return;
+        }
+        let h = &chart.highlight;
+        let (lit_cats, lit_series) = match &h.target {
+            Highlighted::None => (Vec::new(), Vec::new()),
+            Highlighted::Categories(n) => (n.clone(), Vec::new()),
+            Highlighted::Series(n) => (Vec::new(), n.clone()),
+        };
+        let shown = match (&h.target, lit_cats.len() + lit_series.len()) {
+            (Highlighted::None, _) | (_, 0) => "None".to_string(),
+            (_, n) if n <= 2 => lit_cats
+                .iter()
+                .chain(&lit_series)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", "),
+            (Highlighted::Categories(_), n) => format!("{n} categories"),
+            (_, n) => format!("{n} series"),
+        };
+        // `Ok` a category, `Err` a series; `None` clears.
+        let mut pick: Option<Option<Result<String, String>>> = None;
+        ui::labelled(ui, "Highlight", |ui| {
+            ui::combo_height(ui);
+            egui::ComboBox::from_id_salt(("chart-highlight", id))
+                .icon(ui::combo_chevron)
+                .width(ui.available_width())
+                .selected_text(ui::combo_text(&shown))
+                .show_ui(ui, |ui| {
+                    ui::menu_rows(ui);
+                    if ui
+                        .selectable_label(h.target == Highlighted::None, "None")
+                        .clicked()
+                    {
+                        pick = Some(None);
+                    }
+                    if !categories.is_empty() {
+                        ui.label(ui::eyebrow("Categories"));
+                        for c in &categories {
+                            if ui.selectable_label(lit_cats.contains(c), c).clicked() {
+                                pick = Some(Some(Ok(c.clone())));
+                            }
+                        }
+                    }
+                    if !series.is_empty() {
+                        ui.label(ui::eyebrow("Series"));
+                        for s in &series {
+                            if ui.selectable_label(lit_series.contains(s), s).clicked() {
+                                pick = Some(Some(Err(s.clone())));
+                            }
+                        }
+                    }
+                });
+        });
+        if let Some(p) = pick {
+            let next = toggled(&h.target, p);
+            let label = if next == Highlighted::None {
+                "Clear highlight"
+            } else {
+                "Highlight"
+            };
+            self.chart_each(id, chart, label, |c| c.highlight.target = next.clone());
+        }
+        if h.target == Highlighted::None {
+            return;
+        }
+        self.chart_segments_of(
+            ui,
+            id,
+            chart,
+            "Highlight others",
+            &[
+                (chart::Others::Muted, "Muted"),
+                (chart::Others::Faded, "Faded"),
+            ],
+            h.others,
+            |c, v| c.highlight.others = v,
+        );
+        if h.others == chart::Others::Muted {
+            self.chart_slot_row(ui, id, chart, ChartColour::Muted, "Muted colour");
+        }
+    }
+
+    /// *Flat* or *Fade*, and *Fade to*: areas and bars from their colour at the
+    /// value end to a share of it at the baseline. A bound series draws flat,
+    /// said on the card's left-out line.
+    fn chart_fade_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        let on = chart.options.fade.on;
+        self.chart_segments_of(
+            ui,
+            id,
+            chart,
+            "Fade",
+            &[(false, "Flat"), (true, "Fade")],
+            on,
+            |c, v| c.options.fade.on = v,
+        );
+        if on {
+            let w = ui.available_width();
+            self.chart_number(
+                ui,
+                id,
+                chart,
+                w,
+                "Fade to",
+                "Fade to",
+                Scrub::whole(0.5).range(0.0..=100.0),
+                0,
+                |c| c.options.fade.to,
+                |c, v| c.options.fade.to = v.clamp(0.0, 100.0),
+            );
+        }
+    }
+
+    /// A lollipop chart's Bars group: the stem and head sizes, the head's shape
+    /// and fill, *Connect series* for a dumbbell, and the stems' colour.
+    fn chart_lollipop_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        self.chart_pair(ui, |app, ui, w| {
+            app.chart_number(
+                ui,
+                id,
+                chart,
+                w,
+                "Stem",
+                "Stem width",
+                Scrub::fine(0.1, 1).range(0.0..=40.0),
+                1,
+                |c| c.options.bars.stem,
+                |c, v| c.options.bars.stem = v.max(0.0),
+            );
+            app.chart_number(
+                ui,
+                id,
+                chart,
+                w,
+                "Head",
+                "Head size",
+                Scrub::whole(0.25).range(0.0..=100.0),
+                0,
+                |c| c.options.bars.head,
+                |c, v| c.options.bars.head = v.max(0.0),
+            );
+        });
+        self.chart_segments_of(
+            ui,
+            id,
+            chart,
+            "Head shape",
+            &[
+                (PointShape::Circle, "Circle"),
+                (PointShape::Square, "Square"),
+                (PointShape::Diamond, "Diamond"),
+                (PointShape::Triangle, "Triangle"),
+            ],
+            chart.options.bars.head_shape,
+            |c, v| c.options.bars.head_shape = v,
+        );
+        self.chart_segments_of(
+            ui,
+            id,
+            chart,
+            "Head fill",
+            &[
+                (chart::PointStyle::Filled, "Filled"),
+                (chart::PointStyle::Hollow, "Hollow"),
+            ],
+            chart.options.bars.head_style,
+            |c, v| c.options.bars.head_style = v,
+        );
+        let many = chart
+            .mapping
+            .series
+            .iter()
+            .filter(|c| !chart.series.iter().any(|s| s.column == **c && !s.visible))
+            .count()
+            > 1;
+        let on = chart.options.bars.connect;
+        self.chart_switch_if(
+            ui,
+            if many {
+                Ok(())
+            } else {
+                Err("Connecting needs two series")
+            },
+            id,
+            chart,
+            "Connect series",
+            on,
+            |c, on| c.options.bars.connect = on,
+        );
+        let swatch = colour_of(&self.session.doc, id, chart, ChartColour::Stem)
+            .map_or(ui::Swatch::Mixed, |c| {
+                ui::Swatch::Solid(ui::color_to_egui(c))
+            });
+        let set = chart.options.bars.stem_colour.is_some();
+        let full = ui.available_width();
+        let reset = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                let w = if set {
+                    full - ui::CONTROL_H - ui::CARD_COL_GAP
+                } else {
+                    full
+                };
+                let chip = (!set)
+                    .then_some(("Series", "Each series' own colour; pick a colour to set it"));
+                self.chart_colour_row(
+                    ui,
+                    id,
+                    ChartColour::Stem,
+                    w,
+                    swatch,
+                    "Stem colour",
+                    true,
+                    chip,
+                );
+                set && ui::field_button(
+                    ui,
+                    icon::ARROW_COUNTER_CLOCKWISE,
+                    ui::CONTROL_H,
+                    ui::FieldButton::Off,
+                )
+                .on_hover_text("Use each series' colour")
+                .clicked()
+            })
+            .inner;
+        if reset {
+            self.chart_each(id, chart, "Stem colour", |c| {
+                c.options.bars.stem_colour = None
+            });
+        }
+    }
+
+    /// A waterfall's Steps: the three step colours, the totals picked by
+    /// category, the final total's name and the connectors.
+    fn chart_step_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        for (slot, name) in [
+            (ChartColour::Step(0), "Increase"),
+            (ChartColour::Step(1), "Decrease"),
+            (ChartColour::Step(2), "Total"),
+        ] {
+            self.chart_slot_row(ui, id, chart, slot, name);
+        }
+        let w = &chart.options.waterfall;
+        let t = &chart.table;
+        let cats: Vec<String> = chart
+            .mapping
+            .category
+            .and_then(|c| t.index_of(c))
+            .map(|c| {
+                t.rows
+                    .iter()
+                    .map(|r| r[c].trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let shown = match w.totals.len() {
+            0 => "None".to_string(),
+            1 | 2 => w.totals.join(", "),
+            n => format!("{n} totals"),
+        };
+        let mut pick: Option<String> = None;
+        ui::labelled(ui, "Totals at", |ui| {
+            ui::combo_height(ui);
+            egui::ComboBox::from_id_salt(("chart-waterfall-totals", id))
+                .icon(ui::combo_chevron)
+                .width(ui.available_width())
+                .selected_text(ui::combo_text(&shown))
+                .show_ui(ui, |ui| {
+                    ui::menu_rows(ui);
+                    for c in &cats {
+                        if ui.selectable_label(w.totals.contains(c), c).clicked() {
+                            pick = Some(c.clone());
+                        }
+                    }
+                });
+        });
+        if let Some(name) = pick {
+            self.chart_each(id, chart, "Waterfall totals", |c| {
+                let t = &mut c.options.waterfall.totals;
+                match t.iter().position(|n| *n == name) {
+                    Some(i) => {
+                        t.remove(i);
+                    }
+                    None => t.push(name.clone()),
+                }
+            });
+        }
+        let on = w.final_total.is_some();
+        self.chart_switch(ui, id, chart, "Final total", on, |c, on| {
+            c.options.waterfall.final_total = on.then(|| "Total".to_string());
+        });
+        if on {
+            let width = ui.available_width();
+            self.chart_text(
+                ui,
+                id,
+                chart,
+                "chart-final-total",
+                width,
+                "Name",
+                "The final total's name",
+                "Final total",
+                |c| {
+                    c.options
+                        .waterfall
+                        .final_total
+                        .get_or_insert_with(|| "Total".into())
+                },
+            );
+        }
+        let conn = w.connectors;
+        self.chart_switch(ui, id, chart, "Connectors", conn, |c, on| {
+            c.options.waterfall.connectors = on;
+        });
+        if conn {
+            let dashed = w.dashed;
+            self.chart_switch(ui, id, chart, "Dashed connectors", dashed, |c, on| {
+                c.options.waterfall.dashed = on;
+            });
+        }
+        self.chart_highlight_rows(ui, id, chart);
+    }
+
+    /// *References*: lines and bands on an axis, a fold headed by a `+` that
+    /// adds a line at the value axis's middle, each row opening its popover.
+    fn chart_references_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        chart: &Chart,
+        several: bool,
+    ) {
+        const KEY: &str = "Chart references";
+        let open = !self.collapsed_panels.contains(KEY);
+        let add = if chart.kind == ChartKind::Radar {
+            Err("A radar takes no references")
+        } else if !chart.kind.has_axes() {
+            Err("Only a chart with axes takes references")
+        } else if several {
+            Err("Edit references one chart at a time")
+        } else if chart.references.len() >= chart::MAX_REFERENCES {
+            Err("At most 16 references")
+        } else {
+            Ok(())
+        };
+        let (head, added) = ui::fold_rule_add(ui, "References", open, chart.references.len(), add);
+        if head.clicked() {
+            if open {
+                self.collapsed_panels.insert(KEY);
+            } else {
+                self.collapsed_panels.remove(KEY);
+            }
+        }
+        if added {
+            let next_id = chart.references.iter().map(|r| r.id + 1).max().unwrap_or(1);
+            let (lo, hi) = self.drawn_extent(id, chart, true);
+            let mut next = chart.clone();
+            next.references.push(chart::Reference {
+                id: next_id,
+                at: chart::At::Value(((lo + hi) / 2.0 * 100.0).round() / 100.0),
+                ..chart::Reference::default()
+            });
+            self.chart_commit(id, "Add reference", next);
+            self.collapsed_panels.remove(KEY);
+        }
+        if !open {
+            return;
+        }
+        match add {
+            Err(why) if !chart.kind.rect_plot() || several => {
+                ui::selection_note(ui, why);
+                return;
+            }
+            _ => {}
+        }
+        for r in chart.references.clone() {
+            self.chart_reference_row(ui, id, chart, &r);
+        }
+    }
+
+    /// One reference's row: its swatch, label and where it stands, its eye and
+    /// its ×; the row opens its popover.
+    fn chart_reference_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        chart: &Chart,
+        r: &chart::Reference,
+    ) {
+        let swatch = colour_of(&self.session.doc, id, chart, ChartColour::Reference(r.id))
+            .map_or(ui::Swatch::Mixed, |c| {
+                ui::Swatch::Solid(ui::color_to_egui(c))
+            });
+        let at = at_words(&r.at);
+        let at = match r.kind {
+            chart::RefKind::Line => at,
+            chart::RefKind::Band => format!("{at}–{}", at_words(&r.to)),
+        };
+        let name = if r.label.trim().is_empty() {
+            "Reference".to_string()
+        } else {
+            r.label.replace("{value}", "").trim().to_string()
+        };
+        let buttons = 2.0 * (ui::CONTROL_H + ui::CARD_COL_GAP);
+        let w = ui.available_width() - buttons;
+        let rid = r.id;
+        let (mut delete, mut eye) = (false, false);
+        let row = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                let (_, resp) = ui::field_row_pressable(
+                    ui,
+                    egui::vec2(w, ui::CONTROL_H),
+                    false,
+                    r.visible,
+                    |ui, ground| {
+                        ui.spacing_mut().item_spacing.x = 7.0;
+                        let (chip, _) =
+                            ui.allocate_exact_size(egui::Vec2::splat(14.0), egui::Sense::hover());
+                        ui::paint_swatch(ui.painter(), chip, ground, swatch);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new(&at)
+                                    .size(ui::CONTROL_PT)
+                                    .color(theme::text::muted()),
+                            );
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(&name)
+                                                .size(ui::CONTROL_PT)
+                                                .color(color::text()),
+                                        )
+                                        .truncate(),
+                                    );
+                                },
+                            );
+                        });
+                    },
+                );
+                let glyph = if r.visible {
+                    icon::EYE
+                } else {
+                    icon::EYE_SLASH
+                };
+                eye = ui::field_button(ui, glyph, ui::CONTROL_H, ui::FieldButton::Off)
+                    .on_hover_text(if r.visible {
+                        "Hide this reference"
+                    } else {
+                        "Show this reference"
+                    })
+                    .clicked();
+                delete = ui::field_button(ui, icon::X, ui::CONTROL_H, ui::FieldButton::Off)
+                    .on_hover_text("Remove this reference")
+                    .clicked();
+                resp
+            })
+            .inner;
+        egui::Popup::menu(&row)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .gap(ui::MENU_GAP)
+            .show(|ui| {
+                ui::popup_rows(ui);
+                ui.set_min_width(REFERENCE_POPOVER_W);
+                ui.set_max_width(REFERENCE_POPOVER_W);
+                self.chart_reference_popover(ui, id, chart, rid);
+            });
+        if eye {
+            self.chart_each(id, chart, "Show reference", |c| {
+                if let Some(r) = c.references.iter_mut().find(|r| r.id == rid) {
+                    r.visible = !r.visible;
+                }
+            });
+        }
+        if delete {
+            self.chart_each(id, chart, "Remove reference", |c| {
+                c.references.retain(|r| r.id != rid);
+            });
+        }
+    }
+
+    /// A reference's popover: its kind, axis, where it stands (and a band's
+    /// far end), its label, colour, width, dash, label place and *Take into
+    /// the range*. Every field one step named for it.
+    fn chart_reference_popover(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart, rid: u32) {
+        let Some(r) = chart.references.iter().find(|r| r.id == rid).cloned() else {
+            return;
+        };
+        let with = move |c: &mut Chart, f: &dyn Fn(&mut chart::Reference)| {
+            if let Some(r) = c.references.iter_mut().find(|r| r.id == rid) {
+                f(r);
+            }
+        };
+        self.chart_segments_of(
+            ui,
+            id,
+            chart,
+            "Reference kind",
+            &[
+                (chart::RefKind::Line, "Line"),
+                (chart::RefKind::Band, "Band"),
+            ],
+            r.kind,
+            move |c, v| with(c, &|r| r.kind = v),
+        );
+        let axes: &[(chart::RefAxis, &str)] = &[
+            (chart::RefAxis::Value, "Value"),
+            (chart::RefAxis::Category, "Category"),
+        ];
+        self.chart_segments_of(
+            ui,
+            id,
+            chart,
+            "Reference axis",
+            axes,
+            r.axis,
+            move |c, v| {
+                with(c, &|r| {
+                    if r.axis != v {
+                        r.axis = v;
+                        r.at = chart::At::AxisStart;
+                        r.to = chart::At::AxisEnd;
+                    }
+                })
+            },
+        );
+        self.chart_reference_at(ui, id, chart, &r, false);
+        if r.kind == chart::RefKind::Band {
+            self.chart_reference_at(ui, id, chart, &r, true);
+        }
+        let w = ui.available_width();
+        self.chart_text(
+            ui,
+            id,
+            chart,
+            ("chart-ref-label", rid),
+            w,
+            "Label",
+            "Reference label: {value} writes where it stands",
+            "Reference label",
+            move |c| {
+                let i = c.references.iter().position(|r| r.id == rid).unwrap_or(0);
+                &mut c.references[i].label
+            },
+        );
+        let swatch = colour_of(&self.session.doc, id, chart, ChartColour::Reference(rid))
+            .map_or(ui::Swatch::Mixed, |c| {
+                ui::Swatch::Solid(ui::color_to_egui(c))
+            });
+        let half = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+            self.chart_colour_row(
+                ui,
+                id,
+                ChartColour::Reference(rid),
+                half,
+                swatch,
+                "Colour",
+                true,
+                None,
+            );
+            self.chart_number(
+                ui,
+                id,
+                chart,
+                half,
+                "Width",
+                "Reference width",
+                Scrub::fine(0.05, 1).range(0.5..=16.0),
+                1,
+                move |c| {
+                    c.references
+                        .iter()
+                        .find(|r| r.id == rid)
+                        .map_or(1.5, |r| r.width)
+                },
+                move |c, v| with(c, &|r| r.width = v.clamp(0.5, 16.0)),
+            );
+        });
+        self.chart_segments_of(
+            ui,
+            id,
+            chart,
+            "Reference dash",
+            &[
+                (chart::Dash::Solid, "Solid"),
+                (chart::Dash::Dashed, "Dashed"),
+                (chart::Dash::Dotted, "Dotted"),
+            ],
+            r.dash,
+            move |c, v| with(c, &|r| r.dash = v),
+        );
+        self.chart_segments_of(
+            ui,
+            id,
+            chart,
+            "Reference label place",
+            &[
+                (chart::LabelAt::Start, "Start"),
+                (chart::LabelAt::Middle, "Middle"),
+                (chart::LabelAt::End, "End"),
+            ],
+            r.label_at,
+            move |c, v| with(c, &|r| r.label_at = v),
+        );
+        let typed = matches!(r.at, chart::At::Value(_)) && r.axis == chart::RefAxis::Value;
+        self.chart_switch_if(
+            ui,
+            if typed {
+                Ok(())
+            } else {
+                Err("A computed or category reference is inside the data")
+            },
+            id,
+            chart,
+            "Take into the range",
+            r.in_range,
+            move |c, on| with(c, &|r| r.in_range = on),
+        );
+    }
+
+    /// Where a reference stands (`to`: a band's far end): on the value axis a
+    /// typed value or a statistic of every series shown or one; on the category
+    /// axis a category, or a number on a scatter's X; either end of the axis.
+    fn chart_reference_at(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        chart: &Chart,
+        r: &chart::Reference,
+        to: bool,
+    ) {
+        use chart::{At, Stat};
+        let rid = r.id;
+        let now = if to { r.to.clone() } else { r.at.clone() };
+        let label: &'static str = if to {
+            "To"
+        } else if r.kind == chart::RefKind::Band {
+            "From"
+        } else {
+            "At"
+        };
+        let mut options: Vec<(At, String)> = vec![];
+        let value_axis = r.axis == chart::RefAxis::Value;
+        let scatter = chart.kind == ChartKind::Scatter;
+        if value_axis || scatter {
+            let v = match now {
+                At::Value(v) => v,
+                _ => 0.0,
+            };
+            options.push((At::Value(v), "Value".into()));
+        }
+        if value_axis {
+            for (s, n) in [
+                (Stat::Average, "Average"),
+                (Stat::Median, "Median"),
+                (Stat::Min, "Minimum"),
+                (Stat::Max, "Maximum"),
+            ] {
+                let of = match &now {
+                    At::Stat { of, .. } => *of,
+                    _ => None,
+                };
+                options.push((At::Stat { stat: s, of }, n.into()));
+            }
+        } else if !scatter {
+            let t = &chart.table;
+            if let Some(c) = chart.mapping.category.and_then(|c| t.index_of(c)) {
+                for row in &t.rows {
+                    let n = row[c].trim();
+                    if !n.is_empty() && !options.iter().any(|(_, o)| o == n) {
+                        options.push((At::Category(n.into()), n.into()));
+                    }
+                }
+            }
+        }
+        if r.kind == chart::RefKind::Band {
+            options.push((At::AxisStart, "Start".into()));
+            options.push((At::AxisEnd, "End".into()));
+        }
+        let lit = options
+            .iter()
+            .position(|(a, _)| match (a, &now) {
+                (At::Value(_), At::Value(_)) => true,
+                (At::Stat { stat: x, .. }, At::Stat { stat: y, .. }) => x == y,
+                (a, b) => a == b,
+            })
+            .unwrap_or(0);
+        let names: Vec<&str> = options.iter().map(|(_, n)| n.as_str()).collect();
+        let picks: Vec<At> = options.iter().map(|(a, _)| a.clone()).collect();
+        let salt: &'static str = if to { "chart-ref-to" } else { "chart-ref-at" };
+        self.chart_menu(ui, id, chart, salt, label, &names, lit, move |c, i| {
+            if let Some(r) = c.references.iter_mut().find(|r| r.id == rid) {
+                let a = picks[i].clone();
+                if to {
+                    r.to = a;
+                } else {
+                    r.at = a;
+                }
+            }
+        });
+        match now {
+            At::Value(v) => {
+                let w = ui.available_width();
+                self.chart_number(
+                    ui,
+                    id,
+                    chart,
+                    w,
+                    "Value",
+                    "Reference value",
+                    Scrub::fine(0.1, 2),
+                    2,
+                    move |_| v,
+                    move |c, v| {
+                        if let Some(r) = c.references.iter_mut().find(|r| r.id == rid) {
+                            let a = At::Value(v);
+                            if to {
+                                r.to = a;
+                            } else {
+                                r.at = a;
+                            }
+                        }
+                    },
+                );
+            }
+            At::Stat { stat, of } if !to => {
+                let mut series: Vec<(Option<chart::ColumnId>, String)> =
+                    vec![(None, "Every series shown".into())];
+                for c in &chart.mapping.series {
+                    if let Some(col) = chart.table.column(*c) {
+                        series.push((Some(*c), col.name.clone()));
+                    }
+                }
+                let names: Vec<&str> = series.iter().map(|(_, n)| n.as_str()).collect();
+                let lit = series.iter().position(|(c, _)| *c == of).unwrap_or(0);
+                let cols: Vec<Option<chart::ColumnId>> = series.iter().map(|(c, _)| *c).collect();
+                self.chart_menu(
+                    ui,
+                    id,
+                    chart,
+                    "chart-ref-of",
+                    "Of",
+                    &names,
+                    lit,
+                    move |c, i| {
+                        if let Some(r) = c.references.iter_mut().find(|r| r.id == rid) {
+                            r.at = At::Stat { stat, of: cols[i] };
+                        }
+                    },
+                );
+            }
+            _ => {}
+        }
     }
 
     /// One of the chart's own colours (not a series') as a full-width
@@ -1298,14 +2714,44 @@ impl MastikApp {
         let swatch = colour_of(&self.session.doc, id, chart, slot).map_or(ui::Swatch::Mixed, |c| {
             ui::Swatch::Solid(ui::color_to_egui(c))
         });
-        let width = ui.available_width();
-        self.chart_colour_row(ui, id, slot, width, swatch, name, true, None);
+        // An unset colour says it follows the theme, as an inheriting value
+        // does; a set one offers the way back.
+        let set = is_set(chart, slot);
+        let derived = (!set).then_some((
+            "From the theme",
+            "Derived from the theme and the background; pick a colour to set it",
+        ));
+        let full = ui.available_width();
+        let reset = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                let width = if set {
+                    full - ui::CONTROL_H - ui::CARD_COL_GAP
+                } else {
+                    full
+                };
+                self.chart_colour_row(ui, id, slot, width, swatch, name, true, derived);
+                set && ui::field_button(
+                    ui,
+                    icon::ARROW_COUNTER_CLOCKWISE,
+                    ui::CONTROL_H,
+                    ui::FieldButton::Off,
+                )
+                .on_hover_text("Use the theme's colour")
+                .clicked()
+            })
+            .inner;
+        if reset {
+            self.chart_each(id, chart, "Use the theme's colour", |c| {
+                *c = with_paint(c, slot, None);
+            });
+        }
     }
 
     /// One colour of the chart as a field `width` wide, the whole of which opens
     /// the picker on the slot while `live` (a hidden series' row is not, and says
-    /// so): its swatch, its name (dim when not), a right-aligned `total`, and,
-    /// bound, its variable's name in a capsule.
+    /// so): its swatch, its name (dim when not), a right-aligned `detail` with
+    /// its tip, and, bound, its variable's name in a capsule.
     #[allow(clippy::too_many_arguments)]
     fn chart_colour_row(
         &mut self,
@@ -1316,7 +2762,7 @@ impl MastikApp {
         swatch: ui::Swatch,
         name: &str,
         live: bool,
-        total: Option<&str>,
+        detail: Option<(&str, &str)>,
     ) {
         let open = self
             .picker
@@ -1333,13 +2779,13 @@ impl MastikApp {
                 theme::text::off()
             };
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if let Some(total) = total {
+                if let Some((text, tip)) = detail {
                     ui.label(
-                        egui::RichText::new(total)
+                        egui::RichText::new(text)
                             .size(ui::CONTROL_PT)
                             .color(theme::text::muted()),
                     )
-                    .on_hover_text("The node's total: the larger of what flows in and out");
+                    .on_hover_text(tip);
                 }
                 if let Some((var, _)) = self.chart_binding(id, slot) {
                     let doc = &self.session.doc;
@@ -1440,10 +2886,8 @@ impl MastikApp {
             });
         if let Some(pick) = pick {
             let mut next = chart.clone();
-            if !next.series.iter().any(|s| s.column == col)
-                && let Some(fill) = chart::series_fill(chart, col)
-            {
-                next = chart::with_series_fill(&next, col, fill);
+            if !next.series.iter().any(|s| s.column == col) {
+                next = chart::with_series_fill(&next, col, None);
             }
             let s = next.series.iter_mut().find(|s| s.column == col);
             let label = match (pick, s) {
@@ -1463,7 +2907,126 @@ impl MastikApp {
 
     fn chart_mark_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
         match chart.kind {
-            ChartKind::Column | ChartKind::Bar => {
+            ChartKind::Radar => {
+                self.chart_segments_of(
+                    ui,
+                    id,
+                    chart,
+                    "Radar grid",
+                    &[
+                        (chart::RadarGrid::Polygon, "Polygon"),
+                        (chart::RadarGrid::Circle, "Circle"),
+                    ],
+                    chart.options.radar.grid,
+                    |c, v| c.options.radar.grid = v,
+                );
+                let spokes = chart.options.radar.spokes;
+                self.chart_switch(ui, id, chart, "Spokes", spokes, |c, on| {
+                    c.options.radar.spokes = on;
+                });
+                self.chart_pair(ui, |app, ui, w| {
+                    app.chart_number(
+                        ui,
+                        id,
+                        chart,
+                        w,
+                        "Start",
+                        "Radar start angle",
+                        Scrub::whole(1.0).range(-360.0..=360.0),
+                        0,
+                        |c| c.options.radar.start_angle,
+                        |c, v| c.options.radar.start_angle = v.clamp(-360.0, 360.0),
+                    );
+                    app.chart_number(
+                        ui,
+                        id,
+                        chart,
+                        w,
+                        "Width",
+                        "Line width",
+                        Scrub::fine(0.1, 1).range(0.0..=40.0),
+                        1,
+                        |c| c.options.lines.width,
+                        |c, v| c.options.lines.width = v.max(0.0),
+                    );
+                });
+                self.chart_segments_of(
+                    ui,
+                    id,
+                    chart,
+                    "Points",
+                    &[
+                        (chart::PointStyle::None, "None"),
+                        (chart::PointStyle::Hollow, "Hollow"),
+                        (chart::PointStyle::Filled, "Filled"),
+                    ],
+                    chart.options.lines.points,
+                    |c, v| c.options.lines.points = v,
+                );
+                let filled = chart.options.radar.filled;
+                self.chart_number_if(
+                    ui,
+                    if filled {
+                        Ok(())
+                    } else {
+                        Err("Only a filled radar paints its area")
+                    },
+                    id,
+                    chart,
+                    ui.available_width(),
+                    "Area",
+                    "Area opacity",
+                    Scrub::whole(0.5).range(0.0..=100.0),
+                    0,
+                    |c| c.options.lines.area_opacity * 100.0,
+                    |c, v| c.options.lines.area_opacity = (v / 100.0).clamp(0.0, 1.0),
+                );
+            }
+            ChartKind::Column | ChartKind::Bar | ChartKind::Waterfall => {
+                let b = &chart.options.bars;
+                let waterfall = chart.kind == ChartKind::Waterfall;
+                let lollipops = !waterfall && b.shape == chart::BarShape::Lollipops;
+                if !waterfall {
+                    // One reason on both controls: lollipops don't stack.
+                    let stacked = b.stacking != chart::Stacking::Apart;
+                    let pick = ui::segmented_tipped(
+                        ui,
+                        ui.available_width(),
+                        ui::SEGMENT_CELL_H,
+                        2,
+                        usize::from(lollipops),
+                        |i| i == 0 || !stacked,
+                        |i| {
+                            if i == 1 && stacked {
+                                "Lollipops don't stack"
+                            } else {
+                                "Bar shape"
+                            }
+                        },
+                        |p, i, r, on| match i {
+                            0 => ui::segment_label(p, r, "Bars", on),
+                            _ if stacked => ui::segment_label_disabled(p, r, "Lollipops"),
+                            _ => ui::segment_label(p, r, "Lollipops", on),
+                        },
+                    );
+                    if let Some(i) = pick {
+                        self.chart_each(id, chart, "Bar shape", |c| {
+                            c.options.bars.shape = if i == 1 {
+                                chart::BarShape::Lollipops
+                            } else {
+                                chart::BarShape::Bars
+                            };
+                        });
+                    }
+                }
+                // The slots a bar or a lollipop takes, either way.
+                let bar_gap = if waterfall {
+                    Err("A waterfall draws one bar a step")
+                } else if lollipops && b.connect {
+                    Err("Connected heads share one place")
+                } else {
+                    Ok(())
+                };
                 self.chart_pair(ui, |app, ui, w| {
                     app.chart_number(
                         ui,
@@ -1477,8 +3040,9 @@ impl MastikApp {
                         |c| c.options.bars.group_gap,
                         |c, v| c.options.bars.group_gap = v,
                     );
-                    app.chart_number(
+                    app.chart_number_if(
                         ui,
+                        bar_gap,
                         id,
                         chart,
                         w,
@@ -1490,24 +3054,63 @@ impl MastikApp {
                         |c, v| c.options.bars.bar_gap = v,
                     );
                 });
-                self.chart_number(
-                    ui,
-                    id,
-                    chart,
-                    ui.available_width(),
-                    "Radius",
-                    "Bar radius",
-                    Scrub::whole(0.25).range(0.0..=100.0),
-                    0,
-                    |c| c.options.bars.radius,
-                    |c, v| c.options.bars.radius = v,
-                );
-                let all = chart.options.bars.radius_all;
-                self.chart_switch(ui, id, chart, "Round every corner", all, |c, on| {
-                    c.options.bars.radius_all = on;
-                });
+                if lollipops {
+                    self.chart_lollipop_rows(ui, id, chart);
+                } else {
+                    self.chart_number(
+                        ui,
+                        id,
+                        chart,
+                        ui.available_width(),
+                        "Radius",
+                        "Bar radius",
+                        Scrub::whole(0.25).range(0.0..=100.0),
+                        0,
+                        |c| c.options.bars.radius,
+                        |c, v| c.options.bars.radius = v,
+                    );
+                    self.chart_fade_rows(ui, id, chart);
+                    // A floating step rounds every corner already.
+                    if !waterfall {
+                        let all = chart.options.bars.radius_all;
+                        self.chart_switch(ui, id, chart, "Round every corner", all, |c, on| {
+                            c.options.bars.radius_all = on;
+                        });
+                    }
+                }
+                // A waterfall runs in table order: its walk is the order.
+                if !waterfall {
+                    self.chart_menu_of(
+                        ui,
+                        id,
+                        chart,
+                        "chart-bar-order",
+                        "Bar order",
+                        ORDERS,
+                        chart.options.bars.order,
+                        |c, v| c.options.bars.order = v,
+                    );
+                }
+                if !waterfall && chart.options.bars.order != chart::Order::Table {
+                    let by = if chart.options.bars.stacking == chart::Stacking::Apart {
+                        let first =
+                            chart.mapping.series.iter().find(|c| {
+                                !chart.series.iter().any(|s| s.column == **c && !s.visible)
+                            });
+                        let name = first
+                            .and_then(|c| chart.table.column(*c))
+                            .map_or("the first series", |c| c.name.as_str());
+                        format!("By {name}, the first series shown")
+                    } else {
+                        "By each stack's total".to_string()
+                    };
+                    ui::selection_note(ui, &by);
+                }
             }
             ChartKind::Line | ChartKind::Area => {
+                if chart.kind == ChartKind::Area {
+                    self.chart_fade_rows(ui, id, chart);
+                }
                 // A line picks its curve as its Type variant; an area here, every
                 // curve the generator draws for it.
                 if chart.kind == ChartKind::Area {
@@ -1641,10 +3244,16 @@ impl MastikApp {
                         |c, v| c.options.slices.start_angle = v,
                     );
                 });
-                let sort = chart.options.slices.sort;
-                self.chart_switch(ui, id, chart, "Sort by value", sort, |c, on| {
-                    c.options.slices.sort = on;
-                });
+                self.chart_menu_of(
+                    ui,
+                    id,
+                    chart,
+                    "chart-slice-order",
+                    "Slice order",
+                    ORDERS,
+                    chart.options.slices.order,
+                    |c, v| c.options.slices.order = v,
+                );
                 let group = chart.options.slices.group_below.is_some();
                 self.chart_switch(ui, id, chart, "Group small slices", group, |c, on| {
                     c.options.slices.group_below = on.then_some(3.0);
@@ -1840,29 +3449,113 @@ impl MastikApp {
                 );
             }
         }
-        let outline = chart.options.outline;
-        self.chart_switch(
+        // One colour for values under the baseline; a 100% chart's are shares.
+        if matches!(
+            chart.kind,
+            ChartKind::Column | ChartKind::Bar | ChartKind::Line | ChartKind::Area
+        ) {
+            let percent = match chart.kind {
+                ChartKind::Area => chart.options.lines.area_stacking == chart::Stacking::Percent,
+                ChartKind::Line => false,
+                _ => chart.options.bars.stacking == chart::Stacking::Percent,
+            };
+            let live = if percent {
+                Err("A 100% chart draws shares, none below zero")
+            } else {
+                Ok(())
+            };
+            let on = chart.options.below_zero.is_some();
+            self.chart_switch_if(ui, live, id, chart, "Colour below zero", on, |c, on| {
+                c.options.below_zero = on.then(|| {
+                    Brush::Solid(mastik_core::peniko::Color::from_rgb8(0xC0, 0x39, 0x2B)).into()
+                });
+            });
+            // Its own colour only: unset is the switch off, so no reset.
+            if on && live.is_ok() {
+                let swatch = colour_of(&self.session.doc, id, chart, ChartColour::BelowZero)
+                    .map_or(ui::Swatch::Mixed, |c| {
+                        ui::Swatch::Solid(ui::color_to_egui(c))
+                    });
+                let w = ui.available_width();
+                self.chart_colour_row(
+                    ui,
+                    id,
+                    ChartColour::BelowZero,
+                    w,
+                    swatch,
+                    "Below zero",
+                    true,
+                    None,
+                );
+            }
+        }
+        // The marks' stroke: on a solid mark (a separator, in the background
+        // unless set) or over a tint of it (an outline, in the mark's colour).
+        let stroke = &chart.options.stroke;
+        self.chart_segments_of(
             ui,
             id,
             chart,
-            "Outline marks",
-            outline.is_some(),
-            |c, on| c.options.outline = on.then_some(chart::OUTLINE_WIDTH),
+            "Mark stroke",
+            &[
+                (chart::StrokeStyle::Solid, "Solid"),
+                (chart::StrokeStyle::Outline, "Outline"),
+            ],
+            stroke.style,
+            |c, v| c.options.stroke.style = v,
         );
-        if outline.is_some() {
+        let half = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
             self.chart_number(
                 ui,
                 id,
                 chart,
-                ui.available_width(),
-                "Stroke",
-                "Outline width",
-                Scrub::fine(0.1, 1).range(0.1..=20.0),
+                half,
+                "Width",
+                "Mark stroke width",
+                Scrub::fine(0.1, 1).range(0.0..=20.0),
                 1,
-                |c| c.options.outline.unwrap_or(chart::OUTLINE_WIDTH),
-                |c, v| c.options.outline = Some(v.max(0.1)),
+                |c| c.options.stroke.width,
+                |c, v| c.options.stroke.width = v.max(0.0),
             );
-        }
+            let swatch = colour_of(&self.session.doc, id, chart, ChartColour::Stroke)
+                .map_or(ui::Swatch::Mixed, |c| {
+                    ui::Swatch::Solid(ui::color_to_egui(c))
+                });
+            // Unset, the stroke is the background's or each mark's own.
+            let chip = match (stroke.colour.is_some(), stroke.style) {
+                (true, _) => None,
+                (false, chart::StrokeStyle::Solid) => Some((
+                    "Background",
+                    "The background's colour; pick a colour to set it",
+                )),
+                (false, chart::StrokeStyle::Outline) => {
+                    Some(("Series", "Each mark's own colour; pick a colour to set it"))
+                }
+            };
+            let set = stroke.colour.is_some();
+            let w = if set {
+                half - ui::CONTROL_H - ui::CARD_COL_GAP
+            } else {
+                half
+            };
+            self.chart_colour_row(ui, id, ChartColour::Stroke, w, swatch, "Stroke", true, chip);
+            set && ui::field_button(
+                ui,
+                icon::ARROW_COUNTER_CLOCKWISE,
+                ui::CONTROL_H,
+                ui::FieldButton::Off,
+            )
+            .on_hover_text("Use the default stroke colour")
+            .clicked()
+        })
+        .inner
+        .then(|| {
+            self.chart_each(id, chart, "Mark stroke colour", |c| {
+                c.options.stroke.colour = None;
+            });
+        });
     }
 
     fn chart_axis_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
@@ -1947,31 +3640,56 @@ impl MastikApp {
                     "Category axis colour"
                 };
                 self.chart_slot_row(ui, id, chart, ChartColour::Axis(value), name);
+                // Its own half-width field, since the colour row is one control.
+                let half = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
+                self.chart_number(
+                    ui,
+                    id,
+                    chart,
+                    half,
+                    "Width",
+                    "Axis line width",
+                    Scrub::fine(0.05, 1).range(0.5..=8.0),
+                    1,
+                    move |c| pick(c).line_width,
+                    move |c, v| {
+                        let mut a = pick(c);
+                        a.line_width = (v * 2.0).round().clamp(1.0, 16.0) / 2.0;
+                        put(c, a);
+                    },
+                );
             }
             // A band axis (columns, bars, lines, areas) draws no gridlines of its
             // own: only a scatter's X axis is a scale with ticks to rule.
-            let grid = match value || chart.kind == ChartKind::Scatter {
+            // A radar's category gridlines are its spokes.
+            let grid = match value || matches!(chart.kind, ChartKind::Scatter | ChartKind::Radar) {
                 true => Ok(()),
-                false => Err("Only a scatter's X axis draws gridlines"),
+                false => {
+                    Err("Only a scatter's X axis and a radar's spokes draw category gridlines")
+                }
             };
-            self.chart_switch_if(
-                ui,
-                grid,
-                id,
-                chart,
-                if value {
-                    "Value gridlines"
-                } else {
-                    "Category gridlines"
-                },
-                axis.grid.show,
-                move |c, on| {
-                    let mut a = pick(c);
-                    a.grid.show = on;
-                    put(c, a);
-                },
-            );
-            if axis.grid.show && grid.is_ok() {
+            // A radar's spokes are switched in Marks; here they are only styled.
+            let spokes = !value && chart.kind == ChartKind::Radar;
+            if !spokes {
+                self.chart_switch_if(
+                    ui,
+                    grid,
+                    id,
+                    chart,
+                    if value {
+                        "Value gridlines"
+                    } else {
+                        "Category gridlines"
+                    },
+                    axis.grid.show,
+                    move |c, on| {
+                        let mut a = pick(c);
+                        a.grid.show = on;
+                        put(c, a);
+                    },
+                );
+            }
+            if (axis.grid.show || spokes) && grid.is_ok() {
                 self.chart_switch(
                     ui,
                     id,
@@ -1994,6 +3712,23 @@ impl MastikApp {
                     "Category gridline colour"
                 };
                 self.chart_slot_row(ui, id, chart, ChartColour::Grid(value), name);
+                let half = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
+                self.chart_number(
+                    ui,
+                    id,
+                    chart,
+                    half,
+                    "Width",
+                    "Gridline width",
+                    Scrub::fine(0.05, 1).range(0.5..=8.0),
+                    1,
+                    move |c| pick(c).grid.width,
+                    move |c, v| {
+                        let mut a = pick(c);
+                        a.grid.width = (v * 2.0).round().clamp(1.0, 16.0) / 2.0;
+                        put(c, a);
+                    },
+                );
             }
             self.chart_segments_of(
                 ui,
@@ -2374,6 +4109,51 @@ impl MastikApp {
                 |c, v| c.options.values.position = v,
             );
         }
+        if matches!(chart.kind, ChartKind::Column | ChartKind::Bar) {
+            let live = match chart.options.bars.stacking {
+                chart::Stacking::Stacked => Ok(()),
+                chart::Stacking::Percent => Err("Every stack of a 100% chart totals 100%"),
+                chart::Stacking::Apart => Err("Only stacked bars have a total"),
+            };
+            let on = chart.options.values.totals;
+            self.chart_switch_if(ui, live, id, chart, "Stack totals", on, |c, on| {
+                c.options.values.totals = on;
+            });
+        }
+        if chart.highlight.target != chart::Highlighted::None {
+            let only = chart.highlight.values_only;
+            self.chart_switch(ui, id, chart, "Highlighted only", only, |c, on| {
+                c.highlight.values_only = on;
+            });
+        }
+        // Offered while some label can sit inside its mark.
+        let v = &chart.options.values;
+        let inside = match chart.kind {
+            ChartKind::Pie => v.position != ValuePosition::Off && !v.pie_outside,
+            ChartKind::Column | ChartKind::Bar => {
+                v.position == ValuePosition::Inside
+                    || v.position == ValuePosition::End
+                    || (v.position == ValuePosition::Outside
+                        && chart.options.bars.stacking != chart::Stacking::Apart)
+            }
+            _ => false,
+        };
+        if inside {
+            ui::labelled(ui, "Inside ink", |ui| {
+                self.chart_segments_of(
+                    ui,
+                    id,
+                    chart,
+                    "Inside ink",
+                    &[
+                        (chart::InsideInk::Auto, "Auto"),
+                        (chart::InsideInk::Text, "Text"),
+                    ],
+                    chart.options.values.inside_ink,
+                    |c, v| c.options.values.inside_ink = v,
+                );
+            });
+        }
         self.chart_format(ui, id, chart, "chart-values-format", |c| {
             &mut c.options.values.format
         });
@@ -2408,6 +4188,59 @@ impl MastikApp {
                 ],
                 chart.options.legend.align,
                 |c, v| c.options.legend.align = v,
+            );
+        }
+        let lined = matches!(chart.kind, ChartKind::Line | ChartKind::Area);
+        let ends = chart.options.legend.line_ends;
+        self.chart_switch_if(
+            ui,
+            if lined {
+                Ok(())
+            } else {
+                Err("Only lines and areas end where a label can sit")
+            },
+            id,
+            chart,
+            "Label line ends",
+            ends,
+            |c, on| c.options.legend.line_ends = on,
+        );
+        if lined && ends {
+            self.chart_segments_of(
+                ui,
+                id,
+                chart,
+                "Line end label",
+                &[
+                    (chart::EndLabel::Name, "Name"),
+                    (chart::EndLabel::NameValue, "Name, value"),
+                ],
+                chart.options.legend.end_label,
+                |c, v| c.options.legend.end_label = v,
+            );
+        }
+        if chart.options.legend.position != LegendPosition::Off {
+            ui.label(ui::eyebrow("With a legend box"));
+            let shapes: &[(chart::Swatch, &str)] = if lined {
+                &[
+                    (chart::Swatch::Square, "Square"),
+                    (chart::Swatch::Circle, "Circle"),
+                    (chart::Swatch::Line, "Line"),
+                ]
+            } else {
+                &[
+                    (chart::Swatch::Square, "Square"),
+                    (chart::Swatch::Circle, "Circle"),
+                ]
+            };
+            self.chart_segments_of(
+                ui,
+                id,
+                chart,
+                "Legend swatch",
+                shapes,
+                chart.options.legend.swatch,
+                |c, v| c.options.legend.swatch = v,
             );
         }
     }
@@ -2546,6 +4379,90 @@ impl MastikApp {
                 |c, w| c.options.text.weight = w,
             );
         }
+        // Each kind of label's own ink and weight, the chart's while unset.
+        ui.label(ui::eyebrow("By role"));
+        for (r, name) in ["Tick labels", "Values", "Legend", "Axis titles"]
+            .into_iter()
+            .enumerate()
+        {
+            let r = r as u8;
+            let slot = ChartColour::Role(r);
+            let own = role_of(chart, r);
+            let half = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
+            let swatch =
+                colour_of(&self.session.doc, id, chart, slot).map_or(ui::Swatch::Mixed, |c| {
+                    // Inheriting, the chart's ink shows faint.
+                    let c = ui::color_to_egui(c);
+                    ui::Swatch::Solid(if own.ink.is_some() {
+                        c
+                    } else {
+                        c.gamma_multiply(0.55)
+                    })
+                });
+            let mut pick: Option<Option<u16>> = None;
+            let mut reset = false;
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                let w = if own.ink.is_some() {
+                    half - ui::CONTROL_H - ui::CARD_COL_GAP
+                } else {
+                    half
+                };
+                self.chart_colour_row(ui, id, slot, w, swatch, name, true, None);
+                if own.ink.is_some() {
+                    reset = ui::field_button(
+                        ui,
+                        icon::ARROW_COUNTER_CLOCKWISE,
+                        ui::CONTROL_H,
+                        ui::FieldButton::Off,
+                    )
+                    .on_hover_text("Use the chart's colour")
+                    .clicked();
+                }
+                let shown = own.weight.map_or_else(
+                    || "Chart's".to_string(),
+                    |w| {
+                        faces
+                            .iter()
+                            .find(|(fw, _)| *fw == w)
+                            .map_or_else(|| w.to_string(), |(_, n)| n.clone())
+                    },
+                );
+                ui.scope(|ui| {
+                    ui::combo_height(ui);
+                    egui::ComboBox::from_id_salt(("chart-role-weight", r))
+                        .icon(ui::combo_chevron)
+                        .width(ui.available_width())
+                        .selected_text(ui::combo_text(&shown))
+                        .show_ui(ui, |ui| {
+                            ui::menu_rows(ui);
+                            if ui
+                                .selectable_label(own.weight.is_none(), "Chart's")
+                                .clicked()
+                            {
+                                pick = Some(None);
+                            }
+                            for (w, n) in &faces {
+                                if ui.selectable_label(own.weight == Some(*w), n).clicked() {
+                                    pick = Some(Some(*w));
+                                }
+                            }
+                        })
+                        .response
+                        .on_hover_text(format!("{name} weight"));
+                });
+            });
+            if reset {
+                self.chart_each(id, chart, ROLE_STEPS[usize::from(r)].0, |c| {
+                    role_of_mut(c, r).ink = None;
+                });
+            }
+            if let Some(w) = pick {
+                self.chart_each(id, chart, ROLE_STEPS[usize::from(r)].1, |c| {
+                    role_of_mut(c, r).weight = w;
+                });
+            }
+        }
     }
 
     /// *Flatten chart*: each chart keeps its parts and drops its description, one
@@ -2680,8 +4597,8 @@ fn show_series(chart: &mut Chart, col: chart::ColumnId, on: bool) {
     }
     if let Some(s) = chart.series.iter_mut().find(|s| s.column == col) {
         s.visible = on;
-    } else if !on && let Some(fill) = chart::series_fill(chart, col) {
-        *chart = chart::with_series_fill(chart, col, fill);
+    } else if !on {
+        *chart = chart::with_series_fill(chart, col, None);
         if let Some(s) = chart.series.iter_mut().find(|s| s.column == col) {
             s.visible = false;
         }
@@ -2749,7 +4666,7 @@ mod tests {
             Affine::IDENTITY,
             kurbo::Point::new(-4000.0, 0.0),
             kurbo::Point::new(-3520.0, 280.0),
-            mastik_core::peniko::Color::WHITE,
+            Some(mastik_core::peniko::Color::WHITE),
             Chart::sample(kind),
         );
         assert!(app.session.commit(tx));
@@ -2878,7 +4795,7 @@ mod tests {
             Affine::IDENTITY,
             kurbo::Point::new(-4000.0, 400.0),
             kurbo::Point::new(-3520.0, 680.0),
-            mastik_core::peniko::Color::WHITE,
+            Some(mastik_core::peniko::Color::WHITE),
             own,
         );
         assert!(app.session.commit(tx));
@@ -3121,7 +5038,7 @@ mod tests {
             .and_then(|n| n.chart())
             .unwrap()
             .options;
-        assert_eq!(o.category_axis.colour, lit(red), "the category axis");
+        assert_eq!(o.category_axis.colour, Some(lit(red)), "the category axis");
         assert_eq!(o.value_axis.colour, before.options.value_axis.colour);
         assert_eq!(
             o.category_axis.grid.colour,
@@ -3137,14 +5054,14 @@ mod tests {
         let chart = app.session.doc.get(id).and_then(|n| n.chart()).unwrap();
         assert_eq!(
             chart.options.value_axis.grid.colour,
-            lit(blue),
+            Some(lit(blue)),
             "the value gridlines"
         );
-        assert_eq!(chart.options.category_axis.colour, lit(red), "kept");
+        assert_eq!(chart.options.category_axis.colour, Some(lit(red)), "kept");
         assert_eq!(fill_of(chart, ChartColour::Track), Some(lit(blue)));
         assert_eq!(
             fill_of(chart, ChartColour::Neutral),
-            Some(chart.options.value_axis.colour.clone())
+            Some(chart.axis_colour(true))
         );
     }
 
@@ -3308,7 +5225,7 @@ mod tests {
             Affine::IDENTITY,
             kurbo::Point::new(-4000.0, 400.0),
             kurbo::Point::new(-3520.0, 680.0),
-            mastik_core::peniko::Color::WHITE,
+            Some(mastik_core::peniko::Color::WHITE),
             Chart::sample(ChartKind::Column),
         );
         assert!(app.session.commit(tx));
@@ -3338,10 +5255,13 @@ mod tests {
         let tx = app.slot_transaction(a, slot, Brush::Solid(red));
         assert!(app.commit_edit(tx));
         let lit: mastik_core::BrushSource = Brush::Solid(red).into();
-        assert_eq!(chart_at(&app, a).options.value_axis.grid.colour, lit);
+        assert_eq!(
+            chart_at(&app, a).options.value_axis.grid.colour,
+            Some(lit.clone())
+        );
         assert_eq!(
             chart_at(&app, b).options.value_axis.grid.colour,
-            lit,
+            Some(lit.clone()),
             "the second chart took the gridlines"
         );
         let col = chart_at(&app, a).mapping.series[0];
@@ -3406,7 +5326,7 @@ mod tests {
                 *cell = format!("{}00", cell);
             }
         }
-        big.options.outline = Some(chart::OUTLINE_WIDTH);
+        big.options.stroke.width = chart::OUTLINE_WIDTH;
         app.chart_commit(b, "Edit chart data", big);
         app.chart_others = vec![b];
         let first = chart_at(&app, a);
@@ -3505,9 +5425,93 @@ mod tests {
         assert!(drawn(&out, "Step"), "an area's step curve");
     }
 
+    /// A right-click on a bar names its category and series for *Highlight
+    /// ‹name›*, and the row highlights that category as one step.
+    /// flip: `mark_names` reading the bar's category from table order under an
+    /// order → fails at "the bar under the pointer".
+    #[test]
+    fn a_mark_under_the_pointer_is_highlighted_by_name() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = charted(&ctx, ChartKind::Column);
+        let mut chart = chart_at(&app, id);
+        chart.options.bars.order = chart::Order::Descending;
+        app.chart_commit(id, "Bar order", chart);
+        pass(&ctx, &mut app);
+        let chart = chart_at(&app, id);
+        let first = chart.mapping.series[0];
+        // The first bar drawn is June's, the largest.
+        let bar = chart
+            .parts
+            .iter()
+            .find(|(k, _)| k.role == chart::PartRole::Bar && k.series == first.0 && k.index == 0)
+            .map(|(_, n)| *n)
+            .expect("a bar");
+        let at = app
+            .session
+            .resolved
+            .world_bounds(bar)
+            .expect("drawn")
+            .center();
+        let (cat, series) = mark_names(&app, id, at);
+        assert_eq!(cat.as_deref(), Some("Jun"), "the bar under the pointer");
+        assert_eq!(series.as_deref(), Some("Revenue"));
+        app.perform_menu_item(
+            &ctx,
+            crate::menu::Item::HighlightCategory,
+            crate::menu::Target::Layer {
+                id,
+                door: crate::menu::Door::Canvas,
+            },
+            Some(at),
+        );
+        assert_eq!(
+            chart_at(&app, id).highlight.target,
+            chart::Highlighted::Categories(vec!["Jun".into()])
+        );
+        let step = app.session.history.done().last().unwrap();
+        assert_eq!(step.note.label, "Highlight");
+    }
+
+    /// The card offers the chart's own spacing, order, totals, mark stroke and
+    /// role rows, and a column chart keeps *Label line ends* shown, disabled.
+    /// flip: `chart_style_rows` leaving out the padding pair → fails at
+    /// "padding".
+    #[test]
+    fn the_card_offers_the_rows_the_model_has() {
+        let ctx = egui::Context::default();
+        let (mut app, _) = charted(&ctx, ChartKind::Column);
+        for key in [
+            "Chart style",
+            "Chart marks",
+            "Chart values",
+            "Chart legend",
+            "Chart text",
+        ] {
+            app.collapsed_panels.remove(key);
+        }
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            out = shapes(&ctx, &mut app);
+        }
+        assert!(drawn(&out, "Padding"), "padding");
+        for row in [
+            "Gap",
+            "Table order",
+            "Stack totals",
+            "Solid",
+            "Label line ends",
+            "BY ROLE",
+            "Axis titles",
+            "Background",
+            "Plot background",
+        ] {
+            assert!(drawn(&out, row), "{row}");
+        }
+    }
+
     /// The Style section's *Dark* turns the chart dark as one *Chart theme*
-    /// step: its palette series and its ink move to the dark colours.
-    /// flip: the row's setter leaving the chart light → fails at "dark".
+    /// step: its ink, unset, follows to the dark colour.
+    /// flip: the row's setter leaving the theme as it is → fails at "dark".
     #[test]
     fn the_theme_row_turns_the_chart_dark() {
         let ctx = egui::Context::default();
@@ -3517,13 +5521,13 @@ mod tests {
         for _ in 0..3 {
             out = shapes(&ctx, &mut app);
         }
-        assert!(drawn(&out, "Light"), "the row's other segment");
+        assert!(drawn(&out, "Auto"), "the row's other segment");
         let at = text_at(&out, "Dark").expect("the Dark segment");
         click(&ctx, &mut app, at);
         let chart = chart_at(&app, id);
-        assert!(chart.options.dark, "dark");
+        assert_eq!(chart.options.theme, chart::Theme::Dark, "dark");
         let night = chart::chrome(true);
-        assert_eq!(chart.options.text.ink, Brush::Solid(night.ink).into());
+        assert_eq!(chart.ink(), Brush::Solid(night.ink).into());
         let step = app.session.history.done().last().unwrap();
         assert_eq!(step.note.label, "Chart theme");
     }

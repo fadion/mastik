@@ -328,7 +328,9 @@ fn a_slice_rounds_its_corners_and_is_pinned_by_their_box() {
 fn a_series_point_shape_overrides_the_charts() {
     let style = |col: u32, point| SeriesStyle {
         column: ColumnId(col),
-        fill: crate::variable::BrushSource::Literal(crate::Brush::Solid(peniko::Color::BLACK)),
+        fill: Some(crate::variable::BrushSource::Literal(crate::Brush::Solid(
+            peniko::Color::BLACK,
+        ))),
         visible: true,
         dash: Dash::Solid,
         point,
@@ -409,17 +411,125 @@ fn an_options_edit_carries_only_what_changed() {
     after.value_axis.format.prefix = "$".into();
     let mut onto = before.clone();
     onto.bars.group_gap = 50.0;
-    onto.outline = Some(3.0);
+    onto.stroke.width = 3.0;
     let got = Options::carried(&before, &after, &onto);
     assert_eq!(got.bars.radius, 9.0);
     assert_eq!(got.value_axis.format.prefix, "$");
     assert_eq!(got.bars.group_gap, 50.0, "its own gap kept");
-    assert_eq!(got.outline, Some(3.0), "its own outline kept");
+    assert_eq!(got.stroke.width, 3.0, "its own stroke kept");
 
-    let mut outlined = before.clone();
-    outlined.outline = Some(2.0);
-    let got = Options::carried(&outlined, &before, &onto);
-    assert_eq!(got.outline, None, "turned off is carried");
+    let mut stroked = before.clone();
+    stroked.stroke.width = 2.0;
+    let got = Options::carried(&stroked, &before, &onto);
+    assert_eq!(got.stroke.width, 0.0, "turned off is carried");
+}
+
+/// *Largest first* draws a column chart's tallest first and keeps ties in
+/// table order; a stacked chart orders by each stack's total.
+/// flip: `drawn_order` sorting ascending under Descending → fails at "the
+/// largest first".
+#[test]
+fn order_draws_the_largest_first() {
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.options.bars.order = crate::chart::Order::Descending;
+    let first = chart.mapping.series[0].0;
+    let g = draw(&chart);
+    let names: Vec<&str> = all(&g, PartRole::Bar, first)
+        .iter()
+        .map(|p| p.name.rsplit(" · ").next().unwrap())
+        .collect();
+    assert_eq!(names[0], "Jun", "the largest first");
+    assert_eq!(names[5], "Jan");
+    assert_eq!(
+        category_order(&chart),
+        Some(vec![5, 4, 3, 1, 2, 0]),
+        "the order a reader maps through"
+    );
+}
+
+/// A stacked chart with *Totals* writes each stack's net total past its end,
+/// a 100% chart writes none.
+/// flip: `bar_marks` skipping the totals → fails at "a total per stack".
+#[test]
+fn stacked_totals_sit_past_each_stack() {
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.options.bars.stacking = Stacking::Stacked;
+    chart.options.values.totals = true;
+    let g = draw(&chart);
+    let totals = all(&g, PartRole::Total, 0);
+    assert_eq!(totals.len(), 6, "a total per stack");
+    match &totals[0].kind {
+        crate::node::NodeKind::Text { content, style, .. } => {
+            assert_eq!(content, "84", "Jan's 42 + 30 + 12");
+            assert!(style.weight > chart.options.text.weight, "a weight heavier");
+        }
+        other => panic!("a label: {other:?}"),
+    }
+    chart.options.bars.stacking = Stacking::Percent;
+    assert!(
+        all(&draw(&chart), PartRole::Total, 0).is_empty(),
+        "none at 100%"
+    );
+}
+
+/// A *Solid* mark stroke draws in the ground by default, so stacked segments
+/// are kept apart; a set colour wins.
+/// flip: `mark_paint` stroking Solid in the mark's colour → fails at "the ground".
+#[test]
+fn a_solid_stroke_separates_in_the_ground() {
+    let solid = |c| crate::variable::BrushSource::Literal(crate::Brush::Solid(c));
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.options.stroke.width = 2.0;
+    let g = draw(&chart);
+    let bar = all(&g, PartRole::Bar, chart.mapping.series[0].0)[0];
+    assert_eq!(
+        bar.strokes[0].brush,
+        solid(peniko::Color::WHITE),
+        "the ground"
+    );
+    assert_eq!(bar.strokes[0].width, 2.0);
+}
+
+/// *Label line ends* names each line at its end in a track past the plot,
+/// labels that would overlap pushed apart; the role's weight reaches them.
+/// flip: both relaxation passes removed → fails at "apart". Either pass alone
+/// separates two labels, so neither is pinned on its own.
+#[test]
+fn line_end_labels_sit_apart_past_the_plot() {
+    let mut chart = Chart::sample(ChartKind::Line);
+    // Two lines ending one unit apart.
+    for r in &mut chart.table.rows {
+        r[2] = r[1].clone();
+    }
+    chart.table.rows[5][2] = "67".into();
+    chart.options.legend.line_ends = true;
+    chart.options.text.legend.weight = Some(700);
+    let g = draw(&chart);
+    let ends: Vec<&Part> = g
+        .parts
+        .iter()
+        .filter(|p| p.key.role == PartRole::EndLabel && p.key.index == 1)
+        .collect();
+    assert_eq!(ends.len(), 3);
+    let plot = part(&g, PartRole::Plot, 0, 0).unwrap();
+    for e in &ends {
+        assert_eq!(
+            e.parent.map(|k| (k.role, k.index)),
+            Some((PartRole::EndLabel, 0))
+        );
+        if let crate::node::NodeKind::Text { style, .. } = &e.kind {
+            assert_eq!(style.weight, 700);
+        }
+    }
+    let mut boxes: Vec<kurbo::Rect> = ends.iter().map(|p| drawn_box(p)).collect();
+    boxes.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+    for w in boxes.windows(2) {
+        assert!(w[1].y0 >= w[0].y1 - 0.5, "apart: {w:?}");
+    }
+    assert!(
+        drawn_box(plot).width() < 480.0 - 32.0 - 40.0,
+        "the plot gave way"
+    );
 }
 
 /// *Outline* draws every kind's marks as an inside stroke in their colour over
@@ -462,15 +572,16 @@ fn outlined_marks_are_stroked_over_a_tint() {
     }
 }
 
-/// A chart turned dark draws its bars in the dark palette, its labels in the
-/// dark ink, and a hollow point filled with the dark ground.
-/// flip: the generator reading the light palette → fails at "the dark
+/// A *Dark* chart draws its bars in the dark palette and its labels in the dark
+/// ink; a hollow point is filled with the ground it is drawn on, whatever the
+/// theme. flip: the generator reading the light palette → fails at "the dark
 /// palette's first".
 #[test]
 fn a_dark_chart_draws_dark() {
     let solid = |c| crate::variable::BrushSource::Literal(crate::Brush::Solid(c));
     let night = chrome(true);
-    let column = with_dark(&Chart::sample(ChartKind::Column), true);
+    let mut column = Chart::sample(ChartKind::Column);
+    column.options.theme = crate::chart::Theme::Dark;
     let g = draw(&column);
     let [r, gr, b] = palette(column.options.palette, true)[0];
     let bar = all(&g, PartRole::Bar, column.mapping.series[0].0)[0];
@@ -483,12 +594,87 @@ fn a_dark_chart_draws_dark() {
     assert_eq!(label.fills[0].brush, solid(night.ink));
     let mut line = Chart::sample(ChartKind::Line);
     line.options.lines.points = PointStyle::Hollow;
-    let g = draw(&with_dark(&line, true));
+    let cream = peniko::Color::from_rgb8(0xF4, 0xEE, 0xE2);
+    let g = generate_on(
+        &line,
+        kurbo::Size::new(480.0, 280.0),
+        "Inter",
+        &crate::chart::Ground::plain(cream),
+    )
+    .unwrap();
     let point = g.parts.iter().find(|p| p.key.role == PartRole::Point);
     assert_eq!(
         point.expect("a hollow point").fills[0].brush,
-        solid(night.ground)
+        solid(cream),
+        "the ground"
     );
+}
+
+/// *Auto* picks its theme by the ground's contrast and tints the gridlines
+/// toward that ground; *Light* keeps the fixed greys on the same ground.
+/// flip: `Chart::chrome` leaving the grid at the fixed grey under Auto →
+/// fails at "a gridline tinted toward teal".
+#[test]
+fn auto_reads_the_ground_and_tints_toward_it() {
+    let solid = |c| crate::variable::BrushSource::Literal(crate::Brush::Solid(c));
+    let navy = peniko::Color::from_rgb8(0x15, 0x22, 0x3B);
+    let on = |c: &Chart, g| {
+        generate_on(
+            c,
+            kurbo::Size::new(480.0, 280.0),
+            "Inter",
+            &crate::chart::Ground::plain(g),
+        )
+        .unwrap()
+    };
+    let chart = Chart::sample(ChartKind::Column);
+    let g = on(&chart, navy);
+    let label = all(&g, PartRole::TickLabel, 0)[0];
+    assert_eq!(label.fills[0].brush, solid(chrome(true).ink), "dark ink");
+    let teal = peniko::Color::from_rgb8(0x0F, 0x6E, 0x6E);
+    let g = on(&chart, teal);
+    let line = all(&g, PartRole::Gridline, 0)[0];
+    let want = crate::chart::mix(teal, chart.on(teal).chrome().ink, 0.12);
+    assert_eq!(
+        line.fills[0].brush,
+        solid(want),
+        "a gridline tinted toward teal"
+    );
+    let mut light = chart.clone();
+    light.options.theme = crate::chart::Theme::Light;
+    let g = on(&light, teal);
+    let line = all(&g, PartRole::Gridline, 0)[0];
+    assert_eq!(
+        line.fills[0].brush,
+        solid(chrome(false).grid),
+        "Light keeps its grey"
+    );
+}
+
+/// A label inside a bar takes the ground's colour on a dark bar and the ink on
+/// a pale one; *Text* keeps the ink.
+/// flip: `ink_inside` returning early → fails at "white on navy".
+#[test]
+fn an_inside_label_takes_the_ink_that_reads() {
+    let solid = |c| crate::variable::BrushSource::Literal(crate::Brush::Solid(c));
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.mapping.series.truncate(1);
+    chart.options.values.position = crate::chart::ValuePosition::Inside;
+    let col = chart.mapping.series[0];
+    let navy = solid(peniko::Color::from_rgb8(0x15, 0x22, 0x3B));
+    let dark = crate::chart::with_series_fill(&chart, col, Some(navy));
+    let label = |c: &Chart| {
+        all(&draw(c), PartRole::ValueLabel, col.0)[0].fills[0]
+            .brush
+            .clone()
+    };
+    assert_eq!(label(&dark), solid(peniko::Color::WHITE), "white on navy");
+    let yellow = solid(peniko::Color::from_rgb8(0xF5, 0xD3, 0x3F));
+    let pale = crate::chart::with_series_fill(&chart, col, Some(yellow));
+    assert_eq!(label(&pale), solid(chrome(false).ink), "ink on yellow");
+    let mut text = dark.clone();
+    text.options.values.inside_ink = crate::chart::InsideInk::Text;
+    assert_eq!(label(&text), solid(chrome(false).ink), "Text keeps the ink");
 }
 
 /// The value axis's tick labels, lowest first.
@@ -1122,5 +1308,288 @@ fn a_chart_whose_set_offered_nothing_guesses_once_numbers_arrive() {
         after.mapping.series,
         vec![ColumnId(1)],
         "guessed once numbers arrive"
+    );
+}
+
+/// A waterfall walks its steps from the running total, draws a named total
+/// from zero, adds the final total, colours by step, and says when a total's
+/// own cell disagrees with the walk.
+/// flip: `walk` starting each step at zero → fails at "COGS starts at
+/// Revenue's end".
+#[test]
+fn a_waterfall_walks_its_steps() {
+    let solid = |c| crate::variable::BrushSource::Literal(crate::Brush::Solid(c));
+    let mut chart = Chart::sample(ChartKind::Waterfall);
+    let col = chart.mapping.series[0].0;
+    let g = draw(&chart);
+    let steps = all(&g, PartRole::Bar, col);
+    assert_eq!(steps.len(), 7, "six rows and the final total");
+    let named = |n: &str| {
+        *steps
+            .iter()
+            .find(|p| p.name == format!("Step {n}"))
+            .unwrap()
+    };
+    let (rev, cogs, gross) = (named("Revenue"), named("COGS"), named("Gross"));
+    let top = |p: &Part| drawn_box(p).y0;
+    let bottom = |p: &Part| drawn_box(p).y1;
+    assert!((bottom(cogs) - top(rev)).abs() > 1.0, "COGS floats");
+    assert!(
+        (top(cogs) - top(rev)).abs() < 0.5,
+        "COGS starts at Revenue's end"
+    );
+    assert!(
+        (bottom(gross) - bottom(rev)).abs() < 0.5,
+        "a total stands on zero"
+    );
+    let blue = crate::chart::Waterfall::starting(crate::chart::Step::Increase, false);
+    let slate = crate::chart::Waterfall::starting(crate::chart::Step::Total, false);
+    assert_eq!(rev.fills[0].brush, solid(blue));
+    assert_eq!(gross.fills[0].brush, solid(slate));
+    assert!(named("Net").name.ends_with("Net"));
+    chart.table.rows[2][1] = "250".into();
+    let g = draw(&chart);
+    assert!(
+        g.left_out
+            .iter()
+            .any(|l| l == "Gross: the table says 250, the steps sum to 240"),
+        "{:?}",
+        g.left_out
+    );
+}
+
+/// *Fade* fills a bar with a gradient from its colour at the top to the share
+/// at the baseline, and a bound series draws flat and says so.
+/// flip: `fade_last` returning early → fails at "a gradient".
+#[test]
+fn fade_runs_from_the_value_to_the_baseline() {
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.options.fade.on = true;
+    chart.options.fade.to = 25.0;
+    let col = chart.mapping.series[0];
+    let g = draw(&chart);
+    let bar = all(&g, PartRole::Bar, col.0)[0];
+    let crate::variable::BrushSource::Literal(crate::Brush::Gradient(gb)) = &bar.fills[0].brush
+    else {
+        panic!("a gradient: {:?}", bar.fills[0].brush);
+    };
+    let stops = &gb.gradient.stops;
+    let alpha = |i: usize| {
+        stops[i]
+            .color
+            .to_alpha_color::<peniko::color::Srgb>()
+            .components[3]
+    };
+    assert!((alpha(1) - 0.25 * alpha(0)).abs() < 1e-4, "to a quarter");
+    let mut ids = crate::IdSource::new(1);
+    let bound = crate::chart::with_variables(&chart, &[ids.mint_var()]);
+    let g = draw(&bound);
+    assert!(
+        g.left_out
+            .iter()
+            .any(|l| l.starts_with("Fades need an unbound colour")),
+        "said"
+    );
+}
+
+/// A radar draws a spoke per category, rings at the ticks and a closed shape
+/// per series, in a square; fewer than three categories draw nothing and say
+/// so. flip: `radar` skipping the series shapes → fails at "a shape".
+#[test]
+fn a_radar_draws_spokes_rings_and_shapes() {
+    let mut chart = Chart::sample(ChartKind::Radar);
+    chart.options.radar.filled = true;
+    let g = draw(&chart);
+    let spokes = all(&g, PartRole::Gridline, 1);
+    assert_eq!(spokes.len(), 6, "a spoke a category");
+    assert!(!all(&g, PartRole::Gridline, 0).is_empty(), "rings");
+    let col = chart.mapping.series[0].0;
+    assert!(part(&g, PartRole::Line, col, 0).is_some(), "a shape");
+    assert!(part(&g, PartRole::Area, col, 0).is_some(), "filled");
+    let frame = part(&g, PartRole::PieFrame, 0, 0).unwrap();
+    let b = drawn_box(frame);
+    assert!((b.width() - b.height()).abs() < 1e-6, "a square");
+    chart.table.rows.truncate(2);
+    let g = draw(&chart);
+    assert!(part(&g, PartRole::Line, col, 0).is_none());
+    assert!(
+        g.left_out
+            .iter()
+            .any(|l| l == "A radar needs at least 3 categories")
+    );
+}
+
+/// Lollipops draw a stem and a head in each bar's place, refuse stacking, and
+/// connected join each band's heads.
+/// flip: `bar_marks` ignoring the shape → fails at "a stem".
+#[test]
+fn lollipops_draw_stems_and_heads() {
+    use crate::chart::BarShape;
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.options.bars.shape = BarShape::Lollipops;
+    let col = chart.mapping.series[0].0;
+    let g = draw(&chart);
+    assert!(part(&g, PartRole::Stem, col, 0).is_some(), "a stem");
+    assert!(part(&g, PartRole::Head, col, 0).is_some(), "a head");
+    chart.options.bars.connect = true;
+    let g = draw(&chart);
+    assert_eq!(
+        g.parts
+            .iter()
+            .filter(|p| p.key.role == PartRole::Connector)
+            .count(),
+        6,
+        "a line a band"
+    );
+    chart.options.bars.stacking = Stacking::Stacked;
+    assert_eq!(
+        chart.validate(),
+        Err(crate::chart::ChartRule::LollipopsStack)
+    );
+}
+
+/// A highlight mutes every other bar, drops their value labels while
+/// *Highlighted only* is on, and a name the table lacks highlights nothing.
+/// flip: `apply_highlight` returning early → fails at "the others muted".
+#[test]
+fn a_highlight_mutes_the_others() {
+    use crate::chart::Highlighted;
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.options.values.position = ValuePosition::Outside;
+    chart.highlight.target = Highlighted::Categories(vec!["Apr".into()]);
+    let g = draw(&chart);
+    let first = chart.mapping.series[0].0;
+    let bars = all(&g, PartRole::Bar, first);
+    let muted = chart.muted();
+    let apr = bars.iter().find(|p| p.name.ends_with("Apr")).unwrap();
+    let jan = bars.iter().find(|p| p.name.ends_with("Jan")).unwrap();
+    assert_ne!(
+        apr.fills[0].brush, muted,
+        "the highlighted bar keeps its colour"
+    );
+    assert_eq!(jan.fills[0].brush, muted, "the others muted");
+    let labels = all(&g, PartRole::ValueLabel, first);
+    assert_eq!(labels.len(), 1, "values on the highlighted only");
+    chart.highlight.target = Highlighted::Categories(vec!["Nope".into()]);
+    let g = draw(&chart);
+    let jan = all(&g, PartRole::Bar, first)
+        .into_iter()
+        .find(|p| p.name.ends_with("Jan"))
+        .unwrap();
+    assert_ne!(jan.fills[0].brush, muted, "a stale name greys out nothing");
+}
+
+/// A one-series column chart coloured by category gives each bar its
+/// category's colour and lists the categories in its legend.
+/// flip: `by_category` answering false → fails at "a colour per bar".
+#[test]
+fn bars_coloured_by_category_differ() {
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.mapping.series.truncate(1);
+    chart.options.by_category = true;
+    let g = draw(&chart);
+    let bars = all(&g, PartRole::Bar, chart.mapping.series[0].0);
+    assert_ne!(
+        bars[0].fills[0].brush, bars[1].fills[0].brush,
+        "a colour per bar"
+    );
+    let swatches = g
+        .parts
+        .iter()
+        .filter(|p| p.key.role == PartRole::LegendSwatch)
+        .count();
+    assert_eq!(swatches, 6, "the legend lists the categories");
+}
+
+/// *Colour below zero* draws a negative bar in its colour, and a line's run
+/// below the baseline again inside a frame that clips there.
+/// flip: `bar_fill` ignoring `below_zero` → fails at "the loss".
+#[test]
+fn below_zero_takes_its_own_colour() {
+    let solid = |c| crate::variable::BrushSource::Literal(crate::Brush::Solid(c));
+    let red = solid(peniko::Color::from_rgb8(0xC0, 0x39, 0x2B));
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.table.rows[2][3] = "-11".into();
+    chart.options.below_zero = Some(red.clone());
+    let profit = chart.mapping.series[2].0;
+    let g = draw(&chart);
+    let mar = all(&g, PartRole::Bar, profit)
+        .into_iter()
+        .find(|p| p.name.ends_with("Mar"))
+        .unwrap();
+    assert_eq!(mar.fills[0].brush, red, "the loss");
+    chart.kind = ChartKind::Line;
+    let g = draw(&chart);
+    let frame = part(&g, PartRole::Series, profit, 1).expect("a clipped frame");
+    assert!(frame.clip);
+    let copy = part(&g, PartRole::Line, profit, 1).expect("the run again");
+    assert_eq!(copy.strokes[0].brush, red);
+}
+
+/// A reference line at a typed value and at the average draws over the marks
+/// with its label; one past a typed range is left out and said; a band draws
+/// under the marks.
+/// flip: `reference_lines` skipping the range check → fails at "said".
+#[test]
+fn references_draw_and_say_when_outside() {
+    use crate::chart::{At, RefKind, Reference, Stat};
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.references = vec![
+        Reference {
+            id: 1,
+            at: At::Value(50.0),
+            label: "Target {value}".into(),
+            ..Reference::default()
+        },
+        Reference {
+            id: 2,
+            at: At::Stat {
+                stat: Stat::Average,
+                of: None,
+            },
+            label: "Average".into(),
+            ..Reference::default()
+        },
+        Reference {
+            id: 3,
+            kind: RefKind::Band,
+            at: At::Value(20.0),
+            to: At::Value(30.0),
+            label: "Normal".into(),
+            ..Reference::default()
+        },
+    ];
+    let g = draw(&chart);
+    assert!(part(&g, PartRole::Reference, 0, 1).is_some(), "the target");
+    assert!(part(&g, PartRole::Reference, 0, 2).is_some(), "the average");
+    assert!(part(&g, PartRole::Band, 0, 3).is_some(), "the band");
+    match &part(&g, PartRole::ReferenceLabel, 0, 1).unwrap().kind {
+        crate::node::NodeKind::Text { content, .. } => assert_eq!(content, "Target 50"),
+        other => panic!("{other:?}"),
+    }
+    let plot = PartKey {
+        role: PartRole::Plot,
+        series: 0,
+        index: 0,
+    };
+    let order: Vec<PartRole> = g
+        .parts
+        .iter()
+        .filter(|p| p.parent == Some(plot))
+        .map(|p| p.key.role)
+        .collect();
+    let at = |r| order.iter().position(|x| *x == r).unwrap();
+    assert!(
+        at(PartRole::References) < at(PartRole::Series),
+        "bands under the marks"
+    );
+    chart.options.value_axis.range = Some((0.0, 40.0));
+    let g = draw(&chart);
+    assert!(part(&g, PartRole::Reference, 0, 1).is_none());
+    assert!(
+        g.left_out
+            .iter()
+            .any(|l| l.contains("outside the axis's range")),
+        "said"
     );
 }

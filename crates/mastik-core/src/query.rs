@@ -64,6 +64,12 @@ pub fn chart_part_at(
         .candidates_intersecting(page, area)
         .into_iter()
         .filter(|id| crate::chart::owner(doc, *id) == Some(chart))
+        // A part's frame (a series, the plot) spans the plot, so it would win
+        // over the mark drawn inside it.
+        .filter(|id| {
+            doc.get(*id)
+                .is_some_and(|n| !matches!(n.kind, crate::node::NodeKind::Artboard { .. }))
+        })
         .filter(|id| hits_own_shape(res, doc, *id, p, 0.0))
         .collect();
     hits.sort_by_key(|id| std::cmp::Reverse(paint_path(doc, *id)));
@@ -969,7 +975,7 @@ mod tests {
             Affine::IDENTITY,
             kurbo::Point::ZERO,
             kurbo::Point::new(480.0, 280.0),
-            peniko::Color::WHITE,
+            Some(peniko::Color::WHITE),
             crate::chart::Chart::sample(crate::chart::ChartKind::Column),
         );
         doc.apply(&tx).expect("the chart builds");

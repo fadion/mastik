@@ -36,6 +36,9 @@ pub struct Part {
     pub insets: Insets,
     pub display: Option<Display>,
     pub item: LayoutItem,
+    /// A container that clips what it holds (a run below zero); every other
+    /// container lets a label overflow it.
+    pub clip: bool,
 }
 
 /// What [`generate`] makes of a chart at a size.
@@ -69,6 +72,9 @@ const LEGEND_GAP: f64 = 12.0;
 const SWATCH_GAP: f64 = 6.0;
 /// A legend swatch's side.
 const SWATCH: f64 = 10.0;
+/// A *Line* legend swatch's length and stroke.
+const LINE_SWATCH: f64 = 14.0;
+const LINE_SWATCH_W: f64 = 2.0;
 /// The space between a value label and its bar.
 const VALUE_GAP: f64 = 4.0;
 /// A tick mark's length, out from the plot into its axis's track.
@@ -186,6 +192,9 @@ struct Data {
     categories: Vec<String>,
     series: Vec<SeriesData>,
     left_out: Vec<String>,
+    /// Each category's own colour, by drawn place, when the bars are coloured
+    /// by category (`Options::by_category`); empty otherwise.
+    by_category: Vec<BrushSource>,
 }
 
 fn read(chart: &Chart) -> Data {
@@ -202,7 +211,7 @@ fn read(chart: &Chart) -> Data {
             None => rows.push((i, format!("{}", i + 1))),
         }
     }
-    let colours = palette(chart.options.palette, chart.options.dark);
+    let colours = super::colours::drawn_palette(chart);
     let mut series = Vec::new();
     for (n, &col) in chart.mapping.series.iter().enumerate() {
         let Some(at) = t.index_of(col) else { continue };
@@ -226,7 +235,9 @@ fn read(chart: &Chart) -> Data {
         series.push(SeriesData {
             column: col,
             name,
-            fill: style.map_or_else(|| rgb(colours[n % colours.len()]), |s| s.fill.clone()),
+            fill: style
+                .and_then(|s| s.fill.clone())
+                .unwrap_or_else(|| rgb(colours[n % colours.len()])),
             values,
         });
     }
@@ -234,13 +245,85 @@ fn read(chart: &Chart) -> Data {
         categories: rows.into_iter().map(|(_, c)| c).collect(),
         series,
         left_out,
+        by_category: Vec::new(),
     }
 }
 
-/// Lays `chart` out into `size` as parts. `family` is the document's default
-/// text family, used when the chart names none.
+/// The order a column or bar chart draws its categories in, as their places
+/// among the categories read (rows with no category left out); `None` in table
+/// order or for any other kind. Keyed by the first series shown, or by each
+/// stack's total when stacked; ties keep table order and a category with no
+/// value goes last. A mark's index counts drawn places, so a reader mapping one
+/// back to its row goes through this.
+pub fn category_order(chart: &Chart) -> Option<Vec<usize>> {
+    drawn_order(chart, &read(chart))
+}
+
+fn drawn_order(chart: &Chart, data: &Data) -> Option<Vec<usize>> {
+    let b = &chart.options.bars;
+    if !matches!(chart.kind, ChartKind::Column | ChartKind::Bar) || b.order == super::Order::Table {
+        return None;
+    }
+    let key = |c: usize| -> Option<f64> {
+        if b.stacking == Stacking::Apart {
+            data.series.first().and_then(|s| s.values[c])
+        } else {
+            let vs: Vec<f64> = data.series.iter().filter_map(|s| s.values[c]).collect();
+            (!vs.is_empty()).then(|| vs.iter().sum())
+        }
+    };
+    let mut order: Vec<usize> = (0..data.categories.len()).collect();
+    let desc = b.order == super::Order::Descending;
+    order.sort_by(|a, b| match (key(*a), key(*b)) {
+        (Some(x), Some(y)) if desc => y.total_cmp(&x),
+        (Some(x), Some(y)) => x.total_cmp(&y),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+    Some(order)
+}
+
+/// [`generate_on`] the ground the chart was last drawn on, as a plain colour:
+/// for a picture or a preview drawn apart from the document.
 pub fn generate(chart: &Chart, size: Size, family: &str) -> Result<Generated, Refusal> {
+    let ground = super::Ground::plain(chart.grounded.unwrap_or(peniko::Color::WHITE));
+    generate_on(chart, size, family, &ground)
+}
+
+/// Lays `chart` out into `size` as parts, on `ground` (`chart::ground_of`):
+/// every unset colour derived for it. `family` is the document's default text
+/// family, used when the chart names none.
+pub fn generate_on(
+    chart: &Chart,
+    size: Size,
+    family: &str,
+    ground: &super::Ground,
+) -> Result<Generated, Refusal> {
+    let chart = &resolved(&chart.on(ground.colour));
     let mut data = read(chart);
+    if let Some(order) = drawn_order(chart, &data) {
+        data.categories = order.iter().map(|i| data.categories[*i].clone()).collect();
+        for s in &mut data.series {
+            s.values = order.iter().map(|i| s.values[*i]).collect();
+        }
+    }
+    if super::by_category(chart)
+        && let Some(marks) = super::named_marks(chart)
+    {
+        let fallback = data.series.first().map(|s| s.fill.clone());
+        data.by_category = data
+            .categories
+            .iter()
+            .filter_map(|c| {
+                marks
+                    .iter()
+                    .find(|(n, _)| n == c)
+                    .map(|(_, f)| f.clone())
+                    .or_else(|| fallback.clone())
+            })
+            .collect();
+    }
     // A pie's slices are its legend's entries; every other kind's are its series.
     let slices = (chart.kind == ChartKind::Pie).then(|| pie_slices(chart, &mut data));
     let clouds = (chart.kind == ChartKind::Scatter).then(|| scatter_clouds(chart, &mut data));
@@ -258,13 +341,42 @@ pub fn generate(chart: &Chart, size: Size, family: &str) -> Result<Generated, Re
             what: "points",
         });
     }
-    let entries: Vec<Entry> = match (&slices, &clouds) {
+    let mut entries: Vec<Entry> = match (&slices, &clouds) {
+        // A waterfall's colours belong to the step, not the series.
+        _ if chart.kind == ChartKind::Waterfall => [
+            (super::Step::Increase, "Increase"),
+            (super::Step::Decrease, "Decrease"),
+            (super::Step::Total, "Total"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (step, name))| Entry {
+            series: i as u32,
+            name: name.into(),
+            fill: step_fill(chart, step),
+            dash: super::Dash::Solid,
+        })
+        .collect(),
+        // Bars coloured by category list their categories, as a pie does.
+        _ if !data.by_category.is_empty() => data
+            .categories
+            .iter()
+            .zip(&data.by_category)
+            .enumerate()
+            .map(|(i, (name, fill))| Entry {
+                series: i as u32,
+                name: name.clone(),
+                fill: fill.clone(),
+                dash: super::Dash::Solid,
+            })
+            .collect(),
         (Some(s), _) => s
             .iter()
             .map(|s| Entry {
                 series: s.index,
                 name: s.name.clone(),
                 fill: s.fill.clone(),
+                dash: super::Dash::Solid,
             })
             .collect(),
         (_, Some(c)) => c
@@ -273,6 +385,7 @@ pub fn generate(chart: &Chart, size: Size, family: &str) -> Result<Generated, Re
                 series: c.id,
                 name: c.name.clone(),
                 fill: c.fill.clone(),
+                dash: super::Dash::Solid,
             })
             .collect(),
         _ => data
@@ -282,25 +395,50 @@ pub fn generate(chart: &Chart, size: Size, family: &str) -> Result<Generated, Re
                 series: s.column.0,
                 name: s.name.clone(),
                 fill: s.fill.clone(),
+                dash: chart
+                    .series
+                    .iter()
+                    .find(|st| st.column == s.column)
+                    .map_or(super::Dash::Solid, |st| st.dash),
             })
             .collect(),
     };
+    // A swatch for the below-zero colour, while some value is below.
+    let percent = match chart.kind {
+        ChartKind::Column | ChartKind::Bar => chart.options.bars.stacking == Stacking::Percent,
+        ChartKind::Area => chart.options.lines.area_stacking == Stacking::Percent,
+        _ => false,
+    };
+    if let Some(below) = &chart.options.below_zero
+        && !percent
+        && matches!(
+            chart.kind,
+            ChartKind::Column | ChartKind::Bar | ChartKind::Line | ChartKind::Area
+        )
+        && data
+            .series
+            .iter()
+            .any(|s| s.values.iter().flatten().any(|v| *v < 0.0))
+    {
+        entries.push(Entry {
+            series: u32::MAX,
+            name: "Below zero".into(),
+            fill: below.clone(),
+            dash: super::Dash::Solid,
+        });
+    }
     let data = data;
     let o = &chart.options;
-    let text = Text {
-        family: if o.text.family.is_empty() {
-            family.to_string()
-        } else {
-            o.text.family.clone()
-        },
-        weight: o.text.weight,
-        ink: o.text.ink.clone(),
-    };
+    let text = Text::of(o, family);
     let mut parts = Vec::new();
     let mut out = Out {
         parts: &mut parts,
         text: &text,
         extents: [None; 2],
+        ground: ground.brush.clone(),
+        ground_colour: ground.colour,
+        vars: &ground.vars,
+        left_out: Vec::new(),
     };
 
     let legend_at = match o.legend.position {
@@ -322,7 +460,14 @@ pub fn generate(chart: &Chart, size: Size, family: &str) -> Result<Generated, Re
     );
 
     // The legend first: its size decides the body's.
-    let legend = legend_at.map(|at| legend_items(&entries, o.text.legend_size, &text, at, inner));
+    // A *Line* swatch draws a line only where the series are lines.
+    let swatch = match o.legend.swatch {
+        super::Swatch::Line if !matches!(chart.kind, ChartKind::Line | ChartKind::Area) => {
+            super::Swatch::Square
+        }
+        s => s,
+    };
+    let legend = legend_at.map(|at| legend_items(&entries, swatch, &text, at, inner));
     let legend_box = legend.as_ref().map_or(Size::ZERO, |l| l.size);
     let body = if row {
         Size::new(
@@ -376,6 +521,12 @@ pub fn generate(chart: &Chart, size: Size, family: &str) -> Result<Generated, Re
         ChartKind::Column | ChartKind::Bar => {
             bars(chart, &data, body, body_at, &mut out)?;
         }
+        ChartKind::Waterfall => {
+            waterfall(chart, &data, body, body_at, &mut out)?;
+        }
+        ChartKind::Radar => {
+            radar(chart, &data, body, body_at, row, &mut out)?;
+        }
         ChartKind::Line | ChartKind::Area => {
             lines(chart, &data, body, body_at, &mut out)?;
         }
@@ -425,14 +576,205 @@ pub fn generate(chart: &Chart, size: Size, family: &str) -> Result<Generated, Re
         ..Flex::default()
     });
     let extents = out.extents;
+    let notes = std::mem::take(&mut out.left_out);
+    let names = Names {
+        categories: &data.categories,
+        series: data
+            .series
+            .iter()
+            .map(|s| (s.column.0, s.name.as_str()))
+            .chain(clouds.iter().flatten().map(|c| (c.id, c.name.as_str())))
+            .collect(),
+        slices: slices
+            .iter()
+            .flatten()
+            .map(|s| (s.index, s.name.as_str()))
+            .collect(),
+        by_category: !data.by_category.is_empty(),
+    };
+    apply_highlight(chart, &names, &mut parts);
     let mut left_out = data.left_out;
     left_out.extend(sankey_left);
+    left_out.extend(notes);
     Ok(Generated {
         display,
         parts,
         left_out,
         extents,
     })
+}
+
+/// What a highlight reads a part's key by: the drawn categories, the series
+/// and scatter groups by key, a pie's slices by key.
+struct Names<'a> {
+    categories: &'a [String],
+    series: Vec<(u32, &'a str)>,
+    slices: Vec<(u32, &'a str)>,
+    /// Legend entries are categories (colour by category).
+    by_category: bool,
+}
+
+/// The parts of a highlighted chart's other marks muted or faded, its value
+/// labels on them dropped under *Highlighted only*, their category labels in the
+/// muted colour, and a muted line thinner and drawn under the highlighted. A
+/// highlight naming nothing drawn leaves every mark as it is.
+fn apply_highlight(chart: &Chart, names: &Names, parts: &mut Vec<Part>) {
+    let h = &chart.highlight;
+    let (cats, series) = match &h.target {
+        super::Highlighted::None => return,
+        super::Highlighted::Categories(n) => (Some(n), None),
+        super::Highlighted::Series(n) => (None, Some(n)),
+    };
+    let series_of = |k: u32| names.series.iter().find(|(c, _)| *c == k).map(|(_, n)| *n);
+    // Whether the mark keyed `k` is lit: `None` for a part a highlight leaves
+    // alone.
+    let lit = |k: &PartKey| -> Option<bool> {
+        let by_cat = |i: u32| {
+            let name = match chart.kind {
+                ChartKind::Pie => names.slices.iter().find(|(s, _)| *s == i).map(|(_, n)| *n),
+                _ => names.categories.get(i as usize).map(String::as_str),
+            };
+            cats.map(|c| name.is_some_and(|n| c.iter().any(|x| x == n)))
+        };
+        let by_series =
+            |s: u32| series.map(|names| series_of(s).is_some_and(|n| names.iter().any(|x| x == n)));
+        match k.role {
+            PartRole::Bar => by_cat(k.index).or_else(|| by_series(k.series)),
+            PartRole::Slice => by_cat(k.index),
+            PartRole::ValueLabel if chart.kind == ChartKind::Pie => by_cat(k.index),
+            PartRole::ValueLabel | PartRole::Point => match chart.kind {
+                ChartKind::Scatter => by_series(k.series),
+                _ => by_cat(k.index).or_else(|| by_series(k.series)),
+            },
+            PartRole::Line | PartRole::Area => by_series(k.series),
+            PartRole::CategoryLabel => by_cat(k.index),
+            PartRole::LegendSwatch if chart.kind == ChartKind::Pie || names.by_category => {
+                by_cat(k.series)
+            }
+            PartRole::LegendSwatch => by_series(k.series),
+            _ => None,
+        }
+    };
+    // Nothing drawn is lit: the highlight names nothing here, so it does nothing.
+    let any = parts.iter().any(|p| {
+        matches!(
+            p.key.role,
+            PartRole::Bar | PartRole::Slice | PartRole::Line | PartRole::Point
+        ) && lit(&p.key) == Some(true)
+    });
+    if !any {
+        return;
+    }
+    let muted = chart.muted();
+    let dim = |b: &BrushSource| match h.others {
+        super::Others::Muted => muted.clone(),
+        super::Others::Faded => tinted(b, super::FADED),
+    };
+    let mut drop = Vec::new();
+    for (i, p) in parts.iter_mut().enumerate() {
+        if lit(&p.key) != Some(false) {
+            continue;
+        }
+        match p.key.role {
+            PartRole::ValueLabel if h.values_only => drop.push(i),
+            PartRole::ValueLabel => {}
+            PartRole::CategoryLabel => {
+                for f in &mut p.fills {
+                    f.brush = dim(&f.brush);
+                }
+            }
+            _ => {
+                for f in &mut p.fills {
+                    f.brush = dim(&f.brush);
+                }
+                for s in &mut p.strokes {
+                    s.brush = dim(&s.brush);
+                    if p.key.role == PartRole::Line {
+                        s.width *= 0.75;
+                    }
+                }
+            }
+        }
+    }
+    for i in drop.into_iter().rev() {
+        parts.remove(i);
+    }
+    // A muted line's series goes under the lit ones, keeping their order.
+    let unlit_series = parts.iter().any(|p| {
+        p.key.role == PartRole::Series
+            && p.key.index == 0
+            && !by_series_name(series, series_of(p.key.series))
+    });
+    if matches!(chart.kind, ChartKind::Line | ChartKind::Area) && unlit_series {
+        let lit_series = |p: &Part| {
+            p.key.role == PartRole::Series
+                && p.key.index == 0
+                && by_series_name(series, series_of(p.key.series))
+        };
+        // Each lit series' frame with everything under it, which follows it.
+        let mut lits: Vec<Part> = Vec::new();
+        let mut i = 0;
+        while i < parts.len() {
+            if !lit_series(&parts[i]) {
+                i += 1;
+                continue;
+            }
+            let mut under: Vec<PartKey> = vec![parts[i].key];
+            lits.push(parts.remove(i));
+            while i < parts.len() && parts[i].parent.is_some_and(|k| under.contains(&k)) {
+                under.push(parts[i].key);
+                lits.push(parts.remove(i));
+            }
+        }
+        // After the last unlit series' subtree, so they draw over it.
+        let last = parts
+            .iter()
+            .rposition(|p| p.key.role == PartRole::Series && p.key.index == 0);
+        if let Some(mut at) = last {
+            let mut under = vec![parts[at].key];
+            at += 1;
+            while at < parts.len() && parts[at].parent.is_some_and(|k| under.contains(&k)) {
+                under.push(parts[at].key);
+                at += 1;
+            }
+            for (k, p) in lits.into_iter().enumerate() {
+                parts.insert(at + k, p);
+            }
+        } else {
+            parts.extend(lits);
+        }
+    }
+}
+
+/// Whether the series named `name` is among `names`.
+fn by_series_name(names: Option<&Vec<String>>, name: Option<&str>) -> bool {
+    names.is_some_and(|ns| name.is_some_and(|n| ns.iter().any(|x| x == n)))
+}
+
+/// `chart` with every unset chrome colour set to what it derives
+/// (`Chart::ink` and its neighbours), so the passes below read them as set.
+fn resolved(chart: &Chart) -> Chart {
+    let mut c = chart.clone();
+    c.options.text.ink = Some(chart.ink());
+    for value in [true, false] {
+        let (axis, grid) = (chart.axis_colour(value), chart.grid_colour(value));
+        let a = if value {
+            &mut c.options.value_axis
+        } else {
+            &mut c.options.category_axis
+        };
+        a.colour = Some(axis);
+        a.grid.colour = Some(grid);
+    }
+    c
+}
+
+/// A chrome colour [`resolved`] has set.
+fn set(b: &Option<BrushSource>) -> BrushSource {
+    b.clone()
+        .unwrap_or(BrushSource::Literal(crate::Brush::Solid(
+            peniko::Color::TRANSPARENT,
+        )))
 }
 
 fn key(role: PartRole, series: u32, index: u32) -> PartKey {
@@ -463,18 +805,70 @@ fn body_item(row: bool) -> LayoutItem {
 /// The chart's type, resolved.
 struct Text {
     family: String,
-    weight: u16,
-    ink: BrushSource,
+    /// Each role's size, weight and ink, in [`Role`]'s order.
+    roles: [(f64, u16, BrushSource); 4],
+}
+
+/// The kind of a label, which sets its size, weight and ink (`ChartText`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    Tick,
+    Value,
+    Legend,
+    Title,
 }
 
 impl Text {
-    fn kind(&self, content: &str, size: f64) -> NodeKind {
+    /// The type `o` sets each role in, `family` taking an unnamed one, every
+    /// unset weight and ink the chart's.
+    fn of(o: &super::Options, family: &str) -> Text {
+        let t = &o.text;
+        let role = |size: f64, r: &super::RoleText| {
+            (
+                size,
+                r.weight.unwrap_or(t.weight),
+                r.ink.clone().unwrap_or_else(|| set(&t.ink)),
+            )
+        };
+        Text {
+            family: if t.family.is_empty() {
+                family.to_string()
+            } else {
+                t.family.clone()
+            },
+            roles: [
+                role(t.tick_size, &t.tick),
+                role(t.value_size, &t.value),
+                role(t.legend_size, &t.legend),
+                role(t.title_size, &t.title),
+            ],
+        }
+    }
+
+    fn size(&self, r: Role) -> f64 {
+        self.roles[r as usize].0
+    }
+
+    fn weight(&self, r: Role) -> u16 {
+        self.roles[r as usize].1
+    }
+
+    fn ink(&self, r: Role) -> BrushSource {
+        self.roles[r as usize].2.clone()
+    }
+
+    fn kind(&self, content: &str, r: Role) -> NodeKind {
+        self.kind_weighted(content, r, self.weight(r))
+    }
+
+    /// [`Self::kind`] at `weight` rather than the role's own.
+    fn kind_weighted(&self, content: &str, r: Role, weight: u16) -> NodeKind {
         NodeKind::Text {
             content: content.to_string(),
             style: Box::new(TextStyle {
                 font_family: self.family.clone(),
-                font_size: size,
-                weight: self.weight,
+                font_size: self.size(r),
+                weight,
                 ..TextStyle::default()
             }),
             spans: Default::default(),
@@ -488,13 +882,14 @@ impl Text {
         }
     }
 
-    /// The box `content` sets in at `size`, from the same layout a text node uses.
-    fn measure(&self, content: &str, size: f64) -> Rect {
-        crate::geometry::local_bounds(&self.kind(content, size), None).unwrap_or(Rect::new(
+    /// The box `content` sets in as role `r`, from the same layout a text node
+    /// uses.
+    fn measure(&self, content: &str, r: Role) -> Rect {
+        crate::geometry::local_bounds(&self.kind(content, r), None).unwrap_or(Rect::new(
             0.0,
             0.0,
             0.0,
-            size * 1.2,
+            self.size(r) * 1.2,
         ))
     }
 }
@@ -505,6 +900,13 @@ struct Out<'a> {
     text: &'a Text,
     /// [`Generated::extents`], written where the axes are ticked.
     extents: [Option<(f64, f64)>; 2],
+    /// The ground the chart is drawn on (`Ground::brush`), and its colour.
+    ground: BrushSource,
+    ground_colour: peniko::Color,
+    /// The colours of the variables the chart binds (`Ground::vars`).
+    vars: &'a [(crate::VarId, peniko::Color)],
+    /// What a pass left out and says on the card, beside the data's.
+    left_out: Vec<String>,
 }
 
 fn fill(brush: BrushSource) -> Vec<Fill> {
@@ -514,15 +916,29 @@ fn fill(brush: BrushSource) -> Vec<Fill> {
     }]
 }
 
-/// A mark's paint in `brush`: filled solid, or outlined as `Options::outline`
-/// says, the stroke laid inside so a mark keeps the size its value gives it.
-fn mark_paint(o: &super::Options, brush: &BrushSource) -> (Vec<Fill>, Vec<Stroke>) {
-    let Some(width) = o.outline else {
+/// A mark's paint in `brush` with `Options::stroke` laid inside it, so a mark
+/// keeps the size its value gives it: *Solid* fills it and strokes it in the
+/// stroke's colour (unset, `ground`), *Outline* strokes it in its colour (or the
+/// stroke's) over a tint of it. Width 0 fills it plain.
+fn mark_paint(
+    o: &super::Options,
+    brush: &BrushSource,
+    ground: &BrushSource,
+) -> (Vec<Fill>, Vec<Stroke>) {
+    let s = &o.stroke;
+    if s.width <= 0.0 {
         return (fill(brush.clone()), Vec::new());
+    }
+    let (body, ink) = match s.style {
+        super::StrokeStyle::Solid => (brush.clone(), s.colour.clone().unwrap_or(ground.clone())),
+        super::StrokeStyle::Outline => (
+            tinted(brush, super::OUTLINE_TINT),
+            s.colour.clone().unwrap_or(brush.clone()),
+        ),
     };
-    let mut stroke = line_stroke(brush.clone(), width, super::Dash::Solid);
+    let mut stroke = line_stroke(ink, s.width, super::Dash::Solid);
     stroke.align = crate::node::StrokeAlign::Inside;
-    (fill(tinted(brush, super::OUTLINE_TINT)), vec![stroke])
+    (fill(body), vec![stroke])
 }
 
 /// `brush` at `k` of its alpha; a bound colour keeps its binding.
@@ -579,6 +995,7 @@ impl Out<'_> {
             insets,
             display: None,
             item,
+            clip: false,
         });
     }
 
@@ -623,7 +1040,7 @@ impl Out<'_> {
         self.parts.last_mut().expect("pushed").display = display;
     }
 
-    /// A text label, its box's corner at `at`.
+    /// A text label in role `role`'s type, its box's corner at `at`.
     #[allow(clippy::too_many_arguments)]
     fn label(
         &mut self,
@@ -631,13 +1048,13 @@ impl Out<'_> {
         parent: PartKey,
         name: String,
         content: &str,
-        size: f64,
+        role: Role,
         at: Point,
         insets: Insets,
         turn: f64,
     ) {
-        let kind = self.text.kind(content, size);
-        let ink = self.text.ink.clone();
+        let kind = self.text.kind(content, role);
+        let ink = self.text.ink(role);
         self.push(
             key,
             Some(parent),
@@ -649,18 +1066,62 @@ impl Out<'_> {
             LayoutItem::default(),
         );
         if turn != 0.0 {
-            let b = self.text.measure(content, size);
+            let b = self.text.measure(content, role);
             let p = self.parts.last_mut().expect("pushed");
             // Turned about its box's centre, the way layout turns a placed box.
             p.transform = crate::container::placed_at(at, b, Affine::rotate(turn));
         }
     }
 
+    /// The colour `brush` draws, a bound one read from [`super::Ground::vars`];
+    /// `None` when it cannot be told.
+    fn colour_of(&self, brush: &BrushSource) -> Option<peniko::Color> {
+        match brush {
+            BrushSource::Literal(crate::Brush::Solid(c)) => Some(*c),
+            BrushSource::Literal(crate::Brush::Gradient(g)) => g
+                .gradient
+                .stops
+                .first()
+                .map(|s| s.color.to_alpha_color::<peniko::color::Srgb>()),
+            BrushSource::Bound { var, alpha } => self
+                .vars
+                .iter()
+                .find(|(v, _)| v == var)
+                .map(|(_, c)| c.multiply_alpha(*alpha)),
+            _ => None,
+        }
+    }
+
+    /// The label just pushed, sitting inside a mark drawn in `mark`, rewritten
+    /// in the ground when that contrasts more with the mark than the text ink
+    /// does (*Inside ink: Auto*); a tie keeps the ink.
+    fn ink_inside(&mut self, o: &super::Options, mark: &BrushSource) {
+        if o.values.inside_ink != super::InsideInk::Auto {
+            return;
+        }
+        let ink = self.text.ink(Role::Value);
+        let (Some(m), Some(i), Some(g)) = (
+            self.colour_of(mark),
+            self.colour_of(&ink),
+            self.colour_of(&self.ground),
+        ) else {
+            return;
+        };
+        let m = super::mix(self.ground_colour, m.with_alpha(1.0), m.components[3]);
+        if super::contrast(g, m) > super::contrast(i, m) {
+            let ground = self.ground.clone();
+            if let Some(p) = self.parts.last_mut() {
+                p.fills = fill(ground);
+            }
+        }
+    }
+
     /// The part [`Self::rect`] just pushed, repainted as a mark ([`mark_paint`]).
     fn as_mark(&mut self, o: &super::Options) {
+        let ground = self.ground.clone();
         let p = self.parts.last_mut().expect("pushed");
         if let Some(brush) = p.fills.first().map(|f| f.brush.clone()) {
-            (p.fills, p.strokes) = mark_paint(o, &brush);
+            (p.fills, p.strokes) = mark_paint(o, &brush, &ground);
         }
     }
 
@@ -697,9 +1158,9 @@ impl Out<'_> {
         grid: &super::Gridlines,
     ) {
         if !grid.dashed {
-            let (bx, insets) = rule_at(horizontal, share, plot);
+            let (bx, insets) = rule_at(horizontal, share, plot, grid.width);
             let radii = RoundedRectRadii::default();
-            let fill = grid.colour.clone();
+            let fill = set(&grid.colour);
             self.rect(
                 key,
                 parent,
@@ -723,8 +1184,9 @@ impl Out<'_> {
             p.move_to((0.0, y));
             p.line_to((plot.width, y));
         }
-        let mut stroke = line_stroke(grid.colour.clone(), 1.0, super::Dash::Solid);
-        stroke.dashes = GRID_DASH.to_vec();
+        let mut stroke = line_stroke(set(&grid.colour), grid.width, super::Dash::Solid);
+        // The dash scales with the line, so a thick dashed gridline stays dashed.
+        stroke.dashes = GRID_DASH.iter().map(|d| d * grid.width).collect();
         stroke.cap = kurbo::Cap::Butt;
         self.path(key, parent, name, p, plot, Vec::new(), vec![stroke], 1.0);
     }
@@ -799,6 +1261,7 @@ impl Out<'_> {
             insets,
             display: None,
             item: LayoutItem::default(),
+            clip: false,
         });
     }
 
@@ -869,26 +1332,61 @@ impl Out<'_> {
                     ..LayoutItem::default()
                 },
             );
-            let sy = (it.bx.height() - SWATCH) / 2.0;
-            self.rect(
-                key(PartRole::LegendSwatch, it.series, 0),
-                ik,
-                format!("Swatch · {}", it.name),
-                Rect::new(0.0, sy, SWATCH, sy + SWATCH),
-                Spec {
-                    fill: it.fill.clone(),
-                    radii: RoundedRectRadii::from_single_radius(2.0),
-                    insets: Insets::default(),
-                },
-            );
+            let sk = key(PartRole::LegendSwatch, it.series, 0);
+            let sname = format!("Swatch · {}", it.name);
+            let sw = swatch_width(l.swatch);
+            match l.swatch {
+                super::Swatch::Line => {
+                    let mid = it.bx.height() / 2.0;
+                    let mut p = kurbo::BezPath::new();
+                    p.move_to((0.0, LINE_SWATCH_W / 2.0));
+                    p.line_to((sw, LINE_SWATCH_W / 2.0));
+                    let mut stroke = line_stroke(it.fill.clone(), LINE_SWATCH_W, it.dash);
+                    stroke.cap = kurbo::Cap::Butt;
+                    self.path(
+                        sk,
+                        ik,
+                        sname,
+                        p,
+                        Size::new(sw, LINE_SWATCH_W),
+                        Vec::new(),
+                        vec![stroke],
+                        1.0,
+                    );
+                    let part = self.parts.last_mut().expect("pushed");
+                    part.transform = Affine::translate((0.0, mid - LINE_SWATCH_W / 2.0));
+                    // A flex item beside its label, as the rect swatch is.
+                    part.insets = Insets::default();
+                    part.item = LayoutItem::default();
+                }
+                shape => {
+                    let sy = (it.bx.height() - SWATCH) / 2.0;
+                    let r = if shape == super::Swatch::Circle {
+                        SWATCH / 2.0
+                    } else {
+                        2.0
+                    };
+                    self.rect(
+                        sk,
+                        ik,
+                        sname,
+                        Rect::new(0.0, sy, SWATCH, sy + SWATCH),
+                        Spec {
+                            fill: it.fill.clone(),
+                            radii: RoundedRectRadii::from_single_radius(r),
+                            insets: Insets::default(),
+                        },
+                    );
+                }
+            }
             let ly = (it.bx.height() - it.label.height()) / 2.0 - it.label.y0;
             self.label(
                 key(PartRole::LegendLabel, it.series, 0),
                 ik,
                 format!("Label · {}", it.name),
                 &it.name,
-                it.size,
-                Point::new(SWATCH + SWATCH_GAP - it.label.x0, ly),
+                Role::Legend,
+                Point::new(sw + SWATCH_GAP - it.label.x0, ly),
                 Insets::default(),
                 0.0,
             );
@@ -907,21 +1405,22 @@ struct LegendItem {
     series: u32,
     name: String,
     fill: BrushSource,
+    dash: super::Dash,
     label: Rect,
-    size: f64,
     bx: Rect,
 }
 
 struct LegendLayout {
     size: Size,
     items: Vec<LegendItem>,
+    swatch: super::Swatch,
 }
 
 /// The legend's items placed in rows that wrap at the width (top or bottom), or
 /// in one column (left or right).
 fn legend_items(
     entries: &[Entry],
-    size: f64,
+    swatch: super::Swatch,
     text: &Text,
     at: LegendPosition,
     inner: Size,
@@ -929,9 +1428,10 @@ fn legend_items(
     let column = matches!(at, LegendPosition::Left | LegendPosition::Right);
     let mut items = Vec::new();
     let (mut x, mut y, mut line_h, mut widest) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let swatch_w = swatch_width(swatch);
     for s in entries {
-        let label = text.measure(&s.name, size);
-        let w = SWATCH + SWATCH_GAP + label.width();
+        let label = text.measure(&s.name, Role::Legend);
+        let w = swatch_w + SWATCH_GAP + label.width();
         let h = label.height().max(SWATCH);
         if column {
             if !items.is_empty() {
@@ -965,11 +1465,20 @@ fn legend_items(
                 series: s.series,
                 name: s.name.clone(),
                 fill: s.fill.clone(),
+                dash: s.dash,
                 label,
-                size,
                 bx,
             })
             .collect(),
+        swatch,
+    }
+}
+
+/// A legend swatch's width: a *Line* is longer than it is tall.
+fn swatch_width(swatch: super::Swatch) -> f64 {
+    match swatch {
+        super::Swatch::Line => LINE_SWATCH,
+        _ => SWATCH,
     }
 }
 
@@ -1036,6 +1545,656 @@ fn ticks_for(axis: &Axis, lo: f64, hi: f64, length: f64, label_h: f64) -> Ticks 
         (lo, hi)
     };
     scale::ticks(lo, hi, count, axis.range)
+}
+
+/// A radar: a square centred in the body as a pie's is, a spoke per category
+/// clockwise from the start angle, rings at the value axis's ticks, each series
+/// a closed shape through its values (painted at the area opacity when
+/// filled), and the category labels outside the outer ring, anchored by angle.
+/// Fewer than 3 or more than 36 categories draw nothing and say why.
+fn radar(
+    chart: &Chart,
+    data: &Data,
+    body: Size,
+    body_at: Point,
+    row: bool,
+    out: &mut Out,
+) -> Result<(), Refusal> {
+    use std::f64::consts::{FRAC_PI_2, TAU};
+    let o = &chart.options;
+    let ro = &o.radar;
+    let l = &o.lines;
+    let body_key = key(PartRole::Body, 0, 0);
+    out.frame(
+        body_key,
+        None,
+        "Body",
+        Rect::from_origin_size(body_at, body),
+        None,
+        body_item(row),
+    );
+    let n = data.categories.len();
+    if n < *super::RADAR_SPOKES.start() {
+        out.left_out
+            .push("A radar needs at least 3 categories".into());
+        return Ok(());
+    }
+    if n > *super::RADAR_SPOKES.end() {
+        out.left_out
+            .push(format!("Too many spokes: {n}, at most 36"));
+        return Ok(());
+    }
+    let marks: usize = data.series.len() * n;
+    if marks > super::MAX_MARKS {
+        return Err(Refusal::TooManyMarks {
+            count: marks,
+            what: "points",
+        });
+    }
+    let side = body.width.min(body.height).max(0.0);
+    let frame = Rect::from_center_size(
+        Rect::from_origin_size(Point::ZERO, body).center(),
+        (side, side),
+    );
+    let radar_key = key(PartRole::PieFrame, 0, 0);
+    // Centred at its own size, so it stays regular as the body resizes.
+    out.frame_pinned(
+        radar_key,
+        Some(body_key),
+        "Radar",
+        frame,
+        None,
+        LayoutItem::default(),
+        centred(50.0, 50.0),
+    );
+    let sq = Size::new(side, side);
+    let centre = Point::new(side / 2.0, side / 2.0);
+    // The square shrinks until the longest label fits around the outer ring.
+    let ca = &o.category_axis;
+    let labels_on = ca.show && ca.labels;
+    let reach = if labels_on {
+        data.categories
+            .iter()
+            .map(|c| {
+                let b = out.text.measure(c, Role::Tick);
+                b.width().max(b.height())
+            })
+            .fold(0.0, f64::max)
+            + AXIS_GAP
+    } else {
+        0.0
+    };
+    let r = (side / 2.0 - reach).max(side / 4.0);
+    let angle = |c: usize| ro.start_angle.to_radians() - FRAC_PI_2 + c as f64 * TAU / n as f64;
+    let at = |c: usize, k: f64| {
+        let a = angle(c);
+        Point::new(centre.x + k * a.cos(), centre.y + k * a.sin())
+    };
+    // The value axis from the centre out, holding zero unless a range is typed.
+    let va = &o.value_axis;
+    let (lo, hi) = data
+        .series
+        .iter()
+        .flat_map(|s| s.values.iter().flatten().copied())
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+            (lo.min(v), hi.max(v))
+        });
+    let (lo, hi) = if lo.is_finite() { (lo, hi) } else { (0.0, 1.0) };
+    let mut axis = va.clone();
+    axis.start_at_zero = true;
+    let label_h = out.text.measure("0", Role::Tick).height();
+    let t = ticks_for(&axis, lo, hi, r, label_h);
+    out.extents[0] = Some((t.min, t.max));
+    let radius = |v: f64| t.t(v).clamp(0.0, 1.0) * r;
+
+    // The grid: rings at the ticks, spokes out to each category.
+    let grid_key = key(PartRole::Grid, 0, 0);
+    out.frame_pinned(
+        grid_key,
+        Some(radar_key),
+        "Grid",
+        Rect::from_origin_size(Point::ZERO, sq),
+        None,
+        LayoutItem::default(),
+        fill_insets(),
+    );
+    let ring_stroke = |g: &super::Gridlines| {
+        let mut s = line_stroke(set(&g.colour), g.width, super::Dash::Solid);
+        if g.dashed {
+            s.dashes = GRID_DASH.iter().map(|d| d * g.width).collect();
+            s.cap = kurbo::Cap::Butt;
+        }
+        s
+    };
+    if va.show && va.grid.show {
+        for (i, v) in t.values.iter().enumerate() {
+            let k = radius(*v);
+            if k <= 0.0 {
+                continue;
+            }
+            let p = match ro.grid {
+                super::RadarGrid::Circle => kurbo::Circle::new(centre, k).to_path(0.1),
+                super::RadarGrid::Polygon => {
+                    let mut p = kurbo::BezPath::new();
+                    p.move_to(at(0, k));
+                    for c in 1..n {
+                        p.line_to(at(c, k));
+                    }
+                    p.close_path();
+                    p
+                }
+            };
+            out.path(
+                key(PartRole::Gridline, 0, i as u32),
+                grid_key,
+                format!("Ring {}", scale::format(*v, &va.format, t.decimals())),
+                p,
+                sq,
+                Vec::new(),
+                vec![ring_stroke(&va.grid)],
+                1.0,
+            );
+        }
+    }
+    // The spokes are the category gridlines, by the radar's own switch.
+    if ro.spokes {
+        for (c, name) in data.categories.iter().enumerate() {
+            let mut p = kurbo::BezPath::new();
+            p.move_to(centre);
+            p.line_to(at(c, r));
+            out.path(
+                key(PartRole::Gridline, 1, c as u32),
+                grid_key,
+                format!("Spoke {name}"),
+                p,
+                sq,
+                Vec::new(),
+                vec![ring_stroke(&ca.grid)],
+                1.0,
+            );
+        }
+    }
+
+    // Each series a closed shape through its values, joined across a gap.
+    for s in &data.series {
+        let series_key = key(PartRole::Series, s.column.0, 0);
+        out.frame_pinned(
+            series_key,
+            Some(radar_key),
+            &format!("Series {}", s.name),
+            Rect::from_origin_size(Point::ZERO, sq),
+            None,
+            LayoutItem::default(),
+            fill_insets(),
+        );
+        let pts: Vec<(usize, Point)> = (0..n)
+            .filter_map(|c| {
+                let v = s.values[c]?;
+                if v < t.min {
+                    out.left_out
+                        .push(format!("{}, row {}: below the axis's start", s.name, c + 1));
+                }
+                Some((c, at(c, radius(v))))
+            })
+            .collect();
+        if pts.len() < 2 {
+            continue;
+        }
+        let mut p = kurbo::BezPath::new();
+        p.move_to(pts[0].1);
+        for (_, q) in &pts[1..] {
+            p.line_to(*q);
+        }
+        p.close_path();
+        if ro.filled {
+            out.path(
+                key(PartRole::Area, s.column.0, 0),
+                series_key,
+                format!("Area · {}", s.name),
+                p.clone(),
+                sq,
+                fill(s.fill.clone()),
+                Vec::new(),
+                l.area_opacity as f32,
+            );
+        }
+        let dash = chart
+            .series
+            .iter()
+            .find(|st| st.column == s.column)
+            .map_or(super::Dash::Solid, |st| st.dash);
+        out.path(
+            key(PartRole::Line, s.column.0, 0),
+            series_key,
+            format!("Line · {}", s.name),
+            p,
+            sq,
+            Vec::new(),
+            vec![line_stroke(s.fill.clone(), l.width, dash)],
+            1.0,
+        );
+        if l.points != super::PointStyle::None {
+            for (c, q) in &pts {
+                let bx = Rect::from_center_size(*q, (l.point_size, l.point_size));
+                let (fills, strokes) = if l.points == super::PointStyle::Hollow {
+                    (
+                        fill(out.ground.clone()),
+                        vec![line_stroke(
+                            s.fill.clone(),
+                            l.width.min(l.point_size / 3.0),
+                            super::Dash::Solid,
+                        )],
+                    )
+                } else {
+                    mark_paint(o, &s.fill, &out.ground)
+                };
+                let shape = chart
+                    .series
+                    .iter()
+                    .find(|st| st.column == s.column)
+                    .and_then(|st| st.point)
+                    .unwrap_or_default();
+                out.parts.push(Part {
+                    key: key(PartRole::Point, s.column.0, *c as u32),
+                    parent: Some(series_key),
+                    name: format!("{} · {}", s.name, data.categories[*c]),
+                    kind: point_kind(shape, bx.size()),
+                    transform: Affine::translate(bx.origin().to_vec2()),
+                    fills,
+                    strokes,
+                    opacity: 1.0,
+                    insets: centred(q.x / side.max(1e-9) * 100.0, q.y / side.max(1e-9) * 100.0),
+                    display: None,
+                    item: LayoutItem::default(),
+                    clip: false,
+                });
+            }
+        }
+    }
+
+    // Category labels outside the outer ring, anchored by angle: start on
+    // the right, end on the left, centred at the top and bottom.
+    if labels_on {
+        let ck = key(PartRole::CategoryAxis, 0, 0);
+        out.frame_pinned(
+            ck,
+            Some(radar_key),
+            "Category labels",
+            Rect::from_origin_size(Point::ZERO, sq),
+            None,
+            LayoutItem::default(),
+            fill_insets(),
+        );
+        for (c, name) in data.categories.iter().enumerate() {
+            let b = out.text.measure(name, Role::Tick);
+            let a = angle(c);
+            let p = at(c, r + AXIS_GAP);
+            let x = if a.cos() > 0.3 {
+                p.x
+            } else if a.cos() < -0.3 {
+                p.x - b.width()
+            } else {
+                p.x - b.width() / 2.0
+            };
+            let y = if a.sin() > 0.3 {
+                p.y
+            } else if a.sin() < -0.3 {
+                p.y - b.height()
+            } else {
+                p.y - b.height() / 2.0
+            };
+            let lb = Rect::from_origin_size(Point::new(x, y), b.size());
+            out.label(
+                key(PartRole::CategoryLabel, 0, c as u32),
+                ck,
+                format!("Category {name}"),
+                name,
+                Role::Tick,
+                Point::new(x - b.x0, y - b.y0),
+                centred(
+                    lb.center().x / side.max(1e-9) * 100.0,
+                    lb.center().y / side.max(1e-9) * 100.0,
+                ),
+                0.0,
+            );
+        }
+    }
+    // Ring labels up the first spoke.
+    if va.show && va.labels {
+        let vk = key(PartRole::ValueAxis, 0, 0);
+        out.frame_pinned(
+            vk,
+            Some(radar_key),
+            "Value axis",
+            Rect::from_origin_size(Point::ZERO, sq),
+            None,
+            LayoutItem::default(),
+            fill_insets(),
+        );
+        for (i, v) in t.values.iter().enumerate() {
+            let s = scale::format(*v, &va.format, t.decimals());
+            let b = out.text.measure(&s, Role::Tick);
+            let p = at(0, radius(*v));
+            let (x, y) = (p.x + VALUE_GAP, p.y - b.height() / 2.0);
+            let lb = Rect::from_origin_size(Point::new(x, y), b.size());
+            out.label(
+                key(PartRole::TickLabel, 0, i as u32),
+                vk,
+                format!("Tick {s}"),
+                &s,
+                Role::Tick,
+                Point::new(x - b.x0, y - b.y0),
+                centred(
+                    lb.center().x / side.max(1e-9) * 100.0,
+                    lb.center().y / side.max(1e-9) * 100.0,
+                ),
+                0.0,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A waterfall step's colour: set, else its starting colour for the theme drawn.
+fn step_fill(chart: &Chart, step: super::Step) -> BrushSource {
+    let w = &chart.options.waterfall;
+    let own = match step {
+        super::Step::Increase => &w.increase,
+        super::Step::Decrease => &w.decrease,
+        super::Step::Total => &w.total,
+    };
+    own.clone().unwrap_or_else(|| {
+        BrushSource::Literal(crate::Brush::Solid(super::Waterfall::starting(
+            step,
+            chart.drawn_dark(),
+        )))
+    })
+}
+
+/// One waterfall bar: its name, its kind, where it runs from and to, and the
+/// change it writes (a total its running sum).
+struct WalkStep {
+    name: String,
+    step: super::Step,
+    from: f64,
+    to: f64,
+}
+
+/// A waterfall's walk over the first series shown: each step from the running
+/// total to the total plus its value, each named total from zero to the
+/// running total (its own cell ignored, and said when it disagrees), and the
+/// final total the chart adds after the last row.
+fn walk(chart: &Chart, data: &Data, left_out: &mut Vec<String>) -> Vec<WalkStep> {
+    let w = &chart.options.waterfall;
+    let Some(s) = data.series.first() else {
+        return Vec::new();
+    };
+    let mut running = 0.0;
+    let mut steps = Vec::new();
+    for (c, name) in data.categories.iter().enumerate() {
+        if w.totals.iter().any(|t| t == name) {
+            if let Some(v) = s.values[c]
+                && (v - running).abs() > 1e-9 * v.abs().max(1.0)
+            {
+                let f = &chart.options.values.format;
+                let d = |x: f64| scale::format(x, f, scale::decimals_of(x).min(3));
+                left_out.push(format!(
+                    "{name}: the table says {}, the steps sum to {}",
+                    d(v),
+                    d(running)
+                ));
+            }
+            steps.push(WalkStep {
+                name: name.clone(),
+                step: super::Step::Total,
+                from: 0.0,
+                to: running,
+            });
+            continue;
+        }
+        let Some(v) = s.values[c] else { continue };
+        steps.push(WalkStep {
+            name: name.clone(),
+            step: if v >= 0.0 {
+                super::Step::Increase
+            } else {
+                super::Step::Decrease
+            },
+            from: running,
+            to: running + v,
+        });
+        running += v;
+    }
+    if let Some(name) = w.final_total.as_ref().filter(|n| !n.trim().is_empty()) {
+        steps.push(WalkStep {
+            name: name.clone(),
+            step: super::Step::Total,
+            from: 0.0,
+            to: running,
+        });
+    }
+    steps
+}
+
+/// A waterfall: the walk's bars on a band axis, each in its step's colour,
+/// connectors from each bar's end to the next one's start, and value labels
+/// signed for a step and plain for a total.
+fn waterfall(
+    chart: &Chart,
+    data: &Data,
+    body: Size,
+    body_at: Point,
+    out: &mut Out,
+) -> Result<(), Refusal> {
+    let o = &chart.options;
+    let w = &o.waterfall;
+    let horizontal = w.horizontal;
+    let steps = walk(chart, data, &mut out.left_out);
+    if steps.len() > super::MAX_MARKS {
+        return Err(Refusal::TooManyMarks {
+            count: steps.len(),
+            what: "steps",
+        });
+    }
+    if data.series.len() > 1 {
+        let name = &data.series[0].name;
+        out.left_out.push(format!("Draws {name} only"));
+    }
+    let (lo, hi) = steps
+        .iter()
+        .flat_map(|s| [s.from, s.to])
+        .fold((0.0f64, 0.0f64), |(lo, hi), v| (lo.min(v), hi.max(v)));
+    // The axes read the walk's names as categories and its ends as values.
+    let walked = Data {
+        categories: steps.iter().map(|s| s.name.clone()).collect(),
+        series: data
+            .series
+            .first()
+            .map(|s| SeriesData {
+                column: s.column,
+                name: s.name.clone(),
+                fill: s.fill.clone(),
+                values: steps.iter().map(|st| Some(st.to - st.from)).collect(),
+            })
+            .into_iter()
+            .collect(),
+        left_out: Vec::new(),
+        by_category: Vec::new(),
+    };
+    let spec = AxisSpec {
+        horizontal,
+        lo,
+        hi,
+        zero: true,
+        percent: false,
+        x: None,
+        ends: Vec::new(),
+    };
+    let ax = axes(chart, &walked, body, body_at, out, spec);
+    ax.reference_bands(chart, &walked, out);
+    let (plot, plot_key, across_len) = (ax.plot, ax.plot_key, ax.across_len.max(1e-9));
+    let col = data.series.first().map_or(0, |s| s.column.0);
+    let series_key = key(PartRole::Series, col, 0);
+    out.frame_pinned(
+        series_key,
+        Some(plot_key),
+        "Steps",
+        Rect::from_origin_size(Point::ZERO, plot),
+        None,
+        LayoutItem::default(),
+        fill_insets(),
+    );
+    let band = ax.band;
+    let group = band * (1.0 - (o.bars.group_gap / 100.0).clamp(0.0, 0.95));
+    // A step's box, as shares of the plot (across, along) and in plot units.
+    let place = |c: usize, a: f64, b: f64| -> (Rect, Insets) {
+        let a0 = c as f64 * band + (band - group) / 2.0;
+        let a1 = a0 + group;
+        let (s0, s1) = (ax.t.t(a.min(b)), ax.t.t(a.max(b)));
+        let (x0, x1, y0, y1) = if horizontal {
+            (s0, s1, a0 / across_len, a1 / across_len)
+        } else {
+            (a0 / across_len, a1 / across_len, 1.0 - s1, 1.0 - s0)
+        };
+        (
+            Rect::new(
+                x0 * plot.width,
+                y0 * plot.height,
+                x1 * plot.width,
+                y1 * plot.height,
+            ),
+            Insets {
+                left: pct(x0 * 100.0),
+                right: pct((1.0 - x1) * 100.0),
+                top: pct(y0 * 100.0),
+                bottom: pct((1.0 - y1) * 100.0),
+                margin_auto: AutoMargins::default(),
+            },
+        )
+    };
+    let mut boxes = Vec::new();
+    for (c, s) in steps.iter().enumerate() {
+        let (bx, insets) = place(c, s.from, s.to);
+        let r = o
+            .bars
+            .radius
+            .min(bx.width() / 2.0)
+            .min(bx.height() / 2.0)
+            .max(0.0);
+        out.rect(
+            key(PartRole::Bar, col, c as u32),
+            series_key,
+            format!("Step {}", s.name),
+            bx,
+            Spec {
+                fill: step_fill(chart, s.step),
+                radii: RoundedRectRadii::from_single_radius(r),
+                insets,
+            },
+        );
+        out.as_mark(o);
+        // From the step's far end to its near one, as a bar fades to its baseline.
+        let up = s.to >= s.from;
+        let (w, h) = (bx.width(), bx.height());
+        let (full, faint) = match (horizontal, up) {
+            (true, true) => (Point::new(w, 0.0), Point::ZERO),
+            (true, false) => (Point::ZERO, Point::new(w, 0.0)),
+            (false, true) => (Point::ZERO, Point::new(0.0, h)),
+            (false, false) => (Point::new(0.0, h), Point::ZERO),
+        };
+        fade_last(out, o, full, faint, &s.name);
+        boxes.push(bx);
+    }
+    // Connectors: from each bar's end across to the next bar, at that end.
+    if w.connectors && steps.len() > 1 {
+        let k = key(PartRole::Connectors, 0, 0);
+        out.frame_pinned(
+            k,
+            Some(plot_key),
+            "Connectors",
+            Rect::from_origin_size(Point::ZERO, plot),
+            None,
+            LayoutItem::default(),
+            fill_insets(),
+        );
+        let ink = set(&o.value_axis.colour);
+        for i in 0..steps.len() - 1 {
+            let end = steps[i].to;
+            let (a, b) = (boxes[i], boxes[i + 1]);
+            let mut p = kurbo::BezPath::new();
+            if horizontal {
+                let x = ax.t.t(end) * plot.width;
+                p.move_to((x, a.y1));
+                p.line_to((x, b.y0));
+            } else {
+                let y = (1.0 - ax.t.t(end)) * plot.height;
+                p.move_to((a.x1, y));
+                p.line_to((b.x0, y));
+            }
+            let mut stroke = line_stroke(ink.clone(), 1.0, super::Dash::Solid);
+            if w.dashed {
+                stroke.dashes = GRID_DASH.to_vec();
+            }
+            stroke.cap = kurbo::Cap::Butt;
+            out.path(
+                key(PartRole::Connector, 0, i as u32),
+                k,
+                format!("Connector {}", i + 1),
+                p,
+                plot,
+                Vec::new(),
+                vec![stroke],
+                1.0,
+            );
+        }
+    }
+    // Values: a step signed, a total plain.
+    if o.values.position != ValuePosition::Off {
+        let values_key = key(PartRole::Values, 0, 0);
+        out.frame_pinned(
+            values_key,
+            Some(plot_key),
+            "Values",
+            Rect::from_origin_size(Point::ZERO, plot),
+            None,
+            LayoutItem::default(),
+            fill_insets(),
+        );
+        for (c, s) in steps.iter().enumerate() {
+            let total = s.step == super::Step::Total;
+            let v = if total { s.to } else { s.to - s.from };
+            let mut text = scale::format(v, &o.values.format, scale::decimals_of(v).min(3));
+            if !total && v > 0.0 {
+                text.insert(0, '+');
+            }
+            let b = out.text.measure(&text, Role::Value);
+            let up = s.to >= s.from;
+            let Some((at, insets)) =
+                value_place(o.values.position, horizontal, up, boxes[c], b, plot)
+            else {
+                continue;
+            };
+            out.label(
+                key(PartRole::ValueLabel, col, c as u32),
+                values_key,
+                format!("Value {text}"),
+                &text,
+                Role::Value,
+                at,
+                insets,
+                0.0,
+            );
+            if matches!(
+                o.values.position,
+                ValuePosition::Inside | ValuePosition::End
+            ) {
+                out.ink_inside(o, &step_fill(chart, s.step));
+            }
+        }
+    }
+    ax.reference_lines(chart, &walked, out);
+    ax.category_labels(&walked, out);
+    Ok(())
 }
 
 /// Column and bar charts: the body grid with its two axes, the plot's grid,
@@ -1120,9 +2279,12 @@ fn bars(
         zero: true,
         percent: stacking == Stacking::Percent,
         x: None,
+        ends: Vec::new(),
     };
     let ax = axes(chart, data, body, body_at, out, spec);
+    ax.reference_bands(chart, data, out);
     bar_marks(chart, data, &ax, &totals, out);
+    ax.reference_lines(chart, data, out);
     ax.category_labels(data, out);
     Ok(())
 }
@@ -1137,6 +2299,9 @@ struct AxisSpec {
     percent: bool,
     /// A scatter's X domain: the category axis read as numbers.
     x: Option<(f64, f64)>,
+    /// Labels at the lines' ends (`Legend::line_ends`): each series' column,
+    /// its words, the value its line ends at and its colour.
+    ends: Vec<(u32, String, f64, BrushSource)>,
 }
 
 /// The body grid built: the plot and what the marks need of it, and what the
@@ -1157,15 +2322,340 @@ struct Axes {
     under_box: Rect,
     left_at_end: bool,
     bottom_at_top: bool,
-    tick_size: f64,
     /// The category labels' distance from the plot, past any tick marks.
     ca_gap: f64,
     /// The category axis's tick mark colour, when it draws them.
-    ca_ticks: Option<BrushSource>,
+    ca_ticks: Option<(BrushSource, f64)>,
     /// A scatter's X ticks and their text; `None` reads categories.
     x: Option<Ticks>,
     x_text: Vec<String>,
+    /// The value axis's number format, as its ticks write.
+    value_fmt: super::NumberFormat,
 }
+
+/// A statistic of the values drawn: of series `of`, else of every series shown;
+/// a stacked chart's of each stack's total. `None` with no value.
+fn stat_of(chart: &Chart, data: &Data, stat: super::Stat, of: Option<ColumnId>) -> Option<f64> {
+    let stacked = match chart.kind {
+        ChartKind::Column | ChartKind::Bar => chart.options.bars.stacking == Stacking::Stacked,
+        ChartKind::Area => chart.options.lines.area_stacking == Stacking::Stacked,
+        _ => false,
+    };
+    let mut vs: Vec<f64> = match of {
+        Some(col) => data
+            .series
+            .iter()
+            .filter(|s| s.column == col)
+            .flat_map(|s| s.values.iter().flatten().copied())
+            .collect(),
+        None if stacked => (0..data.categories.len())
+            .filter_map(|c| {
+                let v: Vec<f64> = data.series.iter().filter_map(|s| s.values[c]).collect();
+                (!v.is_empty()).then(|| v.iter().sum())
+            })
+            .collect(),
+        None => data
+            .series
+            .iter()
+            .flat_map(|s| s.values.iter().flatten().copied())
+            .collect(),
+    };
+    if vs.is_empty() {
+        return None;
+    }
+    vs.sort_by(f64::total_cmp);
+    Some(match stat {
+        super::Stat::Average => vs.iter().sum::<f64>() / vs.len() as f64,
+        super::Stat::Median => {
+            let n = vs.len();
+            if n % 2 == 1 {
+                vs[n / 2]
+            } else {
+                (vs[n / 2 - 1] + vs[n / 2]) / 2.0
+            }
+        }
+        super::Stat::Min => vs[0],
+        super::Stat::Max => vs[vs.len() - 1],
+    })
+}
+
+impl Axes {
+    /// Where `a` stands along reference axis `axis`, as a share of the plot
+    /// from the axis's start, and the value or name it writes; `None` when the
+    /// data gives none.
+    fn ref_share(
+        &self,
+        chart: &Chart,
+        data: &Data,
+        axis: super::RefAxis,
+        a: &super::At,
+    ) -> Option<(f64, String)> {
+        use super::At;
+        match (axis, a) {
+            (_, At::AxisStart) => Some((0.0, String::new())),
+            (_, At::AxisEnd) => Some((1.0, String::new())),
+            (super::RefAxis::Value, At::Value(v)) => Some((self.t.t(*v), self.value_text(*v))),
+            (super::RefAxis::Value, At::Stat { stat, of }) => {
+                let v = stat_of(chart, data, *stat, *of)?;
+                Some((self.t.t(v), self.value_text(v)))
+            }
+            (super::RefAxis::Category, At::Value(v)) => {
+                let xt = self.x.as_ref()?;
+                Some((
+                    xt.t(*v),
+                    scale::format(*v, &chart.options.category_axis.format, xt.decimals()),
+                ))
+            }
+            (super::RefAxis::Category, At::Category(name)) => {
+                let c = data.categories.iter().position(|n| n == name)?;
+                let along = (c as f64 + 0.5) * self.band / self.across_len.max(1e-9);
+                // Down a bar chart's category axis from the top.
+                Some((
+                    if self.horizontal { 1.0 - along } else { along },
+                    name.clone(),
+                ))
+            }
+            _ => None,
+        }
+    }
+
+    fn value_text(&self, v: f64) -> String {
+        let d = if self.value_fmt.percent {
+            scale::decimals_of(self.t.step * 100.0)
+        } else {
+            self.t.decimals()
+        };
+        scale::format(v, &self.value_fmt, d)
+    }
+
+    /// Whether a reference on `axis` runs up the plot (a vertical line).
+    fn ref_vertical(&self, axis: super::RefAxis) -> bool {
+        (axis == super::RefAxis::Value) == self.horizontal
+    }
+
+    /// The chart's reference bands, under the marks, in a *References* frame.
+    fn reference_bands(&self, chart: &Chart, data: &Data, out: &mut Out) {
+        let bands: Vec<&super::Reference> = chart
+            .references
+            .iter()
+            .filter(|r| r.visible && r.kind == super::RefKind::Band)
+            .collect();
+        if bands.is_empty() {
+            return;
+        }
+        let plot = self.plot;
+        let frame = key(PartRole::References, 0, 0);
+        out.frame_pinned(
+            frame,
+            Some(self.plot_key),
+            "References",
+            Rect::from_origin_size(Point::ZERO, plot),
+            None,
+            LayoutItem::default(),
+            fill_insets(),
+        );
+        for r in bands {
+            let (Some((a, ta)), Some((b, tb))) = (
+                self.ref_share(chart, data, r.axis, &r.at),
+                self.ref_share(chart, data, r.axis, &r.to),
+            ) else {
+                continue;
+            };
+            let (s0, s1) = (a.min(b).clamp(0.0, 1.0), a.max(b).clamp(0.0, 1.0));
+            if s1 <= s0 {
+                continue;
+            }
+            let (x0, x1, y0, y1) = if self.ref_vertical(r.axis) {
+                (s0, s1, 0.0, 1.0)
+            } else {
+                (0.0, 1.0, 1.0 - s1, 1.0 - s0)
+            };
+            let bx = Rect::new(
+                x0 * plot.width,
+                y0 * plot.height,
+                x1 * plot.width,
+                y1 * plot.height,
+            );
+            out.rect(
+                key(PartRole::Band, 0, r.id),
+                frame,
+                format!("Band · {}", r.label),
+                bx,
+                Spec {
+                    fill: tinted(&r.colour, BAND_TINT),
+                    radii: RoundedRectRadii::default(),
+                    insets: Insets {
+                        left: pct(x0 * 100.0),
+                        right: pct((1.0 - x1) * 100.0),
+                        top: pct(y0 * 100.0),
+                        bottom: pct((1.0 - y1) * 100.0),
+                        margin_auto: AutoMargins::default(),
+                    },
+                },
+            );
+            // A band's `{value}` writes both ends, an axis end left out.
+            let ends: Vec<&str> = [&ta, &tb]
+                .into_iter()
+                .map(String::as_str)
+                .filter(|t| !t.is_empty())
+                .collect();
+            let words = r.label.replace("{value}", &ends.join("–"));
+            self.reference_label(r, &words, bx, true, out, frame);
+        }
+    }
+
+    /// The chart's reference lines over the marks, in a *Reference lines*
+    /// frame, each with its label; a line outside the axis's range is left out
+    /// and said.
+    fn reference_lines(&self, chart: &Chart, data: &Data, out: &mut Out) {
+        let lines: Vec<&super::Reference> = chart
+            .references
+            .iter()
+            .filter(|r| r.visible && r.kind == super::RefKind::Line)
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+        let plot = self.plot;
+        let frame = key(PartRole::References, 1, 0);
+        out.frame_pinned(
+            frame,
+            Some(self.plot_key),
+            "Reference lines",
+            Rect::from_origin_size(Point::ZERO, plot),
+            None,
+            LayoutItem::default(),
+            fill_insets(),
+        );
+        for r in lines {
+            let Some((s, text)) = self.ref_share(chart, data, r.axis, &r.at) else {
+                continue;
+            };
+            let name = if r.label.trim().is_empty() {
+                "Reference".to_string()
+            } else {
+                r.label.replace("{value}", "").trim().to_string()
+            };
+            if !(-1e-9..=1.0 + 1e-9).contains(&s) {
+                out.left_out
+                    .push(format!("{name} is outside the axis's range"));
+                continue;
+            }
+            let vertical = self.ref_vertical(r.axis);
+            let k = key(PartRole::Reference, 0, r.id);
+            let (bx, insets) = rule_at(vertical, s, plot, r.width.max(0.5));
+            if r.dash == super::Dash::Solid {
+                out.rect(
+                    k,
+                    frame,
+                    format!("Reference · {name}"),
+                    bx,
+                    Spec {
+                        fill: r.colour.clone(),
+                        radii: RoundedRectRadii::default(),
+                        insets,
+                    },
+                );
+            } else {
+                let mut p = kurbo::BezPath::new();
+                if vertical {
+                    p.move_to((s * plot.width, 0.0));
+                    p.line_to((s * plot.width, plot.height));
+                } else {
+                    let y = (1.0 - s) * plot.height;
+                    p.move_to((0.0, y));
+                    p.line_to((plot.width, y));
+                }
+                let mut stroke = line_stroke(r.colour.clone(), r.width, r.dash);
+                stroke.cap = kurbo::Cap::Butt;
+                out.path(
+                    k,
+                    frame,
+                    format!("Reference · {name}"),
+                    p,
+                    plot,
+                    Vec::new(),
+                    vec![stroke],
+                    1.0,
+                );
+            }
+            let words = r.label.replace("{value}", &text);
+            self.reference_label(r, &words, bx, false, out, frame);
+        }
+    }
+
+    /// A reference's label in its colour and the value labels' type: along a
+    /// line on the side away from the plot's edge, at its start, middle or end;
+    /// inside a band at its top-left. Empty writes none.
+    fn reference_label(
+        &self,
+        r: &super::Reference,
+        words: &str,
+        bx: Rect,
+        band: bool,
+        out: &mut Out,
+        parent: PartKey,
+    ) {
+        let words = words.trim();
+        if words.is_empty() {
+            return;
+        }
+        let plot = self.plot;
+        let b = out.text.measure(words, Role::Value);
+        let (w, h) = (b.width(), b.height());
+        let pad = VALUE_GAP;
+        let vertical = bx.width() < bx.height() && !band;
+        let (x, y) = if band {
+            (bx.x0 + pad, bx.y0 + pad)
+        } else if vertical {
+            let y = match r.label_at {
+                super::LabelAt::End => pad,
+                super::LabelAt::Middle => (plot.height - h) / 2.0,
+                super::LabelAt::Start => plot.height - h - pad,
+            };
+            // Right of the line, unless that runs past the plot.
+            let x = if bx.x1 + pad + w <= plot.width {
+                bx.x1 + pad
+            } else {
+                bx.x0 - pad - w
+            };
+            (x, y)
+        } else {
+            let x = match r.label_at {
+                super::LabelAt::End => plot.width - w - pad,
+                super::LabelAt::Middle => (plot.width - w) / 2.0,
+                super::LabelAt::Start => pad,
+            };
+            // Above the line, unless that runs past the plot's top.
+            let y = if bx.y0 - pad - h >= 0.0 {
+                bx.y0 - pad - h
+            } else {
+                bx.y1 + pad
+            };
+            (x, y)
+        };
+        let lb = Rect::from_origin_size(Point::new(x, y), Size::new(w, h));
+        out.label(
+            key(PartRole::ReferenceLabel, 0, r.id),
+            parent,
+            format!("Label · {words}"),
+            words,
+            Role::Value,
+            Point::new(x - b.x0, y - b.y0),
+            centred(
+                lb.center().x / plot.width.max(1e-9) * 100.0,
+                lb.center().y / plot.height.max(1e-9) * 100.0,
+            ),
+            0.0,
+        );
+        if let Some(p) = out.parts.last_mut() {
+            p.fills = fill(r.colour.clone());
+        }
+    }
+}
+
+/// The share of its colour a reference band is filled with.
+const BAND_TINT: f32 = 0.07;
 
 /// A categorical chart's body: its grid with the value axis's track and labels,
 /// the category axis's track, and the plot with its gridlines and baseline.
@@ -1185,14 +2675,19 @@ fn axes(
         zero,
         percent,
         x,
+        ends,
     } = spec;
     let n_cat = data.categories.len();
+    // The line-end labels' track past the plot: the widest label and a gap.
+    let end_w = ends
+        .iter()
+        .map(|(_, s, ..)| out.text.measure(s, Role::Legend).width() + AXIS_GAP)
+        .fold(0.0, f64::max);
     // The value axis's labels decide its thickness, and the category labels
     // the other axis's.
     let va = &o.value_axis;
     let ca = &o.category_axis;
-    let tick_size = o.text.tick_size;
-    let label_h = out.text.measure("0", tick_size).height();
+    let label_h = out.text.measure("0", Role::Tick).height();
     let mut value_fmt = va.format.clone();
     if percent {
         value_fmt.percent = true;
@@ -1201,6 +2696,24 @@ fn axes(
     let along = if horizontal { body.width } else { body.height } * 0.8;
     let mut axis_va = va.clone();
     axis_va.start_at_zero = zero || va.start_at_zero;
+    // An Auto range takes in each typed value-axis reference that asks to be.
+    let (mut lo, mut hi) = (lo, hi);
+    if va.range.is_none() {
+        for r in chart
+            .references
+            .iter()
+            .filter(|r| r.visible && r.in_range && r.axis == super::RefAxis::Value)
+        {
+            for a in [&r.at, &r.to] {
+                if let super::At::Value(v) = a
+                    && (r.kind == super::RefKind::Band || std::ptr::eq(a, &r.at))
+                {
+                    lo = lo.min(*v);
+                    hi = hi.max(*v);
+                }
+            }
+        }
+    }
     let t = ticks_for(&axis_va, lo, hi, along, label_h);
     out.extents[0] = Some((t.min, t.max));
     let tick_text: Vec<String> = t
@@ -1218,7 +2731,7 @@ fn axes(
         .collect();
     let tick_boxes: Vec<Rect> = tick_text
         .iter()
-        .map(|s| out.text.measure(s, tick_size))
+        .map(|s| out.text.measure(s, Role::Tick))
         .collect();
     let va_show = va.show && va.labels;
     let ca_show = ca.show && ca.labels;
@@ -1244,7 +2757,7 @@ fn axes(
     // A title's text and box, in its own track past its axis's labels.
     let title_of = |a: &Axis| {
         let t = a.title.trim();
-        (a.show && !t.is_empty()).then(|| (t.to_string(), out.text.measure(t, o.text.title_size)))
+        (a.show && !t.is_empty()).then(|| (t.to_string(), out.text.measure(t, Role::Title)))
     };
     let (va_title, ca_title) = (title_of(va), title_of(ca));
     let title_thick =
@@ -1272,9 +2785,9 @@ fn axes(
     let mut cat_boxes: Vec<Rect> = match &x_ticks {
         Some(_) => x_text
             .iter()
-            .map(|s| out.text.measure(s, tick_size))
+            .map(|s| out.text.measure(s, Role::Tick))
             .collect(),
-        None => category_boxes(&data.categories, |c| out.text.measure(c, tick_size)),
+        None => category_boxes(&data.categories, |c| out.text.measure(c, Role::Tick)),
     };
     let band_len_guess = if horizontal {
         body.height
@@ -1304,7 +2817,7 @@ fn axes(
     // stood in its widest guess.
     if x_ticks.is_none() && data.categories.len() > MEASURE_ALL_CATEGORIES {
         for (c, name) in data.categories.iter().enumerate().step_by(every.max(1)) {
-            cat_boxes[c] = out.text.measure(name, tick_size);
+            cat_boxes[c] = out.text.measure(name, Role::Tick);
         }
     }
     let ca_thick = if !ca_show {
@@ -1346,7 +2859,7 @@ fn axes(
         ca.side == AxisSide::End
     };
     let plot = Size::new(
-        (body.width - left_w).max(0.0),
+        (body.width - left_w - end_w).max(0.0),
         (body.height - bottom_h).max(0.0),
     );
     let px_track = |v: f64| Track::Size(TrackSize::Breadth(TrackBreadth::Px(v)));
@@ -1376,9 +2889,13 @@ fn axes(
         }
         tracks
     };
-    let columns = lay(left_at_end, side_tracks);
+    let mut columns = lay(left_at_end, side_tracks);
     let rows = lay(!bottom_at_top, under_tracks);
     let (n_cols, n_rows) = (columns.len() as i16, rows.len() as i16);
+    // Past everything else on the right, outside a right-hand axis.
+    if end_w > 0.0 {
+        columns.push(px_track(end_w));
+    }
     let body_key = key(PartRole::Body, 0, 0);
     out.frame(
         body_key,
@@ -1472,6 +2989,65 @@ fn axes(
     let across_len = if horizontal { plot.height } else { plot.width };
     let value_share = |v: f64| t.t(v);
 
+    // Each line named at its last value, beside the plot: centred there, then
+    // pushed apart down and back up inside the plot's height.
+    if end_w > 0.0 {
+        let ends_key = key(PartRole::EndLabel, 0, 0);
+        let ends_box = Rect::from_origin_size(
+            Point::new(left_w + plot.width, plot_y),
+            Size::new(end_w, plot.height),
+        );
+        out.frame(
+            ends_key,
+            Some(body_key),
+            "Line ends",
+            ends_box,
+            None,
+            cell((n_cols + 1, 1), (plot_row, 1)),
+        );
+        let mut placed: Vec<(usize, Rect, f64)> = ends
+            .iter()
+            .enumerate()
+            .map(|(i, (_, s, v, _))| {
+                let b = out.text.measure(s, Role::Legend);
+                (i, b, (1.0 - value_share(*v)) * plot.height)
+            })
+            .collect();
+        placed.sort_by(|a, b| a.2.total_cmp(&b.2));
+        let h = |b: &Rect| b.height();
+        // Down: each at least a label below the one above.
+        for i in 1..placed.len() {
+            let least = placed[i - 1].2 + (h(&placed[i - 1].1) + h(&placed[i].1)) / 2.0;
+            placed[i].2 = placed[i].2.max(least);
+        }
+        // Up: the last inside the plot, each at most a label above the one below.
+        if let Some(last) = placed.last_mut() {
+            last.2 = last.2.min(plot.height - h(&last.1) / 2.0);
+        }
+        for i in (0..placed.len().saturating_sub(1)).rev() {
+            let most = placed[i + 1].2 - (h(&placed[i].1) + h(&placed[i + 1].1)) / 2.0;
+            placed[i].2 = placed[i].2.min(most).max(h(&placed[i].1) / 2.0);
+        }
+        for (i, b, y) in placed {
+            let (col, text, _, fill_) = &ends[i];
+            let mut insets = centred_y(y / plot.height.max(1e-9) * 100.0);
+            insets.left = px(AXIS_GAP);
+            out.label(
+                key(PartRole::EndLabel, *col, 1),
+                ends_key,
+                format!("End · {text}"),
+                text,
+                Role::Legend,
+                Point::new(AXIS_GAP - b.x0, y - b.height() / 2.0 - b.y0),
+                insets,
+                0.0,
+            );
+            if let Some(p) = out.parts.last_mut() {
+                p.fills = fill(fill_.clone());
+            }
+        }
+    }
+
     // Value tick labels.
     let value_axis_key = key(PartRole::ValueAxis, 0, 0);
     if va_show {
@@ -1492,7 +3068,7 @@ fn axes(
                 let centre = (1.0 - share) * frame_h;
                 turned_label(*b, va_turn, false, centre, va_gap, frame, left_at_end)
             };
-            out.label(k, value_axis_key, name, s, tick_size, at, insets, va_turn);
+            out.label(k, value_axis_key, name, s, Role::Tick, at, insets, va_turn);
         }
     }
     // Value tick marks, out from the plot's edge at each tick.
@@ -1505,14 +3081,14 @@ fn axes(
         for (i, v) in t.values.iter().enumerate() {
             let share = value_share(*v);
             let along = if horizontal { share } else { 1.0 - share };
-            let (bx, insets) = tick_mark(!horizontal, along, from_start, frame);
+            let (bx, insets) = tick_mark(!horizontal, along, from_start, frame, va.line_width);
             out.rect(
                 key(PartRole::Tick, 0, i as u32),
                 value_axis_key,
                 format!("Tick mark {}", tick_text[i]),
                 bx,
                 Spec {
-                    fill: va.colour.clone(),
+                    fill: set(&va.colour),
                     radii: RoundedRectRadii::default(),
                     insets,
                 },
@@ -1533,20 +3109,35 @@ fn axes(
         } else {
             frame.width()
         };
-        let (shown, b) = within(text, *b, length, out.text, o.text.title_size);
+        let (shown, b) = within(text, *b, length, out.text, Role::Title);
         let (at, insets, turn) = title_place(b, frame.size(), turned, edge);
         out.label(
             key(PartRole::AxisTitle, series, 0),
             axis_key,
             format!("Title {text}"),
             &shown,
-            o.text.title_size,
+            Role::Title,
             at,
             insets,
             turn,
         );
     }
 
+    // The plot's own background under everything in it.
+    if let Some(ground) = &o.plot.fill {
+        let r = o.plot.radius;
+        out.rect(
+            key(PartRole::Ground, 0, 0),
+            plot_key,
+            "Ground".into(),
+            Rect::from_origin_size(Point::ZERO, plot),
+            Spec {
+                fill: ground.clone(),
+                radii: RoundedRectRadii::from_single_radius(r),
+                insets: fill_insets(),
+            },
+        );
+    }
     // The plot's grid and its lines.
     let grid_key = key(PartRole::Grid, 0, 0);
     out.frame_pinned(
@@ -1597,14 +3188,14 @@ fn axes(
         } else {
             f64::from(u8::from(edge))
         };
-        let (bx, insets) = rule_at(horizontal, share, plot);
+        let (bx, insets) = rule_at(horizontal, share, plot, ca.line_width);
         out.rect(
             key(PartRole::AxisLine, 1, 0),
             grid_key,
             if at_zero { "Baseline" } else { "Axis line" }.into(),
             bx,
             Spec {
-                fill: ca.colour.clone(),
+                fill: set(&ca.colour),
                 radii: RoundedRectRadii::default(),
                 insets,
             },
@@ -1617,14 +3208,14 @@ fn axes(
         } else {
             left_at_end
         };
-        let (bx, insets) = rule_at(!horizontal, f64::from(u8::from(edge)), plot);
+        let (bx, insets) = rule_at(!horizontal, f64::from(u8::from(edge)), plot, va.line_width);
         out.rect(
             key(PartRole::AxisLine, 0, 0),
             grid_key,
             "Value axis line".into(),
             bx,
             Spec {
-                fill: va.colour.clone(),
+                fill: set(&va.colour),
                 radii: RoundedRectRadii::default(),
                 insets,
             },
@@ -1646,11 +3237,126 @@ fn axes(
         under_box,
         left_at_end,
         bottom_at_top,
-        tick_size,
         ca_gap,
-        ca_ticks: (ca_tick > 0.0).then(|| ca.colour.clone()),
+        ca_ticks: (ca_tick > 0.0).then(|| (set(&ca.colour), ca.line_width)),
         x: x_ticks,
         x_text,
+        value_fmt,
+    }
+}
+
+/// The colour a bar of series `s` at category `c` draws in: below the baseline
+/// the below-zero colour when set, else its category's (colour by category),
+/// else its series'.
+fn bar_fill(o: &super::Options, data: &Data, s: &SeriesData, c: usize, raw: f64) -> BrushSource {
+    match &o.below_zero {
+        Some(b) if raw < 0.0 && o.bars.stacking != Stacking::Percent => b.clone(),
+        _ => data
+            .by_category
+            .get(c)
+            .cloned()
+            .unwrap_or_else(|| s.fill.clone()),
+    }
+}
+
+/// One lollipop in its bar's slot `bx` (pinned by `insets`): a frame keyed and
+/// named as the bar would be, holding a stem centred across the slot from the
+/// baseline to the value and a head on the value's end. `end_up`: the value
+/// end is the slot's top (a column) or right (a bar). Answers the box a value
+/// label sits past, the head included.
+fn lollipop(
+    out: &mut Out,
+    o: &super::Options,
+    (k, parent): (PartKey, PartKey),
+    name: String,
+    (bx, insets): (Rect, Insets),
+    (horizontal, end_up): (bool, bool),
+    fill_: BrushSource,
+) -> Rect {
+    let b = &o.bars;
+    out.frame_pinned(
+        k,
+        Some(parent),
+        &name,
+        bx,
+        None,
+        LayoutItem::default(),
+        insets,
+    );
+    let (w, h) = (bx.width(), bx.height());
+    let stem = b.stem.max(0.0);
+    let head = b.head.max(0.0);
+    let stem_fill = b.stem_colour.clone().unwrap_or_else(|| fill_.clone());
+    // The stem: the slot's length along the value axis, `stem` across.
+    let (sb, si) = if horizontal {
+        let mut i = centred_y(50.0);
+        i.left = px(0.0);
+        i.right = px(0.0);
+        (
+            Rect::new(0.0, h / 2.0 - stem / 2.0, w, h / 2.0 + stem / 2.0),
+            i,
+        )
+    } else {
+        let mut i = centred_x(50.0);
+        i.top = px(0.0);
+        i.bottom = px(0.0);
+        (
+            Rect::new(w / 2.0 - stem / 2.0, 0.0, w / 2.0 + stem / 2.0, h),
+            i,
+        )
+    };
+    out.rect(
+        key(PartRole::Stem, k.series, k.index),
+        k,
+        "Stem".into(),
+        sb,
+        Spec {
+            fill: stem_fill,
+            radii: RoundedRectRadii::default(),
+            insets: si,
+        },
+    );
+    // The head, centred on the value's end of the slot.
+    let (cx, cy) = match (horizontal, end_up) {
+        (true, true) => (w, h / 2.0),
+        (true, false) => (0.0, h / 2.0),
+        (false, true) => (w / 2.0, 0.0),
+        (false, false) => (w / 2.0, h),
+    };
+    let hb = Rect::from_center_size((cx, cy), (head, head));
+    let (fills, strokes) = if b.head_style == super::PointStyle::Hollow {
+        (
+            fill(out.ground.clone()),
+            vec![line_stroke(
+                fill_.clone(),
+                (head / 6.0).clamp(1.0, 3.0),
+                super::Dash::Solid,
+            )],
+        )
+    } else {
+        mark_paint(o, &fill_, &out.ground)
+    };
+    out.parts.push(Part {
+        key: key(PartRole::Head, k.series, k.index),
+        parent: Some(k),
+        name: "Head".into(),
+        kind: point_kind(b.head_shape, hb.size()),
+        transform: Affine::translate(hb.origin().to_vec2()),
+        fills,
+        strokes,
+        opacity: 1.0,
+        insets: centred(cx / w.max(1e-9) * 100.0, cy / h.max(1e-9) * 100.0),
+        display: None,
+        item: LayoutItem::default(),
+        clip: false,
+    });
+    // In the plot's own units: the slot grown by half a head at its value end.
+    let r = head / 2.0;
+    match (horizontal, end_up) {
+        (true, true) => Rect::new(bx.x0, bx.y0, bx.x1 + r, bx.y1),
+        (true, false) => Rect::new(bx.x0 - r, bx.y0, bx.x1, bx.y1),
+        (false, true) => Rect::new(bx.x0, bx.y0 - r, bx.x1, bx.y1),
+        (false, false) => Rect::new(bx.x0, bx.y0, bx.x1, bx.y1 + r),
     }
 }
 
@@ -1662,6 +3368,8 @@ fn bar_marks(chart: &Chart, data: &Data, ax: &Axes, totals: &[f64], out: &mut Ou
     let (horizontal, plot, plot_key, across_len) =
         (ax.horizontal, ax.plot, ax.plot_key, ax.across_len.max(1e-9));
     let stacking = o.bars.stacking;
+    // Totals over a stack; a 100% chart's would all read 100%.
+    let totals_on = o.values.totals && stacking == Stacking::Stacked;
     let (n_cat, n_ser) = (data.categories.len(), data.series.len());
     let value_share = |v: f64| ax.t.t(v);
     let shown = |c: usize, v: f64| -> f64 {
@@ -1673,10 +3381,70 @@ fn bar_marks(chart: &Chart, data: &Data, ax: &Axes, totals: &[f64], out: &mut Ou
     let band = ax.band;
     let group_gap = (o.bars.group_gap / 100.0).clamp(0.0, 0.95);
     let group = band * (1.0 - group_gap);
+    let lollipops = o.bars.shape == super::BarShape::Lollipops;
+    // Connected heads share their band's one centre.
+    let connected = lollipops && o.bars.connect && n_ser > 1;
     let slots = match stacking {
-        Stacking::Apart => n_ser.max(1),
+        Stacking::Apart if !connected => n_ser.max(1),
         _ => 1,
     };
+    // A dumbbell's line from each band's least head to its greatest, under them.
+    if connected {
+        let k = key(PartRole::Connectors, 0, 0);
+        out.frame_pinned(
+            k,
+            Some(plot_key),
+            "Connectors",
+            Rect::from_origin_size(Point::ZERO, plot),
+            None,
+            LayoutItem::default(),
+            fill_insets(),
+        );
+        let ink = o.bars.stem_colour.clone().unwrap_or_else(|| chart.muted());
+        for c in 0..n_cat {
+            let vs: Vec<f64> = data.series.iter().filter_map(|s| s.values[c]).collect();
+            let (Some(lo), Some(hi)) = (
+                vs.iter().copied().reduce(f64::min),
+                vs.iter().copied().reduce(f64::max),
+            ) else {
+                continue;
+            };
+            let mid = (c as f64 + 0.5) * band / across_len;
+            let (s0, s1) = (value_share(lo), value_share(hi));
+            let w = o.bars.stem.max(0.5);
+            let (bx, insets) = if horizontal {
+                let y = mid * plot.height;
+                let r = Rect::new(s0 * plot.width, y - w / 2.0, s1 * plot.width, y + w / 2.0);
+                let mut i = centred_y(mid * 100.0);
+                i.left = pct(s0 * 100.0);
+                i.right = pct((1.0 - s1) * 100.0);
+                (r, i)
+            } else {
+                let x = mid * plot.width;
+                let r = Rect::new(
+                    x - w / 2.0,
+                    (1.0 - s1) * plot.height,
+                    x + w / 2.0,
+                    (1.0 - s0) * plot.height,
+                );
+                let mut i = centred_x(mid * 100.0);
+                i.top = pct((1.0 - s1) * 100.0);
+                i.bottom = pct(s0 * 100.0);
+                (r, i)
+            };
+            out.rect(
+                key(PartRole::Connector, 0, c as u32),
+                k,
+                format!("Connector · {}", data.categories[c]),
+                bx,
+                Spec {
+                    fill: ink.clone(),
+                    radii: RoundedRectRadii::default(),
+                    insets,
+                },
+            );
+        }
+    }
     let bar_gap = (o.bars.bar_gap / 100.0).clamp(0.0, 0.95);
     // `slots` bars and the gaps between them fill the group.
     let bar = group / (slots as f64 + bar_gap * (slots as f64 - 1.0).max(0.0));
@@ -1753,18 +3521,43 @@ fn bar_marks(chart: &Chart, data: &Data, ax: &Axes, totals: &[f64], out: &mut Ou
             } else {
                 RoundedRectRadii::new(0.0, 0.0, r, r)
             };
+            if lollipops {
+                let fill_ = bar_fill(o, data, s, c, raw);
+                let labelled = lollipop(
+                    out,
+                    o,
+                    (key(PartRole::Bar, s.column.0, c as u32), series_key),
+                    format!("{} · {}", s.name, cat),
+                    (bx, insets),
+                    (horizontal, end_up),
+                    fill_,
+                );
+                if o.values.position != ValuePosition::Off {
+                    values_parts.push((s.column.0, c, raw, labelled, end_up));
+                }
+                continue;
+            }
             out.rect(
                 key(PartRole::Bar, s.column.0, c as u32),
                 series_key,
                 format!("{} · {}", s.name, cat),
                 bx,
                 Spec {
-                    fill: s.fill.clone(),
+                    fill: bar_fill(o, data, s, c, raw),
                     radii,
                     insets,
                 },
             );
             out.as_mark(o);
+            // From the value end to the baseline, in the bar's own box.
+            let (w, h) = (bx.width(), bx.height());
+            let (full, faint) = match (horizontal, end_up) {
+                (true, true) => (Point::new(w, 0.0), Point::ZERO),
+                (true, false) => (Point::ZERO, Point::new(w, 0.0)),
+                (false, true) => (Point::ZERO, Point::new(0.0, h)),
+                (false, false) => (Point::new(0.0, h), Point::ZERO),
+            };
+            fade_last(out, o, full, faint, &s.name);
             if o.values.position != ValuePosition::Off {
                 values_parts.push((s.column.0, c, raw, bx, end_up));
             }
@@ -1784,7 +3577,6 @@ fn bar_marks(chart: &Chart, data: &Data, ax: &Axes, totals: &[f64], out: &mut Ou
             fill_insets(),
         );
         let vf = &o.values.format;
-        let size = o.text.value_size;
         // In a stack only the outermost segment each way has an outside to sit
         // in; the ones it covers take their label inside, where it fits. A
         // zero covers nothing and so is never the end.
@@ -1814,9 +3606,12 @@ fn bar_marks(chart: &Chart, data: &Data, ax: &Axes, totals: &[f64], out: &mut Ou
                 scale::decimals_of(raw).min(3)
             };
             let s = scale::format(shown_v, &f, decimals);
-            let b = out.text.measure(&s, size);
+            let b = out.text.measure(&s, Role::Value);
+            // A stack's total takes the place past its end.
             let position = match o.values.position {
-                ValuePosition::Outside if !outer => ValuePosition::Inside,
+                // A lollipop has no inside: its label sits past the head.
+                _ if lollipops => ValuePosition::Outside,
+                ValuePosition::Outside if !outer || totals_on => ValuePosition::Inside,
                 p => p,
             };
             let Some((at, insets)) = value_place(position, horizontal, up, bx, b, plot) else {
@@ -1827,11 +3622,79 @@ fn bar_marks(chart: &Chart, data: &Data, ax: &Axes, totals: &[f64], out: &mut Ou
                 values_key,
                 format!("Value {s}"),
                 &s,
-                size,
+                Role::Value,
                 at,
                 insets,
                 0.0,
             );
+            if matches!(position, ValuePosition::Inside | ValuePosition::End)
+                && let Some(s) = data.series.iter().find(|s| s.column.0 == series)
+            {
+                out.ink_inside(o, &s.fill);
+            }
+        }
+    }
+
+    // Each stack's net total past its end, in the value labels' type a weight
+    // heavier.
+    if totals_on {
+        let totals_key = key(PartRole::Values, 1, 0);
+        out.frame_pinned(
+            totals_key,
+            Some(plot_key),
+            "Totals",
+            Rect::from_origin_size(Point::ZERO, plot),
+            None,
+            LayoutItem::default(),
+            fill_insets(),
+        );
+        let weight = (out.text.weight(Role::Value) + 200).min(900);
+        for (c, cat) in data.categories.iter().enumerate() {
+            if !data.series.iter().any(|s| s.values[c].is_some()) {
+                continue;
+            }
+            let net = ups[c] + downs[c];
+            let up = net >= 0.0;
+            let end = if up { ups[c] } else { downs[c] };
+            let a0 = c as f64 * band + (band - group) / 2.0;
+            let a1 = a0 + bar;
+            let (s0, s1) = (value_share(end.min(0.0)), value_share(end.max(0.0)));
+            let bx = if horizontal {
+                Rect::new(
+                    s0 * plot.width,
+                    a0 / across_len * plot.height,
+                    s1 * plot.width,
+                    a1 / across_len * plot.height,
+                )
+            } else {
+                Rect::new(
+                    a0 / across_len * plot.width,
+                    (1.0 - s1) * plot.height,
+                    a1 / across_len * plot.width,
+                    (1.0 - s0) * plot.height,
+                )
+            };
+            let s = scale::format(net, &o.values.format, scale::decimals_of(net).min(3));
+            let kind = out.text.kind_weighted(&s, Role::Value, weight);
+            let b = crate::geometry::local_bounds(&kind, None).unwrap_or_default();
+            let Some((at, insets)) =
+                value_place(ValuePosition::Outside, horizontal, up, bx, b, plot)
+            else {
+                continue;
+            };
+            out.label(
+                key(PartRole::Total, 0, c as u32),
+                totals_key,
+                format!("Total · {cat}"),
+                &s,
+                Role::Value,
+                at,
+                insets,
+                0.0,
+            );
+            if let Some(p) = out.parts.last_mut() {
+                p.kind = kind;
+            }
         }
     }
 }
@@ -1841,20 +3704,15 @@ impl Axes {
     fn category_labels(&self, data: &Data, out: &mut Out) {
         let (horizontal, left_at_end, bottom_at_top) =
             (self.horizontal, self.left_at_end, self.bottom_at_top);
-        let (band, across_len, every, turn, tick_size) = (
-            self.band,
-            self.across_len.max(1e-9),
-            self.every,
-            self.turn,
-            self.tick_size,
-        );
+        let (band, across_len, every, turn) =
+            (self.band, self.across_len.max(1e-9), self.every, self.turn);
         let (side_box, under_box, cat_boxes) = (self.side_box, self.under_box, &self.cat_boxes);
         let cat_axis_key = key(PartRole::CategoryAxis, 0, 0);
         let frame = if horizontal { side_box } else { under_box };
         // Tick marks: at a scatter's X ticks, else at the centre of every
         // category a label is written for, so a long axis draws no more ticks
         // than labels.
-        if let Some(colour) = &self.ca_ticks {
+        if let Some((colour, width)) = &self.ca_ticks {
             let at: Vec<(usize, f64, String)> = match &self.x {
                 Some(xt) => xt
                     .values
@@ -1877,7 +3735,7 @@ impl Axes {
                 !bottom_at_top
             };
             for (i, along, name) in at {
-                let (bx, insets) = tick_mark(horizontal, along, from_start, frame.size());
+                let (bx, insets) = tick_mark(horizontal, along, from_start, frame.size(), *width);
                 out.rect(
                     key(PartRole::Tick, 1, i as u32),
                     cat_axis_key,
@@ -1939,7 +3797,7 @@ impl Axes {
                 cat_axis_key,
                 label_name,
                 name,
-                tick_size,
+                Role::Tick,
                 at,
                 insets,
                 turn,
@@ -1954,6 +3812,8 @@ struct Entry {
     series: u32,
     name: String,
     fill: BrushSource,
+    /// The series' line dash, for a *Line* swatch.
+    dash: super::Dash,
 }
 
 /// The relaxation passes a Sankey's order takes: a fixed count, not a
@@ -2010,18 +3870,14 @@ fn sankey(
     let mut flows: Vec<Flow> = Vec::new();
     let mut named: rustc_hash::FxHashMap<String, usize> = Default::default();
     let mut joined: rustc_hash::FxHashMap<(usize, usize), usize> = Default::default();
-    let colours = palette(o.palette, o.dark);
+    let colours = super::colours::drawn_palette(chart);
     let mut index = |name: &str, nodes: &mut Vec<Node>| -> usize {
         if let Some(i) = named.get(name) {
             return *i;
         }
         let i = nodes.len();
         named.insert(name.to_string(), i);
-        let fill = chart
-            .nodes
-            .iter()
-            .find(|s| s.name == name)
-            .map_or_else(|| rgb(colours[i % colours.len()]), |s| s.fill.clone());
+        let fill = named_fill(chart, name).unwrap_or_else(|| rgb(colours[i % colours.len()]));
         nodes.push(Node {
             name: name.to_string(),
             value: 0.0,
@@ -2146,12 +4002,11 @@ fn sankey(
         ),
         super::NodeLabels::Off => String::new(),
     };
-    let size = o.text.legend_size;
     let widest = |col: usize| {
         nodes
             .iter()
             .filter(|nd| nd.column == col)
-            .map(|nd| out.text.measure(&label_text(nd), size).width())
+            .map(|nd| out.text.measure(&label_text(nd), Role::Legend).width())
             .fold(0.0, f64::max)
     };
     let (room_l, room_r) = if f.labels == super::NodeLabels::Off {
@@ -2305,7 +4160,7 @@ fn sankey(
         LayoutItem::default(),
         fill_insets(),
     );
-    let neutral = o.value_axis.colour.clone();
+    let neutral = set(&o.value_axis.colour);
     for (k, fl) in flows.iter().enumerate() {
         let (a, b) = (&nodes[fl.from], &nodes[fl.to]);
         let th = fl.value * ky;
@@ -2374,7 +4229,7 @@ fn sankey(
         if text.is_empty() {
             continue;
         }
-        let b = out.text.measure(&text, size);
+        let b = out.text.measure(&text, Role::Legend);
         // Outside on the first and last columns; elsewhere away from the middle.
         let on_left = if nd.column == 0 && columns > 1 {
             true
@@ -2399,13 +4254,53 @@ fn sankey(
             nodes_key,
             format!("Label · {}", nd.name),
             &text,
-            size,
+            Role::Legend,
             Point::new(lx - b.x0, cy - b.height() / 2.0 - b.y0),
             insets,
             0.0,
         );
     }
     Ok(())
+}
+
+/// `brush` fading from full at `full` to `k` of its alpha at `faint`, in its
+/// part's own coordinates; `None` for a colour a gradient stop cannot hold
+/// (a bound one).
+fn faded(brush: &BrushSource, full: Point, faint: Point, k: f64) -> Option<BrushSource> {
+    let Some(crate::Brush::Solid(c)) = brush.literal() else {
+        return None;
+    };
+    let stop = |offset: f32, color: peniko::Color| peniko::ColorStop {
+        offset,
+        color: peniko::color::DynamicColor::from_alpha_color(color),
+    };
+    let gradient = peniko::Gradient::new_linear(full, faint)
+        .with_stops([stop(0.0, *c), stop(1.0, c.multiply_alpha(k as f32))]);
+    Some(BrushSource::Literal(crate::Brush::Gradient(
+        crate::GradientBrush::from(gradient),
+    )))
+}
+
+/// The part just pushed faded (*Fade*) from `full` to `faint`, or left flat
+/// and said once for series `name` when its colour is bound.
+fn fade_last(out: &mut Out, o: &super::Options, full: Point, faint: Point, name: &str) {
+    if !o.fade.on {
+        return;
+    }
+    let k = (o.fade.to / 100.0).clamp(0.0, 1.0);
+    let Some(p) = out.parts.last_mut() else {
+        return;
+    };
+    let Some(f) = p.fills.first_mut() else { return };
+    match faded(&f.brush, full, faint, k) {
+        Some(b) => f.brush = b,
+        None => {
+            let note = format!("Fades need an unbound colour: {name} draws flat");
+            if !out.left_out.contains(&note) {
+                out.left_out.push(note);
+            }
+        }
+    }
 }
 
 /// A *Gradient* flow's fill: a linear gradient across the ribbon from `x0` (the
@@ -2514,7 +4409,7 @@ fn named_fill(chart: &Chart, name: &str) -> Option<BrushSource> {
         .nodes
         .iter()
         .find(|s| s.name == name)
-        .map(|s| s.fill.clone())
+        .and_then(|s| s.fill.clone())
 }
 
 /// A scatter's series: X read off the category column as numbers (a row whose
@@ -2524,7 +4419,7 @@ fn named_fill(chart: &Chart, name: &str) -> Option<BrushSource> {
 fn scatter_clouds(chart: &Chart, data: &mut Data) -> Vec<Cloud> {
     let t = &chart.table;
     let m = &chart.mapping;
-    let colours = palette(chart.options.palette, chart.options.dark);
+    let colours = super::colours::drawn_palette(chart);
     let xs: Vec<Option<f64>> = data.categories.iter().map(|c| parse_number(c)).collect();
     let rows: Vec<usize> = {
         // The table's rows that survived `read` (an empty X), in order.
@@ -2663,8 +4558,10 @@ fn scatter(
         zero: false,
         percent: false,
         x: Some((x_lo, x_hi)),
+        ends: Vec::new(),
     };
     let ax = axes(chart, data, body, body_at, out, spec);
+    ax.reference_bands(chart, data, out);
     let plot = ax.plot;
     let xt = ax.x.as_ref().expect("a scatter's X axis is numeric");
     let largest = all()
@@ -2690,7 +4587,7 @@ fn scatter(
             };
             let bx = Rect::from_center_size(at, (d, d));
             let kind = point_kind(c.shape, bx.size());
-            let (fills, strokes) = mark_paint(o, &c.fill);
+            let (fills, strokes) = mark_paint(o, &c.fill, &out.ground);
             out.parts.push(Part {
                 key: key(PartRole::Point, c.id, *row as u32),
                 parent: Some(series_key),
@@ -2706,9 +4603,11 @@ fn scatter(
                 ),
                 display: None,
                 item: LayoutItem::default(),
+                clip: false,
             });
         }
     }
+    ax.reference_lines(chart, data, out);
     ax.category_labels(data, out);
     Ok(())
 }
@@ -2765,7 +4664,7 @@ const OTHER: &str = "Other";
 /// it. Colours run through the palette by category.
 fn pie_slices(chart: &Chart, data: &mut Data) -> Vec<Slice> {
     let o = &chart.options.slices;
-    let colours = palette(chart.options.palette, chart.options.dark);
+    let colours = super::colours::drawn_palette(chart);
     let Some(s) = data.series.first() else {
         return Vec::new();
     };
@@ -2792,8 +4691,11 @@ fn pie_slices(chart: &Chart, data: &mut Data) -> Vec<Slice> {
         });
     }
     data.left_out.extend(left);
-    if o.sort {
-        out.sort_by(|a, b| b.value.total_cmp(&a.value));
+    // Stable, so ties keep table order.
+    match o.order {
+        super::Order::Table => {}
+        super::Order::Descending => out.sort_by(|a, b| b.value.total_cmp(&a.value)),
+        super::Order::Ascending => out.sort_by(|a, b| a.value.total_cmp(&b.value)),
     }
     if let Some(below) = o.group_below {
         let total: f64 = out.iter().map(|s| s.value).sum();
@@ -2853,13 +4755,12 @@ fn pie(
         centred(50.0, 50.0),
     );
     let outside = o.values.position != ValuePosition::Off && o.values.pie_outside;
-    let size = o.text.value_size;
     let centre = Point::new(side / 2.0, side / 2.0);
     // Room for labels outside: the widest, and a leader line's length.
     let labels: Vec<String> = slices.iter().map(|s| pie_label(chart, s, slices)).collect();
     let widest = labels
         .iter()
-        .map(|l| out.text.measure(l, size).width())
+        .map(|l| out.text.measure(l, Role::Value).width())
         .fold(0.0, f64::max);
     let r = if outside {
         (side / 2.0 - widest - LEADER).max(side / 4.0)
@@ -2893,12 +4794,12 @@ fn pie(
     let mut a = so.start_angle.to_radians() - std::f64::consts::FRAC_PI_2;
     if ring {
         out.path(
-            key(PartRole::Ground, 0, 0),
+            key(PartRole::Track, 0, 0),
             series_key,
             "Track".into(),
             wedge(centre, r, hole, a, a + std::f64::consts::TAU),
             Size::new(side, side),
-            fill(o.value_axis.grid.colour.clone()),
+            fill(set(&o.value_axis.grid.colour)),
             Vec::new(),
             1.0,
         );
@@ -2936,7 +4837,7 @@ fn pie(
         } else {
             Vec::new()
         };
-        let (fills, strokes) = mark_paint(o, &s.fill);
+        let (fills, strokes) = mark_paint(o, &s.fill, &out.ground);
         out.path_rounded(
             key(PartRole::Slice, 0, s.index),
             series_key,
@@ -2961,7 +4862,7 @@ fn pie(
             fill_insets(),
         );
         for (mid, s, text) in mids {
-            let b = out.text.measure(text, size);
+            let b = out.text.measure(text, Role::Value);
             let dir = kurbo::Vec2::new(mid.cos(), mid.sin());
             let at = if outside {
                 let from = centre + dir * r;
@@ -2976,7 +4877,7 @@ fn pie(
                     lead,
                     Size::new(side, side),
                     Vec::new(),
-                    vec![line_stroke(o.text.ink.clone(), 1.0, super::Dash::Solid)],
+                    vec![line_stroke(set(&o.text.ink), 1.0, super::Dash::Solid)],
                     1.0,
                 );
                 // Beside the leader's end, on the side it points to.
@@ -3003,7 +4904,7 @@ fn pie(
                 values_key,
                 format!("Value {text}"),
                 text,
-                size,
+                Role::Value,
                 Point::new(at.x - b.x0, at.y - b.y0),
                 centred(
                     bx.center().x / side.max(1e-9) * 100.0,
@@ -3011,6 +4912,9 @@ fn pie(
                 ),
                 0.0,
             );
+            if !outside {
+                out.ink_inside(o, &s.fill);
+            }
         }
     }
     Ok(())
@@ -3201,6 +5105,32 @@ fn lines(
         hi = if hi > 0.0 { 1.0 } else { 0.0 };
         lo = if lo < 0.0 { -1.0 } else { 0.0 };
     }
+    // Each line's name at its last drawn value, its own last value written
+    // after it under *Name, value*.
+    let ends = if o.legend.line_ends {
+        data.series
+            .iter()
+            .zip(&layers)
+            .filter_map(|(s, (top, _))| {
+                let c = top.iter().rposition(Option::is_some)?;
+                let text = match o.legend.end_label {
+                    super::EndLabel::Name => s.name.clone(),
+                    super::EndLabel::NameValue => {
+                        let v = s.values[c].unwrap_or(0.0);
+                        let f = &o.values.format;
+                        format!(
+                            "{}, {}",
+                            s.name,
+                            scale::format(v, f, scale::decimals_of(v).min(3))
+                        )
+                    }
+                };
+                Some((s.column.0, text, top[c]?, s.fill.clone()))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let spec = AxisSpec {
         horizontal: false,
         lo,
@@ -3209,8 +5139,10 @@ fn lines(
         zero: area,
         percent: stacking == Stacking::Percent,
         x: None,
+        ends,
     };
     let ax = axes(chart, data, body, body_at, out, spec);
+    ax.reference_bands(chart, data, out);
     let plot = ax.plot;
     let at =
         |c: usize, v: f64| Point::new((c as f64 + 0.5) * ax.band, (1.0 - ax.t.t(v)) * plot.height);
@@ -3229,6 +5161,7 @@ fn lines(
             fill_insets(),
         );
         let runs = runs_of(top, base, stand, l.connect_gaps);
+        let mut area_path = None;
 
         if area {
             let mut path = kurbo::BezPath::new();
@@ -3255,6 +5188,15 @@ fn lines(
                 }
                 path.close_path();
             }
+            area_path = Some(path.clone());
+            // From the area's far edge to its baseline, in the plot's space.
+            let reach = path.bounding_box();
+            let base = ((1.0 - ax.t.t(0.0)) * plot.height).clamp(0.0, plot.height);
+            let far = if (reach.y0 - base).abs() >= (reach.y1 - base).abs() {
+                reach.y0
+            } else {
+                reach.y1
+            };
             out.path(
                 key(PartRole::Area, s.column.0, 0),
                 series_key,
@@ -3265,6 +5207,7 @@ fn lines(
                 Vec::new(),
                 l.area_opacity as f32,
             );
+            fade_last(out, o, Point::new(0.0, far), Point::new(0.0, base), &s.name);
         }
         let mut path = kurbo::BezPath::new();
         for run in &runs {
@@ -3272,6 +5215,7 @@ fn lines(
             curve(&mut path, &pts, l.curve);
         }
         let dash = style.map_or(super::Dash::Solid, |st| st.dash);
+        let line_path = path.clone();
         out.path(
             key(PartRole::Line, s.column.0, 0),
             series_key,
@@ -3282,6 +5226,58 @@ fn lines(
             vec![line_stroke(s.fill.clone(), l.width, dash)],
             1.0,
         );
+        // Below the baseline the line and area draw again in the below-zero
+        // colour, inside a frame that clips them there, so the colours meet on
+        // the baseline whatever the curve.
+        if let Some(below) = &o.below_zero
+            && stacking != Stacking::Percent
+            && top.iter().flatten().any(|v| *v < 0.0)
+        {
+            let zy = ((1.0 - ax.t.t(0.0)) * plot.height).clamp(0.0, plot.height);
+            let size = Size::new(plot.width, (plot.height - zy).max(0.0));
+            let bz = key(PartRole::Series, s.column.0, 1);
+            out.frame_pinned(
+                bz,
+                Some(series_key),
+                "Below zero",
+                Rect::from_origin_size(Point::new(0.0, zy), size),
+                None,
+                LayoutItem::default(),
+                Insets {
+                    left: pct(0.0),
+                    right: pct(0.0),
+                    top: pct(zy / plot.height.max(1e-9) * 100.0),
+                    bottom: pct(0.0),
+                    margin_auto: AutoMargins::default(),
+                },
+            );
+            if let Some(p) = out.parts.last_mut() {
+                p.clip = true;
+            }
+            let into = Affine::translate((0.0, -zy));
+            if let Some(a) = area_path {
+                out.path(
+                    key(PartRole::Area, s.column.0, 1),
+                    bz,
+                    format!("Area · {} · below zero", s.name),
+                    into * a,
+                    size,
+                    fill(below.clone()),
+                    Vec::new(),
+                    l.area_opacity as f32,
+                );
+            }
+            out.path(
+                key(PartRole::Line, s.column.0, 1),
+                bz,
+                format!("Line · {} · below zero", s.name),
+                into * line_path,
+                size,
+                Vec::new(),
+                vec![line_stroke(below.clone(), l.width, dash)],
+                1.0,
+            );
+        }
         // A value with no neighbour draws no line, so it is a dot as wide as
         // the line, unless points mark every value already.
         if !points_on {
@@ -3304,6 +5300,7 @@ fn lines(
                     ),
                     display: None,
                     item: LayoutItem::default(),
+                    clip: false,
                 });
             }
         }
@@ -3317,9 +5314,7 @@ fn lines(
                     let bx = Rect::from_center_size(p, (size, size));
                     let (fills, strokes) = if hollow {
                         (
-                            fill(BrushSource::Literal(crate::Brush::Solid(
-                                super::chrome(o.dark).ground,
-                            ))),
+                            fill(o.plot.fill.clone().unwrap_or_else(|| out.ground.clone())),
                             vec![line_stroke(
                                 s.fill.clone(),
                                 (l.width).min(size / 3.0),
@@ -3327,7 +5322,7 @@ fn lines(
                             )],
                         )
                     } else {
-                        mark_paint(o, &s.fill)
+                        mark_paint(o, &s.fill, &out.ground)
                     };
                     out.parts.push(Part {
                         key: key(PartRole::Point, s.column.0, *c as u32),
@@ -3344,6 +5339,7 @@ fn lines(
                         ),
                         display: None,
                         item: LayoutItem::default(),
+                        clip: false,
                     });
                 }
             }
@@ -3362,7 +5358,6 @@ fn lines(
             LayoutItem::default(),
             fill_insets(),
         );
-        let size = o.text.value_size;
         for (si, s) in data.series.iter().enumerate() {
             for (c, v) in layers[si].0.iter().enumerate() {
                 let (Some(v), Some(raw)) = (v, s.values[c]) else {
@@ -3383,7 +5378,7 @@ fn lines(
                     raw
                 };
                 let text = scale::format(shown_v, &f, decimals);
-                let b = out.text.measure(&text, size);
+                let b = out.text.measure(&text, Role::Value);
                 let p = at(c, *v);
                 let lift = VALUE_GAP + l.point_size.max(l.width) / 2.0;
                 let top_y = p.y - lift - b.height();
@@ -3394,7 +5389,7 @@ fn lines(
                     values_key,
                     format!("Value {text}"),
                     &text,
-                    size,
+                    Role::Value,
                     Point::new(p.x - b.width() / 2.0 - b.x0, top_y - b.y0),
                     insets,
                     0.0,
@@ -3402,6 +5397,7 @@ fn lines(
             }
         }
     }
+    ax.reference_lines(chart, data, out);
     ax.category_labels(data, out);
     Ok(())
 }
@@ -3586,19 +5582,20 @@ fn centred_y(y: f64) -> Insets {
 }
 
 /// A 1 px rule across the plot at `share` along the value axis, and its insets.
-fn rule_at(horizontal: bool, share: f64, plot: Size) -> (Rect, Insets) {
+fn rule_at(horizontal: bool, share: f64, plot: Size, width: f64) -> (Rect, Insets) {
+    let h = width / 2.0;
     if horizontal {
         let x = share * plot.width;
         let mut insets = centred_x(share * 100.0);
         insets.top = px(0.0);
         insets.bottom = px(0.0);
-        (Rect::new(x - 0.5, 0.0, x + 0.5, plot.height), insets)
+        (Rect::new(x - h, 0.0, x + h, plot.height), insets)
     } else {
         let y = (1.0 - share) * plot.height;
         let mut insets = centred_y((1.0 - share) * 100.0);
         insets.left = px(0.0);
         insets.right = px(0.0);
-        (Rect::new(0.0, y - 0.5, plot.width, y + 0.5), insets)
+        (Rect::new(0.0, y - h, plot.width, y + h), insets)
     }
 }
 
@@ -3606,7 +5603,14 @@ fn rule_at(horizontal: bool, share: f64, plot: Size) -> (Rect, Insets) {
 /// `along` (a share of the frame along its axis, from its left or top), across
 /// the axis from the frame's start edge (left or top) or its end. Centred like a
 /// tick label, so it keeps its size while its place follows the plot.
-fn tick_mark(stub_horizontal: bool, along: f64, from_start: bool, frame: Size) -> (Rect, Insets) {
+fn tick_mark(
+    stub_horizontal: bool,
+    along: f64,
+    from_start: bool,
+    frame: Size,
+    width: f64,
+) -> (Rect, Insets) {
+    let h = width / 2.0;
     if stub_horizontal {
         let y = along * frame.height;
         let x = if from_start {
@@ -3620,7 +5624,7 @@ fn tick_mark(stub_horizontal: bool, along: f64, from_start: bool, frame: Size) -
         } else {
             insets.right = px(0.0);
         }
-        (Rect::new(x, y - 0.5, x + TICK_LEN, y + 0.5), insets)
+        (Rect::new(x, y - h, x + TICK_LEN, y + h), insets)
     } else {
         let x = along * frame.width;
         let y = if from_start {
@@ -3634,7 +5638,7 @@ fn tick_mark(stub_horizontal: bool, along: f64, from_start: bool, frame: Size) -
         } else {
             insets.bottom = px(0.0);
         }
-        (Rect::new(x - 0.5, y, x + 0.5, y + TICK_LEN), insets)
+        (Rect::new(x - h, y, x + h, y + TICK_LEN), insets)
     }
 }
 
@@ -3730,7 +5734,7 @@ fn turned_label(
 /// `text` (its box `b` at `size`) cut to `length` with an ellipsis when it is
 /// longer, and the box it then takes: an axis title runs no further than its
 /// axis.
-fn within(text: &str, b: Rect, length: f64, measure: &Text, size: f64) -> (String, Rect) {
+fn within(text: &str, b: Rect, length: f64, measure: &Text, size: Role) -> (String, Rect) {
     if b.width() <= length {
         return (text.to_string(), b);
     }

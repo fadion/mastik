@@ -172,6 +172,12 @@ pub enum Item {
     UnlinkChartData,
     /// The chart's parts kept as layers, its description dropped.
     FlattenChart,
+    /// The chart highlights the category under the pointer (*Highlight ‹name›*).
+    HighlightCategory,
+    /// The chart highlights the series under the pointer.
+    HighlightSeries,
+    /// The chart's highlight cleared.
+    ClearHighlight,
     /// *Make a list from data ▸* — the instance menu's row holding the data
     /// sets, [`Self::MakeListFile`] and [`Self::MakeListNewTable`].
     MakeList,
@@ -682,6 +688,9 @@ impl Item {
         Item::UpdateChartData,
         Item::UnlinkChartData,
         Item::FlattenChart,
+        Item::HighlightCategory,
+        Item::HighlightSeries,
+        Item::ClearHighlight,
         Item::MakeList,
         Item::MakeListFile,
         Item::MakeListNewTable,
@@ -838,6 +847,10 @@ impl Item {
             Item::UpdateChartData => s("Update chart data", icon::IMPORT, None, Group::Head),
             Item::UnlinkChartData => s("Unlink data file", icon::LINK_SIMPLE, None, Group::Head),
             Item::FlattenChart => s("Flatten chart", icon::STACK_SIMPLE, None, Group::Structure),
+            // Renamed for the mark under the pointer by `Row::label`.
+            Item::HighlightCategory => s("Highlight category", icon::CHART, None, Group::Head),
+            Item::HighlightSeries => s("Highlight series", icon::CHART, None, Group::Head),
+            Item::ClearHighlight => s("Clear highlight", icon::CHART, None, Group::Head),
             Item::MakeList | Item::MakeListFrom(_) => {
                 s("Make a list from data", icon::TABLE, None, Group::Structure)
             }
@@ -1492,7 +1505,15 @@ impl Item {
             Item::ToggleHidden => &["hide", "show", "visibility"],
             Item::ToggleLocked => &["lock", "unlock"],
             Item::Delete => &["remove"],
-            Item::Tool(Tool::Chart) => &["chart", "graph", "plot"],
+            Item::Tool(Tool::Chart) => &[
+                "chart",
+                "graph",
+                "plot",
+                "waterfall",
+                "bridge",
+                "lollipop",
+                "dumbbell",
+            ],
             Item::Library => &["open", "files", "dashboard", "home"],
             Item::GoToDocument => &["open", "switch", "file", "recent"],
             Item::NextTab | Item::PreviousTab => &["switch", "document", "file"],
@@ -1991,6 +2012,9 @@ pub struct Context<'a> {
     /// Several layers are selected and every one is a chart: what offers
     /// *Flatten chart* over them, which flattens each.
     pub all_charts: bool,
+    /// The category and the series of the chart mark under the pointer, for
+    /// *Highlight ‹name›*.
+    pub chart_mark: (Option<String>, Option<String>),
     /// Why the one instance under the menu cannot become a list's template
     /// (`list::why_not`), dimming *Make a list from data*.
     pub list_refused: Option<&'static str>,
@@ -2125,6 +2149,8 @@ pub struct LayerState {
 pub struct ChartLink {
     pub linked: bool,
     pub changed: bool,
+    /// The chart highlights something, so *Clear highlight* acts.
+    pub highlighted: bool,
 }
 
 impl LayerState {
@@ -2800,6 +2826,28 @@ fn head_rows(cx: &Context<'_>) -> Vec<Row> {
     if one {
         match cx.kinds.first() {
             Some(Kind::Frame) if let Some(link) = st.chart => {
+                let (cat, series) = &cx.chart_mark;
+                if let Some(c) = cat {
+                    rows.push(
+                        Row::new(Item::HighlightCategory)
+                            .label(format!("Highlight {c}"))
+                            .dim_if(locked, why),
+                    );
+                }
+                if let Some(s) = series {
+                    rows.push(
+                        Row::new(Item::HighlightSeries)
+                            .label(format!("Highlight {s}"))
+                            .dim_if(locked, why),
+                    );
+                }
+                if cat.is_some() || series.is_some() || link.highlighted {
+                    rows.push(
+                        Row::new(Item::ClearHighlight)
+                            .dim_if(!link.highlighted, "Nothing is highlighted")
+                            .dim_if(locked, why),
+                    );
+                }
                 rows.push(Row::new(Item::EditChartData));
                 rows.push(Row::new(Item::ImportChartData).dim_if(locked, why));
                 if link.changed {
@@ -2916,6 +2964,9 @@ pub const KIND_VERBS: &[(Item, &str)] = &[
     (Item::EditChartData, "Select a chart"),
     (Item::ImportChartData, "Select a chart"),
     (Item::FlattenChart, "Select a chart"),
+    (Item::HighlightCategory, "Right-click a mark on a chart"),
+    (Item::HighlightSeries, "Right-click a mark on a chart"),
+    (Item::ClearHighlight, "Select a chart"),
     // *Make a list from data* is a submenu head the palette never runs; its
     // two rows stand for it.
     (Item::MakeListFile, "Needs an instance"),
@@ -3737,6 +3788,12 @@ impl MastikApp {
                 .map(|p| (p, self.shown_page_name(p)))
                 .collect(),
             can_align: self.align_target().is_some(),
+            chart_mark: match (open.target, open.world) {
+                (Target::Layer { id, .. }, Some(world)) => {
+                    crate::panels::chart_mark_names(self, id, world)
+                }
+                _ => (None, None),
+            },
             all_charts: self.session.selection.ids().len() > 1
                 && self.session.selection.ids().iter().all(|id| {
                     self.session
@@ -3774,9 +3831,10 @@ impl MastikApp {
                 .parent()
                 .is_some_and(|p| mastik_core::is_effectively_locked(&self.session.doc, p)),
             clips: node.clip(),
-            chart: node.chart().map(|_| ChartLink {
+            chart: node.chart().map(|c| ChartLink {
                 linked: self.chart_link_state(id).is_some(),
                 changed: self.chart_link_state(id) == Some(crate::chart_import::LinkState::Changed),
+                highlighted: c.highlight.target != mastik_core::chart::Highlighted::None,
             }),
             list: node.list().is_some(),
             masked: node.mask()
@@ -4111,6 +4169,31 @@ impl MastikApp {
                     return self.session.info("Select a list");
                 }
                 self.detach_lists(&ids);
+            }
+            // The chart under the menu, by the mark under its pointer.
+            Item::HighlightCategory | Item::HighlightSeries | Item::ClearHighlight => {
+                let chart = hit.or(self.session.selection.single()).filter(|id| {
+                    self.session
+                        .doc
+                        .get(*id)
+                        .is_some_and(|n| n.chart().is_some())
+                });
+                let Some(id) = chart else {
+                    return self.session.info("Select a chart");
+                };
+                let (cat, series) = match world {
+                    Some(w) => crate::panels::chart_mark_names(self, id, w),
+                    None => (None, None),
+                };
+                use mastik_core::chart::Highlighted;
+                let target = match item {
+                    Item::HighlightCategory => cat.map(|c| Highlighted::Categories(vec![c])),
+                    Item::HighlightSeries => series.map(|s| Highlighted::Series(vec![s])),
+                    _ => Some(Highlighted::None),
+                };
+                if let Some(target) = target {
+                    self.highlight_chart(id, target);
+                }
             }
             // The chart under the menu, or the one selected chart from the palette.
             Item::EditChartData
@@ -4462,6 +4545,7 @@ mod tests {
             other_pages: Vec::new(),
             can_align: true,
             all_charts: false,
+            chart_mark: (None, None),
             list_refused: None,
             data_sets: Vec::new(),
         }

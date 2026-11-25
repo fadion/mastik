@@ -989,10 +989,10 @@ fn model_type(model: &str) -> Option<&'static str> {
         "Steps" | "Region" | "Quad" | "[CharAttr]" | "[Effect]" | "[ExportSpec]" | "[Fill]"
         | "[Guide]" | "[Hex]" | "[LayoutGrid]" | "[Name]" | "[Node]" | "[ParaAttr]"
         | "[Stroke]" | "[Reaction]" | "[Flow]" | "TableRows" | "[ColumnName]" | "[TableCell]"
-        | "[TableRow]" | "[RowNumber]" | "ListSort" => Some("array"),
+        | "[TableRow]" | "[RowNumber]" | "ListSort" | "[ChartReference]" => Some("array"),
         "Props" | "Args" | "Tree" | "ChartMapping" | "ChartOptions" | "ChartColours"
-        | "KitModeMap" | "DtcgFile" | "BlockStyle" | "ParagraphStyle" | "TextStyle"
-        | "LayoutItem" | "RepeatLine" | "RepeatGrid" | "LayerPlay" | "PagePlay"
+        | "ChartHighlight" | "KitModeMap" | "DtcgFile" | "BlockStyle" | "ParagraphStyle"
+        | "TextStyle" | "LayoutItem" | "RepeatLine" | "RepeatGrid" | "LayerPlay" | "PagePlay"
         | "TableColumns" | "ListFill" | "ListFilter" | "RowRange" => Some("object"),
         _ => None,
     }
@@ -1267,7 +1267,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 28_700;
-        const ALL_BUDGET: usize = 127_800;
+        const ALL_BUDGET: usize = 128_400;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

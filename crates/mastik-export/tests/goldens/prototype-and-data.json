@@ -1,5 +1,5 @@
 {
-  "snapshot_version": 29,
+  "snapshot_version": 30,
   "pages": [
     {
       "id": "60d:1",
@@ -224,7 +224,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#595959",
+            "color": "#b8b8b8",
             "alpha": 1.0
           }
         }
@@ -292,7 +292,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#595959",
+            "color": "#b8b8b8",
             "alpha": 1.0
           }
         }
@@ -360,7 +360,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#595959",
+            "color": "#b8b8b8",
             "alpha": 1.0
           }
         }
@@ -471,7 +471,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#e6e6e6",
+            "color": "#2a2a2b",
             "alpha": 1.0
           }
         }
@@ -536,7 +536,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#e6e6e6",
+            "color": "#2a2a2b",
             "alpha": 1.0
           }
         }
@@ -601,7 +601,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#e6e6e6",
+            "color": "#2a2a2b",
             "alpha": 1.0
           }
         }
@@ -666,7 +666,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#e6e6e6",
+            "color": "#2a2a2b",
             "alpha": 1.0
           }
         }
@@ -731,7 +731,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#bfbfbf",
+            "color": "#474748",
             "alpha": 1.0
           }
         }
@@ -891,7 +891,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#3b6fe0",
+            "color": "#6b95f0",
             "alpha": 1.0
           }
         }
@@ -958,7 +958,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#3b6fe0",
+            "color": "#6b95f0",
             "alpha": 1.0
           }
         }
@@ -1025,7 +1025,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#595959",
+            "color": "#b8b8b8",
             "alpha": 1.0
           }
         }
@@ -1093,7 +1093,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#595959",
+            "color": "#b8b8b8",
             "alpha": 1.0
           }
         }
@@ -1161,7 +1161,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#3b6fe0",
+            "color": "#6b95f0",
             "alpha": 1.0
           }
         }
@@ -1224,7 +1224,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#595959",
+            "color": "#b8b8b8",
             "alpha": 1.0
           }
         }
@@ -1558,7 +1558,7 @@
           "index": 0,
           "paint": {
             "type": "Solid",
-            "color": "#595959",
+            "color": "#b8b8b8",
             "alpha": 1.0
           }
         }

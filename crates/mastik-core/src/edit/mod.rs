@@ -1742,8 +1742,9 @@ pub fn create_artboard(
 }
 
 /// Create a chart spanning world points `a`..`b` under `parent`: a frame with
-/// `background` as its ground, named for its kind, carrying `chart`. Its parts
-/// are not written here; the next settle generates them.
+/// `background` as its ground (`None` leaves it unpainted, reading what is
+/// under it), named for its kind, carrying `chart`. Its parts are not written
+/// here; the next settle generates them.
 #[allow(clippy::too_many_arguments)]
 pub fn create_chart(
     id: NodeId,
@@ -1752,11 +1753,22 @@ pub fn create_chart(
     parent_world: Affine,
     a: Point,
     b: Point,
-    background: Color,
+    background: Option<Color>,
     chart: crate::chart::Chart,
 ) -> Transaction {
     let name = format!("{} chart", chart.kind.label());
-    let mut tx = create_artboard(id, parent, index, parent_world, a, b, background);
+    let mut tx = create_artboard(
+        id,
+        parent,
+        index,
+        parent_world,
+        a,
+        b,
+        background.unwrap_or(Color::TRANSPARENT),
+    );
+    if background.is_none() {
+        tx.0.retain(|op| !matches!(op, Operation::SetFills { .. }));
+    }
     if let Some(Operation::CreateNode { name: n, .. }) = tx.0.first_mut() {
         *n = Some(name);
     }

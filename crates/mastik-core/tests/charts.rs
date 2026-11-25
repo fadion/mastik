@@ -65,6 +65,9 @@ fn sample() -> Chart {
         data: None,
         parts: Vec::new(),
         generated: None,
+        grounded: None,
+        highlight: Default::default(),
+        references: Vec::new(),
         minted: 0,
     }
 }
@@ -109,6 +112,7 @@ fn fixture() -> F {
                     id: chart,
                     parts: vec![(key(PartRole::Bar, 0), bar)],
                     at: None,
+                    ground: None,
                 },
                 create(card, page, frame(100.0, 100.0)),
             ]),
@@ -187,6 +191,7 @@ fn a_part_is_written_only_by_its_charts_regeneration() {
                     id: f.chart,
                     parts: vec![(key(PartRole::Bar, 0), f.bar)],
                     at: None,
+                    ground: None,
                 },
             ]),
         )
@@ -225,6 +230,7 @@ fn a_description_keeps_the_parts_a_regeneration_wrote() {
                 id: f.chart,
                 parts: vec![(key(PartRole::Bar, 0), new_bar)],
                 at: None,
+                ground: None,
             },
         ]))
         .expect("a regeneration replaces the part");
@@ -566,6 +572,138 @@ fn settle_makes_the_parts_once() {
     assert!(mastik_core::chart::stale(&again, &mastik_core::Resolved::rebuild(&again)).is_empty());
 }
 
+/// A transparent chart reads the nearest painted frame above it, else the page;
+/// its own fill wins and passes as it is; a new chart starts unpainted inside a
+/// painted frame and on white elsewhere.
+/// flip: `ground_of` stopping at the chart frame → fails at "the card's fill".
+#[test]
+fn a_chart_reads_the_ground_under_it() {
+    use mastik_core::chart::{GroundFrom, ground_of, starting_ground};
+    use mastik_core::peniko::Color;
+    let (mut doc, chart) = unsettled(480.0, 280.0);
+    let page = doc.first_page();
+    let card = IdSource::new(0xC9).mint();
+    let navy = Color::from_rgb8(0x1D, 0x1F, 0x26);
+    let fill = |c: Color| {
+        mastik_core::item::keyed_by_position([mastik_core::Fill {
+            brush: mastik_core::Brush::Solid(c).into(),
+            visible: true,
+        }])
+    };
+    assert_eq!(ground_of(&doc, chart).from, GroundFrom::Page);
+    assert_eq!(
+        starting_ground(&doc, page),
+        Some(Color::WHITE),
+        "white on the page"
+    );
+    doc.apply(&Transaction(vec![
+        create(card, page, frame(600.0, 400.0)),
+        Operation::SetFills {
+            id: card,
+            fills: fill(navy),
+        },
+        Operation::Reparent {
+            id: chart,
+            new_parent: card,
+            index: 0,
+        },
+    ]))
+    .unwrap();
+    let g = ground_of(&doc, chart);
+    assert_eq!(
+        (g.colour, g.from),
+        (navy, GroundFrom::Ancestor(card)),
+        "the card's fill"
+    );
+    assert_eq!(
+        starting_ground(&doc, card),
+        None,
+        "none inside a painted card"
+    );
+    doc.apply(&Transaction(vec![Operation::SetFills {
+        id: chart,
+        fills: fill(Color::WHITE),
+    }]))
+    .unwrap();
+    let g = ground_of(&doc, chart);
+    assert_eq!((g.colour, g.from), (Color::WHITE, GroundFrom::Own));
+}
+
+/// Settle regenerates a chart when the ground under it changes, though its own
+/// description and size do not, and an *Auto* chart's chrome follows.
+/// flip: `stale` leaving the ground stamp out → fails at "stale on a new
+/// ground".
+#[test]
+fn a_new_ground_regenerates_the_chart() {
+    use mastik_core::peniko::Color;
+    let (mut doc, chart) = unsettled(480.0, 280.0);
+    let mut res = mastik_core::Resolved::rebuild(&doc);
+    mastik_core::chart::settle_all(&mut doc, &mut res);
+    let fill = |c: Color| {
+        mastik_core::item::keyed_by_position([mastik_core::Fill {
+            brush: mastik_core::Brush::Solid(c).into(),
+            visible: true,
+        }])
+    };
+    doc.apply(&Transaction(vec![Operation::SetFills {
+        id: chart,
+        fills: fill(Color::WHITE),
+    }]))
+    .unwrap();
+    res = mastik_core::Resolved::rebuild(&doc);
+    assert_eq!(
+        mastik_core::chart::stale(&doc, &res),
+        vec![chart],
+        "stale on a new ground"
+    );
+    mastik_core::chart::settle_all(&mut doc, &mut res);
+    let c = doc.get(chart).unwrap().chart().unwrap();
+    assert_eq!(c.grounded, Some(Color::WHITE));
+    assert!(!c.drawn_dark(), "Auto reads white as light");
+    let tick = part(&doc, chart, PartRole::TickLabel, 0, 0).expect("a tick label");
+    let ink = doc.get(tick).unwrap().paint().fills[0].brush.clone();
+    assert_eq!(
+        ink,
+        mastik_core::Brush::Solid(mastik_core::chart::chrome(false).ink).into()
+    );
+}
+
+/// A v21 file's chart keeps its look: `dark` becomes its theme and a colour at
+/// that theme's start becomes unset, a picked one staying.
+/// flip: `migrate_21_to_22` skipping the charts → fails at "the theme".
+#[test]
+fn an_old_charts_dark_becomes_its_theme() {
+    use mastik_core::chart::{InsideInk, Theme, chrome};
+    let (doc, chart) = unsettled(480.0, 280.0);
+    let mut v: serde_json::Value = serde_json::from_slice(&io::save(&doc).unwrap()).unwrap();
+    v["schema_version"] = 21.into();
+    let ink = serde_json::to_value(mastik_core::BrushSource::from(mastik_core::Brush::Solid(
+        chrome(true).ink,
+    )))
+    .unwrap();
+    let red = serde_json::to_value(mastik_core::BrushSource::from(mastik_core::Brush::Solid(
+        mastik_core::peniko::Color::from_rgb8(255, 0, 0),
+    )))
+    .unwrap();
+    for n in v["nodes"].as_array_mut().unwrap() {
+        if n.get("chart").is_some() {
+            let o = &mut n["chart"]["options"];
+            o["dark"] = true.into();
+            o["text"] = serde_json::json!({ "ink": ink });
+            o["value_axis"] = serde_json::json!({ "colour": red });
+        }
+    }
+    let loaded = io::load(&serde_json::to_vec(&v).unwrap()).unwrap();
+    let c = loaded.get(chart).unwrap().chart().unwrap();
+    assert_eq!(c.options.theme, Theme::Dark, "the theme");
+    assert_eq!(c.options.text.ink, None, "the ink at its start unsets");
+    assert!(
+        c.options.value_axis.colour.is_some(),
+        "a picked colour stays"
+    );
+    assert_eq!(c.options.values.inside_ink, InsideInk::Text);
+}
+
 /// **Laid out, not placed**: resized and not regenerated, a bar reflows to
 /// where regeneration at the new size puts it, and regeneration keeps its id.
 /// flip: a bar written without its percentage insets → fails at "the bar
@@ -749,7 +887,7 @@ fn a_replaced_table_keeps_the_columns_whose_names_survive() {
     let mut c = sample();
     let style = |column| SeriesStyle {
         column,
-        fill: mastik_core::Brush::Solid(mastik_core::peniko::Color::BLACK).into(),
+        fill: Some(mastik_core::Brush::Solid(mastik_core::peniko::Color::BLACK).into()),
         visible: true,
         dash: Default::default(),
         point: Default::default(),

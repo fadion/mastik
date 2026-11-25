@@ -35,6 +35,7 @@
   </defs>
   <clipPath id="clip-c7_2"><rect x="0" y="0" width="480" height="280"/></clipPath>
   <g data-name="Chart 1" clip-path="url(#clip-c7_2)">
+    <rect x="0" y="0" width="480" height="280" fill="#ffffff"/>
     <g data-name="Legend" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Legend · Revenue">
         <rect data-name="Swatch · Revenue" transform="matrix(1 0 0 1 0 2.265625)" x="0" y="0" width="10" height="10" rx="2" fill="#3b6fe0"/>
@@ -57,22 +58,22 @@
         <text data-name="Tick 40" transform="matrix(1 0 0 1 24.811035 64.405762)" x="0" y="10" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="11" font-weight="400">40</tspan></text>
         <text data-name="Tick 60" transform="matrix(1 0 0 1 25.095703 28.875488)" x="0" y="10" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="11" font-weight="400">60</tspan></text>
         <text data-name="Tick 80" transform="matrix(1 0 0 1 25.111816 -6.654785)" x="0" y="10" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="11" font-weight="400">80</tspan></text>
-        <rect data-name="Tick mark -20" transform="matrix(1 0 0 1 44.856445 177.151367)" x="0" y="0" width="4" height="1" fill="#bfbfbf"/>
-        <rect data-name="Tick mark 0" transform="matrix(1 0 0 1 44.856445 141.621094)" x="0" y="0" width="4" height="1" fill="#bfbfbf"/>
-        <rect data-name="Tick mark 20" transform="matrix(1 0 0 1 44.856445 106.09082)" x="0" y="0" width="4" height="1" fill="#bfbfbf"/>
-        <rect data-name="Tick mark 40" transform="matrix(1 0 0 1 44.856445 70.560547)" x="0" y="0" width="4" height="1" fill="#bfbfbf"/>
-        <rect data-name="Tick mark 60" transform="matrix(1 0 0 1 44.856445 35.030273)" x="0" y="0" width="4" height="1" fill="#bfbfbf"/>
-        <rect data-name="Tick mark 80" transform="matrix(1 0 0 1 44.856445 -0.5)" x="0" y="0" width="4" height="1" fill="#bfbfbf"/>
+        <rect data-name="Tick mark -20" transform="matrix(1 0 0 1 44.856445 177.151367)" x="0" y="0" width="4" height="1" fill="#cdcdcd"/>
+        <rect data-name="Tick mark 0" transform="matrix(1 0 0 1 44.856445 141.621094)" x="0" y="0" width="4" height="1" fill="#cdcdcd"/>
+        <rect data-name="Tick mark 20" transform="matrix(1 0 0 1 44.856445 106.09082)" x="0" y="0" width="4" height="1" fill="#cdcdcd"/>
+        <rect data-name="Tick mark 40" transform="matrix(1 0 0 1 44.856445 70.560547)" x="0" y="0" width="4" height="1" fill="#cdcdcd"/>
+        <rect data-name="Tick mark 60" transform="matrix(1 0 0 1 44.856445 35.030273)" x="0" y="0" width="4" height="1" fill="#cdcdcd"/>
+        <rect data-name="Tick mark 80" transform="matrix(1 0 0 1 44.856445 -0.5)" x="0" y="0" width="4" height="1" fill="#cdcdcd"/>
         <text data-name="Title Amount" transform="matrix(0 -1 1 0 0 110.874512)" x="0" y="11" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="12" font-weight="400">Amount</tspan></text>
       </g>
       <g data-name="Category axis" transform="matrix(1 0 0 1 48.859375 177.65625)">
         <text data-name="Title Month" transform="matrix(1 0 0 1 181.498535 29.30957)" x="0" y="11" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="12" font-weight="400">Month</tspan></text>
-        <rect data-name="Tick mark Jan" transform="matrix(1 0 0 1 32.761963 0)" x="0" y="0" width="1" height="4" fill="#bfbfbf"/>
-        <rect data-name="Tick mark Feb" transform="matrix(1 0 0 1 99.285889 0)" x="0" y="0" width="1" height="4" fill="#bfbfbf"/>
-        <rect data-name="Tick mark Mar" transform="matrix(1 0 0 1 165.809814 0)" x="0" y="0" width="1" height="4" fill="#bfbfbf"/>
-        <rect data-name="Tick mark Apr" transform="matrix(1 0 0 1 232.33374 0)" x="0" y="0" width="1" height="4" fill="#bfbfbf"/>
-        <rect data-name="Tick mark May" transform="matrix(1 0 0 1 298.857666 0)" x="0" y="0" width="1" height="4" fill="#bfbfbf"/>
-        <rect data-name="Tick mark Jun" transform="matrix(1 0 0 1 365.381592 0)" x="0" y="0" width="1" height="4" fill="#bfbfbf"/>
+        <rect data-name="Tick mark Jan" transform="matrix(1 0 0 1 32.761963 0)" x="0" y="0" width="1" height="4" fill="#cdcdcd"/>
+        <rect data-name="Tick mark Feb" transform="matrix(1 0 0 1 99.285889 0)" x="0" y="0" width="1" height="4" fill="#cdcdcd"/>
+        <rect data-name="Tick mark Mar" transform="matrix(1 0 0 1 165.809814 0)" x="0" y="0" width="1" height="4" fill="#cdcdcd"/>
+        <rect data-name="Tick mark Apr" transform="matrix(1 0 0 1 232.33374 0)" x="0" y="0" width="1" height="4" fill="#cdcdcd"/>
+        <rect data-name="Tick mark May" transform="matrix(1 0 0 1 298.857666 0)" x="0" y="0" width="1" height="4" fill="#cdcdcd"/>
+        <rect data-name="Tick mark Jun" transform="matrix(1 0 0 1 365.381592 0)" x="0" y="0" width="1" height="4" fill="#cdcdcd"/>
         <text data-name="Category Jan" transform="matrix(1 0 0 1 23.784668 10)" x="0" y="10" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="11" font-weight="400">Jan</tspan></text>
         <text data-name="Category Feb" transform="matrix(1 0 0 1 90.182373 10)" x="0" y="10" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="11" font-weight="400">Feb</tspan></text>
         <text data-name="Category Mar" transform="matrix(1 0 0 1 156.182617 10)" x="0" y="10" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="11" font-weight="400">Mar</tspan></text>
@@ -82,14 +83,14 @@
       </g>
       <g data-name="Plot" transform="matrix(1 0 0 1 48.859375 0)">
         <g data-name="Grid">
-          <path data-name="Gridline -20" d="M0,177.6514 L399.1436,177.6514" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 0" d="M0,142.1211 L399.1436,142.1211" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 20" d="M0,106.5908 L399.1436,106.5908" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 40" d="M0,71.0605 L399.1436,71.0605" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 60" d="M0,35.5303 L399.1436,35.5303" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 80" d="M0,0 L399.1436,0" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 141.621094)" x="0" y="0" width="399.1436" height="1" fill="#bfbfbf"/>
-          <rect data-name="Value axis line" transform="matrix(1 0 0 1 -0.5 0)" x="0" y="0" width="1" height="177.6514" fill="#bfbfbf"/>
+          <path data-name="Gridline -20" d="M0,177.6514 L399.1436,177.6514" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 0" d="M0,142.1211 L399.1436,142.1211" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 20" d="M0,106.5908 L399.1436,106.5908" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 40" d="M0,71.0605 L399.1436,71.0605" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 60" d="M0,35.5303 L399.1436,35.5303" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 80" d="M0,0 L399.1436,0" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 141.621094)" x="0" y="0" width="399.1436" height="1" fill="#cdcdcd"/>
+          <rect data-name="Value axis line" transform="matrix(1 0 0 1 -0.5 0)" x="0" y="0" width="1" height="177.6514" fill="#cdcdcd"/>
         </g>
         <g data-name="Series Revenue">
           <path data-name="Revenue · Jan" transform="matrix(1 0 0 1 9.978589 67.50752)" d="M0,2 C0,0.8954 0.8954,0 2,0 L12.5521,0 C13.6567,0 14.5521,0.8954 14.5521,2 L14.5521,74.6136 C14.5521,74.6136 14.5521,74.6136 14.5521,74.6136 L0,74.6136 C0,74.6136 0,74.6136 0,74.6136 Z" fill="#3b6fe0"/>
@@ -119,6 +120,7 @@
   </g>
   <clipPath id="clip-c7_3"><rect x="0" y="0" width="480" height="280"/></clipPath>
   <g data-name="Chart 2" transform="matrix(1 0 0 1 0 320)" clip-path="url(#clip-c7_3)">
+    <rect x="0" y="0" width="480" height="280" fill="#ffffff"/>
     <g data-name="Legend" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Legend · Revenue">
         <rect data-name="Swatch · Revenue" transform="matrix(1 0 0 1 0 2.265625)" x="0" y="0" width="10" height="10" rx="2" fill="#3b6fe0"/>
@@ -136,12 +138,12 @@
     <g data-name="Body" transform="matrix(1 0 0 1 16 42.515625)">
       <g data-name="Category axis" transform="matrix(1 0 0 1 395.34375 0)">
         <text data-name="Title Month" transform="matrix(0 -1 1 0 38.134277 106.898926)" x="0" y="11" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="12" font-weight="400">Month</tspan></text>
-        <rect data-name="Tick mark Jan" transform="matrix(1 0 0 1 0 14.304281)" x="0" y="0" width="4" height="1" fill="#bfbfbf"/>
-        <rect data-name="Tick mark Feb" transform="matrix(1 0 0 1 0 43.912842)" x="0" y="0" width="4" height="1" fill="#bfbfbf"/>
-        <rect data-name="Tick mark Mar" transform="matrix(1 0 0 1 0 73.521403)" x="0" y="0" width="4" height="1" fill="#bfbfbf"/>
-        <rect data-name="Tick mark Apr" transform="matrix(1 0 0 1 0 103.129964)" x="0" y="0" width="4" height="1" fill="#bfbfbf"/>
-        <rect data-name="Tick mark May" transform="matrix(1 0 0 1 0 132.738525)" x="0" y="0" width="4" height="1" fill="#bfbfbf"/>
-        <rect data-name="Tick mark Jun" transform="matrix(1 0 0 1 0 162.347087)" x="0" y="0" width="4" height="1" fill="#bfbfbf"/>
+        <rect data-name="Tick mark Jan" transform="matrix(1 0 0 1 0 14.304281)" x="0" y="0" width="4" height="1" fill="#cdcdcd"/>
+        <rect data-name="Tick mark Feb" transform="matrix(1 0 0 1 0 43.912842)" x="0" y="0" width="4" height="1" fill="#cdcdcd"/>
+        <rect data-name="Tick mark Mar" transform="matrix(1 0 0 1 0 73.521403)" x="0" y="0" width="4" height="1" fill="#cdcdcd"/>
+        <rect data-name="Tick mark Apr" transform="matrix(1 0 0 1 0 103.129964)" x="0" y="0" width="4" height="1" fill="#cdcdcd"/>
+        <rect data-name="Tick mark May" transform="matrix(1 0 0 1 0 132.738525)" x="0" y="0" width="4" height="1" fill="#cdcdcd"/>
+        <rect data-name="Tick mark Jun" transform="matrix(1 0 0 1 0 162.347087)" x="0" y="0" width="4" height="1" fill="#cdcdcd"/>
         <text data-name="Category Jan" transform="matrix(1 0 0 1 10 8.149495)" x="0" y="10" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="11" font-weight="400">Jan</tspan></text>
         <text data-name="Category Feb" transform="matrix(1 0 0 1 10 37.758057)" x="0" y="10" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="11" font-weight="400">Feb</tspan></text>
         <text data-name="Category Mar" transform="matrix(1 0 0 1 10 67.366618)" x="0" y="10" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="11" font-weight="400">Mar</tspan></text>
@@ -156,24 +158,24 @@
         <text data-name="Tick 40" transform="matrix(1 0 0 1 230.18501 10)" x="0" y="10" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="11" font-weight="400">40</tspan></text>
         <text data-name="Tick 60" transform="matrix(1 0 0 1 309.396582 10)" x="0" y="10" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="11" font-weight="400">60</tspan></text>
         <text data-name="Tick 80" transform="matrix(1 0 0 1 388.473877 10)" x="0" y="10" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="11" font-weight="400">80</tspan></text>
-        <rect data-name="Tick mark -20" transform="matrix(1 0 0 1 -0.5 0)" x="0" y="0" width="1" height="4" fill="#bfbfbf"/>
-        <rect data-name="Tick mark 0" transform="matrix(1 0 0 1 78.569238 0)" x="0" y="0" width="1" height="4" fill="#bfbfbf"/>
-        <rect data-name="Tick mark 20" transform="matrix(1 0 0 1 157.638477 0)" x="0" y="0" width="1" height="4" fill="#bfbfbf"/>
-        <rect data-name="Tick mark 40" transform="matrix(1 0 0 1 236.707715 0)" x="0" y="0" width="1" height="4" fill="#bfbfbf"/>
-        <rect data-name="Tick mark 60" transform="matrix(1 0 0 1 315.776953 0)" x="0" y="0" width="1" height="4" fill="#bfbfbf"/>
-        <rect data-name="Tick mark 80" transform="matrix(1 0 0 1 394.846191 0)" x="0" y="0" width="1" height="4" fill="#bfbfbf"/>
+        <rect data-name="Tick mark -20" transform="matrix(1 0 0 1 -0.5 0)" x="0" y="0" width="1" height="4" fill="#cdcdcd"/>
+        <rect data-name="Tick mark 0" transform="matrix(1 0 0 1 78.569238 0)" x="0" y="0" width="1" height="4" fill="#cdcdcd"/>
+        <rect data-name="Tick mark 20" transform="matrix(1 0 0 1 157.638477 0)" x="0" y="0" width="1" height="4" fill="#cdcdcd"/>
+        <rect data-name="Tick mark 40" transform="matrix(1 0 0 1 236.707715 0)" x="0" y="0" width="1" height="4" fill="#cdcdcd"/>
+        <rect data-name="Tick mark 60" transform="matrix(1 0 0 1 315.776953 0)" x="0" y="0" width="1" height="4" fill="#cdcdcd"/>
+        <rect data-name="Tick mark 80" transform="matrix(1 0 0 1 394.846191 0)" x="0" y="0" width="1" height="4" fill="#cdcdcd"/>
         <text data-name="Title Amount" transform="matrix(1 0 0 1 175.624268 29.30957)" x="0" y="11" xml:space="preserve" fill="#595959"><tspan font-family="Inter" font-size="12" font-weight="400">Amount</tspan></text>
       </g>
       <g data-name="Plot">
         <g data-name="Grid">
-          <path data-name="Gridline -20" d="M0,0 L0,177.6514" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 0" d="M79.0692,0 L79.0692,177.6514" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 20" d="M158.1385,0 L158.1385,177.6514" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 40" d="M237.2077,0 L237.2077,177.6514" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 60" d="M316.277,0 L316.277,177.6514" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 80" d="M395.3462,0 L395.3462,177.6514" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <rect data-name="Baseline" transform="matrix(1 0 0 1 78.569238 0)" x="0" y="0" width="1" height="177.6514" fill="#bfbfbf"/>
-          <rect data-name="Value axis line" transform="matrix(1 0 0 1 0 177.151367)" x="0" y="0" width="395.3462" height="1" fill="#bfbfbf"/>
+          <path data-name="Gridline -20" d="M0,0 L0,177.6514" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 0" d="M79.0692,0 L79.0692,177.6514" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 20" d="M158.1385,0 L158.1385,177.6514" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 40" d="M237.2077,0 L237.2077,177.6514" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 60" d="M316.277,0 L316.277,177.6514" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 80" d="M395.3462,0 L395.3462,177.6514" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <rect data-name="Baseline" transform="matrix(1 0 0 1 78.569238 0)" x="0" y="0" width="1" height="177.6514" fill="#cdcdcd"/>
+          <rect data-name="Value axis line" transform="matrix(1 0 0 1 0 177.151367)" x="0" y="0" width="395.3462" height="1" fill="#cdcdcd"/>
         </g>
         <g data-name="Series Revenue">
           <path data-name="Revenue · Jan" transform="matrix(1 0 0 1 79.069238 4.441284)" d="M0,0 C0,0 0,0 0,0 L164.0454,0 C165.15,0 166.0454,0.8954 166.0454,2 L166.0454,4.4769 C166.0454,5.5814 165.15,6.4769 164.0454,6.4769 L0,6.4769 C0,6.4769 0,6.4769 0,6.4769 Z" fill="#3b6fe0"/>
@@ -203,6 +205,7 @@
   </g>
   <clipPath id="clip-c7_4"><rect x="0" y="0" width="480" height="280"/></clipPath>
   <g data-name="Chart 3" transform="matrix(1 0 0 1 0 640)" clip-path="url(#clip-c7_4)">
+    <rect x="0" y="0" width="480" height="280" fill="#ffffff"/>
     <g data-name="Legend" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Legend · Revenue">
         <rect data-name="Swatch · Revenue" transform="matrix(1 0 0 1 0 2.265625)" x="0" y="0" width="10" height="10" rx="2" fill="#3b6fe0"/>
@@ -236,13 +239,13 @@
       </g>
       <g data-name="Plot" transform="matrix(1 0 0 1 24.34375 0)">
         <g data-name="Grid">
-          <path data-name="Gridline -20" d="M0,202.1709 L423.6631,202.1709" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 0" d="M0,161.7367 L423.6631,161.7367" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 20" d="M0,121.3025 L423.6631,121.3025" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 40" d="M0,80.8684 L423.6631,80.8684" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 60" d="M0,40.4342 L423.6631,40.4342" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <path data-name="Gridline 80" d="M0,0 L423.6631,0" fill="none" stroke="#e6e6e6" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
-          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#bfbfbf"/>
+          <path data-name="Gridline -20" d="M0,202.1709 L423.6631,202.1709" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 0" d="M0,161.7367 L423.6631,161.7367" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 20" d="M0,121.3025 L423.6631,121.3025" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 40" d="M0,80.8684 L423.6631,80.8684" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 60" d="M0,40.4342 L423.6631,40.4342" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <path data-name="Gridline 80" d="M0,0 L423.6631,0" fill="none" stroke="#ebebeb" stroke-width="1" stroke-linejoin="round" stroke-linecap="butt" stroke-dasharray="3,3" stroke-dashoffset="0"/>
+          <rect data-name="Baseline" transform="matrix(1 0 0 1 0 161.236719)" x="0" y="0" width="423.6631" height="1" fill="#cdcdcd"/>
         </g>
         <g data-name="Series Revenue">
           <path data-name="Line · Revenue" d="M35.3053,76.8249 L105.9158,64.6947 L176.5263,70.7598 L247.1368,48.521 L317.7473,38.4125 L388.3578,24.2605" fill="none" stroke="#3b6fe0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
@@ -275,6 +278,7 @@
   </g>
   <clipPath id="clip-c7_5"><rect x="0" y="0" width="480" height="280"/></clipPath>
   <g data-name="Chart 4" transform="matrix(1 0 0 1 0 960)" clip-path="url(#clip-c7_5)">
+    <rect x="0" y="0" width="480" height="280" fill="#ffffff"/>
     <g data-name="Legend" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Legend · Team A">
         <rect data-name="Swatch · Team A" transform="matrix(1 0 0 1 0 2.265625)" x="0" y="0" width="10" height="10" rx="2" fill="#3b6fe0"/>
@@ -305,13 +309,13 @@
       </g>
       <g data-name="Plot" transform="matrix(1 0 0 1 40.5625 0)">
         <g data-name="Grid">
-          <rect data-name="Gridline 30" transform="matrix(1 0 0 1 0 181.151367)" x="0" y="0" width="407.4351" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 40" transform="matrix(1 0 0 1 0 144.821094)" x="0" y="0" width="407.4351" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 50" transform="matrix(1 0 0 1 0 108.49082)" x="0" y="0" width="407.4351" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 60" transform="matrix(1 0 0 1 0 72.160547)" x="0" y="0" width="407.4351" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 70" transform="matrix(1 0 0 1 0 35.830273)" x="0" y="0" width="407.4351" height="1" fill="#e6e6e6"/>
-          <rect data-name="Gridline 80" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="407.4351" height="1" fill="#e6e6e6"/>
-          <rect data-name="Axis line" transform="matrix(1 0 0 1 0 181.151367)" x="0" y="0" width="407.4351" height="1" fill="#bfbfbf"/>
+          <rect data-name="Gridline 30" transform="matrix(1 0 0 1 0 181.151367)" x="0" y="0" width="407.4351" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 40" transform="matrix(1 0 0 1 0 144.821094)" x="0" y="0" width="407.4351" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 50" transform="matrix(1 0 0 1 0 108.49082)" x="0" y="0" width="407.4351" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 60" transform="matrix(1 0 0 1 0 72.160547)" x="0" y="0" width="407.4351" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 70" transform="matrix(1 0 0 1 0 35.830273)" x="0" y="0" width="407.4351" height="1" fill="#ebebeb"/>
+          <rect data-name="Gridline 80" transform="matrix(1 0 0 1 0 -0.5)" x="0" y="0" width="407.4351" height="1" fill="#ebebeb"/>
+          <rect data-name="Axis line" transform="matrix(1 0 0 1 0 181.151367)" x="0" y="0" width="407.4351" height="1" fill="#cdcdcd"/>
         </g>
         <g data-name="Series Team A">
           <rect data-name="Team A · row 1" transform="matrix(1 0 0 1 -4 137.688066)" x="0" y="0" width="8" height="8" fill="#3b6fe0" opacity="0.8"/>
@@ -334,6 +338,7 @@
   </g>
   <clipPath id="clip-c7_6"><rect x="0" y="0" width="320" height="240"/></clipPath>
   <g data-name="Chart 5" transform="matrix(1 0 0 1 0 1280)" clip-path="url(#clip-c7_6)">
+    <rect x="0" y="0" width="320" height="240" fill="#ffffff"/>
     <g data-name="Legend" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Legend · Jan">
         <rect data-name="Swatch · Jan" transform="matrix(1 0 0 1 0 2.265625)" x="0" y="0" width="10" height="10" rx="2" fill="#3b6fe0"/>
@@ -375,6 +380,7 @@
   </g>
   <clipPath id="clip-c7_7"><rect x="0" y="0" width="560" height="300"/></clipPath>
   <g data-name="Chart 6" transform="matrix(1 0 0 1 0 1560)" clip-path="url(#clip-c7_7)">
+    <rect x="0" y="0" width="560" height="300" fill="#ffffff"/>
     <g data-name="Body" transform="matrix(1 0 0 1 16 16)">
       <g data-name="Flows">
         <path data-name="Flow · Search → Signup" d="M57.8203,58.3529 C157.0942,58.3529 157.0942,100.7112 256.3682,100.7112 L256.3682,188.2406 C157.0942,188.2406 157.0942,145.8824 57.8203,145.8824 Z" fill="url(#grad-721c0a194b88663a_3-fill-0)" opacity="0.4"/>

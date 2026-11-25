@@ -2294,6 +2294,7 @@ impl Document {
                     if let Some(now) = &node.chart {
                         c.parts = now.parts.clone();
                         c.minted = now.minted;
+                        c.grounded = now.grounded;
                         // Stale once the description differs, so settle regenerates.
                         c.generated = now.generated.filter(|_| now.same_description(c));
                     }
@@ -2305,11 +2306,17 @@ impl Document {
                     chart: old,
                 })
             }
-            Operation::SetChartParts { id, parts, at } => {
+            Operation::SetChartParts {
+                id,
+                parts,
+                at,
+                ground,
+            } => {
                 let node = self.nodes.get_mut(id).ok_or(OpError::NoSuchNode(*id))?;
                 let chart = node.chart.as_mut().ok_or(OpError::WrongKindForOp)?;
                 let old = std::mem::replace(&mut chart.parts, parts.clone());
                 let old_at = std::mem::replace(&mut chart.generated, *at);
+                let old_ground = std::mem::replace(&mut chart.grounded, *ground);
                 // The inverse leaves the mark: an undone part's id stays spent.
                 let actor = crate::chart::part_actor(*id);
                 chart.minted = parts
@@ -2322,6 +2329,7 @@ impl Document {
                     id: *id,
                     parts: old,
                     at: old_at,
+                    ground: old_ground,
                 })
             }
             // A list keeps nothing of the description it replaces: its copies

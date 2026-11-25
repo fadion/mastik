@@ -6782,6 +6782,7 @@ fn a_previewed_charts_parts_read_their_charts_mode() {
         insets: Default::default(),
         display: None,
         item: Default::default(),
+        clip: false,
     };
     let mut ov = RenderOverrides::default();
     ov.replace_chart(

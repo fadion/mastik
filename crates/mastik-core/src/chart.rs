@@ -15,10 +15,11 @@ mod settle;
 pub mod table_io;
 
 pub use colours::{
-    bound_variables, named_marks, sankey_nodes, sankey_totals, series_fill, with_dark,
-    with_node_fill, with_palette, with_series_fill, with_variables,
+    bound_variables, by_category, named_marks, sankey_nodes, sankey_totals, series_fill,
+    series_fill_set, unset_starting, with_node_fill, with_palette, with_series_fill,
+    with_variables,
 };
-pub use generate::{Generated, Part, Refusal, generate, palette};
+pub use generate::{Generated, Part, Refusal, category_order, generate, generate_on, palette};
 pub use preset::{OUTLINE_WIDTH, Preset};
 pub(crate) use settle::part_actor;
 pub use settle::{settle, settle_all, settle_round, stale};
@@ -84,11 +85,176 @@ pub struct Chart {
     /// description changes, so the next settle regenerates ([`stale`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generated: Option<[f64; 2]>,
+    /// The ground the parts were generated on ([`ground_of`]'s colour), written
+    /// with them; settle regenerates when the ground under the chart differs,
+    /// and the card reads the derived chrome off it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grounded: Option<peniko::Color>,
     /// The highest sequence number a regeneration has given a part, raised by
     /// every `SetChartParts` and never lowered, so a part id a regeneration
     /// deleted is never minted again for another part.
     #[serde(default, skip_serializing_if = "is_zero_u64")]
     pub minted: u64,
+    /// The marks drawn as they are, the rest muted or faded: by name, so a
+    /// re-import or a reorder keeps it. Belongs to this chart, not its data.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub highlight: Highlight,
+    /// Lines and bands on an axis, at a value or one the data gives.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<Reference>,
+}
+
+/// The most references a chart holds.
+pub const MAX_REFERENCES: usize = 16;
+
+/// What a highlight names, by name.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub enum Highlighted {
+    #[default]
+    None,
+    /// Categories by their cell's text; a pie's slices.
+    Categories(Vec<String>),
+    /// Series by their column's name; a grouped scatter's groups.
+    Series(Vec<String>),
+}
+
+/// How the marks a highlight leaves out draw.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Others {
+    /// In one colour, derived from the ground unless set.
+    #[default]
+    Muted,
+    /// In their own colour at [`FADED`] of its alpha.
+    Faded,
+}
+
+/// The share of its alpha a faded mark keeps.
+pub const FADED: f32 = 0.3;
+
+/// A chart's highlight (`Chart::highlight`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Highlight {
+    pub target: Highlighted,
+    pub others: Others,
+    /// The muted colour; `None` is the ink at 25% over the ground.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub muted: Option<BrushSource>,
+    /// Value labels on the highlighted marks only, while something is
+    /// highlighted.
+    pub values_only: bool,
+}
+
+impl Default for Highlight {
+    fn default() -> Self {
+        Self {
+            target: Highlighted::None,
+            others: Others::Muted,
+            muted: None,
+            values_only: true,
+        }
+    }
+}
+
+/// A reference's shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RefKind {
+    #[default]
+    Line,
+    /// From `at` to `to`.
+    Band,
+}
+
+/// The axis a reference stands on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RefAxis {
+    #[default]
+    Value,
+    Category,
+}
+
+/// A statistic over the series shown, or one series.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Stat {
+    #[default]
+    Average,
+    Median,
+    Min,
+    Max,
+}
+
+/// Where a reference, or one end of a band, stands.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum At {
+    /// A typed value; on a scatter's X axis, a number.
+    Value(f64),
+    /// A category, by name, at its band's centre.
+    Category(String),
+    /// A statistic of the values drawn: over every series shown, or one.
+    Stat {
+        stat: Stat,
+        of: Option<ColumnId>,
+    },
+    AxisStart,
+    AxisEnd,
+}
+
+impl Default for At {
+    fn default() -> Self {
+        At::Value(0.0)
+    }
+}
+
+/// Where a reference's label sits along it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LabelAt {
+    Start,
+    Middle,
+    #[default]
+    End,
+}
+
+/// A line or band on an axis (`Chart::references`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Reference {
+    /// Its own number, which its parts are keyed by; unique in the chart.
+    pub id: u32,
+    pub kind: RefKind,
+    pub axis: RefAxis,
+    pub at: At,
+    /// A band's far end.
+    pub to: At,
+    /// `{value}` writes the value it stands at; empty draws no label.
+    pub label: String,
+    pub colour: BrushSource,
+    pub width: f64,
+    pub dash: Dash,
+    pub label_at: LabelAt,
+    /// A typed value outside Auto's range widens it to hold the line.
+    pub in_range: bool,
+    pub visible: bool,
+}
+
+impl Default for Reference {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            kind: RefKind::Line,
+            axis: RefAxis::Value,
+            at: At::Value(0.0),
+            to: At::AxisEnd,
+            label: "Reference".into(),
+            colour: BrushSource::Literal(crate::Brush::Solid(peniko::Color::from_rgb8(
+                0xC0, 0x39, 0x2B,
+            ))),
+            width: 1.5,
+            dash: Dash::Dashed,
+            label_at: LabelAt::End,
+            in_range: true,
+            visible: true,
+        }
+    }
 }
 
 /// `serde(with)` for [`Chart::parts`]: each id as the save format spells a node
@@ -116,7 +282,7 @@ mod wire_parts {
     }
 }
 
-/// The seven kinds a chart can be.
+/// The kinds a chart can be.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ChartKind {
     #[default]
@@ -127,10 +293,17 @@ pub enum ChartKind {
     Pie,
     Scatter,
     Sankey,
+    /// A running total walked through its gains and losses (`Options::waterfall`).
+    Waterfall,
+    /// A line chart's table drawn round a centre, a spoke per category
+    /// (`Options::radar`).
+    Radar,
 }
 
 impl ChartKind {
-    pub const ALL: [ChartKind; 7] = [
+    /// In the rail's and the Type dropdown's order: the bar family, the line
+    /// family, the round one, then the specialist kinds.
+    pub const ALL: [ChartKind; 9] = [
         ChartKind::Column,
         ChartKind::Bar,
         ChartKind::Line,
@@ -138,6 +311,8 @@ impl ChartKind {
         ChartKind::Pie,
         ChartKind::Scatter,
         ChartKind::Sankey,
+        ChartKind::Waterfall,
+        ChartKind::Radar,
     ];
 
     /// The kind's name as the UI says it.
@@ -150,7 +325,15 @@ impl ChartKind {
             ChartKind::Pie => "Pie",
             ChartKind::Scatter => "Scatter",
             ChartKind::Sankey => "Sankey",
+            ChartKind::Waterfall => "Waterfall",
+            ChartKind::Radar => "Radar",
         }
+    }
+
+    /// Whether the kind draws in a rectangular plot, which a plot background
+    /// and references need: every kind with axes but a radar.
+    pub fn rect_plot(self) -> bool {
+        self.has_axes() && self != ChartKind::Radar
     }
 
     /// Whether the kind has a value and a category axis.
@@ -381,7 +564,9 @@ impl Mapping {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SeriesStyle {
     pub column: ColumnId,
-    pub fill: BrushSource,
+    /// `None` is the palette's colour at the series' place, for the theme drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<BrushSource>,
     #[serde(default = "yes")]
     pub visible: bool,
     #[serde(default, skip_serializing_if = "is_default")]
@@ -392,11 +577,13 @@ pub struct SeriesStyle {
     pub point: Option<PointShape>,
 }
 
-/// A Sankey node's colour, by name.
+/// A named mark's colour (`named_marks`), by name.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NodeStyle {
     pub name: String,
-    pub fill: BrushSource,
+    /// `None` is the palette's colour at the mark's place, for the theme drawn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<BrushSource>,
 }
 
 /// A line's dash.
@@ -457,7 +644,10 @@ pub enum PartRole {
     ValueAxis,
     CategoryAxis,
     Plot,
+    /// The plot's own background (`Options::plot`).
     Ground,
+    /// A progress ring's track.
+    Track,
     Grid,
     Gridline,
     AxisLine,
@@ -474,6 +664,25 @@ pub enum PartRole {
     PieFrame,
     Values,
     ValueLabel,
+    /// A stack's net total, past its end.
+    Total,
+    /// A lollipop's stem and head, in its bar's frame.
+    Stem,
+    Head,
+    /// A dumbbell's line joining its band's heads, or a waterfall's line from
+    /// one step's end to the next one's start.
+    Connector,
+    /// The frame holding a waterfall's connectors.
+    Connectors,
+    /// A line's or area's name at its last value.
+    EndLabel,
+    /// The frame holding a chart's references.
+    References,
+    /// A reference band, under the marks.
+    Band,
+    /// A reference line, over them.
+    Reference,
+    ReferenceLabel,
     LeaderLine,
     Flows,
     Flow,
@@ -487,10 +696,11 @@ pub enum PartRole {
 #[serde(default)]
 pub struct Options {
     pub palette: Palette,
-    /// Drawn for a dark ground: the palette's dark colours, and light ink over
-    /// dim axes and gridlines (`chart::with_dark`, `chart::chrome`).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub dark: bool,
+    /// Which ground the unset colours are derived for (`Chart::drawn_dark`).
+    pub theme: Theme,
+    /// The plot's own background, under the grid.
+    #[serde(skip_serializing_if = "is_default")]
+    pub plot: Plot,
     pub bars: Bars,
     pub lines: Lines,
     pub slices: Slices,
@@ -501,11 +711,26 @@ pub struct Options {
     pub values: Values,
     pub legend: Legend,
     pub text: ChartText,
-    /// Marks drawn as an inside stroke of this width in their colour over a
-    /// [`OUTLINE_TINT`] of it: bars, slices, points and Sankey nodes. `None` fills
-    /// them solid. Lines are strokes already, and areas keep their opacity.
+    /// The stroke on bars, slices, points and Sankey nodes. Lines are strokes
+    /// already, and areas keep their opacity.
+    #[serde(skip_serializing_if = "is_default")]
+    pub stroke: MarkStroke,
+    /// A one-series column or bar chart's bars coloured by category, as a
+    /// pie's slices are (`named_marks`).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub by_category: bool,
+    /// One colour for every value under the baseline: bars, and the runs of a
+    /// line or area below zero.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub outline: Option<f64>,
+    pub below_zero: Option<BrushSource>,
+    #[serde(skip_serializing_if = "is_default")]
+    pub waterfall: Waterfall,
+    #[serde(skip_serializing_if = "is_default")]
+    pub radar: Radar,
+    /// Areas and bars from their colour at the value end to a share of it at
+    /// the baseline.
+    #[serde(skip_serializing_if = "is_default")]
+    pub fade: Fade,
     /// Space between the frame's edge and the chart, and between the legend and
     /// the body.
     pub padding: f64,
@@ -519,7 +744,8 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             palette: Palette::default(),
-            dark: false,
+            theme: Theme::default(),
+            plot: Plot::default(),
             bars: Bars::default(),
             lines: Lines::default(),
             slices: Slices::default(),
@@ -540,11 +766,110 @@ impl Default for Options {
             values: Values::default(),
             legend: Legend::default(),
             text: ChartText::default(),
-            outline: None,
+            stroke: MarkStroke::default(),
+            by_category: false,
+            below_zero: None,
+            waterfall: Waterfall::default(),
+            radar: Radar::default(),
+            fade: Fade::default(),
             padding: 16.0,
             gap: 12.0,
         }
     }
+}
+
+/// Which ground a chart's unset colours are derived for: *Auto* reads the
+/// ground it is drawn on (`Chart::drawn_dark`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Theme {
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
+/// The plot's own background: a rect under the grid, absent while `fill` is
+/// `None`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Plot {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fill: Option<BrushSource>,
+    pub radius: f64,
+}
+
+/// How a mark's stroke draws: on a solid mark, or over a tint of it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StrokeStyle {
+    /// The mark filled in its colour, stroked inside in the stroke's colour
+    /// (unset: the ground), which separates neighbouring marks.
+    #[default]
+    Solid,
+    /// The mark stroked inside in its colour (or the stroke's) over an
+    /// [`OUTLINE_TINT`] of it.
+    Outline,
+}
+
+/// The stroke on a chart's marks; width 0 draws none.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MarkStroke {
+    pub style: StrokeStyle,
+    pub width: f64,
+    /// `None` is the ground under *Solid*, each mark's own colour under
+    /// *Outline*.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub colour: Option<BrushSource>,
+}
+
+/// The order a column, bar or pie chart draws its categories in. The table
+/// keeps its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Order {
+    #[default]
+    Table,
+    /// Largest first: at the top of a bar chart, the left of a column chart,
+    /// clockwise from the start of a pie.
+    Descending,
+    Ascending,
+}
+
+/// A legend swatch's shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Swatch {
+    #[default]
+    Square,
+    Circle,
+    /// The series' line, dash and all.
+    Line,
+}
+
+/// What a label at a line's end says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EndLabel {
+    #[default]
+    Name,
+    NameValue,
+}
+
+/// One kind of label's own weight and ink; `None` takes the chart's.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RoleText {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weight: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ink: Option<BrushSource>,
+}
+
+/// Which ink a label inside a mark is written in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum InsideInk {
+    /// The text ink or the ground, whichever contrasts more with the mark.
+    #[default]
+    Auto,
+    /// Always the text ink.
+    Text,
 }
 
 /// The colours new series take, in order.
@@ -579,6 +904,142 @@ pub struct Bars {
     pub radius: f64,
     /// Whether the radius rounds every corner, not only the end away from the baseline.
     pub radius_all: bool,
+    /// The order the categories draw in, by the first series shown or a
+    /// stack's total.
+    #[serde(skip_serializing_if = "is_default")]
+    pub order: Order,
+    /// Bars, or lollipops: a stem in a bar's slot and a head at its value.
+    #[serde(skip_serializing_if = "is_default")]
+    pub shape: BarShape,
+    /// A lollipop's stem width and head size.
+    pub stem: f64,
+    pub head: f64,
+    pub head_shape: PointShape,
+    /// Filled, or hollow on the ground.
+    pub head_style: PointStyle,
+    /// Every series' head on its band's centre, joined: a dumbbell.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub connect: bool,
+    /// The stems' colour; `None` is each series' own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stem_colour: Option<BrushSource>,
+}
+
+/// How a column or bar chart draws a value.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BarShape {
+    #[default]
+    Bars,
+    Lollipops,
+}
+
+/// Waterfall options (`ChartKind::Waterfall`).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Waterfall {
+    /// The Bar variant: steps run across rather than up.
+    pub horizontal: bool,
+    /// The steps' colours; `None` is blue, orange and slate for the theme drawn.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub increase: Option<BrushSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decrease: Option<BrushSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total: Option<BrushSource>,
+    /// The categories drawn as the running total, by name.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub totals: Vec<String>,
+    /// A total the chart adds after the last row, named so.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub final_total: Option<String>,
+    /// Lines from each step's end to the next one's start.
+    pub connectors: bool,
+    pub dashed: bool,
+}
+
+impl Default for Waterfall {
+    fn default() -> Self {
+        Self {
+            horizontal: false,
+            increase: None,
+            decrease: None,
+            total: None,
+            totals: Vec::new(),
+            final_total: Some("Total".into()),
+            connectors: true,
+            dashed: true,
+        }
+    }
+}
+
+impl Waterfall {
+    /// A step's starting colour: blue for an increase, orange for a decrease,
+    /// slate for a total (green and red merge under deuteranopia), each its
+    /// dark twin on a dark ground.
+    pub fn starting(step: Step, dark: bool) -> peniko::Color {
+        let [r, g, b] = match (step, dark) {
+            (Step::Increase, false) => [0x3B, 0x6F, 0xE0],
+            (Step::Increase, true) => [0x6B, 0x95, 0xF0],
+            (Step::Decrease, false) => [0xE0, 0x6C, 0x1E],
+            (Step::Decrease, true) => [0xF0, 0x8C, 0x3C],
+            (Step::Total, false) => [0x5D, 0x6D, 0x7E],
+            (Step::Total, true) => [0x8E, 0x9D, 0xAD],
+        };
+        peniko::Color::from_rgb8(r, g, b)
+    }
+}
+
+/// *Fade*: a mark's colour from full at its value end to `to` percent of it at
+/// the baseline, as a generated linear gradient.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Fade {
+    pub on: bool,
+    /// 0 to 100.
+    pub to: f64,
+}
+
+/// A radar's rings' shape.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RadarGrid {
+    #[default]
+    Polygon,
+    Circle,
+}
+
+/// Radar options (`ChartKind::Radar`); its lines take `Options::lines`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Radar {
+    /// Each shape painted at the area opacity, not only outlined.
+    pub filled: bool,
+    pub grid: RadarGrid,
+    /// The category gridlines: a line from the centre out to each category.
+    pub spokes: bool,
+    /// Degrees clockwise from twelve o'clock where the first spoke points.
+    pub start_angle: f64,
+}
+
+impl Default for Radar {
+    fn default() -> Self {
+        Self {
+            filled: false,
+            grid: RadarGrid::Polygon,
+            spokes: true,
+            start_angle: 0.0,
+        }
+    }
+}
+
+/// The fewest and most spokes a radar draws.
+pub const RADAR_SPOKES: std::ops::RangeInclusive<usize> = 3..=36;
+
+/// A waterfall step's kind, which its colour follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    Increase,
+    Decrease,
+    Total,
 }
 
 impl Default for Bars {
@@ -589,6 +1050,14 @@ impl Default for Bars {
             bar_gap: 10.0,
             radius: 2.0,
             radius_all: false,
+            order: Order::Table,
+            shape: BarShape::Bars,
+            stem: 2.0,
+            head: 12.0,
+            head_shape: PointShape::Circle,
+            head_style: PointStyle::Filled,
+            connect: false,
+            stem_colour: None,
         }
     }
 }
@@ -654,7 +1123,9 @@ pub struct Slices {
     pub radius: f64,
     /// Degrees clockwise from twelve o'clock.
     pub start_angle: f64,
-    pub sort: bool,
+    /// The order the slices run in, clockwise from the start angle.
+    #[serde(skip_serializing_if = "is_default")]
+    pub order: Order,
     /// Slices under this percentage fold into *Other*; `None` keeps every slice.
     pub group_below: Option<f64>,
 }
@@ -667,7 +1138,7 @@ impl Default for Slices {
             pad_angle: 0.0,
             radius: 0.0,
             start_angle: 0.0,
-            sort: false,
+            order: Order::Table,
             group_below: None,
         }
     }
@@ -797,7 +1268,11 @@ pub struct Axis {
     pub side: AxisSide,
     pub format: NumberFormat,
     pub grid: Gridlines,
-    pub colour: BrushSource,
+    /// The line's and ticks' colour; `None` is derived (`Chart::axis_colour`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub colour: Option<BrushSource>,
+    /// The line's and ticks' width.
+    pub line_width: f64,
 }
 
 impl Default for Axis {
@@ -815,7 +1290,8 @@ impl Default for Axis {
             side: AxisSide::Start,
             format: NumberFormat::default(),
             grid: Gridlines::default(),
-            colour: BrushSource::Literal(crate::Brush::Solid(chrome(false).axis)),
+            colour: None,
+            line_width: 1.0,
         }
     }
 }
@@ -826,7 +1302,10 @@ impl Default for Axis {
 pub struct Gridlines {
     pub show: bool,
     pub dashed: bool,
-    pub colour: BrushSource,
+    /// `None` is derived (`Chart::grid_colour`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub colour: Option<BrushSource>,
+    pub width: f64,
 }
 
 impl Default for Gridlines {
@@ -834,7 +1313,8 @@ impl Default for Gridlines {
         Self {
             show: true,
             dashed: false,
-            colour: BrushSource::Literal(crate::Brush::Solid(chrome(false).grid)),
+            colour: None,
+            width: 1.0,
         }
     }
 }
@@ -884,6 +1364,11 @@ pub struct Values {
     /// Whether a pie's labels sit outside with a leader line.
     pub pie_outside: bool,
     pub format: NumberFormat,
+    /// The ink of a label sitting inside its mark.
+    pub inside_ink: InsideInk,
+    /// A net total past each stack of a stacked column or bar chart.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub totals: bool,
 }
 
 /// Where the legend sits.
@@ -912,9 +1397,19 @@ pub enum Align {
 pub struct Legend {
     pub position: LegendPosition,
     pub align: Align,
+    /// The swatch's shape in a legend box.
+    #[serde(skip_serializing_if = "is_default")]
+    pub swatch: Swatch,
+    /// Each line or area named at its last value, beside the plot: a switch of
+    /// its own, since every preset writes the position.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub line_ends: bool,
+    #[serde(skip_serializing_if = "is_default")]
+    pub end_label: EndLabel,
 }
 
-/// The chart's type: one family and weight, a size per kind of label, and the ink.
+/// The chart's type: one family and weight, a size per kind of label, and the
+/// ink; each kind of label may take its own weight and ink.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChartText {
@@ -926,7 +1421,21 @@ pub struct ChartText {
     pub value_size: f64,
     pub legend_size: f64,
     pub title_size: f64,
-    pub ink: BrushSource,
+    /// `None` is derived (`Chart::ink`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ink: Option<BrushSource>,
+    /// Tick and category labels.
+    #[serde(skip_serializing_if = "is_default")]
+    pub tick: RoleText,
+    /// Value labels, stack totals and a pie's labels.
+    #[serde(skip_serializing_if = "is_default")]
+    pub value: RoleText,
+    /// The legend, line-end labels and a Sankey's node labels.
+    #[serde(skip_serializing_if = "is_default")]
+    pub legend: RoleText,
+    /// Axis titles.
+    #[serde(skip_serializing_if = "is_default")]
+    pub title: RoleText,
 }
 
 impl Default for ChartText {
@@ -938,12 +1447,16 @@ impl Default for ChartText {
             value_size: 11.0,
             legend_size: 12.0,
             title_size: 12.0,
-            ink: BrushSource::Literal(crate::Brush::Solid(chrome(false).ink)),
+            ink: None,
+            tick: RoleText::default(),
+            value: RoleText::default(),
+            legend: RoleText::default(),
+            title: RoleText::default(),
         }
     }
 }
 
-/// The colours a chart's chrome starts with, for one ground.
+/// A chart's chrome colours for one ground.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Chrome {
     /// The labels' ink.
@@ -952,13 +1465,12 @@ pub struct Chrome {
     pub axis: peniko::Color,
     /// The gridlines.
     pub grid: peniko::Color,
-    /// What a hollow point is filled with: the ground it is drawn for.
+    /// The ground it is drawn for.
     pub ground: peniko::Color,
 }
 
-/// The chrome a chart starts with on a light ground, or (`dark`) the one
-/// [`with_dark`] swaps in for a dark ground: the ink as legible, the axes and
-/// gridlines as quiet, against that ground.
+/// The fixed chrome of *Light* or (`dark`) *Dark*: the ink as legible, the axes
+/// and gridlines as quiet, against that theme's standard ground.
 pub fn chrome(dark: bool) -> Chrome {
     if dark {
         Chrome {
@@ -979,6 +1491,208 @@ pub fn chrome(dark: bool) -> Chrome {
 
 fn grey(l: f32) -> peniko::Color {
     peniko::Color::new([l, l, l, 1.0])
+}
+
+/// The share of the ink over the ground an *Auto* chart's gridlines and axes
+/// are drawn in.
+const AUTO_GRID: f32 = 0.12;
+const AUTO_AXIS: f32 = 0.30;
+/// How much more contrast the dark theme's ink must win by before *Auto* picks
+/// it, so a mid grey reads the same each time rather than flipping per nudge.
+const AUTO_TIE: f64 = 0.25;
+
+/// `top` at `k` over `ground`, opaque.
+pub(crate) fn mix(ground: peniko::Color, top: peniko::Color, k: f32) -> peniko::Color {
+    let [gr, gg, gb, _] = ground.components;
+    let [tr, tg, tb, _] = top.components;
+    peniko::Color::new([
+        gr + (tr - gr) * k,
+        gg + (tg - gg) * k,
+        gb + (tb - gb) * k,
+        1.0,
+    ])
+}
+
+/// WCAG relative luminance.
+fn luminance(c: peniko::Color) -> f64 {
+    let lin = |v: f32| {
+        let v = f64::from(v.clamp(0.0, 1.0));
+        if v <= 0.04045 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let [r, g, b, _] = c.components;
+    0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b)
+}
+
+/// The WCAG contrast ratio between two colours, 1 to 21.
+pub(crate) fn contrast(a: peniko::Color, b: peniko::Color) -> f64 {
+    let (la, lb) = (luminance(a), luminance(b));
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// Whether *Auto* draws dark on `ground`: the dark theme's ink contrasts more
+/// with it than the light theme's, by more than [`AUTO_TIE`].
+pub fn dark_on(ground: peniko::Color) -> bool {
+    contrast(chrome(true).ink, ground) > contrast(chrome(false).ink, ground) + AUTO_TIE
+}
+
+/// Where a chart's ground was read ([`ground_of`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroundFrom {
+    /// The chart frame's own fill.
+    Own,
+    /// The nearest painted ancestor frame.
+    Ancestor(NodeId),
+    /// The page.
+    Page,
+}
+
+/// The ground a chart is drawn on: what a hollow point fills with and what
+/// *Auto* reads.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ground {
+    /// The chart frame's own fill as it is, binding included; anything else's
+    /// as its colour in the chart's modes, so the chart frame stays the only
+    /// user of the variables its parts draw.
+    pub brush: BrushSource,
+    /// The colour it draws, opaque.
+    pub colour: peniko::Color,
+    pub from: GroundFrom,
+    /// The colour each variable the chart binds draws at the chart, so the
+    /// generator can judge contrast without the document.
+    pub vars: Vec<(crate::VarId, peniko::Color)>,
+}
+
+impl Ground {
+    /// A ground of `colour` alone, for a chart drawn outside a document.
+    pub fn plain(colour: peniko::Color) -> Ground {
+        Ground {
+            brush: BrushSource::Literal(crate::Brush::Solid(colour)),
+            colour,
+            from: GroundFrom::Page,
+            vars: Vec::new(),
+        }
+    }
+}
+
+/// `top` composited over `under`, straight alpha.
+fn over(top: peniko::Color, under: peniko::Color) -> peniko::Color {
+    let [tr, tg, tb, ta] = top.components;
+    let [ur, ug, ub, ua] = under.components;
+    let a = ta + ua * (1.0 - ta);
+    if a <= 0.0 {
+        return peniko::Color::TRANSPARENT;
+    }
+    let ch = |t: f32, u: f32| (t * ta + u * ua * (1.0 - ta)) / a;
+    peniko::Color::new([ch(tr, ur), ch(tg, ug), ch(tb, ub), a])
+}
+
+/// The colour a node's visible fills make, each over the ones under it (a
+/// gradient read as its first stop, an image not at all); `None` when nothing
+/// is painted.
+fn painted(doc: &crate::Document, n: &Node) -> Option<peniko::Color> {
+    let mut colour: Option<peniko::Color> = None;
+    for f in n.paint.fills.iter().filter(|f| f.visible) {
+        let c = match &*doc.resolve_brush(n.id, &f.brush) {
+            crate::Brush::Solid(c) => *c,
+            crate::Brush::Gradient(g) => match g.gradient.stops.first() {
+                Some(s) => s.color.to_alpha_color::<peniko::color::Srgb>(),
+                None => continue,
+            },
+            _ => continue,
+        };
+        colour = Some(colour.map_or(c, |under| over(c, under)));
+    }
+    colour.filter(|c| c.components[3] > 0.0)
+}
+
+/// The fill a chart made under `parent` starts with: white on an unpainted
+/// canvas, none inside a painted frame, so a chart drawn on a card reads the
+/// card.
+pub fn starting_ground(doc: &crate::Document, parent: NodeId) -> Option<peniko::Color> {
+    let mut at = Some(parent);
+    while let Some(n) = at.and_then(|a| doc.get(a)) {
+        if matches!(n.kind, NodeKind::Artboard { .. }) && painted(doc, n).is_some() {
+            return None;
+        }
+        at = n.parent;
+    }
+    Some(peniko::Color::WHITE)
+}
+
+/// The ground chart `id` is drawn on: its own fills, else each ancestor frame's
+/// in turn (groups skipped), else the page's ground, a translucent layer laid
+/// over what is under it.
+pub fn ground_of(doc: &crate::Document, id: NodeId) -> Ground {
+    let page = doc
+        .page_of(id)
+        .and_then(|p| doc.page(p))
+        .and_then(|p| p.ground)
+        .unwrap_or(crate::DEFAULT_CANVAS_BACKGROUND)
+        .with_alpha(1.0);
+    let mut above: Option<peniko::Color> = None;
+    let mut from = GroundFrom::Page;
+    let mut at = Some(id);
+    while let Some(n) = at.and_then(|a| doc.get(a)) {
+        if matches!(n.kind, NodeKind::Artboard { .. })
+            && let Some(c) = painted(doc, n)
+        {
+            if from == GroundFrom::Page {
+                from = if n.id == id {
+                    GroundFrom::Own
+                } else {
+                    GroundFrom::Ancestor(n.id)
+                };
+            }
+            above = Some(above.map_or(c, |a| over(a, c)));
+            if above.is_some_and(|a| a.components[3] >= 1.0) {
+                break;
+            }
+        }
+        at = n.parent;
+    }
+    let colour = above.map_or(page, |a| over(a, page)).with_alpha(1.0);
+    // The own fill passes as it is, binding included, while it alone makes the
+    // ground: one visible fill, opaque.
+    let own: Vec<&BrushSource> = doc
+        .get(id)
+        .map(|n| {
+            n.paint
+                .fills
+                .iter()
+                .filter(|f| f.visible)
+                .map(|f| &f.brush)
+                .collect()
+        })
+        .unwrap_or_default();
+    let opaque = |b: &BrushSource| matches!(&*doc.resolve_brush(id, b), crate::Brush::Solid(c) if c.components[3] >= 1.0);
+    let brush = match own.as_slice() {
+        [b] if from == GroundFrom::Own && opaque(b) => (*b).clone(),
+        _ => BrushSource::Literal(crate::Brush::Solid(colour)),
+    };
+    let mut vars: Vec<(crate::VarId, peniko::Color)> = Vec::new();
+    let chart = doc.get(id).and_then(|n| n.chart());
+    for b in chart.into_iter().flat_map(Chart::brushes).chain([&brush]) {
+        if let BrushSource::Bound { var, .. } = b
+            && !vars.iter().any(|(v, _)| v == var)
+            && let Some(crate::variable::Value::Color(c)) = doc.resolve_var(id, *var)
+        {
+            vars.push((*var, c));
+        }
+    }
+    Ground {
+        brush,
+        colour,
+        from,
+        vars,
+    }
+}
+
+fn solid(c: peniko::Color) -> BrushSource {
+    BrushSource::Literal(crate::Brush::Solid(c))
 }
 
 fn yes() -> bool {
@@ -1016,6 +1730,71 @@ pub enum ChartRule {
     BadOption,
     #[error("a chart's parts name a node twice or a role twice")]
     DuplicatePart,
+    #[error("a chart holds at most {MAX_REFERENCES} references, each with its own id")]
+    References,
+    #[error("lollipops don't stack: make the chart grouped first")]
+    LollipopsStack,
+}
+
+impl Chart {
+    /// The highlight's names and the references in shape: names within the
+    /// cell limit, at most [`MAX_REFERENCES`] references with distinct ids,
+    /// every number finite and every width in range.
+    fn validate_annotations(&self) -> Result<(), ChartRule> {
+        let name = |s: &String| s.chars().count() <= MAX_CELL_CHARS;
+        let names = match &self.highlight.target {
+            Highlighted::None => true,
+            Highlighted::Categories(n) | Highlighted::Series(n) => {
+                n.len() <= MAX_ROWS && n.iter().all(name)
+            }
+        };
+        if !names {
+            return Err(ChartRule::BadOption);
+        }
+        if self.references.len() > MAX_REFERENCES {
+            return Err(ChartRule::References);
+        }
+        let b = &self.options.bars;
+        if b.shape == BarShape::Lollipops && b.stacking != Stacking::Apart {
+            return Err(ChartRule::LollipopsStack);
+        }
+        let w = &self.options.waterfall;
+        let sizes = [b.stem, b.head]
+            .iter()
+            .all(|v| v.is_finite() && (0.0..=4096.0).contains(v));
+        let wnames = w.totals.len() <= MAX_ROWS
+            && w.totals.iter().all(name)
+            && w.final_total.as_ref().is_none_or(name);
+        let angle = self.options.radar.start_angle;
+        let fade = self.options.fade.to;
+        let radar = angle.is_finite()
+            && (-360.0..=360.0).contains(&angle)
+            && fade.is_finite()
+            && (0.0..=100.0).contains(&fade);
+        if !sizes || !wnames || !radar {
+            return Err(ChartRule::BadOption);
+        }
+        let mut ids = FxHashSet::default();
+        for r in &self.references {
+            if !ids.insert(r.id) {
+                return Err(ChartRule::References);
+            }
+            let at_ok = |a: &At| match a {
+                At::Value(v) => v.is_finite(),
+                At::Category(c) => name(c),
+                _ => true,
+            };
+            let ok = at_ok(&r.at)
+                && at_ok(&r.to)
+                && r.label.chars().count() <= MAX_TEXT_CHARS
+                && r.width.is_finite()
+                && (0.0..=64.0).contains(&r.width);
+            if !ok {
+                return Err(ChartRule::BadOption);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Chart {
@@ -1069,6 +1848,7 @@ impl Chart {
             }
         }
         self.options.validate()?;
+        self.validate_annotations()?;
         let mut keys = FxHashSet::default();
         let mut nodes = FxHashSet::default();
         for (k, id) in &self.parts {
@@ -1085,20 +1865,37 @@ impl Chart {
         Ok(())
     }
 
-    /// Every colour the description holds.
+    /// Every colour the description holds; an unset one holds none.
     pub fn brushes(&self) -> impl Iterator<Item = &BrushSource> + '_ {
         let o = &self.options;
         self.series
             .iter()
-            .map(|s| &s.fill)
-            .chain(self.nodes.iter().map(|n| &n.fill))
-            .chain([
-                &o.value_axis.colour,
-                &o.value_axis.grid.colour,
-                &o.category_axis.colour,
-                &o.category_axis.grid.colour,
-                &o.text.ink,
-            ])
+            .filter_map(|s| s.fill.as_ref())
+            .chain(self.nodes.iter().filter_map(|n| n.fill.as_ref()))
+            .chain(
+                [
+                    &o.value_axis.colour,
+                    &o.value_axis.grid.colour,
+                    &o.category_axis.colour,
+                    &o.category_axis.grid.colour,
+                    &o.text.ink,
+                    &o.plot.fill,
+                    &o.stroke.colour,
+                    &o.text.tick.ink,
+                    &o.text.value.ink,
+                    &o.text.legend.ink,
+                    &o.text.title.ink,
+                    &o.below_zero,
+                    &self.highlight.muted,
+                    &o.bars.stem_colour,
+                    &o.waterfall.increase,
+                    &o.waterfall.decrease,
+                    &o.waterfall.total,
+                ]
+                .into_iter()
+                .flatten(),
+            )
+            .chain(self.references.iter().map(|r| &r.colour))
     }
 
     /// [`Self::brushes`], to rewrite in place: a binding detached or rebound.
@@ -1106,15 +1903,112 @@ impl Chart {
         let o = &mut self.options;
         self.series
             .iter_mut()
-            .map(|s| &mut s.fill)
-            .chain(self.nodes.iter_mut().map(|n| &mut n.fill))
-            .chain([
-                &mut o.value_axis.colour,
-                &mut o.value_axis.grid.colour,
-                &mut o.category_axis.colour,
-                &mut o.category_axis.grid.colour,
-                &mut o.text.ink,
-            ])
+            .filter_map(|s| s.fill.as_mut())
+            .chain(self.nodes.iter_mut().filter_map(|n| n.fill.as_mut()))
+            .chain(
+                [
+                    &mut o.value_axis.colour,
+                    &mut o.value_axis.grid.colour,
+                    &mut o.category_axis.colour,
+                    &mut o.category_axis.grid.colour,
+                    &mut o.text.ink,
+                    &mut o.plot.fill,
+                    &mut o.stroke.colour,
+                    &mut o.text.tick.ink,
+                    &mut o.text.value.ink,
+                    &mut o.text.legend.ink,
+                    &mut o.text.title.ink,
+                    &mut o.below_zero,
+                    &mut self.highlight.muted,
+                    &mut o.bars.stem_colour,
+                    &mut o.waterfall.increase,
+                    &mut o.waterfall.decrease,
+                    &mut o.waterfall.total,
+                ]
+                .into_iter()
+                .flatten(),
+            )
+            .chain(self.references.iter_mut().map(|r| &mut r.colour))
+    }
+
+    /// The colour a highlight's other marks draw in under *Muted*: set, else
+    /// the ink at 25% over the ground.
+    pub fn muted(&self) -> BrushSource {
+        self.highlight.muted.clone().unwrap_or_else(|| {
+            let c = self.chrome();
+            solid(mix(c.ground, c.ink, 0.25))
+        })
+    }
+
+    /// Whether the chart is drawn for a dark ground: its theme, or under
+    /// *Auto* what the ground it was last drawn on reads as ([`dark_on`]);
+    /// light before it has been drawn.
+    pub fn drawn_dark(&self) -> bool {
+        match self.options.theme {
+            Theme::Light => false,
+            Theme::Dark => true,
+            Theme::Auto => self.grounded.is_some_and(dark_on),
+        }
+    }
+
+    /// The chrome an unset colour derives: *Light*'s and *Dark*'s fixed
+    /// greys; under *Auto* the picked theme's ink, with the gridlines and axes
+    /// that ink at [`AUTO_GRID`] and [`AUTO_AXIS`] over the ground.
+    pub fn chrome(&self) -> Chrome {
+        let dark = self.drawn_dark();
+        let fixed = chrome(dark);
+        match (self.options.theme, self.grounded) {
+            (Theme::Auto, Some(ground)) => Chrome {
+                ink: fixed.ink,
+                axis: mix(ground, fixed.ink, AUTO_AXIS),
+                grid: mix(ground, fixed.ink, AUTO_GRID),
+                ground,
+            },
+            _ => fixed,
+        }
+    }
+
+    /// The labels' ink as drawn: set, else derived.
+    pub fn ink(&self) -> BrushSource {
+        self.options
+            .text
+            .ink
+            .clone()
+            .unwrap_or_else(|| solid(self.chrome().ink))
+    }
+
+    /// An axis's line colour as drawn, the value axis's when `value`.
+    pub fn axis_colour(&self, value: bool) -> BrushSource {
+        let a = self.axis(value);
+        a.colour
+            .clone()
+            .unwrap_or_else(|| solid(self.chrome().axis))
+    }
+
+    /// An axis's gridline colour as drawn, the value axis's when `value`.
+    pub fn grid_colour(&self, value: bool) -> BrushSource {
+        let a = self.axis(value);
+        a.grid
+            .colour
+            .clone()
+            .unwrap_or_else(|| solid(self.chrome().grid))
+    }
+
+    fn axis(&self, value: bool) -> &Axis {
+        if value {
+            &self.options.value_axis
+        } else {
+            &self.options.category_axis
+        }
+    }
+
+    /// This chart as drawn on `ground`: its stamp set to it, so every derived
+    /// colour reads that ground.
+    pub fn on(&self, ground: peniko::Color) -> Chart {
+        Chart {
+            grounded: Some(ground),
+            ..self.clone()
+        }
     }
 
     /// Whether `other` describes the same chart, whatever parts either holds.
@@ -1130,7 +2024,10 @@ impl Chart {
             data,
             parts: _,
             generated: _,
+            grounded: _,
             minted: _,
+            highlight,
+            references,
         } = self;
         *kind == other.kind
             && *table == other.table
@@ -1140,6 +2037,8 @@ impl Chart {
             && *options == other.options
             && *source == other.source
             && *data == other.data
+            && *highlight == other.highlight
+            && *references == other.references
     }
 
     /// This description as a copy carries it: the linked file dropped, since
@@ -1172,6 +2071,22 @@ impl Chart {
                 .collect()
         };
         let (columns, rows, mapping) = match kind {
+            ChartKind::Waterfall => (
+                cols(&["Step", "Change"]),
+                rows(&[
+                    &["Revenue", "420"],
+                    &["COGS", "-180"],
+                    &["Gross", ""],
+                    &["Opex", "-120"],
+                    &["Other", "20"],
+                    &["Tax", "-30"],
+                ]),
+                Mapping {
+                    category: Some(ColumnId(0)),
+                    series: vec![ColumnId(1)],
+                    ..Mapping::default()
+                },
+            ),
             ChartKind::Sankey => (
                 cols(&["From", "To", "Value"]),
                 rows(&[
@@ -1230,12 +2145,36 @@ impl Chart {
             mapping,
             series: Vec::new(),
             nodes: Vec::new(),
-            options: Options::default(),
+            options: Options {
+                // A line chart's legend shows each series' line.
+                legend: Legend {
+                    swatch: if kind == ChartKind::Line {
+                        Swatch::Line
+                    } else {
+                        Swatch::Square
+                    },
+                    ..Legend::default()
+                },
+                // The sample's Gross row is a running total, Net its end.
+                waterfall: if kind == ChartKind::Waterfall {
+                    Waterfall {
+                        totals: vec!["Gross".into()],
+                        final_total: Some("Net".into()),
+                        ..Waterfall::default()
+                    }
+                } else {
+                    Waterfall::default()
+                },
+                ..Options::default()
+            },
             source: None,
             data: None,
             parts: Vec::new(),
             generated: None,
+            grounded: None,
             minted: 0,
+            highlight: Highlight::default(),
+            references: Vec::new(),
         }
     }
 
@@ -1261,6 +2200,10 @@ impl Chart {
             ChartKind::Scatter if self.mapping.size.is_some() => "Bubble",
             ChartKind::Scatter => "Scatter",
             ChartKind::Sankey => return None,
+            ChartKind::Waterfall if o.waterfall.horizontal => "Bar",
+            ChartKind::Waterfall => "Column",
+            ChartKind::Radar if o.radar.filled => "Filled",
+            ChartKind::Radar => "Lines",
         })
     }
 
@@ -1504,7 +2447,12 @@ impl Options {
                     .is_none_or(|(lo, hi)| (hi - lo).is_finite() && lo < hi)
                 && a.tick_count.is_none_or(|n| (1..=100).contains(&n))
                 && format(&a.format)
+                && a.line_width > 0.0
+                && size(a.line_width)
+                && a.grid.width > 0.0
+                && size(a.grid.width)
         };
+        let role = |r: &RoleText| r.weight.is_none_or(|w| (1..=1000).contains(&w));
         let b = &self.bars;
         let l = &self.lines;
         let s = &self.slices;
@@ -1514,7 +2462,8 @@ impl Options {
         let ok = pct(b.group_gap)
             && pct(b.bar_gap)
             && px(b.radius)
-            && self.outline.is_none_or(|w| w > 0.0 && size(w))
+            && px(self.plot.radius)
+            && size(self.stroke.width)
             && size(l.width)
             && size(l.point_size)
             && unit(l.area_opacity)
@@ -1536,6 +2485,9 @@ impl Options {
             && format(&self.values.format)
             && text(&t.family)
             && (1..=1000).contains(&t.weight)
+            && [&t.tick, &t.value, &t.legend, &t.title]
+                .into_iter()
+                .all(role)
             && [t.tick_size, t.value_size, t.legend_size, t.title_size]
                 .iter()
                 .all(|v| *v > 0.0 && size(*v))

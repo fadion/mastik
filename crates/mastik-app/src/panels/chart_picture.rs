@@ -37,9 +37,9 @@ pub(super) enum Picture {
 impl Picture {
     pub(super) fn of(chart: &Chart) -> Self {
         match chart.kind {
-            ChartKind::Column => Self::Column,
+            ChartKind::Column | ChartKind::Waterfall => Self::Column,
             ChartKind::Bar => Self::Bar,
-            ChartKind::Line => Self::Line,
+            ChartKind::Line | ChartKind::Radar => Self::Line,
             ChartKind::Area => Self::Area,
             ChartKind::Pie if chart.options.slices.donut => Self::Donut,
             ChartKind::Pie => Self::Pie,
@@ -70,7 +70,7 @@ pub(super) fn colours(chart: &Chart) -> [Color; COLOURS] {
             .filter_map(|b| solid(&b))
             .collect(),
     };
-    let palette = chart::palette(chart.options.palette, chart.options.dark);
+    let palette = chart::palette(chart.options.palette, chart.drawn_dark());
     std::array::from_fn(|i| {
         own.get(i).copied().unwrap_or_else(|| {
             let c = palette[i % palette.len()];
@@ -672,10 +672,10 @@ mod tests {
         let mut chart = Chart::sample(ChartKind::Column);
         let col = chart.mapping.series[0];
         let red = Color::from_rgb8(255, 0, 0);
-        chart = chart::with_series_fill(&chart, col, mastik_core::Brush::Solid(red).into());
+        chart = chart::with_series_fill(&chart, col, Some(mastik_core::Brush::Solid(red).into()));
         let got = colours(&chart);
         assert_eq!(got[0], red);
-        let p = chart::palette(chart.options.palette, chart.options.dark);
+        let p = chart::palette(chart.options.palette, chart.drawn_dark());
         assert_eq!(got[3], Color::from_rgb8(p[3][0], p[3][1], p[3][2]));
     }
 }

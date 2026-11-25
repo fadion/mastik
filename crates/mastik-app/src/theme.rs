@@ -1203,6 +1203,12 @@ pub mod icon {
     pub const CHART_SCATTER: &str = "\u{f064}";
     /// The Sankey chart kind: one node bar whose two flows part to two bars.
     pub const CHART_SANKEY: &str = "\u{f065}";
+    /// The Waterfall chart kind: a tall start, a floating step down and a
+    /// solid total on the baseline.
+    pub const CHART_WATERFALL: &str = "\u{f097}";
+    /// The Radar chart kind: a pentagon grid with an uneven shape inside (a
+    /// plain polygon means the Polygon tool).
+    pub const CHART_RADAR: &str = "\u{f098}";
     /// A chart's data: a table with a header row — the data window and *Edit
     /// data…*.
     pub const TABLE: &str = "\u{f066}";
@@ -1675,6 +1681,8 @@ pub mod icon {
         ("chart-donut", CHART_DONUT),
         ("chart-scatter", CHART_SCATTER),
         ("chart-sankey", CHART_SANKEY),
+        ("chart-waterfall", CHART_WATERFALL),
+        ("chart-radar", CHART_RADAR),
         ("table", TABLE),
         ("visual-centre", VISUAL_CENTRE),
         ("size-preview", SIZE_PREVIEW),

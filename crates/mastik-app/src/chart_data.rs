@@ -256,13 +256,21 @@ pub(crate) fn cell_of(chart: &Chart, key: Option<chart::PartKey>) -> Cell {
     // with an empty category; a scatter's point and a flow count table rows.
     let by_row =
         matches!(key.role, R::Flow) || (key.role == R::Point && chart.kind == ChartKind::Scatter);
+    // A column or bar chart drawn in its own order counts its drawn places.
+    let index = match chart::category_order(chart) {
+        Some(order) if !by_row => order
+            .get(key.index as usize)
+            .copied()
+            .unwrap_or(key.index as usize),
+        _ => key.index as usize,
+    };
     let row = match at(chart.mapping.category) {
         Some(c) if !by_row => t
             .rows
             .iter()
             .enumerate()
             .filter(|(_, cells)| cells.get(c).is_some_and(|v| !v.trim().is_empty()))
-            .nth(key.index as usize)
+            .nth(index)
             .map_or(last, |(r, _)| r),
         _ => (key.index as usize).min(last),
     };
@@ -279,6 +287,10 @@ pub(crate) fn cell_of(chart: &Chart, key: Option<chart::PartKey>) -> Cell {
         // A slice's value is the first series' at its category's row.
         R::Slice => first_series.map(|c| (row, c)),
         R::CategoryLabel => at(chart.mapping.category).map(|c| (row, c)),
+        // A stack's total: its first series at its category's row.
+        R::Total => first_series.map(|c| (row, c)),
+        // A line's end label: its column's last row.
+        R::EndLabel => col_of(key.series).map(|c| (last, c)),
         // A flow is its row; a node is the first row naming it.
         R::Flow => at(chart.mapping.value).map(|c| (row, c)),
         R::SankeyNode | R::NodeLabel => {

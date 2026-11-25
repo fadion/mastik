@@ -49,6 +49,7 @@ pub(crate) fn migrate(mut value: Value) -> Result<Value, IoError> {
             18 => migrate_18_to_19(&mut value),
             19 => migrate_19_to_20(&mut value),
             20 => migrate_20_to_21(&mut value),
+            21 => migrate_21_to_22(&mut value),
             other => return Err(IoError::UnsupportedVersion(other)),
         }
     }
@@ -515,6 +516,84 @@ fn migrate_20_to_21(value: &mut Value) {
         .filter(|d| d.is_object())
     {
         inner["schema_version"] = Value::from(21u32);
+    }
+}
+
+/// v21 → v22: charts' derived colours and the chart additions that come with
+/// them. A chart's `dark` becomes its theme (*Dark*, else *Light*), each colour
+/// still at that theme's starting value becomes unset
+/// (`chart::unset_starting`), and inside labels keep the text ink, so every
+/// saved chart draws as it did.
+fn migrate_21_to_22(value: &mut Value) {
+    value["schema_version"] = Value::from(22u32);
+    charts_to_22(value);
+    if let Some(inner) = value
+        .get_mut("published")
+        .and_then(|p| p.get_mut("document"))
+        .filter(|d| d.is_object())
+    {
+        inner["schema_version"] = Value::from(22u32);
+        charts_to_22(inner);
+    }
+}
+
+/// [`migrate_21_to_22`] over one document's nodes.
+fn charts_to_22(doc: &mut Value) {
+    let Some(nodes) = doc.get_mut("nodes").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for node in nodes {
+        let Some(chart) = node.get_mut("chart").filter(|c| c.is_object()) else {
+            continue;
+        };
+        let dark = chart
+            .get_mut("options")
+            .and_then(Value::as_object_mut)
+            .and_then(|o| o.remove("dark"))
+            .and_then(|d| d.as_bool())
+            .unwrap_or(false);
+        renamed_chart_options(chart);
+        // A chart the parse refuses is left for the document's own parse to
+        // name.
+        let Ok(old) = serde_json::from_value::<crate::chart::Chart>(chart.clone()) else {
+            continue;
+        };
+        let mut next = crate::chart::unset_starting(&old, dark);
+        next.options.values.inside_ink = crate::chart::InsideInk::Text;
+        if let Ok(v) = serde_json::to_value(&next) {
+            *chart = v;
+        }
+    }
+}
+
+/// A chart's options from before v22 under their new names: `outline: w` as an
+/// *Outline* mark stroke `w` wide, and a pie's `sort` as *Largest first*.
+pub(crate) fn renamed_chart_options(chart: &mut Value) {
+    let Some(o) = chart.get_mut("options").and_then(Value::as_object_mut) else {
+        return;
+    };
+    match o.remove("outline") {
+        Some(Value::Number(w)) => {
+            o.insert(
+                "stroke".into(),
+                serde_json::json!({ "style": "Outline", "width": w }),
+            );
+        }
+        // A patch's null resets it, as it reset the outline.
+        Some(Value::Null) => {
+            o.insert("stroke".into(), Value::Null);
+        }
+        _ => {}
+    }
+    if let Some(slices) = o.get_mut("slices").and_then(Value::as_object_mut)
+        && let Some(sort) = slices.remove("sort")
+    {
+        let order = if sort.as_bool() == Some(true) {
+            "Descending"
+        } else {
+            "Table"
+        };
+        slices.insert("order".into(), Value::from(order));
     }
 }
 

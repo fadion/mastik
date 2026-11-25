@@ -77,6 +77,8 @@ pub(crate) fn chart_glyph(kind: ChartKind) -> &'static str {
         ChartKind::Pie => icon::CHART_DONUT,
         ChartKind::Scatter => icon::CHART_SCATTER,
         ChartKind::Sankey => icon::CHART_SANKEY,
+        ChartKind::Waterfall => icon::CHART_WATERFALL,
+        ChartKind::Radar => icon::CHART_RADAR,
     }
 }
 
@@ -136,6 +138,8 @@ impl Member {
                 ChartKind::Pie => "Pie chart (J)",
                 ChartKind::Scatter => "Scatter chart (J)",
                 ChartKind::Sankey => "Sankey chart (J)",
+                ChartKind::Waterfall => "Waterfall chart (J)",
+                ChartKind::Radar => "Radar chart (J)",
             },
         }
     }

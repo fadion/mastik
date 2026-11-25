@@ -390,7 +390,7 @@ impl MastikApp {
             parent_world,
             at - half,
             at + half,
-            mastik_core::peniko::Color::WHITE,
+            mastik_core::chart::starting_ground(&self.session.doc, parent),
             chart,
         );
         self.session.name_step("Insert chart", icon::CHART);

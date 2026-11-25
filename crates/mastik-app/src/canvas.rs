@@ -5267,7 +5267,7 @@ impl MastikApp {
                 parent_world,
                 start,
                 corner,
-                Color::WHITE,
+                mastik_core::chart::starting_ground(&self.session.doc, parent),
                 mastik_core::chart::Chart::sample(self.rail.chart),
             ),
             Tool::Slice => tools::create_slice(id, parent, index, parent_world, start, corner),
@@ -28622,7 +28622,7 @@ mod redraw_tests {
             Affine::IDENTITY,
             mastik_core::kurbo::Point::new(vp.view.x0 + 20.0, vp.view.y0 + 20.0),
             mastik_core::kurbo::Point::new(vp.view.x0 + 300.0, vp.view.y0 + 220.0),
-            Color::WHITE,
+            Some(Color::WHITE),
             Chart::sample(ChartKind::Column),
         );
         session.try_commit(tx).expect("a chart");
