@@ -10046,7 +10046,19 @@ impl MastikApp {
     /// directly. Exceptions: [`Self::commit_chrome_edit`], the layers panel, and the
     /// *Group*/*Ungroup* buttons (grouping changes no pixel, though `changes_ink` says
     /// `true` by op). Returns whether the commit took.
+    ///
+    /// An edit that hides, shows, retypes or refills a layer of a list's template a
+    /// filled column drives is refused here with the column's words and no step
+    /// (`filled_op`): the regeneration would write the cell back in the same step.
     pub(crate) fn commit_edit(&mut self, tx: Transaction) -> bool {
+        if let Some(why) =
+            tx.0.iter()
+                .find_map(|op| crate::panels::variants::filled_op(&self.session.doc, op))
+        {
+            self.session.forget_step_name();
+            self.session.info(why);
+            return false;
+        }
         self.note_edit(None, &tx);
         self.session.commit(tx)
     }

@@ -422,14 +422,43 @@ impl MastikApp {
         self.adopt_decoded(pictures);
         tx.0.splice(0..0, b.beside_ops(&self.session.doc));
         // A layer of a list's template a filled column drives is left as it
-        // is: the regeneration would write its cell back in the same step.
+        // is: the regeneration would write its cell back in the same step. Every
+        // op on that layer goes (its credit stays), and so does a picture only
+        // its fills would have used.
         let mut filled = Vec::new();
-        tx.0.retain(|op| {
-            let why = crate::panels::variants::filled_op(&self.session.doc, op);
-            let keep = why.is_none();
-            filled.extend(why);
-            keep
+        let mut skipped_layers = std::collections::HashSet::new();
+        for op in &tx.0 {
+            if let Some(why) = crate::panels::variants::filled_op(&self.session.doc, op) {
+                filled.push(why);
+                skipped_layers.extend(op.overwrites());
+            }
+        }
+        let pictures = |op: &mastik_core::Operation| match op {
+            mastik_core::Operation::SetFills { fills, .. } => fills
+                .iter()
+                .filter_map(|f| match f.brush.literal() {
+                    Some(mastik_core::Brush::Image(b)) => Some(b.image.id.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let (dropped, kept): (Vec<_>, Vec<_>) = tx.0.into_iter().partition(|op| {
+            op.overwrites()
+                .is_some_and(|id| skipped_layers.contains(&id))
         });
+        let used: std::collections::HashSet<_> = kept.iter().flat_map(pictures).collect();
+        let unused: std::collections::HashSet<_> = dropped
+            .iter()
+            .flat_map(pictures)
+            .filter(|i| !used.contains(i))
+            .collect();
+        tx.0 = kept
+            .into_iter()
+            .filter(|op| {
+                !matches!(op, mastik_core::Operation::AddImage { id, .. } if unused.contains(id))
+            })
+            .collect();
         // Counted from the edit: an avatar the sink could not draw is left out.
         let changed =
             tx.0.iter()
@@ -441,7 +470,7 @@ impl MastikApp {
                     )
                 })
                 .count();
-        let skipped = filled.len();
+        let skipped = skipped_layers.len();
         if changed == 0
             && let Some(why) = filled.into_iter().next()
         {

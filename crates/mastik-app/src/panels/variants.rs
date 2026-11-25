@@ -752,9 +752,9 @@ pub(crate) fn filled_layer(
 }
 
 /// Why `op` cannot be committed: it hides, shows, retypes or refills a layer
-/// [`filled_layer`] guards, which the next regeneration would write back. The
-/// doors that build their edit as a transaction (*Hide*, *Fill with content*)
-/// ask this of each operation.
+/// [`filled_layer`] guards, which the next regeneration would write back.
+/// `MastikApp::commit_edit`, *Hide*, the layers eye and *Fill with content* ask
+/// this of each operation.
 pub(crate) fn filled_op(
     doc: &mastik_core::Document,
     op: &mastik_core::Operation,

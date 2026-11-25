@@ -903,10 +903,11 @@ override. Kit mains not yet vendored are offered to a swap only (`kit::swap_offe
   menu offers no *Reset ‹property›* for it: a component property's row shows
   its label and the column's name as a `binding::chip` with no ×, a variant dropdown is
   disabled and its label offers no override reset, both with the tooltip *Filled from title in rows.csv, as every row is: edit it in
-  the table*. The layers the property drives refuse the same edit at every other door with those
-  words and no step (`variants::filled_layer` / `filled_op`): the canvas text session, the Text
-  card's content, the layers eye, *Hide*, and *Fill with content*, which leaves them out and
-  counts them as *skipped … a list fills*. The interaction
+  the table*. The layers the property drives refuse the same edit with those words and no step
+  (`variants::filled_layer` / `filled_op`): every panel door through `MastikApp::commit_edit`
+  (the inspector's eye, *Back into flow*, the Fill card's image swap), the canvas text session,
+  the Text card's content, the layers eye and *Hide*. *Fill with content* leaves such a layer out
+  whole, its credit and picture with it, and counts it as *skipped … a list fills*. The interaction
   state's label hovers *In code the browser sets <property>. Pick one here to draw it, and to force it
   in the export; <rest> leaves it to the browser.* Several
   instances get the rows when they share one owner. Label cut with `…` and a tooltip only when cut

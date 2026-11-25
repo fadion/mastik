@@ -2268,6 +2268,164 @@ mod tests {
         );
     }
 
+    /// A panel door committing through `commit_edit` (the inspector header's
+    /// eye, *Back into flow*, the Fill card's image swap) refuses a template
+    /// layer a filled column drives, with the column's words and no step.
+    /// flip: `commit_edit` not asking `filled_op` → fails at "refused".
+    #[test]
+    fn commit_edit_refuses_a_layer_a_column_shows() {
+        let ctx = egui::Context::default();
+        let (mut app, label) = listed_with_a_shown_column(&ctx);
+        let depth = app.session.history.undo_depth();
+        app.session.name_step("Hide", crate::theme::icon::EYE_SLASH);
+        let took = app.commit_edit(mastik_core::Transaction(vec![
+            mastik_core::Operation::SetVisible {
+                id: label,
+                visible: false,
+            },
+        ]));
+        assert!(!took, "refused");
+        assert_eq!(app.session.history.undo_depth(), depth, "no step");
+        assert!(
+            app.session.status().text.contains("on_sale"),
+            "said: {}",
+            app.session.status().text
+        );
+        assert!(!app.session.has_step_name(), "the name is not left waiting");
+    }
+
+    /// *Fill with content* over a template whose picture a filled column drives
+    /// fills the free text, leaves that layer whole (its fills and credit) and
+    /// adds no picture for it, and says how many layers it skipped.
+    /// flip: `filled_op` without its `SetFills` arm, or `commit_fill_content`
+    /// filtering by op → fails at "credit kept" (the regeneration puts the
+    /// fills back either way).
+    #[test]
+    fn fill_with_content_skips_a_filled_picture_whole() {
+        use mastik_core::list::{List, Target};
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let inst = with_photo(&mut app);
+        let main = mastik_core::component::main_of(&app.session.doc, inst).unwrap();
+        let text = verb(
+            &mut app,
+            "create_text",
+            json!({ "parent": main.to_wire(), "text": "Name" }),
+        )[0];
+        // Named as the box reads them: an avatar and a full name.
+        let main_thumb = app.session.doc.get(main).unwrap().children()[0];
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::SetName {
+                id: main_thumb,
+                name: "Avatar".into(),
+            },
+            mastik_core::Operation::SetName {
+                id: text,
+                name: "Name".into(),
+            },
+        ])));
+        let set = DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "People".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "pic".into(),
+                }],
+                rows: vec![vec!["ada.png".into()], vec!["alan.png".into()]],
+            },
+            source: None,
+            pictures: Vec::new(),
+        };
+        let (tx, l) = list::make(
+            &app.session.doc,
+            &app.session.resolved,
+            &mut app.session.ids,
+            inst,
+            Source::New(set),
+        )
+        .unwrap();
+        assert!(app.commit_edit(tx));
+        let photo = mastik_core::variant::instance_properties(&app.session.doc, inst)
+            .iter()
+            .find(|p| p.name == "Photo")
+            .map(|p| p.id)
+            .expect("fixture: the image property");
+        let now: List = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        app.commit_list_fill(
+            l,
+            List {
+                fill: vec![list::Fill {
+                    target: Target::Prop(photo),
+                    column: ColumnId(0),
+                }],
+                ..now
+            },
+        );
+        let kids = app.session.doc.get(inst).unwrap().children().to_vec();
+        let (thumb, name) = (kids[0], kids[1]);
+        assert!(
+            crate::panels::variants::filled_layer(
+                &app.session.doc,
+                thumb,
+                mastik_core::variant::PropKind::Image
+            )
+            .is_some(),
+            "fixture: a column fills the picture"
+        );
+        let credit: mastik_core::credit::Credit = serde_json::from_value(json!({
+            "kind": "photo",
+            "text": "Photo by Ana on Unsplash",
+            "author": "Ana",
+            "provider": "Unsplash",
+            "licence": "Unsplash License",
+        }))
+        .unwrap();
+        assert!(app.session.commit(mastik_core::Transaction(vec![
+            mastik_core::Operation::SetCredit {
+                id: thumb,
+                credit: Some(Box::new(credit)),
+            }
+        ])));
+        let fills = |app: &MastikApp| app.session.doc.get(thumb).unwrap().paint().fills.to_vec();
+        let before = fills(&app);
+        let images = app.session.doc.images().count();
+        assert!(
+            app.session.doc.get(thumb).unwrap().credit().is_some(),
+            "fixture: credited"
+        );
+        let depth = app.session.history.undo_depth();
+        app.session.selection.set_one(inst);
+        app.open_fill_content();
+        let mut b = app.fill_content.take().expect("the box");
+        // Invented values, not the table's: an avatar drawn and a name made up.
+        b.opts.avatars = Some(Default::default());
+        b.opts.columns.clear();
+        app.run_fill_content(b);
+        assert!(app.fill_content.is_none(), "fixture: the fill ran");
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
+        assert_ne!(
+            match app.session.doc.get(name).map(|n| n.kind()) {
+                Some(NodeKind::Text { content, .. }) => content.as_str(),
+                _ => "",
+            },
+            "Name",
+            "the free text filled"
+        );
+        assert_eq!(fills(&app), before, "fills unchanged");
+        assert!(
+            app.session.doc.get(thumb).unwrap().credit().is_some(),
+            "credit kept"
+        );
+        assert_eq!(app.session.doc.images().count(), images, "no picture added");
+        assert!(
+            app.session.status().text.contains("skipped 1 a list fills"),
+            "said: {}",
+            app.session.status().text
+        );
+    }
+
     /// *Reset all* on a list's template takes back its other overrides and
     /// leaves each filled property at its row's cell, since the list is made
     /// again in the reset's step; so it stays offered there.
