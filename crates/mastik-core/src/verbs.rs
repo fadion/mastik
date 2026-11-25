@@ -546,7 +546,17 @@ fn settled_model(model: &str, v: &Value) -> Result<Value, String> {
         "RepeatGrid" => reads!(crate::repeat::Grid),
         "ChartTable" => reads!(crate::chart::Table),
         "[Name]" => reads!(Vec<String>),
-        "LayerPlay" => reads!(crate::prototype::LayerPlay),
+        // Checked with stand-in ids for snap points that leave them out; the verb
+        // fills in its own.
+        "LayerPlay" => {
+            let mut p = v.clone();
+            let mut n = 0;
+            play_in(&mut p, &mut || {
+                n += 1;
+                crate::item::ItemId::positional(n)
+            });
+            settle::<crate::prototype::LayerPlay>(model, p).map(|_| v.clone())
+        }
         "PlayExport" => reads!(crate::prototype::PlayExport),
         // A transition in part completed from a new page's, which is what the
         // verb reads too.
@@ -6179,7 +6189,11 @@ pub static VERBS: &[Verb] = &[
             req("play", ParamKind::Model("LayerPlay"), "the settings"),
         ],
         run: |ctx, a| {
-            let play = a.model::<crate::prototype::LayerPlay>("play")?;
+            let ids = &mut *ctx.ids;
+            let play: crate::prototype::LayerPlay = keyed_arg(a, "play", "LayerPlay", |v| {
+                play_in(v, &mut || ids.mint_item());
+                Ok(())
+            })?;
             let ops = existing_layers(ctx, a)?
                 .into_iter()
                 .map(|id| Operation::SetPlay {
@@ -7353,7 +7367,7 @@ pub struct Tree {
     /// the layer is made: a target the tree holds is remapped to its new layer.
     pub reactions: Option<Value>,
     /// The layer's prototype settings, as `set_play` takes them.
-    pub play: Option<crate::prototype::LayerPlay>,
+    pub play: Option<Value>,
     /// Bottom first.
     #[serde(default)]
     pub children: Vec<Tree>,
@@ -7651,7 +7665,14 @@ fn tree_ops(
             text: text.trim().to_owned(),
         });
     }
-    if let Some(play) = &tree.play {
+    if let Some(written) = &tree.play {
+        let mut v = written.clone();
+        let ids = &mut *ctx.ids;
+        let play: crate::prototype::LayerPlay = loosen_model("LayerPlay", "", &mut v)
+            .map(|()| play_in(&mut v, &mut || ids.mint_item()))
+            .and_then(|()| settle::<crate::prototype::LayerPlay>("LayerPlay", v))
+            .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
+            .map_err(|why| a.invalid("tree", format!("at `play`: {why}")))?;
         late.push(Operation::SetPlay {
             id,
             play: play.map_layers(&mut |t| minted.get(&t).copied().unwrap_or(t)),
@@ -8487,10 +8508,18 @@ fn ids_in(v: &mut Value, mint: &mut dyn FnMut() -> crate::item::ItemId) {
     }
 }
 
+/// A layer's play settings `v` in their serde shape: an `id` for each snap point
+/// written without one, which a *Drop* trigger names it by.
+fn play_in(v: &mut Value, mint: &mut dyn FnMut() -> crate::item::ItemId) {
+    if let Some(points) = v.pointer_mut("/follow/points") {
+        ids_in(points, mint);
+    }
+}
+
 /// Each prototype action by its name, and whether it carries a transition: what
 /// an action written as a bare word, or its kind in another case, is read as.
 /// Kept with [`crate::prototype::Action`]'s variants.
-const ACTIONS: [(&str, bool); 14] = [
+const ACTIONS: [(&str, bool); 15] = [
     ("Navigate", true),
     ("Back", false),
     ("OpenOverlay", true),
@@ -8499,6 +8528,7 @@ const ACTIONS: [(&str, bool); 14] = [
     ("ScrollTo", true),
     ("ChangeState", true),
     ("SetVariable", false),
+    ("SetMode", false),
     ("Conditional", false),
     ("OpenUrl", false),
     ("RunScript", false),

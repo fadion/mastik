@@ -7969,6 +7969,43 @@ fn get_tree_and_insert_subtree_carry_reactions() {
     let _ = instance;
 }
 
+/// `set_play` and a tree layer's `play` give each snap point written without an
+/// `id` one of its own, as a reaction's actions are given theirs.
+///
+/// flip: `play_in` not minting point ids → `set_play` is refused at its `run`;
+/// the tree's `play` read without `play_in` → `insert_subtree` is refused.
+#[test]
+fn set_play_gives_snap_points_their_ids() {
+    let (mut doc, mut ids, page) = blank();
+    let a = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": rect(40.0, 40.0) }),
+    )[0];
+    let play = json!({ "follow": { "range": "Points", "release": "Snaps", "points": [
+        { "name": "Open", "x": 200.0, "y": 0.0 },
+        { "name": "Half", "x": 100.0, "y": 0.0 },
+    ] } });
+    run(
+        &mut doc,
+        &mut ids,
+        "set_play",
+        json!({ "nodes": [a.to_wire()], "play": play }),
+    );
+    let points = doc.get(a).unwrap().play().follow.clone().unwrap().points;
+    assert_eq!(points.len(), 2);
+    assert_ne!(points[0].id, points[1].id, "each point its own id");
+    let made = run(
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": { "kind": rect(40.0, 40.0), "play": play } }),
+    )[0];
+    let points = doc.get(made).unwrap().play().follow.clone().unwrap().points;
+    assert_eq!(points.len(), 2, "the tree's points");
+}
+
 /// A link's transition reads back as it is: a smart animate's side survives
 /// `reactions_value` and `set_reactions` on a page whose default shares it,
 /// and a tree read on one page and inserted on another whose default differs
