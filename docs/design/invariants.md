@@ -24,7 +24,7 @@ The non-negotiable rules of the Mastik architecture (original §4, numbering pre
      - Components (§5.3d, D978): an instance's copies are stored nodes whose following fields the commit writes from their sources.
      - Kits (§5.3e, D1010, D1012): a vendored kit main is a stored copy of another document's main at a published version, rewritten only by the commit that accepts an update. A kit's own published state is not another member: it is the tree as it stood at publish, with nothing left to derive it from.
      - Kit-carried variables and styles (§5.3f, D1064): copies of the kit's at a published version, each with its origin, rewritten only by the accepting commit.
-     - Styles (§5.3f, D1062; type via D1067, container layout via D1075): a styled layer's fills, strokes, effects, type or layout are a copy of its style's list, written by the commit (`style::settle`).
+     - Styles (§5.3f, D1062; type via D1067, container layout via D1075): a styled layer's fills, strokes, effects, type, layout or chart options are a copy of its style's value, written by the commit (`style::settle`).
      - Chart parts (`charts.md`): the nodes under a chart frame, with its `parts`, `generated` and `minted`, are generated from its description and rewritten only by `chart::settle`, in a transaction of its own outside history after a commit, an undo, a redo or a load. No undo step writes a part.
      - Laid widths (§5.3f, `core-model.md`): `Document::laid_widths` is layout output kept on the document so `modes_at` can pick by width; written only by `Document::settle_widths` after layout, never saved and never compared.
      - Variables add no member: a bound field stores its binding and resolves at read.

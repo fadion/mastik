@@ -70,12 +70,13 @@ everything below.
   for a scatter the optional size and group columns, and for a Sankey the *From*, *To* and
   *Value* columns. Columns are named by `ColumnId`, so a rename keeps the mapping.
 - **`series: Vec<SeriesStyle>`** — one per series column, keyed by its `ColumnId`: colour (an
-  `Option<BrushSource>`: unset draws the palette's colour at the series' place, in the theme the
-  chart is drawn in; set, a colour variable binds to it through the existing binding chrome),
+  `Option<BrushSource>`: unset draws its place's colour, `chart::place_fill` — the *From
+  variables* group's, else the palette's in the theme the chart is drawn in; set, a colour variable binds to it through the existing binding chrome),
   visible, and the per-series line dash and point shape.
-- **A chart's colours bind** (`Chart::brushes`: series, nodes, the axes' and gridlines' colours,
-  the text ink and each role's, the plot background, the mark stroke, the muted, below-zero and
-  reference colours; an unset
+- **A chart's colours bind** (`Chart::brushes`: series, nodes, the options' own
+  (`Options::brushes`: the axes' and gridlines' colours, the text ink and each role's, the plot
+  background, the mark stroke, below zero, the stem, the steps and the *From variables* group),
+  the muted and reference colours; an unset
   colour holds none). The parts are generated with the bound brush itself, so they read the
   variable as any layer does and a mode switch recolours them with no regeneration; an outlined
   mark's tint is the binding at 14% of its alpha. To the variable flows the **chart frame is
@@ -99,10 +100,11 @@ everything below.
   *Replace* (so `replace_font`) writes the new family into the description
   (`families::families_in_use`, `replace_family`).
 - **`nodes: Vec<NodeStyle>`** — a Sankey's node colours, keyed by node name, so a
-  re-import or a reorder keeps them. A node with no style draws the palette's colour at its
-  place in node order; editing or binding its swatch stores one (`chart::with_node_fill`). A
+  re-import or a reorder keeps them. A node with no style draws its place's colour in node
+  order (`chart::place_fill`); editing or binding its swatch stores one (`chart::with_node_fill`). A
   style whose name no row uses stays, drawing nothing, and applies again if the name returns;
-  only picking a palette clears them (`chart::with_palette`).
+  only picking a palette or a *From variables* group clears them (`chart::with_palette`,
+  `with_variables`).
 - **`highlight: Highlight`** — the marks drawn as they are, by name so a re-import or a reorder
   keeps it: `target` (`Highlighted::None`, `Categories(names)`, `Series(names)`; a grouped
   scatter's groups are series), `others` (*Muted* or *Faded*), `muted` (unset: `Chart::muted`,
@@ -480,13 +482,18 @@ it applies to; switching kind keeps the others' values.
   the_mastik_chart_palette_survives_the_dichromacies`), *Cool*, *Warm*, *Mono* (one hue in steps), or *From
   variables*: a group of colour variables
   that may bind a fill (the name before the last `/`, else the collection's name; its variables
-  in the table's order), bound to the series in order (a Sankey's nodes), round again past the
-  last (`chart::with_variables`), so a mode switch recolours the chart. The palette dropdown
-  lists the four palettes, then the groups under *From variables*; a group lights while the
-  series run through it in order (`chart::bound_variables`), and the dropdown reads *From
-  variables · ‹group›*. Picking a palette puts every series and named mark back to unset, unbound
-  (`chart::with_palette`), so they draw the palette's colours in the theme drawn; a series' own
-  swatch, once edited, is its own.
+  in the table's order), stored bound in `Options::palette_group` (at most
+  `MAX_PALETTE_GROUP`): an unset series or named mark takes the group's colour at its place,
+  round again past the last (`chart::place_fill`, the one read of a place's colour, which the
+  generator and the card share), so a mode switch recolours the chart and a series added later
+  takes the next colour. Picking a group (`chart::with_variables`) or a palette
+  (`chart::with_palette`, which clears the group) puts every series and named mark back to
+  unset, unbound; a series' own swatch, once edited, is its own. The group is stored rather than
+  bound series by series so that a chart style's palette moves exactly the unset series. The
+  palette dropdown lists the four palettes, then the groups under *From variables*; a group lights
+  while the stored group runs through it in order, or, in a file whose series were bound one by
+  one, while the series do (`chart::bound_variables`), and the dropdown reads *From variables ·
+  ‹group›*.
 - **Ground and theme.** The text ink, the axes' and gridlines' colours, a series' colour and a
   named mark's are each an `Option`: unset, the generator derives it from the ground the chart
   is drawn on and `Options::theme` (*Auto*, *Light*, *Dark*; *Auto* for a new chart). Nothing is
@@ -915,6 +922,19 @@ References starts open):
   faces with *Chart's* first. Undo steps *‹Role› colour* and *‹Role› weight* (`ROLE_STEPS`).
 - At the foot, **Flatten chart** (`ui::action_button`), with `Ctrl+E` in its tooltip.
 
+**The Chart card is a style card** (`styles-variables.md`, *Styles*), the chart slot's: its
+head's `⋯` is the slots' menu (*Apply style…*, *Create style…*, *Detach style*). The type rows
+lead, live, above the capsule (`style_card_parts`' `head`). Styled, the sections the look holds
+— Style, Marks, Axes, Values, Legend, Text — fold into the capsule and are read-only, as on any
+styled card; Data, Series or Steps, and References follow it live, then *Flatten chart*. Data
+then ends with a *This chart* eyebrow over what sits among the look's rows but is the chart's
+own: the *Background* row (the frame's fill, never the style's) and, on a chart with axes, each
+axis's typed range and title. Outside the capsule, what the look holds is shown disabled with
+*From the style · Detach to change*: the palette dropdown reads that, and so does a type
+variant that would change the look (a line's curve, a donut, a filled radar), while stacking and
+a waterfall's direction stay live. The series' own swatches stay live. Under the browser's
+*Edit* of the style the card is live and writes the style.
+
 A multi-selection of charts shows the Chart card when every chart is the same kind
 (`selected_charts`), drawn from the first and writing each in one step. A kind change carries the
 kind and every option it changed (`chart::Options::carried`); every other edit is applied to
@@ -1120,7 +1140,9 @@ window the name opens for typing, the next thing to write.
   chart*. In the same transaction every part binding its variable's scope refuses — a line's
   stroke drawing a colour scoped to fills, which `variable::check` excuses only on a chart's parts
   — detaches to the colour it drew (`variable::out_of_scope_ops`); the drop comes first, so the
-  detaches no longer write a part. `chart::flatten` alone is refused at the commit when such a
+  detaches no longer write a part. A chart style the chart is bound to is unbound beside the
+  drop (`SetChartStyle { style: None }`), since a frame with no chart has no look to style.
+  `chart::flatten` alone is refused at the commit when such a
   binding exists, so every door goes through `flatten_ops`
   (`flatten_chart_detaches_a_line_drawing_a_fill_scoped_colour`). What was on screen is what
   remains; the labels are text layers that can be edited, restyled or converted to paths.

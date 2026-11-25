@@ -147,7 +147,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 - **Data from a URL, formulas in the table, and data bound to variables** — the table is values, from typing, pasting or a local file.
 - **Interactivity** (hover readouts, tooltips, animation) — a chart is a picture of its data, on the canvas and in code export.
 - **A chart's own title or caption** — a text layer beside it does that.
-- **Saved user presets** — duplicate a styled chart and replace its data.
+- **A chart style carrying the chart's data** (highlights, references, series colours) — a chart style is a look; a duplicate carries the rest.
 - **Refreshing a linked file without a click** — an opened document's link can name any file on the machine (`charts.md`, *Import and the linked file*).
 
 ## The assistant

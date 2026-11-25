@@ -7,25 +7,6 @@ work is described in `architecture.md`. Refs are file + function name, never lin
 the code before picking an item up — an item's premise can go stale while its ask still reads
 true.
 
-## Now · Chart improvements
-
-Charts that serve more than the default look: house styles, built on the chart's ground and
-derived colours (`charts.md`, *Ground and theme*). Two rules hold for all of it. **One save-format
-version bump and one MCP snapshot bump** cover the batch: new `ChartKind` and `PartRole` values
-are plain serde enums an older reader cannot parse, and `chart::Options` does not deny unknown
-fields, so an older reader would drop new options on save. Schema v22 and snapshot 30 are the
-batch's bumps; the remaining items ride on them until release. **Every new
-colour joins `Chart::brushes` and `brushes_mut`**, so it binds, detaches and pastes with the
-rest.
-
-- **Chart styles.** A sixth style slot (`StyleValue::Chart`, `StyleRefs::chart`,
-  `SetChartStyle`) under the slots' rules, carrying the look (options, palette with a stored
-  `Options::palette_group`, theme choice, text, stroke, `Options::fade`, totals) and never the
-  kind, stacking, order, shape, data, series colours, highlight, references, axis titles or typed
-  ranges. Styled, the card's look sections collapse into the styled capsule; *Flatten* unbinds the
-  style; kits carry them. Every five-slot enumeration grows a sixth. Landing it removes the
-  non-goal *Saved user presets*.
-
 ## Next · Editing parity
 
 Mastik as a standalone tool: the effects, paints, media and path tools that would otherwise send
