@@ -52,3 +52,7 @@ decision belongs in `docs/non-goals.md` or `docs/decisions.md` instead.
   are its design (`command-mode.md`); the Luau sandbox leaves out `_G` and `getfenv` on purpose.
 - **A "self" target for *Change to* across several layers.** `set_reactions` writes the same
   reactions to every layer it names; layers whose targets differ take a call each.
+- **A script's colour write keeping the variable it equals.** A written value replaces its
+  binding, as the inspector's does; a matching colour is not a binding.
+- **`print` showing a Luau table's contents.** Luau prints a table as its address; that is
+  the language's, not a tool's.

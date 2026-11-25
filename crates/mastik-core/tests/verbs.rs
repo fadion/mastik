@@ -5360,8 +5360,12 @@ fn push_to_main_writes_an_override_into_the_main() {
     assert!(matches!(loose, Err(VerbError::Nothing(_))), "{loose:?}");
 }
 
-/// `add_variant` grows a set by one main; `duplicate_as_component` copies a main
-/// as a new main, not an instance, and a layer holding a main with a new main in it.
+/// `add_variant` grows a set by one main, clear of the variants there;
+/// `duplicate_as_component` copies a main as a new main, not an instance, and a
+/// layer holding a main with a new main in it.
+///
+/// flip: `add_variant` placing the copy below its source → fails at "the copy
+/// covers no variant".
 #[test]
 fn add_variant_and_duplicate_as_component_make_mains() {
     let (mut doc, mut ids, page) = blank();
@@ -5381,6 +5385,28 @@ fn add_variant_and_duplicate_as_component_make_mains() {
     )[0];
     assert!(doc.get(new).unwrap().component());
     assert_eq!(doc.get(set).unwrap().children().len(), 3);
+    // A copy of the first variant lands clear of every other one.
+    let first = run(
+        &mut doc,
+        &mut ids,
+        "add_variant",
+        json!({ "node": a.to_wire() }),
+    )[0];
+    let res = Resolved::rebuild(&doc);
+    let at = res.world_bounds(first).unwrap();
+    for v in doc
+        .get(set)
+        .unwrap()
+        .children()
+        .iter()
+        .filter(|v| **v != first)
+    {
+        let other = res.world_bounds(*v).unwrap();
+        assert!(
+            at.intersect(other).area() <= 0.0,
+            "the copy covers no variant: {at:?} over {other:?}"
+        );
+    }
     let (lone, _) = main_component(&mut doc, &mut ids, page, "Lone", 50.0);
     assert_eq!(
         refused_param(
@@ -8221,7 +8247,7 @@ fn a_link_to_the_wrong_kind_of_layer_is_refused() {
 /// `flow_names` without the object arm → the `set_flows` run is refused;
 /// `play_fields` answering `None` → fails at "the overlay's fields";
 /// `model_fields` without its one-key arm → fails at "a field right under an
-/// action".
+/// action"; `play_fields` without its `cells` arm → fails at "a cell's fields".
 #[test]
 fn prototype_fields_are_refused_by_name_and_values_take_names() {
     let (mut doc, mut ids, page) = blank();
@@ -8348,6 +8374,17 @@ fn prototype_fields_are_refused_by_name_and_values_take_names() {
     assert!(
         why.contains("`values`") && why.contains("`cells`"),
         "a field right under an action: {why}"
+    );
+    let why = refusal(
+        &doc,
+        &mut ids,
+        "set_reactions",
+        edit(json!({ "table": "Tasks", "row": "Opened",
+            "cells": [{ "column": "Status", "value": "Done" }] })),
+    );
+    assert!(
+        why.contains("`column`") && why.contains("`to`"),
+        "a cell's fields: {why}"
     );
 }
 

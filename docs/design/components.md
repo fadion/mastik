@@ -722,7 +722,8 @@ properties). Over a property with no values it leaves the refusal to `apply` (`S
 
 **Verbs**: `combine` (*Combine as variants* — mains framed with `SET_PAD` (10) of air on every side,
 nothing moving on the page, properties read from the names as below); `add_variant` (duplicates a
-variant as a main `VARIANT_GAP` (24) below, grows the set to `SET_PAD` past it, first free
+variant as a main `VARIANT_GAP` (24) below the set's lowest variant, so it covers none already
+there, grows the set to `SET_PAD` past it, first free
 combination, set bindings extended); the set's property/value renames, adds, moves, deletes
 (`delete_value` deletes the variants holding it through `relink_for_delete`).
 

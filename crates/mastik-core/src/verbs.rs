@@ -1084,9 +1084,7 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
     // shows every action.
     if miss.why.contains("missing field")
         && matches!(model, "[Reaction]" | "[Flow]" | "LayerPlay" | "PagePlay")
-        && let Some(fields) = named
-            .as_deref()
-            .and_then(|n| play_fields(&[Some(Step::Key(n.to_owned()))]))
+        && let Some(fields) = play_fields(&miss.steps)
     {
         return format!("{said}; the fields there are `{}`", fields.join("`, `"));
     }
@@ -1178,6 +1176,8 @@ fn play_fields(below: &[Option<Step>]) -> Option<&'static [&'static str]> {
         "follow" => struct_fields::<p::Follow>(),
         "scroll_effect" => struct_fields::<p::ScrollEffect>(),
         "input" => struct_fields::<p::Input>(),
+        "cells" => struct_fields::<p::CellWrite>(),
+        "branches" => struct_fields::<p::Branch>(),
         k => variant_fields::<p::Action>(k)
             .or_else(|| variant_fields::<p::Trigger>(k))
             .or_else(|| variant_fields::<p::VarChange>(k))
@@ -1237,6 +1237,24 @@ fn struct_fields<T: serde::de::DeserializeOwned>() -> Option<&'static [&'static 
 pub fn variant_fields<T: serde::de::DeserializeOwned>(
     variant: &str,
 ) -> Option<&'static [&'static str]> {
+    enum_capture::<T>(variant).1
+}
+
+/// The variant names the enum `T` is read by; `None` for a type that is no
+/// enum.
+fn enum_variants<T: serde::de::DeserializeOwned>() -> Option<&'static [&'static str]> {
+    enum_capture::<T>("").0
+}
+
+/// The enum `T`'s variant names, and the fields of its struct variant `variant`,
+/// as a derived `Deserialize` hands them to its deserializer.
+#[allow(clippy::type_complexity)]
+fn enum_capture<T: serde::de::DeserializeOwned>(
+    variant: &str,
+) -> (
+    Option<&'static [&'static str]>,
+    Option<&'static [&'static str]>,
+) {
     use serde::de::{
         DeserializeSeed, Deserializer, EnumAccess, IntoDeserializer, VariantAccess, Visitor,
     };
@@ -1255,9 +1273,11 @@ pub fn variant_fields<T: serde::de::DeserializeOwned>(
             Stop
         }
     }
-    /// Hands the enum `variant` by name, then notes its fields and stops.
+    /// Notes the enum's variants, hands it `variant` by name, then notes that
+    /// variant's fields and stops.
     struct Capture<'a> {
         variant: &'a str,
+        variants: Cell<Option<&'static [&'static str]>>,
         fields: Cell<Option<&'static [&'static str]>>,
     }
     impl<'de> Deserializer<'de> for &Capture<'_> {
@@ -1268,9 +1288,10 @@ pub fn variant_fields<T: serde::de::DeserializeOwned>(
         fn deserialize_enum<V: Visitor<'de>>(
             self,
             _: &'static str,
-            _: &'static [&'static str],
+            variants: &'static [&'static str],
             visitor: V,
         ) -> Result<V::Value, Stop> {
+            self.variants.set(Some(variants));
             visitor.visit_enum(self)
         }
         serde::forward_to_deserialize_any! {
@@ -1310,10 +1331,60 @@ pub fn variant_fields<T: serde::de::DeserializeOwned>(
     }
     let capture = Capture {
         variant,
+        variants: Cell::new(None),
         fields: Cell::new(None),
     };
     let _ = T::deserialize(&capture);
-    capture.fields.get()
+    (capture.variants.get(), capture.fields.get())
+}
+
+/// The shape of the prototype model `name` (`Reaction`, `Action`, `Trigger`,
+/// `Flow`, `LayerPlay` and the structs they hold), for `describe_tools`: a
+/// struct's `fields`, or an enum's `variants`, each with its fields or `null`
+/// for a word or a single value; with the model's example where it has one.
+/// `None` for a name that is no such model.
+pub fn model_shape(name: &str) -> Option<Value> {
+    use crate::prototype as p;
+    use serde_json::json;
+    fn variants<T: serde::de::DeserializeOwned>() -> Option<Value> {
+        let names = enum_variants::<T>()?;
+        let map: serde_json::Map<String, Value> = names
+            .iter()
+            .map(|v| ((*v).to_owned(), json!(variant_fields::<T>(v))))
+            .collect();
+        Some(json!({ "variants": map }))
+    }
+    fn fields<T: serde::de::DeserializeOwned>() -> Option<Value> {
+        Some(json!({ "fields": struct_fields::<T>()? }))
+    }
+    let bare = name.trim_start_matches('[').trim_end_matches(']');
+    let mut shape = match bare {
+        "Reaction" => fields::<p::Reaction>(),
+        "Trigger" => variants::<p::Trigger>(),
+        "Action" => variants::<p::Action>(),
+        "VarChange" => variants::<p::VarChange>(),
+        "WhichRow" => variants::<p::WhichRow>(),
+        "CellWrite" => fields::<p::CellWrite>(),
+        "Branch" => fields::<p::Branch>(),
+        "Transition" => fields::<p::Transition>(),
+        "OverlaySettings" => fields::<p::OverlaySettings>(),
+        "Flow" => fields::<p::Flow>(),
+        "LayerPlay" => fields::<p::LayerPlay>(),
+        "Follow" => fields::<p::Follow>(),
+        "ScrollEffect" => fields::<p::ScrollEffect>(),
+        "Input" => fields::<p::Input>(),
+        "PagePlay" => fields::<p::PagePlay>(),
+        "PlayExport" => fields::<p::PlayExport>(),
+        _ => None,
+    }?;
+    let model = match bare {
+        "Reaction" | "Flow" => format!("[{bare}]"),
+        _ => bare.to_owned(),
+    };
+    if let Some(e) = example(&model) {
+        shape["example"] = e;
+    }
+    Some(shape)
 }
 
 /// The model a field of that name holds, wherever it sits.

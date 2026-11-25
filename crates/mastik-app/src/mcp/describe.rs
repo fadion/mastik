@@ -8,7 +8,9 @@ use serde_json::{Value, json};
 /// those whose name holds `query`, then of those whose description alone does,
 /// then of those holding each of its words, then of those whose name holds one,
 /// at most [`DESCRIBED`]; with `brief`, every match's name and description only.
-/// A name that is no tool is answered in `not_found`. A chat at `level` is
+/// A prototype model's name (`Reaction`, `Action`, `LayerPlay`) is answered in
+/// `models` with its fields or variants; any other name that is no tool is
+/// answered in `not_found`. A chat at `level` is
 /// offered only what that level runs; a tool named above it, or one `query`
 /// matches that a higher level runs, is answered in `beyond_access` with the
 /// level it needs.
@@ -69,9 +71,16 @@ pub(super) fn describe_tools(args: &Value, level: Option<access::Level>) -> Valu
     // A named tool a higher level drops is neither beyond this chat's access nor
     // missing; it is left out of both.
     let higher = |n: &str| needs(n).is_none_or(|l| level.is_none_or(|at| l > at));
+    // A model a schema names (`A [Reaction]`) is answered with its shape, since
+    // no example shows every action or trigger.
+    let models: serde_json::Map<String, Value> = names
+        .iter()
+        .filter_map(|n| Some(((*n).to_owned(), mastik_core::verbs::model_shape(n)?)))
+        .collect();
     let (mut beyond_access, not_found): (Vec<&str>, Vec<&str>) = names
         .iter()
         .filter(|n| !all.iter().any(|d| d["name"] == **n))
+        .filter(|n| !models.contains_key(**n))
         .filter(|n| !beyond.iter().any(|d| d["name"] == **n) || higher(n))
         .partition(|n| beyond.iter().any(|d| d["name"] == **n));
     // A query's matches above the level too, the ones a higher level runs: an
@@ -125,6 +134,9 @@ pub(super) fn describe_tools(args: &Value, level: Option<access::Level>) -> Valu
             "tools": unlisted,
             "said": "Not in the core list: where your client lists only it, run these through `call`, as {\"tool\": <name>, \"args\": {…}}",
         });
+    }
+    if !models.is_empty() {
+        answer["models"] = Value::Object(models);
     }
     if !not_found.is_empty() {
         answer["not_found"] = json!(not_found);
@@ -312,6 +324,41 @@ mod tests {
             "a brief line is short: {longest:?}"
         );
         assert_eq!(answer["not_found"], json!(["no_such_tool"]), "not found");
+    }
+
+    /// A model a schema names is answered with its shape: every action with its
+    /// fields, a struct's fields, the example beside them.
+    ///
+    /// flip: `describe_tools` without its `models` → fails at "the actions".
+    #[test]
+    fn describe_tools_answers_a_model_by_its_shape() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        let found = call(
+            &mut engine,
+            &mut docs,
+            1,
+            "describe_tools",
+            json!({ "names": ["Action", "[Reaction]", "OverlaySettings"] }),
+        );
+        let answer = ok(&found);
+        let models = &answer["models"];
+        assert_eq!(
+            models["Action"]["variants"]["EditRow"],
+            json!(["table", "row", "cells"]),
+            "the actions: {answer}"
+        );
+        assert!(
+            models["Action"]["variants"]["Back"].is_null(),
+            "a bare word"
+        );
+        assert!(models["[Reaction]"]["example"].is_array(), "the example");
+        assert!(
+            models["OverlaySettings"]["fields"]
+                .to_string()
+                .contains("close_outside"),
+            "a struct's fields"
+        );
+        assert!(answer.get("not_found").is_none(), "{answer}");
     }
 
     /// A query of words no text holds together still finds the tools holding
