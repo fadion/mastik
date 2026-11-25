@@ -117,11 +117,13 @@ list's description as it drops a misplaced one.
   with content* offers a shape (`app-canvas-chrome.md`).
 - **A cell naming nothing gives the row the main's picture.** The List card warns under that fill
   row (`list::unmatched_pictures`, *Fill*, below).
-- **The app reads the files** (`list_data::read_pictures`): only a plain relative path beside the
-  data file (no absolute path, no `..`; `\` reads as `/`), and only when the joined path passes
+- **The app reads the files** (`list_data::read_pictures_in`): only a plain relative path beside
+  the data file (no absolute path, no `..`; `\` reads as `/`), and only when the joined path passes
   `tokens_import::local_path`, since the folder comes from the document's own link and a stat
-  under `\\host\share` sends the user's credentials there. Only in the rows a list can draw
-  (`MAX_DRAWN`), each file
+  under `\\host\share` sends the user's credentials there. One gate, `list_data::beside_path`,
+  serves the read and the List card's notes. Only in the rows the set's lists can draw
+  (`list_data::drawn_rows`: each list's shown rows after its filter and sort, every row once one
+  is *Opened*, the first `MAX_DRAWN` for a table no list reads yet), each file
   up to `tokens_import::MAX_READ`, decoded by `app::read_picture`. A cell already naming a
   document picture's id is not read, and each cell is tried once per read however many rows name
   it. Each new picture's `AddImage` lands in the same step as the map. Reads happen whenever a
@@ -129,8 +131,9 @@ list's description as it drops a misplaced one.
   list*, *Make a list from data ▸* a table, the card's table dropdown and *From a file…*; on
   *Update* and *Relink…* (which replace the map); and when the card's *Fill* points an image
   property at a column it did not already fill while the set is linked. Any other fill edit
-  reads nothing. *Fill with content* reads every linked table's first `MAX_DRAWN` rows when it
-  opens, and any further row its plan takes; a per-row export reads every row, and its preview
+  reads nothing. *Make a list from data ▸* a table and `commit_list_onto` write the set ahead of
+  the list through one helper (`list_data::set_ahead`). *Fill with content* reads every linked
+  table's drawn rows when it opens, and any further row its plan takes; a per-row export reads every row, and its preview
   the row shown.
   A browser drop's file has no folder, so nothing is read for it.
 - **The reads run on the UI thread** at those moments, not on the chart import's worker.

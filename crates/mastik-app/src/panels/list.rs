@@ -3128,7 +3128,7 @@ mod tests {
     /// a folder the document names as relative (or, on Windows, behind a
     /// non-drive prefix) is never looked at, though the file is there; a cell
     /// written with `\` reads on every platform.
-    /// flip: `read_pictures_in` dropping its `local_path` check → fails at "not local".
+    /// flip: `beside_path` dropping its `local_path` check → fails at "not local".
     #[test]
     fn pictures_are_read_only_beside_a_local_file() {
         let ctx = egui::Context::default();
@@ -3162,5 +3162,88 @@ mod tests {
         assert_eq!(found, 1, "a local folder is read, `\\` or not");
         assert_eq!(relative, 0, "not local: relative");
         assert_eq!(verbatim.unwrap_or(0), 0, "not local: verbatim prefix");
+    }
+
+    /// A list sorted past the table's first 200 rows reads the pictures of the
+    /// rows it draws, not of the first 200 in table order.
+    /// flip: `read_set_pictures` reading the first `MAX_DRAWN` rows → fails at
+    /// "row 250's picture".
+    #[test]
+    fn a_sorted_list_reads_the_pictures_of_the_rows_it_draws() {
+        use mastik_core::chart::DataLink;
+        use mastik_core::list::{List, SortKey, Target};
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let inst = with_photo(&mut app);
+        let dir = std::env::temp_dir().join(format!("mastik-drawn-pics-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = crate::app::rgba_to_png(&[40; 16], (2, 2)).unwrap();
+        std::fs::write(dir.join("p250.png"), png).unwrap();
+        let set = DataSet {
+            id: app.session.ids.mint_data_set(),
+            name: "People".into(),
+            table: Table {
+                columns: vec![Column {
+                    id: ColumnId(0),
+                    name: "pic".into(),
+                }],
+                rows: (1..=250).map(|i| vec![format!("p{i:03}.png")]).collect(),
+            },
+            source: Some(DataLink {
+                path: dir.join("people.csv").to_string_lossy().into_owned(),
+                size: 0,
+                modified: 0,
+                header: None,
+            }),
+            pictures: Vec::new(),
+        };
+        let data = set.id;
+        let (tx, l) = list::make(
+            &app.session.doc,
+            &app.session.resolved,
+            &mut app.session.ids,
+            inst,
+            Source::New(set),
+        )
+        .unwrap();
+        assert!(app.commit_edit(tx));
+        let now: List = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        app.list_commit(
+            l,
+            "List sort",
+            List {
+                sort: vec![SortKey {
+                    column: ColumnId(0),
+                    descending: true,
+                }],
+                ..now
+            },
+        );
+        assert_eq!(
+            list::shown(&app.session.doc, l).first(),
+            Some(&249),
+            "fixture: row 250 drawn first"
+        );
+        let photo = mastik_core::variant::instance_properties(&app.session.doc, inst)
+            .iter()
+            .find(|p| p.name == "Photo")
+            .map(|p| p.id)
+            .expect("fixture: the image property");
+        let now: List = app.session.doc.get(l).unwrap().list().unwrap().clone();
+        app.commit_list_fill(
+            l,
+            List {
+                fill: vec![list::Fill {
+                    target: Target::Prop(photo),
+                    column: ColumnId(0),
+                }],
+                ..now
+            },
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let doc = &app.session.doc;
+        let set = doc.data_set(data).unwrap();
+        assert!(set.picture(doc, "p250.png").is_some(), "row 250's picture");
     }
 }

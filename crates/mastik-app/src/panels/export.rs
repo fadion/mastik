@@ -4011,8 +4011,9 @@ fn row_pictures(
     if unmapped.rows.iter().flatten().all(|c| c.trim().is_empty()) {
         return None;
     }
+    let every: Vec<usize> = (0..unmapped.rows.len()).collect();
     let (mut ops, pairs) =
-        crate::list_data::read_pictures_in(doc, dir, &unmapped, &columns, unmapped.rows.len());
+        crate::list_data::read_pictures_in(doc, dir, &unmapped, &columns, &every);
     if pairs.is_empty() {
         return None;
     }

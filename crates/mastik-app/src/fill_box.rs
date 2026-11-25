@@ -235,8 +235,9 @@ impl FillBox {
             };
             let columns: Vec<_> = table.columns.iter().map(|c| c.id).collect();
             let dir = std::path::Path::new(&link.path).parent();
+            let every: Vec<usize> = (0..table.rows.len()).collect();
             let (images, pairs) =
-                crate::list_data::read_pictures_in(doc, dir, &table, &columns, table.rows.len());
+                crate::list_data::read_pictures_in(doc, dir, &table, &columns, &every);
             for op in images {
                 let mastik_core::Operation::AddImage { id, .. } = &op else {
                     continue;
@@ -685,7 +686,9 @@ fn read_beside(doc: &Document) -> (Vec<mastik_core::Operation>, Vec<Beside>) {
         let Some(link) = &set.source else { continue };
         let dir = std::path::Path::new(&link.path).parent();
         let columns: Vec<_> = set.table.columns.iter().map(|c| c.id).collect();
-        let (images, pairs) = crate::list_data::read_pictures(doc, dir, &set.table, &columns);
+        let rows = crate::list_data::drawn_rows(doc, Some(set.id), &set.table, None);
+        let (images, pairs) =
+            crate::list_data::read_pictures_in(doc, dir, &set.table, &columns, &rows);
         for op in images {
             let new = !ops.iter().any(|o| match (o, &op) {
                 (

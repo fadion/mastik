@@ -216,34 +216,74 @@ fn picture_columns_of(
 }
 
 /// The pictures the cells of `table`'s `columns` name as paths beside the data
-/// file in `dir`, in the rows a list can draw: read and decoded now, each new
-/// picture's `AddImage` and every (cell, picture) pair. A cell already naming a
-/// picture's id, one that is no plain relative path (absolute, or climbing out
-/// with `..`), one outside a local folder, or one that does not read as a
-/// picture is left out.
+/// file in `dir`, in its first [`list::MAX_DRAWN`] rows, for a table no list
+/// reads yet: read and decoded now, each new picture's `AddImage` and every
+/// (cell, picture) pair. A cell already naming a picture's id, one
+/// [`beside_path`] refuses, or one that does not read as a picture is left out.
 pub(crate) fn read_pictures(
     doc: &mastik_core::Document,
     dir: Option<&Path>,
     table: &mastik_core::chart::Table,
     columns: &[mastik_core::chart::ColumnId],
 ) -> (Vec<Operation>, Vec<(String, mastik_core::ImageId)>) {
-    read_pictures_in(doc, dir, table, columns, list::MAX_DRAWN)
+    let rows: Vec<usize> = (0..table.rows.len().min(list::MAX_DRAWN)).collect();
+    read_pictures_in(doc, dir, table, columns, &rows)
 }
 
-/// [`read_pictures`] for data set `set`, beside its linked file: the
-/// `AddImage`s of the pictures `columns` name that `set` does not map yet, with
-/// `set`'s map grown by them; `None` when it is not linked or nothing is found.
+/// The rows of `table` the lists over data set `set` can draw, `also` (a list
+/// not over it in the document yet) among them: each list's shown rows, and
+/// every row once one is *Opened*, which play may open on any. With no list,
+/// the first [`list::MAX_DRAWN`].
+pub(crate) fn drawn_rows(
+    doc: &mastik_core::Document,
+    set: Option<DataSetId>,
+    table: &mastik_core::chart::Table,
+    also: Option<(NodeId, &List)>,
+) -> Vec<usize> {
+    let mut lists: Vec<(NodeId, &List)> = also.into_iter().collect();
+    if let Some(set) = set {
+        for id in list::lists(doc) {
+            if let Some(l) = doc.get(id).and_then(|n| n.list())
+                && l.data == set
+                && also.is_none_or(|(a, _)| a != id)
+            {
+                lists.push((id, l));
+            }
+        }
+    }
+    let len = table.rows.len();
+    if lists.is_empty() {
+        return (0..len.min(list::MAX_DRAWN)).collect();
+    }
+    if lists.iter().any(|(_, l)| l.rows == list::Rows::Opened) {
+        return (0..len).collect();
+    }
+    let mut rows: Vec<usize> = lists
+        .iter()
+        .flat_map(|(id, l)| l.shown_rows(table, &|v| doc.resolve_var(*id, v)))
+        .collect();
+    rows.sort_unstable();
+    rows.dedup();
+    rows
+}
+
+/// [`read_pictures`] for data set `set`, beside its linked file, in the rows
+/// its lists and `also` draw ([`drawn_rows`]): the `AddImage`s of the pictures
+/// `columns` name that `set` does not map yet, with `set`'s map grown by them;
+/// `None` when it is not linked or nothing is found.
 pub(crate) fn read_set_pictures(
     doc: &mastik_core::Document,
     set: &DataSet,
     columns: &[mastik_core::chart::ColumnId],
+    also: Option<(NodeId, &List)>,
 ) -> Option<(Vec<Operation>, DataSet)> {
     let link = set.source.as_ref()?;
     if columns.is_empty() {
         return None;
     }
     let dir = Path::new(&link.path).parent();
-    let (images, pairs) = read_pictures(doc, dir, &set.table, columns);
+    let rows = drawn_rows(doc, Some(set.id), &set.table, also);
+    let (images, pairs) = read_pictures_in(doc, dir, &set.table, columns, &rows);
     let mut next = set.clone();
     for (cell, picture) in pairs {
         if set.picture(doc, &cell).is_none() && !next.pictures.iter().any(|(c, _)| *c == cell) {
@@ -253,13 +293,35 @@ pub(crate) fn read_set_pictures(
     (next.pictures.len() > set.pictures.len()).then_some((images, next))
 }
 
+/// The operations that put list `id` (as `next`) over data set `set`, ahead of
+/// the list's own: the pictures `columns` name read and added, then the set with
+/// its grown map; the set alone when `adding` it and nothing is read; `None`
+/// when there is nothing to write ahead.
+fn set_ahead(
+    doc: &mastik_core::Document,
+    set: &DataSet,
+    (id, next): (NodeId, &List),
+    columns: &[mastik_core::chart::ColumnId],
+    adding: bool,
+) -> Option<Vec<Operation>> {
+    let (mut ops, set) = match read_set_pictures(doc, set, columns, Some((id, next))) {
+        Some((ops, set)) => (ops, set),
+        None if adding => (Vec::new(), set.clone()),
+        None => return None,
+    };
+    ops.push(Operation::SetDataSet {
+        id: set.id,
+        set: Some(Box::new(set)),
+    });
+    Some(ops)
+}
+
 impl MastikApp {
     /// Put list `id` as `next` over data set `set` as one step `label`: the
-    /// pictures `columns` name beside its linked file read and mapped first
-    /// ([`read_set_pictures`]), the set written when `adding` it or when the
-    /// read grew its map, then the list. Every door that points a list at a
-    /// table, or a property at an image column, commits through it. Whether
-    /// the step landed.
+    /// pictures `columns` name beside its linked file read and mapped first, the
+    /// set written when `adding` it or when the read grew its map, then the list.
+    /// Every door that points a list at a table, or a property at an image
+    /// column, writes the set through [`set_ahead`]. Whether the step landed.
     pub(crate) fn commit_list_onto(
         &mut self,
         id: NodeId,
@@ -269,19 +331,10 @@ impl MastikApp {
         adding: bool,
         label: &'static str,
     ) -> bool {
-        let read = read_set_pictures(&self.session.doc, set, columns);
-        let (mut ops, set) = match read {
-            Some((ops, set)) => (ops, set),
-            None if adding => (Vec::new(), set.clone()),
-            None => {
-                self.list_commit(id, label, next);
-                return true;
-            }
+        let Some(mut ops) = set_ahead(&self.session.doc, set, (id, &next), columns, adding) else {
+            self.list_commit(id, label, next);
+            return true;
         };
-        ops.push(Operation::SetDataSet {
-            id: set.id,
-            set: Some(Box::new(set)),
-        });
         ops.push(Operation::SetList {
             id,
             list: Some(Box::new(next)),
@@ -307,14 +360,31 @@ impl MastikApp {
     }
 }
 
-/// [`read_pictures`] over the first `rows` rows: every row for an export,
-/// which draws a file per row.
+/// Where the picture `cell` names beside a data file in `dir` is, when it may be
+/// looked at: a plain relative path (no root, no `..`) under a local folder.
+/// `dir` comes from the document's own link, so it is untrusted: a stat under
+/// `\\host\share` sends the user's credentials to that host. `img\a.png` names
+/// the same file on every platform.
+pub(crate) fn beside_path(dir: &Path, cell: &str) -> Option<PathBuf> {
+    let rel = cell.trim().replace('\\', "/");
+    let plain = Path::new(&rel).components().all(|k| {
+        matches!(
+            k,
+            std::path::Component::Normal(_) | std::path::Component::CurDir
+        )
+    });
+    let path = dir.join(&rel);
+    (plain && crate::tokens_import::local_path(&path)).then_some(path)
+}
+
+/// [`read_pictures`] over table rows `rows`: every row for an export, which
+/// draws a file per row, and the rows its lists draw for a data set.
 pub(crate) fn read_pictures_in(
     doc: &mastik_core::Document,
     dir: Option<&Path>,
     table: &mastik_core::chart::Table,
     columns: &[mastik_core::chart::ColumnId],
-    rows: usize,
+    rows: &[usize],
 ) -> (Vec<Operation>, Vec<(String, mastik_core::ImageId)>) {
     let (mut ops, mut pairs) = (Vec::new(), Vec::<(String, mastik_core::ImageId)>::new());
     let Some(dir) = dir else {
@@ -326,7 +396,7 @@ pub(crate) fn read_pictures_in(
         let Some(c) = table.index_of(*col) else {
             continue;
         };
-        for row in table.rows.iter().take(rows) {
+        for row in rows.iter().filter_map(|r| table.rows.get(*r)) {
             let cell = row[c].trim();
             if cell.is_empty()
                 || !tried.insert(cell)
@@ -334,24 +404,9 @@ pub(crate) fn read_pictures_in(
             {
                 continue;
             }
-            // `img\a.png` names the same file on every platform.
-            let rel = cell.replace('\\', "/");
-            let rel = Path::new(&rel);
-            let plain = rel.components().all(|k| {
-                matches!(
-                    k,
-                    std::path::Component::Normal(_) | std::path::Component::CurDir
-                )
-            });
-            if !plain {
+            let Some(path) = beside_path(dir, cell) else {
                 continue;
-            }
-            // `dir` comes from the document's own link, so it is untrusted: a stat
-            // under `\\host\share` sends the user's credentials to that host.
-            let path = dir.join(rel);
-            if !crate::tokens_import::local_path(&path) {
-                continue;
-            }
+            };
             let Some(size) = std::fs::metadata(&path)
                 .ok()
                 .filter(|m| m.is_file())
@@ -426,7 +481,7 @@ pub(crate) fn refused_picture(set: &DataSet, cell: &str) -> Option<String> {
 /// `set`'s linked file, when it refused it.
 pub(crate) fn last_refusal(set: &DataSet, cell: &str) -> Option<String> {
     let dir = Path::new(&set.source.as_ref()?.path).parent()?;
-    let path = dir.join(cell.trim().replace('\\', "/"));
+    let path = beside_path(dir, cell)?;
     REFUSED.lock().ok()?.get(&path).cloned()
 }
 
@@ -434,19 +489,8 @@ pub(crate) fn last_refusal(set: &DataSet, cell: &str) -> Option<String> {
 /// no read in this process has looked at.
 fn unread_picture(set: &DataSet, cell: &str) -> Option<String> {
     let dir = Path::new(&set.source.as_ref()?.path).parent()?;
-    let path = dir.join(cell.trim().replace('\\', "/"));
-    // The same gates the read keeps: a plain path under the folder, and no
-    // stat leaves this machine.
-    let rel = cell.trim().replace('\\', "/");
-    let plain = Path::new(&rel).components().all(|k| {
-        matches!(
-            k,
-            std::path::Component::Normal(_) | std::path::Component::CurDir
-        )
-    });
-    let there = plain
-        && crate::tokens_import::local_path(&path)
-        && std::fs::metadata(&path).is_ok_and(|m| m.is_file());
+    let path = beside_path(dir, cell)?;
+    let there = std::fs::metadata(&path).is_ok_and(|m| m.is_file());
     there.then(|| {
         let shown = crate::app::image_name(&path);
         format!("“{shown}” is there but was not read: Update reads it")
@@ -729,9 +773,9 @@ impl MastikApp {
         );
         let doc = &self.session.doc;
         let made = made.map(|(mut tx, frame)| {
-            let mut read = None;
+            let mut ahead = None;
             for op in &mut tx.0 {
-                if let Operation::SetList { list: Some(l), .. } = op {
+                if let Operation::SetList { id, list: Some(l) } = op {
                     if let Some(fill) = &fill {
                         l.fill = fill.clone();
                     }
@@ -739,18 +783,12 @@ impl MastikApp {
                     // this template's pictures; a new one came with its own.
                     if let Some(set) = existing.and_then(|s| doc.data_set(s)) {
                         let columns = picture_columns_of(doc, instance, &l.fill);
-                        read = read_set_pictures(doc, set, &columns);
+                        ahead = set_ahead(doc, set, (*id, l), &columns, false);
                     }
                 }
             }
             let mut front = images;
-            if let Some((added, set)) = read {
-                front.extend(added);
-                front.push(Operation::SetDataSet {
-                    id: set.id,
-                    set: Some(Box::new(set)),
-                });
-            }
+            front.extend(ahead.into_iter().flatten());
             tx.0.splice(0..0, front);
             (tx, frame)
         });
@@ -1153,9 +1191,11 @@ impl MastikApp {
                 });
             }
         }
-        // The pictures the image columns name, read beside the file again.
+        // The pictures the image columns name, read beside the file again, in
+        // the rows the lists draw from the new table.
         let dir = Path::new(path).parent();
-        let (images, pictures) = read_pictures(&self.session.doc, dir, &table, &columns);
+        let rows = drawn_rows(&self.session.doc, Some(set), &table, None);
+        let (images, pictures) = read_pictures_in(&self.session.doc, dir, &table, &columns, &rows);
         let next = DataSet {
             table,
             source: Some(link_for(Path::new(path), parsed, header)),
