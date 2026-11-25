@@ -23,8 +23,10 @@ const LOOKS: usize = 1024;
 pub(super) struct Shown {
     rev: u64,
     layers: Option<Rc<HashMap<String, Layer>>>,
-    /// The layers changed or removed since the look before by anyone but this
-    /// client, so `base_rev` does not count the client's own steps against it.
+    /// The layers and tables added, changed or removed since the look before by
+    /// anyone but this client, so `base_rev` does not count the client's own
+    /// steps against it. An added one counts: a name the client read may now
+    /// resolve to it.
     others: Vec<String>,
     /// The step on top of the history then, and the whole document's
     /// [`fingerprint`]: what `export_png`'s `since` rebuilds that document from
@@ -299,8 +301,8 @@ pub(super) fn layers_of(s: &EditorSession) -> Rc<HashMap<String, Layer>> {
     looked(s).1
 }
 
-/// Remember a look at `rev`, with the layers and tables `others` changed or
-/// removed since the look before, `top`, the step on top of the history, and
+/// Remember a look at `rev`, with the layers and tables `others` added, changed
+/// or removed since the look before, `top`, the step on top of the history, and
 /// `tables`, each table's hash ([`tables_of`]).
 pub(super) fn remember(
     conn: &mut Connection,
@@ -348,18 +350,21 @@ pub(super) fn catch_up(conn: &mut Connection, session: &EditorSession) -> Option
         Some((last, from)) => {
             let d = delta(last, &now);
             let report = (!d.is_empty()).then(|| d.to_json(&now, last, from));
-            (report, d.changed.into_iter().chain(d.removed).collect())
+            let others = d.added.into_iter().chain(d.changed).chain(d.removed);
+            (report, others.collect())
         }
         None => (None, Vec::new()),
     };
     let tables = tables_of(session);
     if let Some(last) = conn.shown.back() {
-        others.extend(
-            last.tables
-                .iter()
-                .filter(|(id, hash)| tables.get(*id) != Some(*hash))
-                .map(|(id, _)| id.clone()),
-        );
+        let changed = last
+            .tables
+            .iter()
+            .filter(|(id, hash)| tables.get(*id) != Some(*hash));
+        let added = tables
+            .iter()
+            .filter(|(id, _)| !last.tables.contains_key(*id));
+        others.extend(changed.chain(added).map(|(id, _)| id.clone()));
     }
     remember(conn, rev, now, others, session.history.current(), tables);
     report
@@ -832,6 +837,63 @@ mod tests {
         };
         let said = format!("People changed since rev {base}. Read it again with get_table.");
         assert!(why.contains(&said), "{why}");
+    }
+
+    /// A stale write naming a table that another client deleted and made again
+    /// under the same name is refused, and the new table is left alone.
+    ///
+    /// flip: `catch_up` leaving added tables out of `others` → fails at "refused".
+    #[test]
+    fn a_stale_write_by_name_to_a_table_made_since_is_refused() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        open(&mut engine, &mut docs, 2);
+        let people = |who: &str| json!({ "name": "People", "columns": ["Name"], "rows": [[who]] });
+        ok(&call(&mut engine, &mut docs, 1, "add_table", people("Ana")));
+        let read = call(
+            &mut engine,
+            &mut docs,
+            2,
+            "get_table",
+            json!({ "table": "People" }),
+        );
+        let base = ok(&read)["rev"].clone();
+        let gone = json!({ "table": "People" });
+        ok(&call(&mut engine, &mut docs, 1, "delete_table", gone));
+        ok(&call(&mut engine, &mut docs, 1, "add_table", people("Zed")));
+        let edit = json!({ "table": "People", "set": [{ "row": 1, "column": "Name",
+            "value": "Old" }], "base_rev": base });
+        let late = call(&mut engine, &mut docs, 2, "edit_table", edit);
+        assert!(late.is_error, "refused");
+        let sets = docs.session.doc.data_sets();
+        assert_eq!(sets.len(), 1, "one People");
+        assert_eq!(
+            sets[0].table.rows[0][0], "Zed",
+            "the new table is unchanged"
+        );
+    }
+
+    /// A stale script finding a layer by a name another client gave a new
+    /// layer since is refused, and the new layer is left alone.
+    ///
+    /// flip: `catch_up` leaving added layers out of `others` → fails at "refused".
+    #[test]
+    fn a_stale_script_by_name_to_a_layer_made_since_is_refused() {
+        let (mut engine, mut docs) = (Engine::default(), One::new());
+        open(&mut engine, &mut docs, 1);
+        open(&mut engine, &mut docs, 2);
+        let old = rect(&mut engine, &mut docs, 1, "Card");
+        let read = call(&mut engine, &mut docs, 2, "get_node", json!({ "id": old }));
+        let base = ok(&read)["rev"].clone();
+        let gone = json!({ "nodes": [old] });
+        ok(&call(&mut engine, &mut docs, 1, "delete_node", gone));
+        let new = rect(&mut engine, &mut docs, 1, "Card");
+        let args = json!({ "source": "Card.opacity = 0.5", "base_rev": base });
+        let late = call(&mut engine, &mut docs, 2, "run_script", args);
+        assert!(late.is_error, "refused: {:?}", late.content);
+        let id = mastik_core::NodeId::from_wire(&new).unwrap();
+        let opacity = docs.session.doc.get(id).map(mastik_core::Node::opacity);
+        assert_eq!(opacity, Some(1.0), "the new layer is unchanged");
     }
 
     /// A delete with a stale `base_rev` is refused when a layer inside what it
