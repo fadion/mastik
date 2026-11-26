@@ -455,6 +455,7 @@ pub fn generate_on(
         ground_colour: ground.colour,
         vars: &ground.vars,
         left_out: Vec::new(),
+        ref_labels: Vec::new(),
     };
 
     let legend_at = match o.legend.position {
@@ -928,6 +929,9 @@ struct Out<'a> {
     vars: &'a [(crate::VarId, peniko::Color)],
     /// What a pass left out and says on the card, beside the data's.
     left_out: Vec<String>,
+    /// The reference labels placed so far, in the plot's space: a later one
+    /// moves off them or is left out.
+    ref_labels: Vec<Rect>,
 }
 
 fn fill(brush: BrushSource) -> Vec<Fill> {
@@ -2624,7 +2628,9 @@ impl Axes {
 
     /// A reference's label in its colour and the value labels' type: along a
     /// line on the side away from the plot's edge, at its start, middle or end;
-    /// inside a band at its top-left. Empty writes none.
+    /// inside a band at its top-left. One that would cover a label already
+    /// placed takes the line's other side, else is left out and said. Empty
+    /// writes none.
     fn reference_label(
         &self,
         r: &super::Reference,
@@ -2643,8 +2649,9 @@ impl Axes {
         let (w, h) = (b.width(), b.height());
         let pad = VALUE_GAP;
         let vertical = bx.width() < bx.height() && !band;
-        let (x, y) = if band {
-            (bx.x0 + pad, bx.y0 + pad)
+        // Where the label may sit, the side it prefers first.
+        let sides: Vec<(f64, f64)> = if band {
+            vec![(bx.x0 + pad, bx.y0 + pad)]
         } else if vertical {
             let y = match r.label_at {
                 super::LabelAt::End => pad,
@@ -2652,12 +2659,12 @@ impl Axes {
                 super::LabelAt::Start => plot.height - h - pad,
             };
             // Right of the line, unless that runs past the plot.
-            let x = if bx.x1 + pad + w <= plot.width {
-                bx.x1 + pad
+            let (right, left) = (bx.x1 + pad, bx.x0 - pad - w);
+            if right + w <= plot.width {
+                vec![(right, y), (left, y)]
             } else {
-                bx.x0 - pad - w
-            };
-            (x, y)
+                vec![(left, y), (right, y)]
+            }
         } else {
             let x = match r.label_at {
                 super::LabelAt::End => plot.width - w - pad,
@@ -2665,14 +2672,28 @@ impl Axes {
                 super::LabelAt::Start => pad,
             };
             // Above the line, unless that runs past the plot's top.
-            let y = if bx.y0 - pad - h >= 0.0 {
-                bx.y0 - pad - h
+            let (above, below) = (bx.y0 - pad - h, bx.y1 + pad);
+            if above >= 0.0 {
+                vec![(x, above), (x, below)]
             } else {
-                bx.y1 + pad
-            };
-            (x, y)
+                vec![(x, below), (x, above)]
+            }
         };
-        let lb = Rect::from_origin_size(Point::new(x, y), Size::new(w, h));
+        // The first side clear of the labels already placed; none clear, it is left out.
+        let rect = |(x, y): (f64, f64)| Rect::from_origin_size(Point::new(x, y), Size::new(w, h));
+        let free = sides.iter().map(|s| rect(*s)).find(|lb| {
+            out.ref_labels
+                .iter()
+                .all(|t| t.intersect(*lb).area() <= 0.0)
+        });
+        let Some(lb) = free else {
+            out.left_out.push(format!(
+                "{words}: its label would cover another reference's"
+            ));
+            return;
+        };
+        out.ref_labels.push(lb);
+        let (x, y) = (lb.x0, lb.y0);
         out.label(
             key(PartRole::ReferenceLabel, 0, r.id),
             parent,

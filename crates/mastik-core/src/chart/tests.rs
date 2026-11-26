@@ -1696,6 +1696,38 @@ fn references_draw_and_say_when_outside() {
     );
 }
 
+/// A reference label that would cover another's takes the line's other side,
+/// and with both sides taken it is left out and said.
+/// flip: `reference_label` taking a side without checking the placed labels →
+/// fails at "the second moves to the other side".
+#[test]
+fn reference_labels_move_off_each_other() {
+    use crate::chart::{At, Reference};
+    let at = |id, v| Reference {
+        id,
+        at: At::Value(v),
+        label: format!("R{id}"),
+        ..Reference::default()
+    };
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.references = vec![at(1, 50.0), at(2, 50.5)];
+    let g = draw(&chart);
+    let label = |g: &Generated, id| drawn_box(part(g, PartRole::ReferenceLabel, 0, id).unwrap());
+    let (a, b) = (label(&g, 1), label(&g, 2));
+    assert!(
+        a.intersect(b).area() <= 0.0,
+        "the second moves to the other side: {a:?} {b:?}"
+    );
+    chart.references.push(at(3, 50.2));
+    let g = draw(&chart);
+    assert!(part(&g, PartRole::ReferenceLabel, 0, 3).is_none());
+    assert!(
+        g.left_out.iter().any(|l| l.starts_with("R3:")),
+        "said: {:?}",
+        g.left_out
+    );
+}
+
 /// On a 100% chart a statistic reference reads the shares its axis draws, so an
 /// average lands inside the axis rather than at the raw values.
 /// flip: `stat_of` averaging raw values on `Percent` → fails at "drawn on a 100% chart".

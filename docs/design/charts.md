@@ -629,8 +629,10 @@ it applies to; switching kind keeps the others' values.
     series 1), each a `Reference` rect as thick as its width when solid, else a dashed path. Its
     `ReferenceLabel` is in the value role's type and the reference's colour, `{value}` written
     as where it stands, placed by `label_at` along the line: above a horizontal line (below
-    when there is no room), right of a vertical one (left when there is none). An empty label
-    writes none.
+    when there is no room), right of a vertical one (left when there is none). A label that
+    would cover one already placed (bands first, then lines in list order) takes the line's
+    other side; with both taken it is left out and the left-out line says *‹label›: its label
+    would cover another reference's*. An empty label writes none.
   - A line outside the axis's range is left out, and the card's left-out line says *‹label› is
     outside the axis's range*.
 - **Number format** (one per value axis and one for values): decimals, thousands separator,
