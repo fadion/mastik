@@ -12,6 +12,7 @@ use crate::menu::{self, Door, Group, Item, Kind, Target};
 use crate::theme::{self, color, icon};
 use crate::tools::Tool;
 use eframe::egui;
+use mastik_core::chart::ChartKind;
 use mastik_core::repeat::Way;
 use mastik_core::{NodeId, build};
 use std::ops::Range;
@@ -347,6 +348,17 @@ fn rank(label: &str, aliases: &[&str], query: &[String]) -> Option<(u8, Vec<Rang
     // An alias must answer a word the label cannot, or "g g" would find *Group*.
     (query.iter().all(|q| in_label(q) || in_alias(q)) && query.iter().any(|q| !in_label(q)))
         .then(|| (2, Vec::new()))
+}
+
+/// The chart kind the query names through *Insert chart*'s aliases, matched as
+/// `rank` matches an alias (a word's start), or none when it names no kind or two.
+fn chart_kind_asked(query: &[String]) -> Option<ChartKind> {
+    let mut asked = Item::CHART_KIND_WORDS
+        .iter()
+        .filter(|(word, _)| query.iter().any(|q| word.starts_with(q.as_str())))
+        .map(|&(_, kind)| kind);
+    let first = asked.next()?;
+    asked.all(|kind| kind == first).then_some(first)
 }
 
 /// The byte range of `needle` in `name`, case folded, where folding kept the
@@ -1356,6 +1368,11 @@ impl MastikApp {
                 self.palette = Some(pal);
             }
             Some(Run::Cmd(item)) => {
+                if item == Item::Tool(Tool::Chart)
+                    && let Some(kind) = chart_kind_asked(&query_words(&pal.query))
+                {
+                    self.rail.chart = kind;
+                }
                 // Closed first: the verb may open a dialog or a modal.
                 self.run_palette_item(ctx, item, target);
                 ctx.request_repaint();
@@ -2102,6 +2119,44 @@ pub(crate) mod tests {
         assert_eq!(rank("Bring to front", &[], &q("front")).unwrap().0, 1);
         let (r, hits) = rank("Copy as SVG", &["svg", "vector"], &q("vector")).unwrap();
         assert_eq!((r, hits.len()), (2, 0));
+    }
+
+    /// A chart-kind word is one of *Insert chart*'s aliases, so the row it picks is
+    /// the row it finds; a query naming no kind, or two, picks none.
+    #[test]
+    fn a_chart_alias_names_its_kind() {
+        let aliases = Item::Tool(Tool::Chart).aliases();
+        for (word, _) in Item::CHART_KIND_WORDS {
+            assert!(aliases.contains(&word), "{word} finds Insert chart");
+        }
+        assert_eq!(chart_kind_asked(&q("spider")), Some(ChartKind::Radar));
+        assert_eq!(
+            chart_kind_asked(&q("insert brid")),
+            Some(ChartKind::Waterfall)
+        );
+        assert_eq!(chart_kind_asked(&q("chart")), None);
+        assert_eq!(chart_kind_asked(&q("radar waterfall")), None);
+    }
+
+    /// Through real frames: *radar* then `Enter` arms the chart tool on Radar, and
+    /// a plain *chart* keeps the rail's kind.
+    /// flip: `Run::Cmd` not setting `rail.chart` → fails at "radar arms Radar".
+    #[test]
+    fn a_chart_alias_arms_its_kind() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let mut app = MastikApp::headless(&ctx);
+        let none = egui::Modifiers::NONE;
+        app.rail.chart = ChartKind::Pie;
+        type_into_palette(&ctx, &mut app, "chart");
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, none)], none);
+        assert_eq!(app.tool, Tool::Chart, "fixture: Enter ran Insert chart");
+        assert_eq!(app.rail.chart, ChartKind::Pie, "chart keeps the kind");
+        app.choose_tool(Tool::Select);
+        type_into_palette(&ctx, &mut app, "radar");
+        pass(&ctx, &mut app, vec![key(egui::Key::Enter, none)], none);
+        assert_eq!(app.tool, Tool::Chart, "fixture: Enter ran Insert chart");
+        assert_eq!(app.rail.chart, ChartKind::Radar, "radar arms Radar");
     }
 
     /// One frame of the whole app, with these events and modifiers held.

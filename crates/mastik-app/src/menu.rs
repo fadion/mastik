@@ -20,6 +20,7 @@
 //! maintainer.
 
 use crate::theme::icon;
+use mastik_core::chart::ChartKind;
 use mastik_core::repeat::Way;
 use mastik_core::{BoolOp, GuideId, NodeId, NodeKind, build};
 
@@ -1489,7 +1490,18 @@ impl Item {
         }
     }
 
-    /// Other words the palette finds this row by, beyond its label.
+    /// *Insert chart*'s aliases that name a kind of their own, so the palette arms
+    /// the tool on that kind. *Lollipop* and *dumbbell* are column options, not
+    /// kinds, and only find the row.
+    pub const CHART_KIND_WORDS: [(&'static str, ChartKind); 4] = [
+        ("waterfall", ChartKind::Waterfall),
+        ("bridge", ChartKind::Waterfall),
+        ("radar", ChartKind::Radar),
+        ("spider", ChartKind::Radar),
+    ];
+
+    /// Other words the palette finds this row by, beyond its label. A word in
+    /// `CHART_KIND_WORDS` also picks its kind when *Insert chart* runs.
     pub fn aliases(self) -> &'static [&'static str] {
         match self {
             Item::CopyAsSvg => &["svg", "vector"],

@@ -679,8 +679,10 @@ A chart has no title or caption of its own: a text layer next to it does that, a
   mask makes nothing and says *A chart can't go inside a component, an instance or a mask*
   (tried on a copy of the document, so the placement rule stays the core's).
 - **Other doors**: the palette's *Insert chart* (aliases *chart*, *graph*, *plot*, *waterfall*,
-  *bridge*, *lollipop*, *dumbbell*, *radar*, *spider*), which arms the tool on the rail's current kind; an alias
-  finds the row but does not pick its kind; a `.csv` or `.tsv` dropped on the canvas, which makes a chart at the drop from the file
+  *bridge*, *lollipop*, *dumbbell*, *radar*, *spider*), which arms the tool on the rail's current kind,
+  or on the kind the query names (*waterfall* and *bridge* a Waterfall, *radar* and *spider* a
+  Radar, `menu::Item::CHART_KIND_WORDS`), which the rail then keeps; *lollipop* and *dumbbell* are
+  column options, not kinds, and only find the row; a `.csv` or `.tsv` dropped on the canvas, which makes a chart at the drop from the file
   (*Import*, below): a Scatter when the file's first column is numeric, a Sankey when it has
   exactly two text columns followed by one number column, else a Column chart.
 
