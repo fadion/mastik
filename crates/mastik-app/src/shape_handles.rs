@@ -140,7 +140,7 @@ impl MastikApp {
             || self.editing_in_place()
             || self.mode != crate::input::Mode::Normal
             || self.chrome_hidden()
-            || self.edited_gradient().is_some()
+            || self.gradient_handles_up()
         {
             return None;
         }

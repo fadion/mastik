@@ -524,7 +524,7 @@ struct EffectRowOut {
     grabbed: bool,
 }
 /// The glyph an effect row wears; the seven read as one set.
-fn effect_glyph(kind: &EffectKind) -> &'static str {
+pub(crate) fn effect_glyph(kind: &EffectKind) -> &'static str {
     match kind {
         EffectKind::DropShadow(_) => icon::DROP_HALF_BOTTOM,
         EffectKind::InnerShadow(_) => icon::DROP_HALF,
@@ -554,7 +554,8 @@ fn effects_step_glyph(before: &[Keyed<Effect>], after: &[Keyed<Effect>]) -> &'st
 }
 /// The number at the right-hand end of an effect row.
 ///
-/// A shadow's alpha, a blur's radius, a sharpen's amount and radius
+/// A shadow's alpha, a blur's radius (a progressive one's two, `24 → 0`), a
+/// sharpen's amount and radius
 /// (`60% · 1.5`), a noise's density, or how many filter channels are off
 /// neutral ([`mastik_core::Filters::changed`]).
 fn effect_summary(kind: &EffectKind) -> String {
@@ -562,8 +563,16 @@ fn effect_summary(kind: &EffectKind) -> String {
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
             format!("{:.0}%", f64::from(s.color.components[3]) * 100.0)
         }
-        EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius } => {
-            ui::number(2)(*radius, 0..=2)
+        // A progressive blur's two radii, start first.
+        EffectKind::LayerBlur { radius, ramp } | EffectKind::BackgroundBlur { radius, ramp } => {
+            match ramp {
+                Some(r) => format!(
+                    "{} → {}",
+                    ui::number(2)(*radius, 0..=2),
+                    ui::number(2)(r.end, 0..=2)
+                ),
+                None => ui::number(2)(*radius, 0..=2),
+            }
         }
         EffectKind::Sharpen { amount, radius } => {
             format!("{:.0}% · {}", amount * 100.0, ui::number(2)(*radius, 0..=2))
@@ -581,6 +590,10 @@ fn effect_hint(kind: &EffectKind) -> &'static str {
         EffectKind::InnerShadow(_) => {
             "Cast inside the layer — offset, blur, spread and colour. The number is its opacity"
         }
+        EffectKind::LayerBlur { ramp: Some(_), .. } => {
+            "Blurs the layer's own drawing, more at one end than the other. The numbers are \
+             the radius at each end"
+        }
         EffectKind::LayerBlur { .. } => {
             "Blurs the layer's own drawing, children included. The number is the radius"
         }
@@ -591,6 +604,10 @@ fn effect_hint(kind: &EffectKind) -> &'static str {
         EffectKind::Noise(_) => {
             "Noise in one or two colours, or many, over the layer and inside its edges. The \
              number is its density"
+        }
+        EffectKind::BackgroundBlur { ramp: Some(_), .. } => {
+            "Blurs what lies behind the layer, more at one end than the other. The numbers are \
+             the radius at each end"
         }
         EffectKind::BackgroundBlur { .. } => {
             "Blurs what lies behind the layer, inside its outline. The number is the radius"
@@ -10769,6 +10786,9 @@ impl MastikApp {
         // A shadow's or a noise's blend mode, picked from its combo.
         let mut shadow_blend: Option<BlendMode> = None;
         let mut noise_multi: Option<bool> = None;
+        // A blur's Even / Progressive switch and a progressive one's ease.
+        let mut progressive: Option<bool> = None;
+        let mut ease: Option<mastik_core::RampEase> = None;
         // The kind combo's list is its own `Area` above this one, so a pick there
         // misses `contains_pointer`; asked by layer order.
         let over_overlay = ctx
@@ -10896,20 +10916,128 @@ impl MastikApp {
                                 shadow_blend = Some(mode);
                             }
                         }
-                        EffectKind::LayerBlur { radius } => {
-                            if let Some(r) = self.effect_number_field(
-                                ui,
-                                subjects,
-                                index,
-                                mastik_core::EFFECT_BLUR,
-                                "Radius",
-                                egui::vec2(inner, CELL),
-                                *radius,
-                                0.0..=MAX_BLUR,
-                            ) {
-                                let _ = r.on_hover_text(
-                                    "Blurs the layer's own drawing, children included",
-                                );
+                        EffectKind::LayerBlur { radius, ramp }
+                        | EffectKind::BackgroundBlur { radius, ramp } => {
+                            let backdrop = matches!(effect.kind, EffectKind::BackgroundBlur { .. });
+                            let on = usize::from(ramp.is_some());
+                            if let Some(i) =
+                                ui::segmented(ui, inner, ui::SEGMENT_CELL_H, 2, on, |p, i, r, sel| {
+                                    ui::segment_label(p, r, ["Even", "Progressive"][i], sel);
+                                })
+                                && i != on
+                            {
+                                progressive = Some(i == 1);
+                            }
+                            match ramp {
+                                None => {
+                                    if let Some(r) = self.effect_number_field(
+                                        ui,
+                                        subjects,
+                                        index,
+                                        mastik_core::EFFECT_BLUR,
+                                        "Radius",
+                                        egui::vec2(inner, CELL),
+                                        *radius,
+                                        0.0..=MAX_BLUR,
+                                    ) {
+                                        let _ = r.on_hover_text(match backdrop {
+                                            true => {
+                                                "Blurs what lies behind the layer, inside its \
+                                                 outline. A translucent fill lets it show"
+                                            }
+                                            false => {
+                                                "Blurs the layer's own drawing, children included"
+                                            }
+                                        });
+                                    }
+                                }
+                                Some(ramp) => {
+                                    let ramp = *ramp;
+                                    let cell = egui::vec2(half, CELL);
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = COL;
+                                        for (slot, prefix, value, tip) in [
+                                            (
+                                                mastik_core::EFFECT_BLUR,
+                                                "Start",
+                                                *radius,
+                                                "The radius where the ramp starts",
+                                            ),
+                                            (
+                                                mastik_core::EFFECT_SPREAD,
+                                                "End",
+                                                ramp.end,
+                                                "The radius where the ramp ends",
+                                            ),
+                                        ] {
+                                            if let Some(r) = self.effect_number_field(
+                                                ui,
+                                                subjects,
+                                                index,
+                                                slot,
+                                                prefix,
+                                                cell,
+                                                value,
+                                                0.0..=MAX_BLUR,
+                                            ) {
+                                                let _ = r.on_hover_text(tip);
+                                            }
+                                        }
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = COL;
+                                        // The gradient's angle field: turns the ramp
+                                        // about the layer's centre.
+                                        let mut deg = ramp.angle();
+                                        let resp = ui::value_field(
+                                            ui,
+                                            cell,
+                                            Prefix::Icon(icon::ROTATION),
+                                            &mut deg,
+                                            Scrub::whole(0.5).range(0.0..=360.0),
+                                            |d| d.suffix("°").max_decimals(0),
+                                        )
+                                        .on_hover_text(
+                                            "Which way the ramp runs across the layer: 90° is \
+                                             top to bottom",
+                                        );
+                                        self.effect_valve(&resp, subjects, index, move |k| {
+                                            if let Some((_, Some(r))) = k.blur_mut() {
+                                                *r = r.turned(deg % 360.0);
+                                            }
+                                        });
+                                        ui.scope(|ui| {
+                                            ui::combo_height(ui);
+                                            egui::ComboBox::from_id_salt(("blur-ease", index))
+                                                .icon(ui::combo_chevron)
+                                                .width(half)
+                                                .selected_text(ramp.ease.label())
+                                                .show_ui(ui, |ui| {
+                                                    ui::menu_rows(ui);
+                                                    for e in mastik_core::RampEase::ALL {
+                                                        let row = ui.selectable_label(
+                                                            e == ramp.ease,
+                                                            e.label(),
+                                                        );
+                                                        if row.clicked() && e != ramp.ease {
+                                                            ease = Some(e);
+                                                        }
+                                                    }
+                                                })
+                                                .response
+                                                .on_hover_text(
+                                                    "How the radius moves between the ends",
+                                                );
+                                        });
+                                    });
+                                    ui::note_line(
+                                        ui,
+                                        icon::INFO,
+                                        theme::text::dim(),
+                                        "Drag the ends on the canvas to move the ramp.",
+                                        None,
+                                    );
+                                }
                             }
                         }
                         EffectKind::Sharpen { amount, radius } => {
@@ -11064,23 +11192,6 @@ impl MastikApp {
                                 noise_multi = Some(!n.multi);
                             }
                         }
-                        EffectKind::BackgroundBlur { radius } => {
-                            if let Some(r) = self.effect_number_field(
-                                ui,
-                                subjects,
-                                index,
-                                mastik_core::EFFECT_BLUR,
-                                "Radius",
-                                egui::vec2(inner, CELL),
-                                *radius,
-                                0.0..=MAX_BLUR,
-                            ) {
-                                let _ = r.on_hover_text(
-                                    "Blurs what lies behind the layer, inside its outline. \
-                                     A translucent fill lets it show",
-                                );
-                            }
-                        }
                         EffectKind::Filters(f) => {
                             let f = *f;
                             for channel in mastik_core::FilterChannel::ALL {
@@ -11165,11 +11276,19 @@ impl MastikApp {
             })
             .response;
         // `on_picker`: the shadow swatch's detached picker is a separate layer at
-        // `Order::Middle`, so neither the overlay nor the menu term covers it.
-        let on_picker = ctx
-            .pointer_interact_pos()
-            .and_then(|p| ctx.layer_id_at(p))
-            .is_some_and(|l| l.id == super::picker::layer_id());
+        // `Order::Middle`, so neither the overlay nor the menu term covers it. A
+        // progressive blur's ramp on the canvas counts too, as the picker's own
+        // gradient handles keep it open.
+        let (rect, ppp) = (self.canvas_rect, self.canvas_ppp);
+        let on_ramp = self.edited_ramp().is_some()
+            && ctx
+                .pointer_interact_pos()
+                .is_some_and(|p| self.gradient_claims(p, rect, ppp));
+        let on_picker = on_ramp
+            || ctx
+                .pointer_interact_pos()
+                .and_then(|p| ctx.layer_id_at(p))
+                .is_some_and(|l| l.id == super::picker::layer_id());
         // Recorded every frame, never from inside the short-circuiting `&&`.
         let press_away = super::press_began_away(&ctx, menu.layer_id.id, menu.rect, head.rect);
         if close
@@ -11227,6 +11346,23 @@ impl MastikApp {
                     "Two-colour noise"
                 };
                 self.session.name_step(step, icon::GRAIN);
+                self.write_effects(subjects, effects);
+            }
+        }
+        if progressive.is_some() || ease.is_some() {
+            let mut effects = match self.session.display_node(id) {
+                Some(n) => n.effects().to_vec(),
+                None => return,
+            };
+            if let Some(entry) = effects.get_mut(index) {
+                if let Some(on) = progressive {
+                    entry.value = entry.value.with_progressive(on);
+                }
+                if let Some(e) = ease
+                    && let Some((_, Some(r))) = entry.kind.blur_mut()
+                {
+                    r.ease = e;
+                }
                 self.write_effects(subjects, effects);
             }
         }
@@ -13814,7 +13950,7 @@ mod effects_step_glyph_tests {
     fn blur(i: usize, radius: f64) -> Keyed<Effect> {
         Keyed::new(
             ItemId::positional(i),
-            Effect::new(EffectKind::LayerBlur { radius }),
+            Effect::new(EffectKind::layer_blur(radius)),
         )
     }
 
@@ -19174,7 +19310,7 @@ mod effects_panel_tests {
                 EffectKind::InnerShadow(Default::default()),
                 &["X", "Y", "Blur", "Spread"],
             ),
-            (EffectKind::LayerBlur { radius: 6.0 }, &["Radius"]),
+            (EffectKind::layer_blur(6.0), &["Radius"]),
             (
                 EffectKind::Sharpen {
                     amount: 0.6,
@@ -19456,7 +19592,7 @@ mod effects_panel_tests {
     fn a_rows_close_button_removes_that_effect_and_leaves_the_popover_shut() {
         let mut card = Card::new(vec![
             EffectKind::DropShadow(Default::default()),
-            EffectKind::LayerBlur { radius: 6.0 },
+            EffectKind::layer_blur(6.0),
         ]);
         let fields = card.row_fields();
         assert_eq!(fields.len(), 2, "two effects, two rows");
@@ -19476,7 +19612,7 @@ mod effects_panel_tests {
     fn pressing_a_row_shows_its_popover_and_pressing_it_again_puts_it_away() {
         let mut card = Card::new(vec![
             EffectKind::DropShadow(Default::default()),
-            EffectKind::LayerBlur { radius: 6.0 },
+            EffectKind::layer_blur(6.0),
         ]);
         let fields = card.row_fields();
         let body = egui::pos2(fields[1].left() + 40.0, fields[1].center().y);
@@ -19830,7 +19966,7 @@ mod effects_multi_tests {
         let mut card = Card::new(vec![
             vec![drop_shadow()],
             Vec::new(),
-            vec![EffectKind::LayerBlur { radius: 4.0 }, drop_shadow()],
+            vec![EffectKind::layer_blur(4.0), drop_shadow()],
         ]);
         assert!(
             card.says("These layers have different effects"),
@@ -19900,7 +20036,7 @@ mod effects_multi_tests {
         let mut card = Card::new(vec![
             vec![shadow(Color::BLACK)],
             vec![
-                EffectKind::LayerBlur { radius: 8.0 },
+                EffectKind::layer_blur(8.0),
                 EffectKind::InnerShadow(mastik_core::Shadow::default()),
             ],
             Vec::new(),
@@ -24391,7 +24527,7 @@ mod paint_write_tests {
                 id: b,
                 effects: mastik_core::keyed_by_position([
                     shadow(green),
-                    mastik_core::Effect::new(mastik_core::EffectKind::LayerBlur { radius: 12.0 }),
+                    mastik_core::Effect::new(mastik_core::EffectKind::layer_blur(12.0)),
                 ]),
             },
         ]))
@@ -24440,7 +24576,7 @@ mod paint_write_tests {
         app.session.commit(Transaction(vec![Operation::SetEffects {
             id: a,
             effects: mastik_core::keyed_by_position([mastik_core::Effect::new(
-                mastik_core::EffectKind::LayerBlur { radius: 4.0 },
+                mastik_core::EffectKind::layer_blur(4.0),
             )]),
         }]));
         let tx = app.slot_transaction(a, PaintSlot::Effect(0, 0), Brush::Solid(red));
@@ -25091,7 +25227,7 @@ mod slot_decision_tests {
                     color: red,
                     ..Default::default()
                 })),
-                Effect::new(EffectKind::LayerBlur { radius: 12.0 }),
+                Effect::new(EffectKind::layer_blur(12.0)),
             ]),
         }]));
 

@@ -10,6 +10,11 @@
 //! (`MastikApp::slot_brush`), so a gradient layout stretches is edited on the box it
 //! is drawn on. A drag re-derives from the brush at the press each frame, previews
 //! through `preview_slot` and commits once through `write_slot`.
+//!
+//! **An open progressive blur is the same mode.** While its effect popover is open,
+//! the blur's ramp is a line with an end handle at each radius, drawn and dragged as
+//! a linear gradient's ends are; each end is filled grey by its radius. A drag
+//! writes the ramp on the layer's normalised box and commits one *Effects* step.
 
 use crate::app::MastikApp;
 use crate::input::Mode;
@@ -20,7 +25,7 @@ use crate::ui::color_to_egui;
 use eframe::egui;
 use mastik_core::kurbo::{Affine, Point, Rect, Vec2};
 use mastik_core::peniko::Color;
-use mastik_core::{Brush, NodeId};
+use mastik_core::{Brush, Effect, NodeId};
 
 /// A handle's drawn radius, and the dots' that stand for the stops between.
 const HANDLE_R: f32 = 6.0;
@@ -62,12 +67,26 @@ enum Guide {
     Ring(egui::Pos2, f32),
 }
 
+/// What the handles edit: a gradient paint, or a progressive blur's ramp.
+enum Edited {
+    Paint {
+        slot: PaintSlot,
+        /// As drawn, in the layer's space.
+        brush: Box<Brush>,
+    },
+    /// Effect `index` of the layer, as stored (its ramp on the normalised box),
+    /// and its start and end radii as drawn.
+    Ramp {
+        index: usize,
+        effect: Box<Effect>,
+        radii: (f64, f64),
+    },
+}
+
 /// The edited gradient laid out on screen for one frame.
 struct Marks {
     id: NodeId,
-    slot: PaintSlot,
-    /// As drawn, in the layer's space.
-    brush: Brush,
+    edit: Edited,
     /// The layer's space to world.
     world: Affine,
     handles: Vec<(Grab, egui::Pos2, Option<Color>)>,
@@ -146,7 +165,70 @@ impl MastikApp {
         }
     }
 
+    /// The progressive blur whose popover is open, when its ramp's ends are on the
+    /// canvas: its layer, its index and the effect as stored. `None` unless a
+    /// selecting tool is up and that layer is the whole selection.
+    pub(crate) fn edited_ramp(&self) -> Option<(NodeId, usize, Effect)> {
+        if self.mode != Mode::Normal || !self.selecting() {
+            return None;
+        }
+        let (id, index) = self.effect_menu?;
+        if self.session.selection.ids() != [id] {
+            return None;
+        }
+        let node = self.session.display_node(id)?;
+        let effect = node.effects().get(index)?;
+        effect.kind.ramp()?;
+        Some((id, index, effect.value.clone()))
+    }
+
+    /// Whether gradient or ramp handles are on the canvas, which the selection's
+    /// own handles step aside for.
+    pub(crate) fn gradient_handles_up(&self) -> bool {
+        self.edited_gradient().is_some() || self.edited_ramp().is_some()
+    }
+
+    /// The handles on screen this frame: the picker's gradient's, else the open
+    /// progressive blur's ramp.
     fn gradient_marks(&self, rect: egui::Rect, ppp: f32) -> Option<Marks> {
+        self.paint_marks(rect, ppp)
+            .or_else(|| self.ramp_marks(rect, ppp))
+    }
+
+    /// A progressive blur's ramp as handles: its two ends on the layer's box, each
+    /// filled with a grey for its radius ([`ramp_grey`]), and the line between.
+    fn ramp_marks(&self, rect: egui::Rect, ppp: f32) -> Option<Marks> {
+        let (id, index, effect) = self.edited_ramp()?;
+        let world = self.session.preview_world_transform(id)?;
+        let bounds = self.session.preview_local_box(id)?;
+        let ramp = *effect.kind.ramp()?;
+        // The radii as drawn, a bound one read through its variable.
+        let node = self.session.display_node(id)?;
+        let drawn = self.session.doc.resolved_effects(id, node.effects());
+        let [_, _, start, end] = drawn.get(index)?.numbers();
+        let (start, end) = (start.unwrap_or(0.0), end.unwrap_or(0.0));
+        let (a, b) = ramp.on_box(bounds);
+        let to_s = |p: Point| self.to_screen(world * p, rect, ppp);
+        let most = start.max(end);
+        Some(Marks {
+            id,
+            world,
+            handles: vec![
+                (Grab::Start, to_s(a), Some(ramp_grey(start, most))),
+                (Grab::End, to_s(b), Some(ramp_grey(end, most))),
+            ],
+            stops: Vec::new(),
+            guide: Guide::Segment(to_s(a), to_s(b)),
+            outline: Vec::new(),
+            edit: Edited::Ramp {
+                index,
+                effect: Box::new(effect),
+                radii: (start, end),
+            },
+        })
+    }
+
+    fn paint_marks(&self, rect: egui::Rect, ppp: f32) -> Option<Marks> {
         let (id, slot, brush) = self.edited_gradient()?;
         let world = self.session.preview_world_transform(id)?;
         let to_s = |p: Point| self.to_screen(world * p, rect, ppp);
@@ -208,8 +290,10 @@ impl MastikApp {
         drop(place);
         Some(Marks {
             id,
-            slot,
-            brush,
+            edit: Edited::Paint {
+                slot,
+                brush: Box::new(brush),
+            },
             world,
             handles,
             stops: dots,
@@ -234,7 +318,7 @@ impl MastikApp {
         rect: egui::Rect,
         ppp: f32,
     ) -> Option<crate::cursor::Pointer> {
-        if matches!(self.drag, Drag::Gradient { .. }) {
+        if matches!(self.drag, Drag::Gradient { .. } | Drag::BlurRamp { .. }) {
             return Some(crate::canvas::handle_cursor(true));
         }
         let m = self.gradient_marks(rect, ppp)?;
@@ -265,14 +349,24 @@ impl MastikApp {
         let Some(g) = m.grab_at(grab) else {
             return false;
         };
-        if let Some(i) = self.stop_of_grab(&m.brush, g) {
-            self.select_gradient_stop(i);
-        }
-        self.drag = Drag::Gradient {
-            id: m.id,
-            slot: m.slot,
-            grab: g,
-            from: Box::new(m.brush),
+        self.drag = match m.edit {
+            Edited::Paint { slot, brush } => {
+                if let Some(i) = self.stop_of_grab(&brush, g) {
+                    self.select_gradient_stop(i);
+                }
+                Drag::Gradient {
+                    id: m.id,
+                    slot,
+                    grab: g,
+                    from: brush,
+                }
+            }
+            Edited::Ramp { index, effect, .. } => Drag::BlurRamp {
+                id: m.id,
+                index,
+                grab: g,
+                from: effect,
+            },
         };
         true
     }
@@ -305,28 +399,33 @@ impl MastikApp {
         let Some(m) = self.gradient_marks(rect, ppp) else {
             return false;
         };
-        if let Some(g) = m.grab_at(screen) {
-            if let Some(i) = self.stop_of_grab(&m.brush, g) {
+        let grab = m.grab_at(screen);
+        if grab.is_none() && !m.on_guide(screen) {
+            return false;
+        }
+        // A ramp has no stops: a click on it is only kept from the artwork.
+        let Edited::Paint { slot, brush } = &m.edit else {
+            return true;
+        };
+        if let Some(g) = grab {
+            if let Some(i) = self.stop_of_grab(brush, g) {
                 self.select_gradient_stop(i);
             }
             return true;
         }
-        if !m.on_guide(screen) {
-            return false;
-        }
         let local = m.world.inverse() * self.to_world(screen, rect, ppp);
-        let Some(t) = paint::offset_at(&m.brush, local) else {
+        let Some(t) = paint::offset_at(brush, local) else {
             return true;
         };
-        let mut stops = paint::stops_of(&m.brush);
+        let mut stops = paint::stops_of(brush);
         stops.push((t, paint::sample(&stops, t)));
-        let next = paint::with_stops(&m.brush, stops);
+        let next = paint::with_stops(brush, stops);
         let index = paint::stops_of(&next)
             .iter()
             .position(|s| s.0 == t)
             .unwrap_or(0);
         self.session.name_step("Add stop", icon::PLUS);
-        self.write_slot(m.id, m.slot, next);
+        self.write_slot(m.id, *slot, next);
         self.select_gradient_stop(index);
         true
     }
@@ -349,14 +448,17 @@ impl MastikApp {
         let Some(g) = m.grab_at(screen) else {
             return false;
         };
-        let mut stops = paint::stops_of(&m.brush);
+        let Edited::Paint { slot, brush } = &m.edit else {
+            return true;
+        };
+        let mut stops = paint::stops_of(brush);
         if let Grab::Stop(i) = g
             && stops.len() > 2
         {
             stops.remove(i);
             let last = stops.len() - 1;
             self.session.name_step("Remove stop", icon::X);
-            self.write_slot(m.id, m.slot, paint::with_stops(&m.brush, stops));
+            self.write_slot(m.id, *slot, paint::with_stops(brush, stops));
             let keep = self.gradient_stop().min(last);
             self.select_gradient_stop(keep);
         }
@@ -385,21 +487,9 @@ impl MastikApp {
             return (from.clone(), None);
         };
         let p = xf.inverse() * world;
-        // One of the box's nine points within `SNAP_PX` of the pointer on screen.
-        let snapped = |p: Point| -> Point {
-            if shift {
-                return p;
-            }
-            let Some(b) = self.session.preview_local_box(id) else {
-                return p;
-            };
-            let at = self.to_screen(xf * p, rect, ppp);
-            box_points(b)
-                .into_iter()
-                .map(|q| (q, self.to_screen(xf * q, rect, ppp).distance(at)))
-                .filter(|(_, d)| *d <= SNAP_PX)
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .map_or(p, |(q, _)| q)
+        let snapped = |p: Point| match shift {
+            true => p,
+            false => self.box_snapped(id, xf, p, rect, ppp),
         };
         let next = match grab {
             Grab::Start | Grab::End => {
@@ -407,10 +497,7 @@ impl MastikApp {
                     return (from.clone(), None);
                 };
                 let fixed = if grab == Grab::Start { b } else { a };
-                let moved = match shift {
-                    true => fixed + eighths(p - fixed),
-                    false => snapped(p),
-                };
+                let moved = self.moved_end(id, xf, fixed, p, shift, rect, ppp);
                 match grab {
                     Grab::Start => paint::with_linear_ends(from, moved, b),
                     _ => paint::with_linear_ends(from, a, moved),
@@ -518,6 +605,128 @@ impl MastikApp {
         }
     }
 
+    /// `p` (layer space, under `xf` to world) moved onto one of layer `id`'s
+    /// box's nine points within [`SNAP_PX`] of it on screen, or left as it is.
+    fn box_snapped(&self, id: NodeId, xf: Affine, p: Point, rect: egui::Rect, ppp: f32) -> Point {
+        let Some(b) = self.session.preview_local_box(id) else {
+            return p;
+        };
+        let at = self.to_screen(xf * p, rect, ppp);
+        box_points(b)
+            .into_iter()
+            .map(|q| (q, self.to_screen(xf * q, rect, ppp).distance(at)))
+            .filter(|(_, d)| *d <= SNAP_PX)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map_or(p, |(q, _)| q)
+    }
+
+    /// Where a dragged end of a line goes with the pointer at `p`, the other end at
+    /// `fixed`: held to eighths of a turn about `fixed` under Shift, else snapped
+    /// to the box ([`Self::box_snapped`]). A linear gradient's ends and a ramp's.
+    #[allow(clippy::too_many_arguments)]
+    fn moved_end(
+        &self,
+        id: NodeId,
+        xf: Affine,
+        fixed: Point,
+        p: Point,
+        shift: bool,
+        rect: egui::Rect,
+        ppp: f32,
+    ) -> Point {
+        match shift {
+            true => fixed + eighths(p - fixed),
+            false => self.box_snapped(id, xf, p, rect, ppp),
+        }
+    }
+
+    /// The effect a ramp drag makes with the pointer at `world`, re-derived from
+    /// `from` (the effect at the press): the grabbed end moved, on the layer's box
+    /// normalised as the ramp stores it.
+    fn ramp_drag_effect(
+        &self,
+        id: NodeId,
+        grab: Grab,
+        from: &Effect,
+        world: Point,
+        shift: bool,
+    ) -> Effect {
+        let (rect, ppp) = (self.canvas_rect, self.canvas_ppp);
+        let (Some(xf), Some(b), Some(ramp)) = (
+            self.session
+                .preview_world_transform(id)
+                .filter(|t| mastik_core::build::affine_is_invertible(*t)),
+            self.session.preview_local_box(id),
+            from.kind.ramp(),
+        ) else {
+            return from.clone();
+        };
+        if b.width() <= 0.0 || b.height() <= 0.0 {
+            return from.clone();
+        }
+        let (a, z) = ramp.on_box(b);
+        let fixed = if grab == Grab::Start { z } else { a };
+        let moved = self.moved_end(id, xf, fixed, xf.inverse() * world, shift, rect, ppp);
+        let unit = Point::new((moved.x - b.x0) / b.width(), (moved.y - b.y0) / b.height());
+        let mut out = from.clone();
+        if let Some((_, Some(r))) = out.kind.blur_mut() {
+            match grab {
+                Grab::Start => r.from = unit,
+                _ => r.to = unit,
+            }
+        }
+        out
+    }
+
+    /// The transaction writing effect `index` of `id` as `effect`.
+    fn ramp_tx(&self, id: NodeId, index: usize, effect: Effect) -> mastik_core::Transaction {
+        let Some(node) = self.session.doc.get(id) else {
+            return mastik_core::Transaction::default();
+        };
+        let mut effects = node.effects().to_vec();
+        match effects.get_mut(index) {
+            Some(e) => e.value = effect,
+            None => return mastik_core::Transaction::default(),
+        }
+        mastik_core::Transaction(vec![mastik_core::Operation::SetEffects { id, effects }])
+    }
+
+    /// Preview a ramp drag; `world` is the pointer.
+    pub(crate) fn update_ramp_drag(&mut self, world: Point, shift: bool) {
+        let Drag::BlurRamp {
+            id,
+            index,
+            grab,
+            from,
+        } = &self.drag
+        else {
+            return;
+        };
+        let (id, index, grab) = (*id, *index, *grab);
+        let next = self.ramp_drag_effect(id, grab, from, world, shift);
+        let tx = self.ramp_tx(id, index, next);
+        self.session.set_preview(&tx);
+    }
+
+    /// Commit a ramp drag: one *Effects* step for the whole gesture.
+    pub(crate) fn finish_ramp_drag(
+        &mut self,
+        (id, index, grab): (NodeId, usize, Grab),
+        from: &Effect,
+        world: Point,
+        shift: bool,
+    ) {
+        let next = self.ramp_drag_effect(id, grab, from, world, shift);
+        if next == *from {
+            self.session.clear_preview();
+            return;
+        }
+        let glyph = crate::panels::effect_glyph(&next.kind);
+        let tx = self.ramp_tx(id, index, next);
+        self.session.name_step("Effects", glyph);
+        self.session.commit(tx);
+    }
+
     /// The gradient's guide, handles and stops, and a drag's value beside the
     /// pointer.
     pub(crate) fn draw_gradient_handles(
@@ -554,16 +763,18 @@ impl MastikApp {
         let selected = self.gradient_stop();
         let ring = egui::Stroke::new(2.0, color::SELECT);
         let pointer = painter.ctx().input(|i| i.pointer.latest_pos());
-        // A hollow ghost where a click on the bare guide would add a stop.
+        // A hollow ghost where a click on the bare guide would add a stop; a ramp
+        // has no stops to add.
         if self.drag.is_none()
+            && let Edited::Paint { brush, .. } = &m.edit
             && let Some(at) = pointer
             && m.grab_at(at).is_none()
             && m.on_guide(at)
             && !self.selection_locked()
         {
             let local = m.world.inverse() * self.to_world(at, rect, ppp);
-            if let Some(t) = paint::offset_at(&m.brush, local) {
-                let stops = paint::stops_of(&m.brush);
+            if let Some(t) = paint::offset_at(brush, local) {
+                let stops = paint::stops_of(brush);
                 let ghost = match m.guide {
                     Guide::Segment(a, b) => {
                         let ab = b - a;
@@ -587,7 +798,10 @@ impl MastikApp {
             painter.circle_filled(*at, DOT_R, color_to_egui(*c));
             painter.circle_stroke(*at, DOT_R, egui::Stroke::new(1.5, egui::Color32::WHITE));
         }
-        let stopped = self.stop_on_handle(&m.brush, selected);
+        let stopped = match &m.edit {
+            Edited::Paint { brush, .. } => self.stop_on_handle(brush, selected),
+            Edited::Ramp { .. } => None,
+        };
         for (g, at, fill) in &m.handles {
             if stopped == Some(*g) {
                 painter.circle_stroke(*at, HANDLE_R + 5.0, ring);
@@ -620,9 +834,22 @@ impl MastikApp {
                 }
             }
         }
-        if let (Drag::Gradient { grab, .. }, Some(at)) = (&self.drag, pointer)
-            && let Some(text) = gradient_readout(&m.brush, *grab)
-        {
+        // A gradient's readout, or the dragged ramp end's radius.
+        let readout = match (&self.drag, &m.edit) {
+            (Drag::Gradient { grab, .. }, Edited::Paint { brush, .. }) => {
+                gradient_readout(brush, *grab)
+            }
+            (Drag::BlurRamp { grab, .. }, Edited::Ramp { radii, .. }) => {
+                let r = if *grab == Grab::Start {
+                    radii.0
+                } else {
+                    radii.1
+                };
+                Some(crate::ui::number(2)(r, 0..=2))
+            }
+            _ => None,
+        };
+        if let (Some(text), Some(at)) = (readout, pointer) {
             let hue = crate::canvas::chrome_hue(&self.session.doc, m.id);
             crate::spacing::paint_label(painter, at, &text, None, hue);
         }
@@ -643,6 +870,19 @@ impl MastikApp {
             _ => None,
         }
     }
+}
+
+/// The grey a ramp end's handle is filled with: white for no blur, darkening
+/// towards the stronger of the two radii, `most`. Data, like a gradient handle's
+/// stop colour, so not a theme colour: it reads the same in both themes.
+fn ramp_grey(radius: f64, most: f64) -> Color {
+    let k = match most > 0.0 {
+        true => (radius / most).clamp(0.0, 1.0),
+        false => 0.0,
+    };
+    // From white to a dark grey that still shows its white ring.
+    let v = (255.0 - k * 200.0).round() as u8;
+    Color::from_rgb8(v, v, v)
 }
 
 /// The box's corners, edge midpoints and centre: where an end or a centre snaps.
@@ -1194,5 +1434,47 @@ mod canvas_tests {
             near(a, Point::new(0.0, 25.0)) && near(b, Point::new(400.0, 25.0)),
             "{a:?} {b:?}"
         );
+    }
+
+    /// With a progressive background blur's popover open, its ramp's end snaps to
+    /// the box's top-right corner, stored on the normalised box, as one undo step
+    /// that leaves the rect where it was.
+    ///
+    /// flip: `gradient_marks` without its `ramp_marks` arm → fails at the ramp
+    /// assertion (the press moves the rect instead).
+    #[test]
+    fn dragging_a_ramp_end_snaps_it_to_the_box() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = app_with_a_ramp(&ctx);
+        app.picker = None;
+        app.session.commit(Transaction(vec![Operation::SetEffects {
+            id,
+            effects: mastik_core::keyed_by_position([Effect::new(
+                mastik_core::EffectKind::BackgroundBlur {
+                    radius: 24.0,
+                    ramp: Some(mastik_core::BlurRamp::down(0.0)),
+                },
+            )]),
+        }]));
+        app.effect_menu = Some((id, 0));
+        frame(&ctx, &mut app, Vec::new(), Default::default());
+        assert!(app.edited_ramp().is_some(), "the ramp's ends are up");
+        assert!(app.gradient_handles_up(), "and the box steps aside");
+        let depth = app.session.history.undo_depth();
+        drag(
+            &ctx,
+            &mut app,
+            Point::new(100.0, 100.0),
+            Point::new(197.0, 3.0),
+            Default::default(),
+        );
+        let node = app.session.doc.get(id).unwrap();
+        let ramp = *node.effects()[0].kind.ramp().expect("still progressive");
+        assert!(
+            near(ramp.from, Point::new(0.5, 0.0)) && near(ramp.to, Point::new(1.0, 0.0)),
+            "the end on the box's top-right corner: {ramp:?}"
+        );
+        assert_eq!(node.transform(), Affine::IDENTITY, "the rect did not move");
+        assert_eq!(app.session.history.undo_depth(), depth + 1, "one step");
     }
 }

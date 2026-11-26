@@ -51,7 +51,7 @@ pub(crate) use export::{
 #[cfg(test)]
 pub(crate) use inspector::CropShape;
 pub(crate) use inspector::{
-    CropAspect, IMAGE_FOLDED, ImageCard, MultiField, image_fold_key, interacting,
+    CropAspect, IMAGE_FOLDED, ImageCard, MultiField, effect_glyph, image_fold_key, interacting,
 };
 pub use layers::LayerDrag;
 /// The kind icon shared by the tree and the inspector header.
