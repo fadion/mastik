@@ -433,11 +433,11 @@ fn a_background_blur_lands_as_one() {
     };
     assert!(matches!(
         kind("G"),
-        (mastik_core::EffectKind::BackgroundBlur { radius }, false) if radius == 8.0
+        (mastik_core::EffectKind::BackgroundBlur { radius, .. }, false) if radius == 8.0
     ));
     assert!(matches!(
         kind("S"),
-        (mastik_core::EffectKind::LayerBlur { radius }, true) if radius == 8.0
+        (mastik_core::EffectKind::LayerBlur { radius, .. }, true) if radius == 8.0
     ));
 }
 
@@ -452,10 +452,12 @@ fn a_background_blur_under_its_own_key_lands_beside_a_layer_blur() {
     let r = import(export(&["G"], vec![glass], &[]));
     let fx = r.doc.get(one(&r.doc, "G")).unwrap().effects().to_vec();
     assert_eq!(fx.len(), 2, "{fx:?}");
-    assert!(matches!(fx[0].kind, mastik_core::EffectKind::LayerBlur { radius } if radius == 4.0));
+    assert!(
+        matches!(fx[0].kind, mastik_core::EffectKind::LayerBlur { radius, .. } if radius == 4.0)
+    );
     assert!(matches!(
         fx[1].kind,
-        mastik_core::EffectKind::BackgroundBlur { radius } if radius == 6.0
+        mastik_core::EffectKind::BackgroundBlur { radius, .. } if radius == 6.0
     ));
 }
 

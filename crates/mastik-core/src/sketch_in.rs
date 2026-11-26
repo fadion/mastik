@@ -1056,11 +1056,11 @@ impl Builder<'_> {
         if let Some(blur) = style.get("blur").filter(|b| b_of(b, "isEnabled")) {
             let radius = num(blur, "radius");
             match num(blur, "type") as i64 {
-                0 => out.push(Effect::new(EffectKind::LayerBlur { radius })),
-                3 => out.push(Effect::new(EffectKind::BackgroundBlur { radius })),
+                0 => out.push(Effect::new(EffectKind::layer_blur(radius))),
+                3 => out.push(Effect::new(EffectKind::background_blur(radius))),
                 _ => {
                     self.count("Motion and zoom blur", 1, "layers", "Read as a layer blur");
-                    out.push(Effect::new(EffectKind::LayerBlur { radius }));
+                    out.push(Effect::new(EffectKind::layer_blur(radius)));
                 }
             }
         }

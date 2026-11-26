@@ -2165,7 +2165,7 @@ mod measurable_bounds_tests {
         doc.apply(&Transaction(vec![Operation::SetEffects {
             id: node,
             effects: crate::keyed_by_position([crate::effect::Effect::new(
-                crate::effect::EffectKind::LayerBlur { radius: 10.0 },
+                crate::effect::EffectKind::layer_blur(10.0),
             )]),
         }]))
         .expect("a blur is a legal effect");
@@ -2199,7 +2199,7 @@ mod measurable_bounds_tests {
         doc.apply(&Transaction(vec![Operation::SetEffects {
             id: plain,
             effects: crate::keyed_by_position([crate::effect::Effect::new(
-                crate::effect::EffectKind::LayerBlur { radius: 10.0 },
+                crate::effect::EffectKind::layer_blur(10.0),
             )]),
         }]))
         .expect("a blur is a legal effect");
@@ -2226,7 +2226,7 @@ mod measurable_bounds_tests {
     fn a_blur_whose_square_overflows_still_reports_the_ink_it_covers() {
         let blur = |radius| {
             crate::keyed_by_position([crate::effect::Effect::new(
-                crate::effect::EffectKind::LayerBlur { radius },
+                crate::effect::EffectKind::layer_blur(radius),
             )])
         };
         let box_ = Rect::new(0.0, 0.0, 100.0, 100.0);

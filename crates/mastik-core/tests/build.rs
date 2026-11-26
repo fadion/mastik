@@ -3338,7 +3338,7 @@ fn stroke_ink_covers_what_a_non_zero_expansion_fills() {
 fn outline_stroke_groups_a_filled_layer_with_its_stroke() {
     let mut f = Fixture::new();
     let id = stroked_square(&mut f, mastik_core::StrokeAlign::Center);
-    let blur = mastik_core::Effect::new(mastik_core::EffectKind::LayerBlur { radius: 2.0 });
+    let blur = mastik_core::Effect::new(mastik_core::EffectKind::layer_blur(2.0));
     let item = f.ids.mint_item();
     f.commit(Transaction(vec![
         Operation::SetFills {

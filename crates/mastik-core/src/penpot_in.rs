@@ -814,10 +814,8 @@ impl Builder<'_> {
             effects.push(Effect {
                 visible: !b_of(blur, "hidden"),
                 ..Effect::new(match str_of(blur, "type") {
-                    "background-blur" => EffectKind::BackgroundBlur { radius: value },
-                    _ => EffectKind::LayerBlur {
-                        radius: value / crate::effect::BLUR_DEVIATION,
-                    },
+                    "background-blur" => EffectKind::background_blur(value),
+                    _ => EffectKind::layer_blur(value / crate::effect::BLUR_DEVIATION),
                 })
             });
         }

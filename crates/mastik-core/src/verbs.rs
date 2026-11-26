@@ -846,7 +846,7 @@ fn unseen_field(v: &Value) -> Option<Vec<Option<Step>>> {
     fn effect_fields(map: &serde_json::Map<String, Value>) -> Option<Vec<&'static str>> {
         let fields = match map.get("type")?.as_str()? {
             "drop_shadow" | "inner_shadow" => struct_fields::<crate::effect::Shadow>()?.to_vec(),
-            "layer_blur" | "background_blur" => vec!["radius"],
+            "layer_blur" | "background_blur" => vec!["radius", "ramp"],
             "sharpen" => vec!["amount", "radius"],
             "noise" => NOISE_KIND_FIELDS[1..].to_vec(),
             "filters" => struct_fields::<crate::effect::Filters>()?.to_vec(),
@@ -1749,9 +1749,13 @@ pub fn example(model: &str) -> Option<Value> {
                 },
             ],
         }),
-        "[Effect]" => json(&vec![Effect::new(
-            EffectKind::DropShadow(Shadow::default()),
-        )]),
+        "[Effect]" => json(&vec![
+            Effect::new(EffectKind::DropShadow(Shadow::default())),
+            Effect::new(EffectKind::BackgroundBlur {
+                radius: 24.0,
+                ramp: Some(crate::effect::BlurRamp::down(0.0)),
+            }),
+        ]),
         "[ExportSpec]" => json(&vec![ExportSpec::new(
             ExportFormat::Png,
             ExportScale::default(),
@@ -1841,7 +1845,14 @@ pub fn example(model: &str) -> Option<Value> {
 /// form: a style's value is paints, a text or layout style, or a chart's look.
 pub fn more_examples(model: &str) -> Vec<Value> {
     match model {
-        "StyleValue" => vec![serde_json::json!({ "chart": chart_look_example() })],
+        "StyleValue" => vec![
+            serde_json::json!({ "chart": chart_look_example() }),
+            serde_json::json!({ "effects": [{
+                "type": "background_blur",
+                "radius": 24,
+                "ramp": { "end": 0, "angle": 90, "ease": "smooth" },
+            }] }),
+        ],
         _ => Vec::new(),
     }
 }

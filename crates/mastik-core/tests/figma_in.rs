@@ -985,10 +985,44 @@ fn a_background_blur_lands_as_one() {
         matches!(
             fx[..],
             [ref e] if !e.visible
-                && matches!(e.kind, mastik_core::EffectKind::BackgroundBlur { radius } if radius == 16.0)
+                && matches!(e.kind, mastik_core::EffectKind::BackgroundBlur { radius, .. } if radius == 16.0)
         ),
         "{fx:?}"
     );
+}
+
+/// Figma's progressive blur lands as a ramp: `startRadius` at `startOffset` to
+/// `radius` at `endOffset`, both on the normalised box, linear.
+/// flip: `blur_of` ignoring `blurType` → fails at the ramp.
+#[test]
+fn a_progressive_blur_lands_as_a_ramp() {
+    let glass = node(
+        "10:2",
+        "RECTANGLE",
+        (0.0, 0.0, 20.0, 10.0),
+        json!({
+            "effects": [{
+                "type": "LAYER_BLUR",
+                "blurType": "PROGRESSIVE",
+                "radius": 4,
+                "startRadius": 20,
+                "startOffset": { "x": 0.5, "y": 0.0 },
+                "endOffset": { "x": 0.5, "y": 0.8 },
+            }],
+        }),
+    );
+    let r = import(fetched(vec![glass], json!({}), &[]));
+    let fx = r.doc.get(one(&r.doc, "10:2")).unwrap().effects().to_vec();
+    let want = mastik_core::EffectKind::LayerBlur {
+        radius: 20.0,
+        ramp: Some(mastik_core::BlurRamp {
+            end: 4.0,
+            from: mastik_core::kurbo::Point::new(0.5, 0.0),
+            to: mastik_core::kurbo::Point::new(0.5, 0.8),
+            ease: mastik_core::RampEase::Linear,
+        }),
+    };
+    assert_eq!(fx[0].kind, want);
 }
 
 /// What the reader builds is a document the loader accepts.

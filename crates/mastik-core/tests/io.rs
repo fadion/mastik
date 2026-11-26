@@ -3497,9 +3497,7 @@ fn no_operation_may_write_a_number_that_is_not_finite() {
             "SetEffects (blur radius)",
             Operation::SetEffects {
                 id: rect,
-                effects: keyed_by_position([Effect::new(EffectKind::LayerBlur {
-                    radius: f64::INFINITY,
-                })]),
+                effects: keyed_by_position([Effect::new(EffectKind::layer_blur(f64::INFINITY))]),
             },
         ),
         (
@@ -3624,7 +3622,7 @@ fn no_operation_may_write_a_number_that_is_not_finite() {
         },
         Operation::SetEffects {
             id: rect,
-            effects: keyed_by_position([Effect::new(EffectKind::LayerBlur { radius: 8.0 })]),
+            effects: keyed_by_position([Effect::new(EffectKind::layer_blur(8.0))]),
         },
     ]))
     .expect("finite values are ordinary");
@@ -4442,7 +4440,7 @@ fn a_blur_past_the_cap_loads_at_the_cap_and_its_delete_undoes() {
     let mut doc = Document::new(root);
     let r = ids.mint();
     let s = ids.mint_style();
-    let blur = |radius| keyed_by_position([Effect::new(EffectKind::LayerBlur { radius })]);
+    let blur = |radius| keyed_by_position([Effect::new(EffectKind::layer_blur(radius))]);
     doc.apply(&Transaction(vec![
         Operation::CreateNode {
             id: r,
@@ -4481,7 +4479,7 @@ fn a_blur_past_the_cap_loads_at_the_cap_and_its_delete_undoes() {
     let mut doc = io::load(json.replace("777.0", "5000.0").as_bytes()).expect("it loads");
 
     let radius = |effects: &[mastik_core::Keyed<Effect>]| match effects[0].value.kind {
-        EffectKind::LayerBlur { radius } => radius,
+        EffectKind::LayerBlur { radius, .. } => radius,
         _ => unreachable!(),
     };
     assert_eq!(radius(doc.get(r).unwrap().effects()), cap, "the layer's");

@@ -5089,9 +5089,9 @@ mod tests {
         let mut ids = IdSource::new(0xEF);
         let g = ids.mint();
         let mut n = group(g, None, vec![]);
-        n.effects = crate::keyed_by_position([crate::Effect::new(crate::EffectKind::LayerBlur {
-            radius: f64::INFINITY,
-        })]);
+        n.effects = crate::keyed_by_position([crate::Effect::new(crate::EffectKind::layer_blur(
+            f64::INFINITY,
+        ))]);
         assert!(matches!(
             insert(&mut doc, vec![n], ab),
             Err(OpError::NonFinite)
@@ -5106,7 +5106,7 @@ mod tests {
     #[test]
     fn a_blur_past_the_cap_is_refused_at_both_doors() {
         let blur = |radius| {
-            crate::keyed_by_position([crate::Effect::new(crate::EffectKind::LayerBlur { radius })])
+            crate::keyed_by_position([crate::Effect::new(crate::EffectKind::layer_blur(radius))])
         };
         let shadow = |b| {
             crate::keyed_by_position([crate::Effect::new(crate::EffectKind::DropShadow(

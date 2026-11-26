@@ -652,7 +652,7 @@ fn an_effects_style_binding_a_number_its_kind_lacks_is_refused() {
         ],
     )
     .unwrap();
-    let mut blur = mastik_core::Effect::new(mastik_core::EffectKind::LayerBlur { radius: 4.0 });
+    let mut blur = mastik_core::Effect::new(mastik_core::EffectKind::layer_blur(4.0));
     blur.vars[mastik_core::EFFECT_X] = Some(var);
     let id = StyleId(f.ids.mint());
     let r = commit(

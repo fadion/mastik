@@ -2702,9 +2702,7 @@ fn effects_of<'a>(
             // A zero deviation is the identity, not a skip.
             if dev > 0.0 {
                 out.effects.push(crate::effect::Effect::new(
-                    crate::effect::EffectKind::LayerBlur {
-                        radius: dev / crate::effect::BLUR_DEVIATION,
-                    },
+                    crate::effect::EffectKind::layer_blur(dev / crate::effect::BLUR_DEVIATION),
                 ));
             }
             i += 1;
@@ -4095,7 +4093,7 @@ mod tests {
                 matches!(
                     fx.as_slice(),
                     [crate::effect::Effect {
-                        kind: EffectKind::LayerBlur { radius },
+                        kind: EffectKind::LayerBlur { radius, .. },
                         visible: true,
                         vars: [None, None, None, None],
                     }] if (radius - 6.0).abs() < 1e-9
@@ -4121,7 +4119,7 @@ mod tests {
         assert!(
             matches!(
                 fx.as_slice(),
-                [crate::effect::Effect { kind: EffectKind::LayerBlur { radius }, .. }]
+                [crate::effect::Effect { kind: EffectKind::LayerBlur { radius, .. }, .. }]
                     if *radius == crate::effect::MAX_BLUR
             ),
             "{fx:?}"
@@ -4224,7 +4222,7 @@ mod tests {
                </svg>"##,
         );
         assert!(
-            matches!(stack_of(&doc, &out)[0].kind, EffectKind::LayerBlur { radius } if (radius - 8.0).abs() < 1e-9),
+            matches!(stack_of(&doc, &out)[0].kind, EffectKind::LayerBlur { radius, .. } if (radius - 8.0).abs() < 1e-9),
             "the mean of 2 and 6 is 4, and the radius is twice that"
         );
         assert_eq!(out.approximated, vec!["uneven feGaussianBlur (averaged)"]);

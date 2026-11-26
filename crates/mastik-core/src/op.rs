@@ -2478,7 +2478,7 @@ mod changes_nothing_tests {
                 Operation::SetEffects {
                     id: a,
                     effects: crate::keyed_by_position([Effect::new(
-                        crate::effect::EffectKind::LayerBlur { radius: 2.0 },
+                        crate::effect::EffectKind::layer_blur(2.0),
                     )]),
                 },
             ),

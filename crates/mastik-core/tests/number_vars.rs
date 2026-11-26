@@ -768,7 +768,7 @@ fn a_bound_effect_number_draws_and_reaches_at_its_number() {
     assert_eq!(drawn_numbers(&f.doc, f.rect)[EFFECT_SPREAD], Some(70.0));
 
     let mut blurred = f.doc.get(f.rect).unwrap().effects().to_vec();
-    blurred[0].value = mastik_core::Effect::new(mastik_core::EffectKind::LayerBlur { radius: 3.0 });
+    blurred[0].value = mastik_core::Effect::new(mastik_core::EffectKind::layer_blur(3.0));
     blurred[0].vars[mastik_core::EFFECT_X] = Some(f.muted);
     let wrong = f.doc.apply(&Transaction(vec![Operation::SetEffects {
         id: f.rect,
@@ -828,7 +828,7 @@ fn an_effect_list_write_keeps_a_bound_number_by_two_halves() {
         "5 detaches at 5"
     );
     let retyped = write(&f.doc, &|e| {
-        e.kind = mastik_core::EffectKind::LayerBlur { radius: 3.0 };
+        e.kind = mastik_core::EffectKind::layer_blur(3.0);
     });
     assert_eq!(
         retyped.vars, [None; 4],

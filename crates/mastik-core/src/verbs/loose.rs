@@ -365,6 +365,7 @@ fn loosen_effect(item: &mut Value, errs: &mut Vec<String>) {
         blend_by_label(&mut inner);
         loosen_noise(&mut inner);
         blur_radius(&mut inner);
+        loosen_ramp(&mut inner);
         map.insert("kind".into(), Value::Object(inner));
         map.insert("visible".into(), visible);
     } else if let Some(Value::Object(kind)) = map.get_mut("kind") {
@@ -375,7 +376,68 @@ fn loosen_effect(item: &mut Value, errs: &mut Vec<String>) {
         blend_by_label(kind);
         loosen_noise(kind);
         blur_radius(kind);
+        loosen_ramp(kind);
         map.entry("visible").or_insert(Value::Bool(true));
+    }
+}
+
+/// A progressive blur's ramp written short: `angle` in degrees for the ends
+/// (`BlurRamp::framed`, 90 running down), an end given as `[x, y]`, and `ease` as
+/// `linear`, `smooth` or the popover's words.
+fn loosen_ramp(kind: &mut Map<String, Value>) {
+    if !matches!(
+        kind.get("type").and_then(Value::as_str),
+        Some("layer_blur" | "background_blur")
+    ) {
+        return;
+    }
+    let Some(Value::Object(ramp)) = kind.get_mut("ramp") else {
+        return;
+    };
+    if let Some(Value::String(e)) = ramp.get("ease") {
+        let word = match snake(e).as_str() {
+            "linear" => "linear",
+            _ => "smooth",
+        };
+        ramp.insert("ease".into(), Value::String(word.into()));
+    }
+    for end in ["from", "to"] {
+        if let Some(Value::Array(xy)) = ramp.get(end)
+            && let [Some(x), Some(y)] = [xy.first(), xy.get(1)].map(|v| v.and_then(Value::as_f64))
+        {
+            ramp.insert(end.into(), serde_json::json!({ "x": x, "y": y }));
+        }
+    }
+    if let Some(angle) = ramp.remove("angle").as_ref().and_then(Value::as_f64)
+        && !ramp.contains_key("from")
+        && !ramp.contains_key("to")
+    {
+        let framed = crate::effect::BlurRamp::framed(angle, 0.0, crate::effect::RampEase::Smooth);
+        let point = |p: crate::kurbo::Point| serde_json::json!({ "x": p.x, "y": p.y });
+        ramp.insert("from".into(), point(framed.from));
+        ramp.insert("to".into(), point(framed.to));
+    }
+}
+
+/// A progressive blur's ramp written with its `angle` where that says where the
+/// ends are ([`loosen_ramp`]).
+fn tighten_ramp(item: &mut Value) {
+    let Some(Value::Object(kind)) = item.get_mut("kind") else {
+        return;
+    };
+    let Some(ramp) = kind
+        .get("ramp")
+        .and_then(|r| serde_json::from_value::<crate::effect::BlurRamp>(r.clone()).ok())
+    else {
+        return;
+    };
+    if let Some(Value::Object(out)) = kind.get_mut("ramp")
+        && ramp.is_framed()
+    {
+        out.remove("from");
+        out.remove("to");
+        let angle = (ramp.angle() * 1e4).round() / 1e4;
+        out.insert("angle".into(), serde_json::json!(angle));
     }
 }
 
@@ -860,7 +922,10 @@ pub(crate) fn tighten(key: &str, v: &mut Value) {
                     "fills" => tighten_paint(item, false),
                     "strokes" => tighten_paint(item, true),
                     "grids" => tighten_grid(item),
-                    "effects" => tighten_noise(item),
+                    "effects" => {
+                        tighten_noise(item);
+                        tighten_ramp(item);
+                    }
                     _ => {}
                 }
             }
@@ -1041,5 +1106,42 @@ mod tests {
             let back: Vec<crate::Effect> = serde_json::from_value(alone).expect("reads back");
             assert_eq!(back[0].kind, effect.kind, "the kind written alone");
         }
+    }
+
+    /// A progressive blur written as the MCP shows it, `angle`, `end` and `ease`,
+    /// reads as the framed ramp, and a framed ramp is written back that way; ends
+    /// the angle cannot place stay as points.
+    ///
+    /// flip: `tighten_ramp` leaving the ends → fails at the written shape.
+    #[test]
+    fn a_progressive_blur_reads_and_writes_its_angle() {
+        let mut short = serde_json::json!([{
+            "type": "background_blur",
+            "radius": 24,
+            "ramp": { "end": 0, "angle": 90, "ease": "Ease in and out" },
+        }]);
+        loosen("effects", &mut short);
+        let read: Vec<crate::Effect> = serde_json::from_value(short).expect("reads");
+        let want = crate::EffectKind::BackgroundBlur {
+            radius: 24.0,
+            ramp: Some(crate::effect::BlurRamp::down(0.0)),
+        };
+        assert_eq!(read[0].kind, want);
+        let mut v = serde_json::json!([serde_json::to_value(&read[0]).unwrap()]);
+        tighten("effects", &mut v);
+        assert_eq!(
+            v[0]["kind"]["ramp"],
+            serde_json::json!({ "end": 0.0, "angle": 90.0, "ease": "smooth" })
+        );
+        let mut odd = read[0].clone();
+        if let Some((_, Some(r))) = odd.kind.blur_mut() {
+            r.to = crate::kurbo::Point::new(0.9, 0.4);
+        }
+        let mut v = serde_json::json!([serde_json::to_value(&odd).unwrap()]);
+        tighten("effects", &mut v);
+        assert!(v[0]["kind"]["ramp"].get("angle").is_none(), "{v}");
+        loosen("effects", &mut v);
+        let back: Vec<crate::Effect> = serde_json::from_value(v).expect("reads back");
+        assert_eq!(back[0].kind, odd.kind);
     }
 }
