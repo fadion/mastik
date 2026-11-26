@@ -407,6 +407,16 @@ impl<'a> Args<'a> {
         serde_json::from_value(v).map_err(|e| self.invalid(name, e))
     }
 
+    /// Parameter `name` with its short forms expanded and its words put right, as
+    /// JSON: for a patch the verb merges itself.
+    fn loose(&self, name: &'static str) -> Option<Value> {
+        let v = self.get(name)?;
+        Some(match self.verb.params.iter().find(|p| p.name == name) {
+            Some(p) => loosened(p, v).into_owned(),
+            None => v.clone(),
+        })
+    }
+
     /// The `Id` parameter `name`, as the id type it names.
     pub fn id<T: serde::de::DeserializeOwned>(&self, name: &'static str) -> Result<T, VerbError> {
         self.model(name)
@@ -484,7 +494,23 @@ pub fn check_model(model: &str, v: &Value) -> Result<(), String> {
 /// [`loose::loosen_strict`] for a value of the model type `model`, as the field
 /// `key`. A chart's own `text` and `padding` are not a text style or a frame's
 /// padding, the layer short forms of those names: only what is inside them loosens.
+/// A chart style's value loosens as chart options, and every chart value takes
+/// its colours as `"#rrggbb"`.
 fn loosen_model(model: &str, key: &str, v: &mut Value) -> Result<(), String> {
+    match model {
+        "ChartOptions" => *v = chart_hex(&dark_as_theme(v)),
+        "ChartHighlight" | "[ChartReference]" => *v = chart_hex(v),
+        "StyleValue" => {
+            if let Some(map) = v.as_object_mut()
+                && let Some(mut chart) = map.remove("chart")
+            {
+                loosen_model("ChartOptions", "options", &mut chart)?;
+                map.insert("chart".into(), chart);
+                return Ok(());
+            }
+        }
+        _ => {}
+    }
     let own: Vec<(&str, Value)> = match (model, v.as_object_mut()) {
         ("ChartOptions", Some(map)) => ["text", "padding"]
             .into_iter()
@@ -603,16 +629,15 @@ fn settled_model(model: &str, v: &Value) -> Result<Value, String> {
         "ChartMapping" => {
             checked(read_model::<crate::chart::Mapping>(&without_nulls(v)).map(|_| ()))
         }
-        "ChartOptions" => checked(
-            settle::<crate::chart::Options>(model, without_nulls(&dark_as_theme(v))).map(|_| ()),
-        ),
+        "ChartOptions" => {
+            settle::<crate::chart::Options>(model, without_nulls(v)).map(|mut settled| {
+                nulls_back(&mut settled, v);
+                settled
+            })
+        }
         // Whole values, each replacing the chart's own.
-        "ChartHighlight" => checked(
-            settle::<crate::chart::Highlight>(model, hex_colours(v, &["muted"])).map(|_| ()),
-        ),
-        "[ChartReference]" => checked(
-            settle::<Vec<crate::chart::Reference>>(model, hex_colours(v, &["colour"])).map(|_| ()),
-        ),
+        "ChartHighlight" => reads!(crate::chart::Highlight),
+        "[ChartReference]" => reads!(Vec<crate::chart::Reference>),
         "TableRows" => checked(read_model::<Vec<Vec<tables::CellIn>>>(v).map(|_| ())),
         "[ColumnName]" => checked(read_model::<Vec<String>>(v).map(|_| ())),
         "[TableCell]" => checked(read_model::<Vec<tables::CellEdit>>(v).map(|_| ())),
@@ -7300,7 +7325,7 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "set_chart",
-        doc: "Change a chart's kind, or patch its mapping or options; its parts follow. A switch to or from a Sankey re-reads the mapping off the table's columns before `mapping` patches it",
+        doc: "Change a chart's kind, patch its mapping or options, colour its series and marks, or set its highlight or references; its parts follow. A switch to or from a Sankey re-reads the mapping off the table's columns before `mapping` patches it",
         params: &[
             req("node", NODE, "the chart"),
             opt("kind", ParamKind::Choice(CHART_KINDS), "what it draws"),
@@ -7354,9 +7379,8 @@ pub static VERBS: &[Verb] = &[
             if let Some(patch) = a.get("mapping") {
                 chart.mapping = patched(a, "mapping", &chart.mapping, patch)?;
             }
-            if let Some(patch) = a.get("options") {
+            if let Some(patch) = a.loose("options") {
                 let palette = chart.options.palette;
-                let patch = dark_as_theme(patch);
                 chart.options = patched(a, "options", &chart.options, &patch)?;
                 // A null sets the default back, which adds a final total; an empty
                 // name is how a caller turns it off.
@@ -7381,14 +7405,12 @@ pub static VERBS: &[Verb] = &[
             if a.nulled("highlight") {
                 chart.highlight = Default::default();
             }
-            if let Some(v) = a.get("highlight") {
-                chart.highlight = serde_json::from_value(hex_colours(v, &["muted"]))
-                    .map_err(|e| a.invalid("highlight", e))?;
+            if a.get("highlight").is_some() {
+                chart.highlight = a.model("highlight")?;
                 chart_names_known(a, &chart)?;
             }
-            if let Some(v) = a.get("references") {
-                chart.references = serde_json::from_value(hex_colours(v, &["colour"]))
-                    .map_err(|e| a.invalid("references", e))?;
+            if a.get("references").is_some() {
+                chart.references = a.model("references")?;
             }
             chart_valid(a, &chart)?;
             Ok(Done::ops(vec![Operation::SetChart {
@@ -7719,33 +7741,67 @@ fn chart_valid(a: &Args<'_>, chart: &crate::chart::Chart) -> Result<(), VerbErro
     })
 }
 
-/// `v` with each `"#rrggbb"` string under one of `keys` (in it, or in each
-/// item of a list) written as the literal colour a chart's brush reads.
-fn hex_colours(v: &Value, keys: &[&str]) -> Value {
+/// The fields of a chart's options, highlight and references that hold a colour
+/// as a brush.
+const CHART_COLOUR_KEYS: [&str; 10] = [
+    "colour",
+    "ink",
+    "fill",
+    "below_zero",
+    "stem_colour",
+    "increase",
+    "decrease",
+    "total",
+    "muted",
+    "palette_group",
+];
+
+/// `v`, a chart value, with each `"#rrggbb"` string under one of
+/// [`CHART_COLOUR_KEYS`] (or in a list there) written as the literal colour a
+/// chart's brush reads, at any depth.
+fn chart_hex(v: &Value) -> Value {
+    fn brush(v: &mut Value) {
+        if let Value::String(s) = v
+            && let Some(c) = loose::hex_colour(s)
+        {
+            let b = crate::variable::BrushSource::Literal(crate::Brush::Solid(c));
+            *v = serde_json::to_value(b).unwrap_or_default();
+        }
+    }
+    fn walk(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                for (k, field) in m.iter_mut() {
+                    if CHART_COLOUR_KEYS.contains(&k.as_str()) {
+                        match &mut *field {
+                            Value::Array(items) => items.iter_mut().for_each(brush),
+                            other => brush(other),
+                        }
+                    }
+                    walk(field);
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(walk),
+            _ => {}
+        }
+    }
     let mut v = v.clone();
-    let fix = |m: &mut serde_json::Map<String, Value>| {
-        for k in keys {
-            if let Some(Value::String(s)) = m.get(*k)
-                && let Ok(c) = peniko::color::parse_color(s)
-            {
-                let c = c.to_alpha_color::<peniko::color::Srgb>();
-                let b = crate::variable::BrushSource::Literal(crate::Brush::Solid(c));
-                m.insert(
-                    (*k).to_string(),
-                    serde_json::to_value(b).unwrap_or_default(),
-                );
+    walk(&mut v);
+    v
+}
+
+/// `settled` with the nulls of `patch`, the merge patch it was settled from
+/// without them, put back where `patch` writes them.
+fn nulls_back(settled: &mut Value, patch: &Value) {
+    if let (Value::Object(into), Value::Object(from)) = (settled, patch) {
+        for (k, v) in from {
+            if v.is_null() {
+                into.insert(k.clone(), Value::Null);
+            } else if let Some(inner) = into.get_mut(k) {
+                nulls_back(inner, v);
             }
         }
-    };
-    match &mut v {
-        Value::Object(m) => fix(m),
-        Value::Array(items) => items
-            .iter_mut()
-            .filter_map(Value::as_object_mut)
-            .for_each(fix),
-        _ => {}
     }
-    v
 }
 
 /// Refuse a highlight naming a category or series `chart` draws nothing under,
@@ -7783,7 +7839,14 @@ fn chart_names_known(a: &Args<'_>, chart: &crate::chart::Chart) -> Result<(), Ve
         }
     };
     if let Some(bad) = asked.iter().find(|n| !known.contains(n)) {
-        let list: Vec<String> = known.iter().map(|n| format!("`{n}`")).collect();
+        // A waterfall's steps repeat its rows' names; each is listed once.
+        let mut list: Vec<String> = Vec::new();
+        for n in &known {
+            let n = format!("`{n}`");
+            if !list.contains(&n) {
+                list.push(n);
+            }
+        }
         return Err(a.invalid(
             "highlight",
             format!("`{bad}` is none of the chart's {what}: {}", list.join(", ")),

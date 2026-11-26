@@ -1218,7 +1218,10 @@ series* dim with *Right-click a mark on a chart*.
   as a style nothing reads, and a variable that is no colour is refused. `set_chart`'s
   `highlight` replaces the highlight whole (null clears it), each name checked against the
   chart's categories or series and a missing one refused listing them; its `references` replace
-  the whole list. Both read `"#rrggbb"` for `muted` and a reference's `colour`. `set_chart_data` has
+  the whole list. The options, the highlight, the references and a chart style's value
+  (`add_style`'s `{"chart": …}`) read every colour field as `"#rrggbb"` and enum words in any
+  case, at run time as the check does (`verbs::chart_hex`, `verbs::settle`); a chart style's
+  `padding` and `text` are the chart's own, not a frame's or a text style's. `set_chart_data` has
   three forms. `data` points the chart at another table of the document's, as the Data dropdown
   does (`Chart::reading`). `table` on a chart with a table of its own replaces it by *Import*'s
   rule (`Chart::with_table`; a mapping of which nothing survives is guessed). `table` on a chart

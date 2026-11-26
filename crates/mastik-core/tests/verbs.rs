@@ -4801,6 +4801,85 @@ fn set_chart_highlights_and_references() {
     assert_eq!(chart_of(&doc, c).highlight.target, Highlighted::None);
 }
 
+/// `set_chart`'s options, highlight and references take colours as `"#rrggbb"`
+/// and enum words in any case at run time as the check does, and a null in the
+/// options still sets its field back.
+/// flip: the run reading the raw `options` instead of the loosened patch → fails
+/// at the `run`; `nulls_back` doing nothing → fails at "the null resets".
+#[test]
+fn set_chart_takes_short_forms() {
+    use mastik_core::chart::{BarShape, Highlighted, Theme};
+    let solid = |r, g, b| Some(Brush::Solid(Color::from_rgb8(r, g, b)).into());
+    let (mut doc, mut ids, page) = blank();
+    let c = run(
+        &mut doc,
+        &mut ids,
+        "insert_chart",
+        json!({ "parent": page.to_wire(), "kind": "waterfall" }),
+    )[0];
+    run(
+        &mut doc,
+        &mut ids,
+        "set_chart",
+        json!({ "node": c.to_wire(), "options": {
+            "theme": "dark",
+            "below_zero": "#c0392b",
+            "bars": { "shape": "lollipops", "stem_colour": "#112233" },
+            "waterfall": { "increase": "#00ff00" } } }),
+    );
+    let o = chart_of(&doc, c).options;
+    assert_eq!(o.theme, Theme::Dark);
+    assert_eq!(o.bars.shape, BarShape::Lollipops);
+    assert_eq!(o.below_zero, solid(0xc0, 0x39, 0x2b));
+    assert_eq!(o.bars.stem_colour, solid(0x11, 0x22, 0x33));
+    assert_eq!(o.waterfall.increase, solid(0, 255, 0));
+    run(
+        &mut doc,
+        &mut ids,
+        "set_chart",
+        json!({ "node": c.to_wire(), "options": { "below_zero": null },
+            "highlight": { "target": { "categories": ["COGS"] }, "muted": "#808080" } }),
+    );
+    let got = chart_of(&doc, c);
+    assert_eq!(got.options.below_zero, None, "the null resets");
+    assert_eq!(got.options.theme, Theme::Dark, "the rest stays");
+    assert_eq!(
+        got.highlight.target,
+        Highlighted::Categories(vec!["COGS".into()])
+    );
+    assert_eq!(got.highlight.muted, solid(0x80, 0x80, 0x80));
+    // A waterfall's refusal names each step once, not its rows and steps both.
+    let typo =
+        json!({ "node": c.to_wire(), "highlight": { "target": { "Categories": ["Nope"] } } });
+    let why = refused_why(&doc, &mut ids, "set_chart", typo);
+    assert_eq!(why.matches("`COGS`").count(), 1, "{why}");
+}
+
+/// A chart style written as a value reads its options as `set_chart` does: a
+/// bare `padding` is the chart's own number, not a frame's four sides, and
+/// colours and words take their short forms.
+/// flip: `loosen_model` loosening a style's `chart` as a layer's fields → fails
+/// at the `add_style`.
+#[test]
+fn a_chart_style_value_takes_chart_short_forms() {
+    use mastik_core::chart::Theme;
+    let (mut doc, mut ids, _) = blank();
+    let script = json!([{ "verb": "add_style", "args": { "name": "Report",
+        "value": { "chart": { "padding": 16, "theme": "dark", "below_zero": "#c0392b" } } } }]);
+    verbs::run_script(&mut doc, &mut ids, Lent::default(), &script)
+        .unwrap_or_else(|e| panic!("{e}"));
+    let s = doc.styles().iter().find(|s| s.name == "Report").unwrap();
+    let mastik_core::style::StyleValue::Chart(o) = &s.value else {
+        panic!("{:?}", s.value)
+    };
+    assert_eq!(o.padding, 16.0);
+    assert_eq!(o.theme, Theme::Dark);
+    assert_eq!(
+        o.below_zero,
+        Some(Brush::Solid(Color::from_rgb8(0xc0, 0x39, 0x2b)).into())
+    );
+}
+
 /// `set_chart` switching to or from a Sankey re-reads the mapping off the
 /// table's columns, as the Chart card does (`Chart::with_kind`).
 /// flip: the verb assigning `chart.kind` alone → fails at "a column chart maps
