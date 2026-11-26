@@ -745,9 +745,10 @@ References starts open):
   as above it so it clears the lit ring; the cells sit 2 px apart so the width goes to the
   pictures. It is rasterised at a whole-pixel size with every straight edge and hairline
   snapped to the pixel grid, and drawn at a pixel-aligned spot, so a smaller picture stays
-  crisp. Donut and Bubble have drawings of their own; stacking variants
-  keep their kind's, and a radar draws a line chart's. The marks wear the chart's first colours (series, a pie's first slices, a
-  Sankey's first nodes; the palette in the theme drawn fills the rest), so a chart drawn dark
+  crisp. Donut, Bubble and a column or bar chart's lollipops have drawings of their own;
+  stacking variants keep their kind's. The marks wear the chart's first colours (series, a
+  pie's first slices, a Sankey's first nodes, a waterfall's increase, decrease and total; the
+  palette in the theme drawn fills the rest), so a chart drawn dark
   has cells in its dark colours; the chrome is the app theme's text ink, and
   there is no ground: a 1 px frame sits over the cell's hover and lit fills. Outline's tint is
   22% there, against the chart's 14%, which vanishes at this size. The pictures are rasterised

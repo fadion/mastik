@@ -18,9 +18,9 @@ const TINT: f32 = 0.22;
 /// How many colours a picture draws in, the most any kind needs.
 pub(super) const COLOURS: usize = 4;
 
-/// Which drawing a chart's cells show: its kind, with Donut and Bubble apart
-/// because their shape differs. Stacking variants keep their kind's picture,
-/// since no preset changes stacking.
+/// Which drawing a chart's cells show: its kind, with Donut, Bubble and
+/// lollipops apart because their shape differs. Stacking variants keep their
+/// kind's picture, since no preset changes stacking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Picture {
     Column,
@@ -32,14 +32,25 @@ pub(super) enum Picture {
     Scatter,
     Bubble,
     Sankey,
+    Waterfall,
+    Radar,
+    /// A column chart's lollipops.
+    Lollipops,
+    /// A bar chart's lollipops.
+    LollipopsAcross,
 }
 
 impl Picture {
     pub(super) fn of(chart: &Chart) -> Self {
+        let lollipops = chart.options.bars.shape == chart::BarShape::Lollipops;
         match chart.kind {
-            ChartKind::Column | ChartKind::Waterfall => Self::Column,
+            ChartKind::Column if lollipops => Self::Lollipops,
+            ChartKind::Bar if lollipops => Self::LollipopsAcross,
+            ChartKind::Column => Self::Column,
+            ChartKind::Waterfall => Self::Waterfall,
             ChartKind::Bar => Self::Bar,
-            ChartKind::Line | ChartKind::Radar => Self::Line,
+            ChartKind::Radar => Self::Radar,
+            ChartKind::Line => Self::Line,
             ChartKind::Area => Self::Area,
             ChartKind::Pie if chart.options.slices.donut => Self::Donut,
             ChartKind::Pie => Self::Pie,
@@ -53,14 +64,27 @@ impl Picture {
 /// The colours `chart` draws its first marks in, as [`COLOURS`] solid colours:
 /// series for most kinds, the first named marks (`chart::named_marks`: a pie's
 /// slices, a Sankey's nodes, a grouped scatter's groups) for those coloured by
-/// name; the palette fills whatever the chart has fewer of. Bound
-/// brushes must be resolved first.
+/// name, a waterfall's increase, decrease and total; the palette fills whatever
+/// the chart has fewer of. Bound brushes must be resolved first.
 pub(super) fn colours(chart: &Chart) -> [Color; COLOURS] {
     let solid = |b: &mastik_core::BrushSource| {
         b.literal()
             .and_then(|brush| super::paint::stops_of(brush).first().map(|(_, c)| *c))
     };
+    let w = &chart.options.waterfall;
     let own: Vec<Color> = match chart::named_marks(chart) {
+        _ if chart.kind == ChartKind::Waterfall => [
+            (&w.increase, chart::Step::Increase),
+            (&w.decrease, chart::Step::Decrease),
+            (&w.total, chart::Step::Total),
+        ]
+        .into_iter()
+        .map(|(own, step)| {
+            own.as_ref()
+                .and_then(solid)
+                .unwrap_or_else(|| chart::Waterfall::starting(step, chart.drawn_dark()))
+        })
+        .collect(),
         Some(marks) => marks.iter().filter_map(|(_, b)| solid(b)).collect(),
         None => chart
             .mapping
@@ -284,8 +308,195 @@ pub(super) fn art(
         Picture::Scatter => dots(&mut a, s, cs, ink, false),
         Picture::Bubble => dots(&mut a, s, cs, ink, true),
         Picture::Sankey => sankey(&mut a, s, cs, ink),
+        Picture::Waterfall => waterfall(&mut a, s, cs, ink),
+        Picture::Radar => radar(&mut a, s, cs, ink),
+        Picture::Lollipops => lollipops(&mut a, s, cs, ink, false),
+        Picture::LollipopsAcross => lollipops(&mut a, s, cs, ink, true),
     }
     a.out
+}
+
+/// Two rises, a fall and the total, in the increase, decrease and total
+/// colours, the steps joined by dashed connectors. Minimal gives the axis's
+/// room to taller steps.
+fn waterfall(a: &mut Art, s: Preset, cs: &[Color; COLOURS], ink: &Ink) {
+    let (bold, min) = (s == Preset::Bold, s == Preset::Minimal);
+    let bottom = if min { 28.0 } else { 27.0 };
+    let k = if min { 1.15 } else { 1.0 };
+    // Each step's top and foot, as heights above the bottom.
+    let steps: [(f64, f64, usize); 4] = [
+        (0.0, 10.0, 0),
+        (10.0, 16.0, 0),
+        (16.0, 11.0, 1),
+        (0.0, 11.0, 2),
+    ];
+    let (w, xs) = if bold {
+        (7.0, [4.0, 13.0, 22.0, 31.0])
+    } else {
+        (6.0, [5.0, 14.0, 23.0, 32.0])
+    };
+    let r = if s == Preset::Soft { 1.6 } else { 0.0 };
+    a.hgrid(s, ink);
+    for (i, ((from, to, c), x)) in steps.iter().zip(xs).enumerate() {
+        let (lo, hi) = (from.min(*to) * k, from.max(*to) * k);
+        a.mark(Rect::new(x, bottom - hi, x + w, bottom - lo), cs[*c], s, r);
+        if bold {
+            a.value(x + w / 2.0, bottom - hi - 3.4, ink);
+        }
+        if let Some(next) = xs.get(i + 1)
+            && !min
+        {
+            a.hline(bottom - to * k, x + w, *next, ink.dash, true);
+        }
+    }
+    if !min {
+        a.hline(27.5, 3.0, 41.0, ink.axis, false);
+    }
+}
+
+/// Two series on five spokes over a pentagon grid. Soft dots its points,
+/// Outline draws thin lines over a tint, Bold widens the lines and writes the
+/// first series' top value, Minimal drops the grid for a larger shape.
+fn radar(a: &mut Art, s: Preset, cs: &[Color; COLOURS], ink: &Ink) {
+    let min = s == Preset::Minimal;
+    let (c, r) = if min {
+        (Point::new(22.0, 16.5), 12.5)
+    } else {
+        (Point::new(22.0, 19.0), 10.0)
+    };
+    let tau = std::f64::consts::TAU;
+    let at = |i: usize, share: f64| {
+        let ang = i as f64 / 5.0 * tau;
+        c + Vec2::new(r * share * ang.sin(), -r * share * ang.cos())
+    };
+    let ring = |shares: [f64; 5]| {
+        let mut p = BezPath::new();
+        p.move_to(at(0, shares[0]));
+        for (i, s) in shares.iter().enumerate().skip(1) {
+            p.line_to(at(i, *s));
+        }
+        p.close_path();
+        p
+    };
+    if !min {
+        a.legend(&cs[..2], ink);
+    }
+    if !matches!(s, Preset::Bold | Preset::Minimal) {
+        let grid = ink.grid;
+        for share in [0.5, 1.0] {
+            a.stroke(ring([share; 5]), 0.6, grid);
+        }
+        for i in 0..5 {
+            let mut spoke = BezPath::new();
+            spoke.move_to(c);
+            spoke.line_to(at(i, 1.0));
+            a.stroke(spoke, 0.6, grid);
+        }
+    }
+    let series = [
+        ([0.9, 0.6, 0.8, 0.5, 0.7], cs[0]),
+        ([0.5, 0.8, 0.4, 0.7, 0.4], cs[1]),
+    ];
+    let width = match s {
+        Preset::Outline => 1.0,
+        Preset::Bold => 2.5,
+        _ => 1.5,
+    };
+    for (shares, col) in series {
+        if s == Preset::Outline {
+            a.fill(ring(shares), col.multiply_alpha(TINT));
+        }
+        a.stroke(ring(shares), width, col);
+        if s == Preset::Soft {
+            for (i, share) in shares.iter().enumerate() {
+                a.fill(Circle::new(at(i, *share), 1.4), col);
+            }
+        }
+    }
+    if s == Preset::Bold {
+        let top = at(0, series[0].0[0]);
+        a.value(top.x + 4.5, top.y - 0.9, ink);
+    }
+}
+
+/// Column's two groups of two (or Bar's) as stems with round heads. Outline's
+/// heads are hollow, Bold's stems thicker with values past the heads.
+fn lollipops(a: &mut Art, s: Preset, cs: &[Color; COLOURS], ink: &Ink, across: bool) {
+    let (bold, min) = (s == Preset::Bold, s == Preset::Minimal);
+    let stem = if bold { 1.5 } else { 1.0 };
+    let head = match s {
+        Preset::Bold => 2.4,
+        Preset::Soft => 2.2,
+        _ => 2.0,
+    };
+    if !min {
+        a.legend(&cs[..2], ink);
+    }
+    // Each mark's place across the axis, its length along it.
+    let (places, lengths, base) = if across {
+        let ls = if min {
+            [22.0, 13.0, 31.0, 20.0]
+        } else {
+            [20.0, 12.0, 28.0, 17.0]
+        };
+        let ys = if min {
+            [7.5, 13.5, 20.5, 26.5]
+        } else {
+            [11.0, 15.5, 22.0, 26.5]
+        };
+        (ys, ls, 6.0)
+    } else {
+        let hs = if min {
+            [13.0, 7.0, 18.0, 11.0]
+        } else {
+            [11.0, 6.0, 15.0, 9.0]
+        };
+        ([8.0, 14.0, 26.0, 32.0], hs, if min { 26.0 } else { 27.0 })
+    };
+    if across {
+        if !matches!(s, Preset::Bold | Preset::Minimal) {
+            for x in [19.5, 32.5] {
+                a.vline(x, 9.0, 30.0, ink.grid, s == Preset::Soft);
+            }
+        }
+    } else {
+        a.hgrid(s, ink);
+    }
+    for (i, (p, l)) in places.iter().zip(lengths).enumerate() {
+        let col = cs[i % 2];
+        let (stem_box, centre) = if across {
+            (
+                Rect::new(base, p - stem / 2.0, base + l, p + stem / 2.0),
+                Point::new(base + l, *p),
+            )
+        } else {
+            (
+                Rect::new(p - stem / 2.0, base - l, p + stem / 2.0, base),
+                Point::new(*p, base - l),
+            )
+        };
+        a.fill_rect(stem_box, 0.0, col);
+        if s == Preset::Outline {
+            a.fill(Circle::new(centre, head - 0.5), col.multiply_alpha(TINT));
+            a.stroke(Circle::new(centre, head - 0.5), 1.0, col);
+        } else {
+            a.fill(Circle::new(centre, head), col);
+        }
+        if bold {
+            if across {
+                a.value(centre.x + head + 3.0, centre.y - 0.9, ink);
+            } else {
+                a.value(centre.x, centre.y - head - 3.4, ink);
+            }
+        }
+    }
+    if !min {
+        if across {
+            a.vline(5.5, 8.5, 30.5, ink.axis, false);
+        } else {
+            a.hline(27.5, 4.0, 40.0, ink.axis, false);
+        }
+    }
 }
 
 /// Two groups of two. Bold widens the bars; Minimal gives the legend's room to
@@ -599,7 +810,7 @@ fn sankey(a: &mut Art, s: Preset, cs: &[Color; COLOURS], ink: &Ink) {
 mod tests {
     use super::*;
 
-    const ALL: [Picture; 9] = [
+    const ALL: [Picture; 13] = [
         Picture::Column,
         Picture::Bar,
         Picture::Line,
@@ -609,6 +820,10 @@ mod tests {
         Picture::Scatter,
         Picture::Bubble,
         Picture::Sankey,
+        Picture::Waterfall,
+        Picture::Radar,
+        Picture::Lollipops,
+        Picture::LollipopsAcross,
     ];
 
     fn ink() -> Ink {
@@ -666,6 +881,34 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A waterfall, a radar and lollipops each show their own picture, and a
+    /// waterfall's wears its increase, decrease and total colours.
+    /// flip: `Picture::of` mapping a waterfall to Column → fails at "a waterfall".
+    #[test]
+    fn the_newer_kinds_have_their_own_pictures() {
+        let pic = |kind| Picture::of(&Chart::sample(kind));
+        assert_eq!(pic(ChartKind::Waterfall), Picture::Waterfall, "a waterfall");
+        assert_eq!(pic(ChartKind::Radar), Picture::Radar, "a radar");
+        let mut bars = Chart::sample(ChartKind::Bar);
+        bars.options.bars.shape = chart::BarShape::Lollipops;
+        assert_eq!(
+            Picture::of(&bars),
+            Picture::LollipopsAcross,
+            "a bar's lollipops"
+        );
+        let w = Chart::sample(ChartKind::Waterfall);
+        let dark = w.drawn_dark();
+        assert_eq!(
+            colours(&w)[..3],
+            [
+                chart::Waterfall::starting(chart::Step::Increase, dark),
+                chart::Waterfall::starting(chart::Step::Decrease, dark),
+                chart::Waterfall::starting(chart::Step::Total, dark),
+            ],
+            "the steps' colours"
+        );
     }
 
     /// A chart's own series colours lead, and the palette fills the rest.
