@@ -769,7 +769,14 @@ pub(super) fn table(doc: &Document, args: &Value) -> Result<Value, String> {
         .iter()
         .map(|i| {
             let c = &t.columns[*i];
-            json!({ "id": c.id.0, "name": c.name, "numeric": t.is_numeric(c.id) })
+            let mut col = json!({ "id": c.id.0, "name": c.name, "numeric": t.is_numeric(c.id) });
+            if matches!(
+                mastik_core::list::column_order(t, c.id),
+                mastik_core::list::Order::Date { .. }
+            ) {
+                col["date"] = Value::Bool(true);
+            }
+            col
         })
         .collect();
     let rows: Vec<Value> = t

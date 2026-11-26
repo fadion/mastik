@@ -1090,7 +1090,7 @@ window the name opens for typing, the next thing to write.
   a click selects the column): *Rename*, *Use as category* / *Use as X* (`icon::KEY`, dimmed on
   the column that already is, its tooltip saying so),
   *Show as series* (ticked), *Insert column left* / *right*, *Sort ascending* / *descending*
-  (numbers by value in a number column, text ignoring case, empty cells last: `list::sort_order`,
+  (numbers by value, dates by date, text ignoring case, empty cells last: `list::sort_order`,
   a list's sort order; the sorted header wears that row's `ARROW_UP` / `ARROW_DOWN` after its
   name, tooltip *Sorted ascending* / *descending*, until an edit takes the rows out of that
   order, `chart_data::sort_holds`), *Delete column*, which leaves the

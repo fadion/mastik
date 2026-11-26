@@ -378,28 +378,171 @@ pub struct SortKey {
     pub descending: bool,
 }
 
-/// Two cells in the data window's *Sort ascending* order: a number column by
-/// value, text ignoring case. Empty cells are not ordered here; callers put
-/// them last whichever way the sort runs.
-pub fn cell_order(x: &str, y: &str, numeric: bool) -> std::cmp::Ordering {
-    let (x, y) = (x.trim(), y.trim());
-    if numeric {
-        let (p, q) = (crate::chart::parse_number(x), crate::chart::parse_number(y));
-        p.partial_cmp(&q).unwrap_or(std::cmp::Ordering::Equal)
-    } else {
-        x.to_lowercase().cmp(&y.to_lowercase())
+/// How a column's cells compare in a sort ([`column_order`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Order {
+    /// By value: every cell a number.
+    Number,
+    /// By date: every cell a date [`parse_date`] reads, a numeric one day
+    /// first when `day_first`.
+    Date { day_first: bool },
+    /// As text, ignoring case.
+    Text,
+}
+
+/// How column `id` of `table` sorts: by number when every non-empty cell is
+/// one, else by date when every one reads as a date, else as text. Numeric
+/// dates read month first unless a cell only reads day first (`13/02/2026`).
+pub fn column_order(table: &Table, id: ColumnId) -> Order {
+    if table.is_numeric(id) {
+        return Order::Number;
+    }
+    let reads = |day_first: bool| {
+        let mut any = false;
+        for c in table.cells(id) {
+            if c.trim().is_empty() {
+                continue;
+            }
+            if parse_date(c, day_first).is_none() {
+                return false;
+            }
+            any = true;
+        }
+        any
+    };
+    match () {
+        _ if reads(false) => Order::Date { day_first: false },
+        _ if reads(true) => Order::Date { day_first: true },
+        _ => Order::Text,
     }
 }
 
-/// `a` against `b` sorted by column `col`, empty cells last either way.
-pub fn sort_order(a: &str, b: &str, numeric: bool, ascending: bool) -> std::cmp::Ordering {
+/// A date as (year, month, day): ISO `2026-12-02`, numeric `12/2/2026` (with
+/// its year; `day_first` reads `2/12/2026` as the same day), or by an English
+/// month name with or without a year and a weekday: `Dec 2`, `2 December
+/// 2026`, `Tue, Dec 2nd, 2026`. A date without a year sorts before any with one.
+pub fn parse_date(s: &str, day_first: bool) -> Option<(Option<i32>, u32, u32)> {
+    let s = s.trim();
+    let numeric: Vec<&str> = s.split(['-', '/', '.']).collect();
+    if numeric.len() == 3
+        && numeric
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
+    {
+        let n = |p: &str| p.parse::<u32>().ok();
+        let (y, m, d) = if numeric[0].len() == 4 {
+            (n(numeric[0])?, n(numeric[1])?, n(numeric[2])?)
+        } else {
+            let (a, b) = (n(numeric[0])?, n(numeric[1])?);
+            let y = match (numeric[2].len(), n(numeric[2])?) {
+                (2, y) => 2000 + y,
+                (4, y) => y,
+                _ => return None,
+            };
+            let (m, d) = if day_first { (b, a) } else { (a, b) };
+            (y, m, d)
+        };
+        return valid(Some(y as i32), m, d);
+    }
+    let words: Vec<String> = s
+        .split([' ', ',', '.'])
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let mut words: &[String] = &words;
+    if words.len() > 1
+        && words[0].len() >= 3
+        && WEEKDAYS.iter().any(|d| d.starts_with(words[0].as_str()))
+    {
+        words = &words[1..];
+    }
+    let day = |w: &str| {
+        let digits = w.trim_end_matches(|c: char| c.is_ascii_alphabetic());
+        let suffix = &w[digits.len()..];
+        (matches!(suffix, "" | "st" | "nd" | "rd" | "th") && !digits.is_empty())
+            .then(|| digits.parse::<u32>().ok())
+            .flatten()
+    };
+    let year = |w: &str| (w.len() == 4).then(|| w.parse::<i32>().ok()).flatten();
+    let (m, d, y) = match words {
+        [a, b] => match (month(a), month(b)) {
+            (Some(m), _) => (m, day(b)?, None),
+            (_, Some(m)) => (m, day(a)?, None),
+            _ => return None,
+        },
+        [a, b, c] => match (month(a), month(b)) {
+            (Some(m), _) => (m, day(b)?, Some(year(c)?)),
+            (_, Some(m)) => (m, day(a)?, Some(year(c)?)),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    valid(y, m, d)
+}
+
+/// The English weekdays, matched by their first three letters or more.
+const WEEKDAYS: [&str; 7] = [
+    "monday",
+    "tuesday",
+    "wednesday",
+    "thursday",
+    "friday",
+    "saturday",
+    "sunday",
+];
+
+/// The month `w` names in English, whole or by three letters or more
+/// (`sept` too), 1 for January.
+fn month(w: &str) -> Option<u32> {
+    const MONTHS: [&str; 12] = [
+        "january",
+        "february",
+        "march",
+        "april",
+        "may",
+        "june",
+        "july",
+        "august",
+        "september",
+        "october",
+        "november",
+        "december",
+    ];
+    (w.len() >= 3)
+        .then(|| MONTHS.iter().position(|m| m.starts_with(w)))
+        .flatten()
+        .map(|i| i as u32 + 1)
+}
+
+/// `(y, m, d)` when the month is 1–12 and the day 1–31.
+fn valid(y: Option<i32>, m: u32, d: u32) -> Option<(Option<i32>, u32, u32)> {
+    ((1..=12).contains(&m) && (1..=31).contains(&d)).then_some((y, m, d))
+}
+
+/// Two cells in the data window's *Sort ascending* order by `order`
+/// ([`column_order`]). Empty cells are not ordered here; callers put them
+/// last whichever way the sort runs.
+pub fn cell_order(x: &str, y: &str, order: Order) -> std::cmp::Ordering {
+    let (x, y) = (x.trim(), y.trim());
+    match order {
+        Order::Number => {
+            let (p, q) = (crate::chart::parse_number(x), crate::chart::parse_number(y));
+            p.partial_cmp(&q).unwrap_or(std::cmp::Ordering::Equal)
+        }
+        Order::Date { day_first } => parse_date(x, day_first).cmp(&parse_date(y, day_first)),
+        Order::Text => x.to_lowercase().cmp(&y.to_lowercase()),
+    }
+}
+
+/// `a` against `b` sorted by `order`, empty cells last either way.
+pub fn sort_order(a: &str, b: &str, order: Order, ascending: bool) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     match (a.trim().is_empty(), b.trim().is_empty()) {
         (true, true) => Ordering::Equal,
         (true, false) => Ordering::Greater,
         (false, true) => Ordering::Less,
         _ => {
-            let o = cell_order(a, b, numeric);
+            let o = cell_order(a, b, order);
             if ascending { o } else { o.reverse() }
         }
     }
@@ -539,12 +682,12 @@ impl List {
 
     /// `rows` put in the sort's order; stable, so equal rows keep table order.
     fn sort_rows(&self, table: &Table, rows: &mut [usize]) {
-        let keys: Vec<(usize, bool, bool)> = self
+        let keys: Vec<(usize, Order, bool)> = self
             .sort
             .iter()
             .filter_map(|k| {
                 let c = table.index_of(k.column)?;
-                Some((c, table.is_numeric(k.column), !k.descending))
+                Some((c, column_order(table, k.column), !k.descending))
             })
             .collect();
         if keys.is_empty() {
@@ -552,8 +695,8 @@ impl List {
         }
         rows.sort_by(|a, b| {
             keys.iter()
-                .map(|(c, numeric, up)| {
-                    sort_order(&table.rows[*a][*c], &table.rows[*b][*c], *numeric, *up)
+                .map(|(c, order, up)| {
+                    sort_order(&table.rows[*a][*c], &table.rows[*b][*c], *order, *up)
                 })
                 .find(|o| o.is_ne())
                 .unwrap_or(std::cmp::Ordering::Equal)
@@ -1932,6 +2075,45 @@ mod tests {
             4,
             "an empty value passes all"
         );
+    }
+
+    /// A column of dates sorts by date, not as text (*Dec 2* before *Dec 12*);
+    /// numeric dates read month first unless a cell only reads day first; a
+    /// column with one cell that is no date sorts as text.
+    /// flip: `column_order` skipping its date test → fails at "by date".
+    #[test]
+    fn a_date_column_sorts_by_date() {
+        let t = table(
+            &["Task", "Due"],
+            &[
+                &["Ship", "Dec 12"],
+                &["Plan", "Tue, Dec 2nd"],
+                &["Draft", "Nov 30"],
+                &["Later", ""],
+            ],
+        );
+        let due = t.columns[1].id;
+        let mut l = List::new(DataSetId(NodeId { actor: 1, seq: 1 }));
+        l.sort.push(SortKey {
+            column: due,
+            descending: false,
+        });
+        assert_eq!(l.shown_rows(&t, &no_vars), vec![2, 1, 0, 3], "by date");
+        assert_eq!(column_order(&t, due), Order::Date { day_first: false });
+
+        let numeric = table(&["D"], &[&["13/02/2026"], &["2/3/2026"], &["2026-01-05"]]);
+        let d = numeric.columns[0].id;
+        assert_eq!(column_order(&numeric, d), Order::Date { day_first: true });
+        l.sort[0].column = d;
+        assert_eq!(l.shown_rows(&numeric, &no_vars), vec![2, 0, 1]);
+        assert_eq!(
+            parse_date("12 December 2026", false),
+            Some((Some(2026), 12, 12))
+        );
+        assert_eq!(parse_date("Dec 32", false), None);
+
+        let mixed = table(&["D"], &[&["Dec 2"], &["soon"]]);
+        assert_eq!(column_order(&mixed, mixed.columns[0].id), Order::Text);
     }
 
     /// *Any* passes a row passing one test, *All* only one passing both; a

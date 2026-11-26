@@ -296,7 +296,7 @@ pub static TOOLS: &[Tool] = &[
     },
     Tool {
         name: "get_table",
-        doc: "A data table's columns (id, name, `numeric`) and a page of its rows, every cell text, rows counted from 1; `total` is the whole table's row count.",
+        doc: "A data table's columns (id, name, `numeric`, `date`) and a page of its rows, every cell text, rows counted from 1; `total` is the whole table's row count.",
         params: &[
             param("table", ParamKind::Text, true, "The table, by id or name."),
             param(

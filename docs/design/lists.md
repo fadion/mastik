@@ -158,8 +158,13 @@ list's description as it drops a misplaced one.
   card says so under the test. The regeneration that follows the column's removal drops both, as
   it drops fills (`List::on_columns_of`), since a column added later can be minted under the
   freed id and would otherwise be read in its place.
-- **Sort** compares by `list::sort_order` over `list::cell_order`: a number column by value, text
-  ignoring case, empty cells last whichever way it runs; stable, so equal rows keep table order.
+- **Sort** compares by `list::sort_order` over `list::cell_order`, in the column's
+  `list::column_order`: a number column by value; a date column (every non-empty cell a date
+  `list::parse_date` reads: ISO, numeric with a year, or an English month name with or without a
+  year and weekday) by date, numeric dates month first unless a cell only reads day first, a date
+  without a year before any with one; anything else as text ignoring case. Empty cells last
+  whichever way it runs; stable, so equal rows keep table order. The type is read, never set, as
+  a number column's is, and `get_table` marks a date column `date`.
   The data window's *Sort ascending* / *descending* sorts by the same function
   (`chart_data::sorted`).
 - **Limits**: `MAX_TESTS` (8) tests and `MAX_SORT` (2) sort keys; `List::validate` refuses more

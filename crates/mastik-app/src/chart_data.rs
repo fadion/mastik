@@ -515,25 +515,32 @@ fn row_moved(before: &chart::Table, after: &chart::Table, n: u32) -> Option<Stri
 }
 
 /// `table` sorted by column `col` in a list sort's order (`list::sort_order`):
-/// numbers by value in a number column, text otherwise, empty cells last.
+/// numbers by value, dates by date, text otherwise, empty cells last.
 fn sorted(table: &chart::Table, col: usize, ascending: bool) -> chart::Table {
     let mut t = table.clone();
-    let numeric = t.columns.get(col).is_some_and(|c| table.is_numeric(c.id));
+    let order = column_order(table, col);
     t.rows
-        .sort_by(|a, b| mastik_core::list::sort_order(&a[col], &b[col], numeric, ascending));
+        .sort_by(|a, b| mastik_core::list::sort_order(&a[col], &b[col], order, ascending));
     t
+}
+
+/// How column `col` of `table` sorts (`list::column_order`); text past the end.
+fn column_order(table: &chart::Table, col: usize) -> mastik_core::list::Order {
+    table
+        .columns
+        .get(col)
+        .map_or(mastik_core::list::Order::Text, |c| {
+            mastik_core::list::column_order(table, c.id)
+        })
 }
 
 /// Whether `table`'s rows still stand in the order [`sorted`] by `col` gave
 /// them: an edit since that moved a row or changed a cell out of place answers
 /// `false`.
 fn sort_holds(table: &chart::Table, col: usize, ascending: bool) -> bool {
-    let numeric = table
-        .columns
-        .get(col)
-        .is_some_and(|c| table.is_numeric(c.id));
+    let order = column_order(table, col);
     table.rows.windows(2).all(|w| {
-        mastik_core::list::sort_order(&w[0][col], &w[1][col], numeric, ascending)
+        mastik_core::list::sort_order(&w[0][col], &w[1][col], order, ascending)
             != std::cmp::Ordering::Greater
     })
 }

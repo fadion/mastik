@@ -96,9 +96,6 @@ place, saved in the same shape so existing files load. It is matched in about 60
 
 ## Next · MCP
 
-- **A list sorted by a date column.** Every cell is text, so a sort on *Due* puts *Dec 12*
-  before *Dec 2*; a sort that reads dates (or a date column kind) would let a task list sort by
-  due date.
 - **A visibility bound to a boolean's negation.** A boolean binds visibility only as it is, so
   an off/on pair (a switch's two looks) needs a second variable kept in step by every toggle. A
   negated binding, or a boolean choosing between two values, would drop it.
