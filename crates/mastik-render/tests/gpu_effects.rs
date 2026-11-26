@@ -2285,6 +2285,59 @@ fn both_backends_draw_the_same_progressive_background_blur() {
     }
 }
 
+/// A background blur beside a glass, wide enough to run on a coarse grid, draws
+/// alike on both backends. A full-detail blur on either side also passes, within
+/// the tolerance; `fx_gpu`'s plan test pins that the GPU's is coarse.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn both_backends_draw_the_same_coarse_background_blur_beside_a_glass() {
+    let Some(mut g) = gpu() else {
+        return;
+    };
+    let radius = 120.0;
+    let sigma = mastik_core::effect::deviation(radius);
+    assert!(
+        mastik_core::effect::shadow_downscale(sigma) > 1,
+        "the fixture's blur runs on a coarse grid"
+    );
+    let (mut doc, _) = glass(true, 1.0);
+    let glass_id = doc
+        .get(doc.first_page())
+        .and_then(|p| p.children().last().copied())
+        .expect("the glass is the page's last layer");
+    let lens = mastik_core::Glass {
+        blur: 0.0,
+        bend: 0.0,
+        ..Default::default()
+    };
+    doc.apply(&Transaction(vec![Operation::SetEffects {
+        id: glass_id,
+        effects: keyed_by_position([
+            Effect::new(EffectKind::background_blur(radius)),
+            Effect::new(EffectKind::Glass(lens)),
+        ]),
+    }]))
+    .unwrap();
+    let res = Resolved::rebuild(&doc);
+    let gpu_px = render_gpu(&mut g, &doc, &res);
+    let cpu_px = render_cpu(&doc, &res);
+    for y in 0..SIDE as usize {
+        for x in 0..SIDE as usize {
+            let (a, b) = (at(&gpu_px, x, y), at(&cpu_px, x, y));
+            let d = [
+                a.0.abs_diff(b.0),
+                a.1.abs_diff(b.1),
+                a.2.abs_diff(b.2),
+                a.3.abs_diff(b.3),
+            ];
+            assert!(
+                d.iter().all(|d| *d <= 2),
+                "at ({x}, {y}): gpu {a:?} vs cpu {b:?}"
+            );
+        }
+    }
+}
+
 /// Over nothing but the canvas's ground, a glass shows the ground: the backdrop
 /// read from the top of the walk holds it (`ScenePainter::ground`), so erasing
 /// under the glass does not punch a hole through to transparency.

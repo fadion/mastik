@@ -1386,10 +1386,11 @@ pub fn run_glass(
         GlassPart::Backdrop => {
             for e in visible {
                 match &e.kind {
-                    // Even: `scene::backdrop_chain` evens a ramp beside a glass.
+                    // Even: `scene::backdrop_chain` evens a ramp beside a glass. On a
+                    // coarse grid past the budget, as the glass's own blur is: the
+                    // glass buffer is never downscaled, so zoom is its only bound.
                     EffectKind::LayerBlur { radius, .. } if *radius > 0.0 => {
-                        let (sx, sy) = device_sigma(*radius, scale.0, scale.1);
-                        blur(&mut s, sx, sy);
+                        blur_budgeted(&mut s, *radius, scale, Channels::Rgba);
                     }
                     EffectKind::Glass(g) => glass_backdrop(&mut s, &outline, g, scale),
                     _ => {}

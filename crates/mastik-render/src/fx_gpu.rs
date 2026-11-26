@@ -1239,8 +1239,7 @@ impl Runner<'_> {
                 for e in visible {
                     match &e.kind {
                         EffectKind::LayerBlur { radius, .. } if *radius > 0.0 => {
-                            let (sx, sy) = effects::device_sigma(*radius, scale.0, scale.1);
-                            self.blur(&mut cur, &mut alt, sx, sy);
+                            self.blur_budgeted(&mut cur, &mut alt, *radius, scale);
                         }
                         EffectKind::Glass(g) => {
                             if g.blur > 0.0 {
@@ -1479,7 +1478,51 @@ impl Runner<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::size_class;
+    use super::*;
+
+    /// A glass's background blur past the budget is planned on a coarse grid, as
+    /// the glass's own blur is; the two pictures agree within the parity
+    /// tolerance, so only the plan can tell.
+    ///
+    /// flip: the glass item's `LayerBlur` arm calling `blur` → fails at the
+    /// `Coarsen` assertion.
+    #[test]
+    fn a_wide_background_blur_beside_a_glass_is_planned_coarse() {
+        let effects = mastik_core::keyed_by_position([
+            Effect::new(EffectKind::LayerBlur {
+                radius: 120.0,
+                ramp: None,
+            }),
+            Effect::new(EffectKind::Glass(mastik_core::Glass {
+                blur: 0.0,
+                bend: 0.0,
+                ..Default::default()
+            })),
+        ]);
+        let item = Item {
+            slice: Slice {
+                at: (0, 0),
+                size: (200, 400),
+            },
+            dst_at: (0, 0),
+            effects: &effects,
+            scale: (1.0, 1.0),
+            layer: true,
+            to_local: kurbo::Affine::IDENTITY,
+            glass: Some((effects::GlassPart::Backdrop, 200)),
+        };
+        let mut plan = Plan::default();
+        Runner {
+            plan: &mut plan,
+            w: 200,
+            h: 400,
+        }
+        .item(&item);
+        assert!(
+            plan.steps.iter().any(|s| s.pass == Pass::Coarsen),
+            "the background blur runs on a coarse grid"
+        );
+    }
 
     /// The pool's size classes: two per octave, never below the request, and never
     /// past the device limit unless the request itself is.
