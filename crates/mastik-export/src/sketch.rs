@@ -234,7 +234,8 @@ impl Writer<'_> {
                     }));
                     self.text_styles.insert(st.id, (id, typed));
                 }
-                mastik_core::style::StyleValue::Layout(_) => {}
+                mastik_core::style::StyleValue::Layout(_)
+                | mastik_core::style::StyleValue::Chart(_) => {}
                 _ => self.approximate("Fill, border and effect styles, written as their values"),
             }
         }

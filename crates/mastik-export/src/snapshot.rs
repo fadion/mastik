@@ -68,7 +68,9 @@ use std::collections::BTreeMap;
 /// - **29** `NodeSnapshot::list` (`ListSummary`) on a list frame and
 ///   `list_copy` on a copy and every layer inside one; `ChartSummary::data_id`.
 /// - **30** `ChartSummary::kind` may read *Waterfall* or *Radar*; a chart's parts take the
-///   new roles (stems, heads, connectors, totals, line ends, references).
+///   new roles (stems, heads, connectors, totals, line ends, references);
+///   `ChartSummary::highlight` and `references`, absent when unset; and
+///   `NodeSnapshot::styles` may carry `chart`, a chart style.
 pub const SNAPSHOT_VERSION: u32 = 30;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -381,6 +383,14 @@ pub struct ChartSummary {
     /// That data table's id, which the table tools take.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data_id: Option<String>,
+    /// The highlight in the form `set_chart` takes, absent when nothing is
+    /// highlighted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<mastik_core::chart::Highlight>,
+    /// The reference lines and bands in the form `set_chart` takes, which
+    /// replaces the whole list: read them to add one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<mastik_core::chart::Reference>,
 }
 
 /// A list's description as an agent reads it: the data table it repeats its
@@ -1304,6 +1314,9 @@ fn chart_summary(doc: &Document, id: NodeId, c: &mastik_core::chart::Chart) -> C
             .data
             .filter(|d| doc.data_set(*d).is_some())
             .map(|d| d.0.to_wire()),
+        highlight: (c.highlight.target != mastik_core::chart::Highlighted::None)
+            .then(|| c.highlight.clone()),
+        references: c.references.clone(),
     }
 }
 

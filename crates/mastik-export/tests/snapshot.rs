@@ -853,6 +853,10 @@ fn a_chart_reports_its_description_and_its_parts_their_roles() {
         dash: Default::default(),
         point: Default::default(),
     });
+    chart.references.push(mastik_core::chart::Reference {
+        id: 7,
+        ..Default::default()
+    });
     doc.apply(&Transaction(vec![
         Operation::CreateNode {
             id: frame,
@@ -902,6 +906,12 @@ fn a_chart_reports_its_description_and_its_parts_their_roles() {
         c.series[1]
     );
     assert!(!c.linked);
+    assert_eq!(
+        c.references.iter().map(|r| r.id).collect::<Vec<_>>(),
+        [7],
+        "references read back"
+    );
+    assert_eq!(c.highlight, None, "no highlight, no key");
 
     let parts = &doc.get(frame).unwrap().chart().unwrap().parts;
     assert!(parts.len() > 10, "the fixture settled: {}", parts.len());
