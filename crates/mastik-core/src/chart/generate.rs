@@ -3080,7 +3080,10 @@ fn axes(
                 insets,
                 0.0,
             );
-            if let Some(p) = out.parts.last_mut() {
+            // Under *Text* the label keeps the legend's ink `out.label` gave it.
+            if o.legend.end_ink == super::EndInk::Series
+                && let Some(p) = out.parts.last_mut()
+            {
                 p.fills = fill(fill_.clone());
             }
         }

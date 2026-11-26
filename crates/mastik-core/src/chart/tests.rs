@@ -532,6 +532,27 @@ fn line_end_labels_sit_apart_past_the_plot() {
     );
 }
 
+/// A line-end label is in its series' colour, or under *Text* in the legend's ink.
+/// flip: `axes` overriding an end label's fill whatever `end_ink` says → fails
+/// at "the legend's ink".
+#[test]
+fn a_line_end_label_takes_the_ink_picked() {
+    let mut chart = Chart::sample(ChartKind::Line);
+    chart.options.legend.line_ends = true;
+    let col = chart.mapping.series[0].0;
+    let end = |g: &Generated| part(g, PartRole::EndLabel, col, 1).unwrap().fills.clone();
+    let line = |g: &Generated| {
+        part(g, PartRole::Line, col, 0).unwrap().strokes[0]
+            .brush
+            .clone()
+    };
+    let g = draw(&chart);
+    assert_eq!(end(&g)[0].brush, line(&g), "the series' colour");
+    chart.options.legend.end_ink = crate::chart::EndInk::Text;
+    let g = draw(&chart);
+    assert_ne!(end(&g)[0].brush, line(&g), "the legend's ink");
+}
+
 /// *Outline* draws every kind's marks as an inside stroke in their colour over
 /// a tint of it, and *Clean* fills them solid with no stroke.
 /// flip: `mark_paint` ignoring `Options::outline` → fails at "stroked".

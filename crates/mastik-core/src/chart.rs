@@ -867,6 +867,16 @@ pub enum EndLabel {
     NameValue,
 }
 
+/// Which ink a label at a line's end is written in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EndInk {
+    /// Its series' colour.
+    #[default]
+    Series,
+    /// The legend's ink, as the legend box's labels.
+    Text,
+}
+
 /// One kind of label's own weight and ink; `None` takes the chart's.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -1421,6 +1431,9 @@ pub struct Legend {
     pub line_ends: bool,
     #[serde(skip_serializing_if = "is_default")]
     pub end_label: EndLabel,
+    /// The ink a line-end label is written in.
+    #[serde(skip_serializing_if = "is_default")]
+    pub end_ink: EndInk,
 }
 
 /// The chart's type: one family and weight, a size per kind of label, and the

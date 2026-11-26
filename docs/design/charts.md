@@ -263,7 +263,8 @@ or turned, which value labels fit.
   drawn value in a px grid track past the plot's right edge (outside a value axis on the right),
   as wide as the widest label plus the axis gap. They sit in a *Line ends* frame
   (`PartRole::EndLabel`, index 0), each label an `EndLabel` keyed by its column at index 1,
-  named *End · ‹text›*, in the series' colour and the legend role's type. They are centred on
+  named *End · ‹text›*, in the series' colour (or under `EndInk::Text` the legend role's ink)
+  and the legend role's type. They are centred on
   their value, then pushed apart down and back up inside the plot's height. *Name, value* (`EndLabel::NameValue`) writes the series' own last value after its name
   in the values' format.
 - **Every container is a frame**, unpainted, never a group, because a group takes no insets,
@@ -589,8 +590,9 @@ it applies to; switching kind keeps the others' values.
   starts with it off. *Swatch* (`Legend::swatch`: Square, Circle, Line): *Line* is a 14 × 2
   stroke in the series' dash, drawn only on lines and areas (elsewhere it draws Square); a line
   chart's sample starts on it. *Label line ends* (`Legend::line_ends`, lines and areas) and what
-  they say (`Legend::end_label`: *Name*, *Name, value*), always in the series' colour. A switch,
-  not a legend position, because every preset writes the position.
+  they say (`Legend::end_label`: *Name*, *Name, value*), in the series' colour or the legend's
+  ink (`Legend::end_ink`: *Series*, *Text*). A switch, not a legend position, because every
+  preset writes the position.
 - **Highlight** (`Chart::highlight`; not Sankey), applied over the finished parts by key
   (`generate::apply_highlight`). *Categories* reaches bars, slices and category labels; *Series*
   reaches bars, lines, areas and points (a scatter's groups by name). When the target names
@@ -881,7 +883,8 @@ References starts open):
     0.5 to 8 in steps of 0.5 (steps *Axis line width*, *Gridline width*); a colour row is one
     `field_row_pressable`, so the width cannot sit inside it.
   - *Legend*: *Label line ends*, disabled off lines and areas with *Only lines and areas end
-    where a label can sit*, with *Line end label* (*Name* / *Name, value*) under it while on;
+    where a label can sit*, with *Line end label* (*Name* / *Name, value*) and *Line end ink*
+    (*Series* / *Text*) under it while on;
     then, while the legend shows, a *With a legend box* eyebrow over *Legend swatch* (*Square*,
     *Circle*, and *Line* on lines and areas).
   - The chart's own colours are colour rows (`chart_slot_row`, *Text colour*'s row): in Axes, per

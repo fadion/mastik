@@ -4456,6 +4456,18 @@ impl MastikApp {
                 chart.options.legend.end_label,
                 |c, v| c.options.legend.end_label = v,
             );
+            self.chart_segments_of(
+                ui,
+                id,
+                chart,
+                "Line end ink",
+                &[
+                    (chart::EndInk::Series, "Series"),
+                    (chart::EndInk::Text, "Text"),
+                ],
+                chart.options.legend.end_ink,
+                |c, v| c.options.legend.end_ink = v,
+            );
         }
         if chart.options.legend.position != LegendPosition::Off {
             ui.label(ui::eyebrow("With a legend box"));
