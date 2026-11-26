@@ -1194,7 +1194,8 @@ series* dim with *Right-click a mark on a chart*.
   `by_category` and `below_zero` are saved skipped at their defaults. The `grounded` stamp is saved beside `generated`.
 - **MCP snapshot** (`export.md`, *Snapshot*): a chart frame carries `chart` (kind, variant
   (`Chart::variant`), the table's header with each column's id and type and its row count, the
-  mapping by column id, each series' name, visibility and own colour, the data set it reads by
+  mapping by column id, each series' name, visibility, own colour and, when its own, dash and
+  point shape as `set_chart`'s `series` writes them, the data set it reads by
   name and id, and whether it is linked)
   beside its parts, each part with its `role`. Version 17; the waterfall and radar kinds and
   the roles added since are version 30.
@@ -1222,6 +1223,13 @@ series* dim with *Right-click a mark on a chart*.
   `with_node_fill`, so an agent brands a chart without flattening it and losing its live data. A
   name the chart draws nothing under is refused listing the ones it does, so a typo is not kept
   as a style nothing reads, and a variable that is no colour is refused. `set_chart`'s
+  `series`, applied after `colours`, patches each series' style by the same series names
+  (`verbs::chart_series_style`): `dash` (Solid, Dashed, Dotted), `point` (Circle, Square,
+  Diamond, Triangle, or null for the chart's own shape: a scatter's `Points::shape`, a line's
+  circle) and `visible`, words in any case and a field left out kept, so an agent dashes, marks or
+  hides a series without the Chart card. A series with no style yet takes one only when the patch
+  leaves it other than the default, so writing the defaults adds nothing; an unknown series
+  (refused listing the series), field or word is refused as `series`' fault. `set_chart`'s
   `highlight` replaces the highlight whole (null clears it), each name checked against the
   chart's categories or series and a missing one refused listing them; its `references` replace
   the whole list. The options, the highlight, the references and a chart style's value

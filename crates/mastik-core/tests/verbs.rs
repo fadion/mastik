@@ -5064,6 +5064,69 @@ fn set_chart_rebinds_a_colour_keeps_a_group_and_unsets_a_series() {
     );
 }
 
+/// `set_chart`'s `series` dashes, marks and hides a series by name, words in any
+/// case, a null point back to the chart's; the defaults written to a series
+/// with no style add none; an unknown series, field or word is refused as
+/// `series`' fault.
+/// flip: `chart_series_style` pushing a style the patch left at the defaults →
+/// fails at "no style for the defaults".
+#[test]
+fn set_chart_series_dashes_marks_and_hides() {
+    use mastik_core::chart::{Dash, PointShape};
+    let (mut doc, mut ids, page) = blank();
+    let c = run(
+        &mut doc,
+        &mut ids,
+        "insert_chart",
+        json!({ "parent": page.to_wire(), "kind": "line" }),
+    )[0];
+    let chart = chart_of(&doc, c);
+    let [first, second, ..] = chart.mapping.series[..] else {
+        panic!("the sample has two series")
+    };
+    let name = |col| chart.table.column(col).unwrap().name.clone();
+    let style = |doc: &Document, col| {
+        chart_of(doc, c)
+            .series
+            .into_iter()
+            .find(|s| s.column == col)
+    };
+    assert!(
+        style(&doc, second).is_none(),
+        "the fixture's second is unstyled"
+    );
+    run(
+        &mut doc,
+        &mut ids,
+        "set_chart",
+        json!({ "node": c.to_wire(), "series": {
+            name(first): { "dash": "dashed", "point": "SQUARE", "visible": false },
+            name(second): { "dash": "Solid", "point": null, "visible": true } } }),
+    );
+    let s = style(&doc, first).unwrap();
+    assert_eq!(
+        (s.dash, s.point, s.visible),
+        (Dash::Dashed, Some(PointShape::Square), false)
+    );
+    assert!(style(&doc, second).is_none(), "no style for the defaults");
+    run(
+        &mut doc,
+        &mut ids,
+        "set_chart",
+        json!({ "node": c.to_wire(), "series": { name(first): { "point": null } } }),
+    );
+    let s = style(&doc, first).unwrap();
+    assert_eq!((s.dash, s.point), (Dash::Dashed, None), "the rest kept");
+    for bad in [
+        json!({ "Nope": { "dash": "Dashed" } }),
+        json!({ name(first): { "width": 2 } }),
+        json!({ name(first): { "dash": "Wavy" } }),
+    ] {
+        let args = json!({ "node": c.to_wire(), "series": bad });
+        assert_eq!(refused_param(&doc, &mut ids, "set_chart", args), "series");
+    }
+}
+
 /// `set_chart_data` replaces the table, keeping the mapping and series styles of
 /// each column whose name survives, and drops the linked file.
 #[test]

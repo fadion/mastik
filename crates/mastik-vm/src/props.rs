@@ -303,7 +303,7 @@ pub static PROPERTIES: &[Property] = &[
         PropType::Table,
         true,
         "chart settings",
-        "A chart's kind, mapping, options, colours, highlight, references and style, as `set_chart` takes them; nil on a layer that is not a chart",
+        "A chart's kind, mapping, options, colours, series styles, highlight, references and style, as `set_chart` takes them; nil on a layer that is not a chart",
     ),
     prop(
         "chart_data",

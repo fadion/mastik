@@ -2546,7 +2546,8 @@ fn reactions_copied_to_another_page_keep_their_transitions() {
 }
 
 /// Two column charts, `A` styled through `set_chart` (options, a hex and a bound
-/// series colour, a highlight, a reference) and bound to a chart style.
+/// series colour, a dashed and a hidden series, a highlight, a reference) and
+/// bound to a chart style.
 fn styled_charts(h: &mut TestHost) -> (NodeId, NodeId) {
     let f = h.frame("F", 1200.0, 800.0);
     let chart = |h: &mut TestHost, name: &str, x: f64| {
@@ -2571,6 +2572,8 @@ fn styled_charts(h: &mut TestHost) -> (NodeId, NodeId) {
             "options": { "theme": "dark", "below_zero": "#c0392b",
                 "value_axis": { "title": "Revenue" }, "bars": { "radius": 4 } },
             "colours": { series(0): "#ff0000", series(1): "Brand" },
+            "series": { series(0): { "dash": "Dashed", "point": "Square" },
+                series(1): { "visible": false } },
             "highlight": { "target": { "Series": [series(0)] } },
             "references": [{ "at": { "Value": 10 } }] }),
     );
@@ -2599,7 +2602,9 @@ fn styled_charts(h: &mut TestHost) -> (NodeId, NodeId) {
 /// read written back leaves the chart and its style binding as they were.
 /// flip: `chart_whole` keeping the options the chart has in place of a new
 /// chart's → fails at "whole" (`below_zero` stays); `chart_colours_value`
-/// reading a bound colour as its hex → fails at "by its variable's name".
+/// reading a bound colour as its hex → fails at "by its variable's name";
+/// `chart_whole` not resetting the series a value leaves out → fails at "series
+/// back at the default".
 #[test]
 fn chart_reads_as_set_chart_takes_it_and_round_trips() {
     let mut h = TestHost::new();
@@ -2634,6 +2639,14 @@ fn chart_reads_as_set_chart_takes_it_and_round_trips() {
         "by its variable's name"
     );
     assert_eq!(
+        read(
+            &mut h,
+            &format!("return A.chart.series[\"{series}\"].visible")
+        ),
+        "false",
+        "a hidden series"
+    );
+    assert_eq!(
         read(&mut h, "return F.chart == nil"),
         "true",
         "a frame has none"
@@ -2651,7 +2664,7 @@ fn chart_reads_as_set_chart_takes_it_and_round_trips() {
     // Whole: what the value leaves out goes back to a new chart's.
     read(
         &mut h,
-        "local c = sel.chart\nc.options = { theme = \"Dark\" }\nc.colours = nil\nc.style = nil\nsel.chart = c",
+        "local c = sel.chart\nc.options = { theme = \"Dark\" }\nc.colours = nil\nc.series = nil\nc.style = nil\nsel.chart = c",
     );
     let after = h.doc.get(a).unwrap().chart().unwrap().clone();
     assert_eq!(after.options.below_zero, None, "whole");
@@ -2659,6 +2672,13 @@ fn chart_reads_as_set_chart_takes_it_and_round_trips() {
     assert!(
         after.series.iter().all(|s| s.fill.is_none()),
         "colours back on the palette"
+    );
+    assert!(
+        after
+            .series
+            .iter()
+            .all(|s| s.visible && s.dash == Default::default() && s.point.is_none()),
+        "series back at the default"
     );
     assert_eq!(
         after.highlight, before.highlight,

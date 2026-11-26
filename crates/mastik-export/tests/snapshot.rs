@@ -828,7 +828,8 @@ fn a_bound_field_reports_its_drawn_value() {
 }
 
 /// A chart frame carries its description — kind, variant, header, row count,
-/// mapping and series — and every part under it its role; nothing else does.
+/// mapping and series, each with its dash and point when its own — and every
+/// part under it its role; nothing else does.
 ///
 /// flip: `node_snapshot` leaving `role` out → fails at "every part has its role".
 #[test]
@@ -850,8 +851,8 @@ fn a_chart_reports_its_description_and_its_parts_their_roles() {
                 .into(),
         ),
         visible: false,
-        dash: Default::default(),
-        point: Default::default(),
+        dash: mastik_core::chart::Dash::Dashed,
+        point: Some(mastik_core::chart::PointShape::Square),
     });
     chart.references.push(mastik_core::chart::Reference {
         id: 7,
@@ -895,11 +896,22 @@ fn a_chart_reports_its_description_and_its_parts_their_roles() {
     assert_eq!(c.mapping.category, Some(ColumnId(0)));
     assert_eq!(c.series.len(), 3);
     assert!(
-        c.series[0].visible && c.series[0].fill.is_none(),
+        c.series[0].visible
+            && c.series[0].fill.is_none()
+            && c.series[0].dash.is_none()
+            && c.series[0].point.is_none(),
         "{:?}",
         c.series[0]
     );
     assert!(!c.series[1].visible);
+    assert_eq!(
+        (c.series[1].dash, c.series[1].point),
+        (
+            Some(mastik_core::chart::Dash::Dashed),
+            Some(mastik_core::chart::PointShape::Square)
+        ),
+        "its dash and point"
+    );
     assert!(
         matches!(&c.series[1].fill, Some(PaintSummary::Solid { color, .. }) if color == "#112233"),
         "{:?}",

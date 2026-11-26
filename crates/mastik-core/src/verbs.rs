@@ -697,6 +697,13 @@ fn check_other(model: &str, v: &Value) -> Result<(), String> {
         {
             Ok(())
         }
+        "ChartSeries"
+            if v.as_object()
+                .is_some_and(|m| m.values().all(Value::is_object)) =>
+        {
+            Ok(())
+        }
+        "ChartSeries" => Err("expected an object of series styles by series name".into()),
         "ChartColours" => Err(
             "expected an object of colours by series or mark name, null for the palette's".into(),
         ),
@@ -1771,6 +1778,7 @@ pub fn example(model: &str) -> Option<Value> {
             "legend": { "position": "Bottom" },
         }),
         "ChartColours" => serde_json::json!({ "Revenue": "#3b82f6" }),
+        "ChartSeries" => serde_json::json!({ "Revenue": { "dash": "Dashed", "point": "Square" } }),
         "ChartHighlight" => serde_json::json!({
             "target": { "Categories": ["Apr"] }, "others": "Muted",
         }),
@@ -7362,7 +7370,7 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "set_chart",
-        doc: "Change a chart's kind, patch its mapping or options, colour its series and marks, or set its highlight or references; its parts follow. A switch to or from a Sankey re-reads the mapping off the table's columns before `mapping` patches it",
+        doc: "Change a chart's kind, patch its mapping or options, colour or style its series and marks, or set its highlight or references; its parts follow. A switch to or from a Sankey re-reads the mapping off the table's columns before `mapping` patches it",
         params: &[
             req("node", NODE, "the chart"),
             opt("kind", ParamKind::Choice(CHART_KINDS), "what it draws"),
@@ -7382,6 +7390,11 @@ pub static VERBS: &[Verb] = &[
                 "by series, slice, group or node name: \"#rrggbb\" or a colour variable",
             ),
             opt(
+                "series",
+                ParamKind::Model("ChartSeries"),
+                "by series name: `dash` Solid|Dashed|Dotted, `point` Circle|Square|Diamond|Triangle (null: the chart's), `visible`",
+            ),
+            opt(
                 "highlight",
                 ParamKind::Model("ChartHighlight"),
                 "categories or series by name, the rest muted; null clears",
@@ -7399,6 +7412,7 @@ pub static VERBS: &[Verb] = &[
                 "mapping",
                 "options",
                 "colours",
+                "series",
                 "highlight",
                 "references",
             ]
@@ -7407,7 +7421,7 @@ pub static VERBS: &[Verb] = &[
                 && !a.nulled("highlight")
             {
                 return Err(VerbError::Nothing(
-                    "`set_chart` changes `kind`, `mapping`, `options`, `colours`, `highlight` or `references`",
+                    "`set_chart` changes `kind`, `mapping`, `options`, `colours`, `series`, `highlight` or `references`",
                 ));
             }
             let chart = chart_set(ctx.doc, a, chart)?;
@@ -7685,6 +7699,11 @@ fn chart_set(
             chart = chart_colour(doc, a, &chart, mark, colour)?;
         }
     }
+    if let Some(Value::Object(series)) = a.get("series") {
+        for (mark, style) in series {
+            chart = chart_series_style(a, &chart, mark, style)?;
+        }
+    }
     // Checked against the chart as the call leaves it, kind included.
     if a.nulled("highlight") {
         chart.highlight = Default::default();
@@ -7701,11 +7720,12 @@ fn chart_set(
 }
 
 /// The parts of a chart the `chart` value holds ([`chart_value`]), in order.
-const CHART_VALUE_KEYS: [&str; 7] = [
+const CHART_VALUE_KEYS: [&str; 8] = [
     "kind",
     "mapping",
     "options",
     "colours",
+    "series",
     "highlight",
     "references",
     "style",
@@ -7714,7 +7734,8 @@ const CHART_VALUE_KEYS: [&str; 7] = [
 /// Chart `id`'s settings in the shapes `set_chart` takes, for a script's `chart`
 /// property: `kind` as its word, `mapping` by column id, `options` as the patch
 /// from a new chart's, `colours` for each series or named mark with its own,
-/// `highlight` and `references` when set, and `style`, the chart style it is
+/// `series` for each series dashed, marked or hidden, `highlight` and
+/// `references` when set, and `style`, the chart style it is
 /// bound to, by name. Colours are `"#rrggbb"`, a bound mark colour its
 /// variable's name. `None` on a layer that is not a chart. [`chart_whole`]
 /// writes it back.
@@ -7740,6 +7761,10 @@ pub fn chart_value(doc: &Document, id: NodeId) -> Option<Value> {
     let colours = chart_colours_value(doc, chart);
     if !colours.is_empty() {
         out.insert("colours".into(), Value::Object(colours));
+    }
+    let series = chart_series_value(chart);
+    if !series.is_empty() {
+        out.insert("series".into(), Value::Object(series));
     }
     if chart.highlight != crate::chart::Highlight::default() {
         let h = serde_json::to_value(&chart.highlight).unwrap_or_default();
@@ -7777,14 +7802,8 @@ fn chart_colours_value(doc: &Document, chart: &crate::chart::Chart) -> Map<Strin
             for column in &chart.mapping.series {
                 let fill = chart.series.iter().find(|s| s.column == *column);
                 if let Some(fill) = fill.and_then(|s| s.fill.as_ref())
-                    && let Some(col) = chart.table.column(*column)
+                    && let Some(name) = series_key(chart, *column)
                 {
-                    // A name two columns share would colour the first; the id is exact.
-                    let shared = chart.table.columns.iter().filter(|c| c.name == col.name);
-                    let name = match shared.count() {
-                        1 => col.name.clone(),
-                        _ => column.0.to_string(),
-                    };
                     put(name, fill);
                 }
             }
@@ -7871,7 +7890,7 @@ fn differs_from(v: &Value, base: &Value) -> Option<Value> {
 }
 
 /// The edit setting chart `id` to `value`, a table in [`chart_value`]'s shape,
-/// whole: an option, colour, highlight, reference or style it leaves out goes
+/// whole: an option, colour, series style, highlight, reference or style it leaves out goes
 /// back to a new chart's, while a `kind` or `mapping` left out is kept, so one
 /// chart's look copies onto another that draws its own data. Checked as
 /// `set_chart` checks its arguments; the refusal names the part at fault.
@@ -7952,6 +7971,37 @@ pub fn chart_whole(doc: &Document, id: NodeId, value: &Value) -> Result<Vec<Oper
     {
         chart = chart_colour(doc, &a, &chart, name, &Value::Null).map_err(named)?;
     }
+    // Each series styled whole: what its entry leaves out, and every series the
+    // value names none for, back at the default.
+    let whole = |style: Option<&Value>| {
+        let mut w = serde_json::json!({ "dash": "Solid", "point": null, "visible": true });
+        if let (Some(Value::Object(given)), Value::Object(into)) = (style, &mut w) {
+            into.extend(given.clone());
+        }
+        w
+    };
+    let mut styled = Vec::new();
+    match given.get("series") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(series)) => {
+            for (mark, style) in series {
+                if !style.is_object() {
+                    return Err(format!(
+                        "`series`: `{mark}`: expected {{ dash, point, visible }}"
+                    ));
+                }
+                styled.push(series_named(&a, "series", &chart, mark).map_err(named)?);
+                chart = chart_series_style(&a, &chart, mark, &whole(Some(style))).map_err(named)?;
+            }
+        }
+        Some(_) => return Err("`series`: expected a table of series by name".into()),
+    }
+    for column in chart.mapping.series.clone() {
+        if !styled.contains(&column) {
+            let mark = column.0.to_string();
+            chart = chart_series_style(&a, &chart, &mark, &whole(None)).map_err(named)?;
+        }
+    }
     let mut ops = Vec::new();
     if chart != *current {
         ops.push(Operation::SetChart {
@@ -8023,7 +8073,19 @@ fn chart_colour(
         }
         return Ok(crate::chart::with_node_fill(chart, mark, fill));
     }
-    let column = chart
+    let column = series_named(a, "colours", chart, mark)?;
+    Ok(crate::chart::with_series_fill(chart, column, fill))
+}
+
+/// The series column `chart` draws under `mark`, its column's name or id,
+/// refused as `param`'s fault listing the series when there is none.
+fn series_named(
+    a: &Args<'_>,
+    param: &'static str,
+    chart: &crate::chart::Chart,
+    mark: &str,
+) -> Result<crate::chart::ColumnId, VerbError> {
+    chart
         .mapping
         .series
         .iter()
@@ -8039,12 +8101,122 @@ fn chart_colour(
                 .filter_map(|c| chart.table.column(*c))
                 .map(|c| format!("`{}`", c.name))
                 .collect();
-            bad(format!(
-                "`{mark}` is no series; the series are {}",
-                names.join(", ")
-            ))
-        })?;
-    Ok(crate::chart::with_series_fill(chart, column, fill))
+            a.invalid(
+                param,
+                format!("`{mark}` is no series; the series are {}", names.join(", ")),
+            )
+        })
+}
+
+/// `chart` with series `mark`'s style patched by `style`: its `dash`, its
+/// `point` (null for the chart's own shape) and whether it is `visible`, each
+/// word in any case. A series with no style yet takes one only when the patch
+/// leaves it other than the default, so writing the defaults changes nothing.
+fn chart_series_style(
+    a: &Args<'_>,
+    chart: &crate::chart::Chart,
+    mark: &str,
+    style: &Value,
+) -> Result<crate::chart::Chart, VerbError> {
+    use crate::chart::{Dash, PointShape, SeriesStyle};
+    let bad = |why: String| a.invalid("series", format!("`{mark}`: {why}"));
+    let column = series_named(a, "series", chart, mark)?;
+    let Value::Object(fields) = style else {
+        return Err(bad("expected { dash, point, visible }".into()));
+    };
+    let word = |v: &Value, words: &[&str]| -> Result<usize, VerbError> {
+        v.as_str()
+            .and_then(|s| words.iter().position(|w| w.eq_ignore_ascii_case(s)))
+            .ok_or_else(|| bad(format!("expected one of {}", words.join(", "))))
+    };
+    let mut next = chart
+        .series
+        .iter()
+        .find(|s| s.column == column)
+        .cloned()
+        .unwrap_or(SeriesStyle {
+            column,
+            fill: None,
+            visible: true,
+            dash: Dash::default(),
+            point: None,
+        });
+    for (k, v) in fields {
+        match k.as_str() {
+            "dash" => {
+                next.dash = [Dash::Solid, Dash::Dashed, Dash::Dotted]
+                    [word(v, &["Solid", "Dashed", "Dotted"])?];
+            }
+            "point" if v.is_null() => next.point = None,
+            "point" => {
+                let shapes = [
+                    PointShape::Circle,
+                    PointShape::Square,
+                    PointShape::Diamond,
+                    PointShape::Triangle,
+                ];
+                next.point = Some(shapes[word(v, &["Circle", "Square", "Diamond", "Triangle"])?]);
+            }
+            "visible" => {
+                next.visible = v
+                    .as_bool()
+                    .ok_or_else(|| bad("`visible` is true or false".into()))?;
+            }
+            other => {
+                return Err(bad(format!(
+                    "a series has no `{other}`; it has `dash`, `point` and `visible`"
+                )));
+            }
+        }
+    }
+    let mut out = chart.clone();
+    match out.series.iter_mut().find(|s| s.column == column) {
+        Some(s) => *s = next,
+        None if next.visible && next.dash == Dash::default() && next.point.is_none() => {}
+        None => out.series.push(next),
+    }
+    Ok(out)
+}
+
+/// The styles `chart` gives its series other than the default, by the name
+/// `set_chart`'s `series` takes: a column's name, its id when two share it.
+fn chart_series_value(chart: &crate::chart::Chart) -> Map<String, Value> {
+    let mut out = Map::new();
+    for column in &chart.mapping.series {
+        let Some(s) = chart.series.iter().find(|s| s.column == *column) else {
+            continue;
+        };
+        let mut style = Map::new();
+        if s.dash != crate::chart::Dash::default() {
+            style.insert(
+                "dash".into(),
+                serde_json::to_value(s.dash).unwrap_or_default(),
+            );
+        }
+        if let Some(p) = s.point {
+            style.insert("point".into(), serde_json::to_value(p).unwrap_or_default());
+        }
+        if !s.visible {
+            style.insert("visible".into(), Value::Bool(false));
+        }
+        if !style.is_empty()
+            && let Some(name) = series_key(chart, *column)
+        {
+            out.insert(name, Value::Object(style));
+        }
+    }
+    out
+}
+
+/// The name `set_chart` takes for series `column`: its column's name, or its id
+/// when another column shares the name, which would pick the first.
+fn series_key(chart: &crate::chart::Chart, column: crate::chart::ColumnId) -> Option<String> {
+    let col = chart.table.column(column)?;
+    let shared = chart.table.columns.iter().filter(|c| c.name == col.name);
+    Some(match shared.count() {
+        1 => col.name.clone(),
+        _ => column.0.to_string(),
+    })
 }
 
 /// One mark's colour written as a string: `"#rrggbb"`, or a colour variable by

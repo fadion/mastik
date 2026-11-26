@@ -500,6 +500,12 @@ pub struct SeriesSummary {
     /// Its own colour, absent while it takes the palette's next.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<PaintSummary>,
+    /// Its line's dash as `set_chart`'s `series` writes it, absent while solid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dash: Option<mastik_core::chart::Dash>,
+    /// Its own point shape, absent while it takes the chart's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point: Option<mastik_core::chart::PointShape>,
 }
 
 /// One effect, flattened for a reader that is not this program. `kind` is a
@@ -1326,6 +1332,10 @@ fn chart_summary(doc: &Document, id: NodeId, c: &mastik_core::chart::Chart) -> C
                     fill: style
                         .and_then(|s| s.fill.as_ref())
                         .map(|f| paint_summary(doc, &doc.resolve_brush(id, f))),
+                    dash: style
+                        .map(|s| s.dash)
+                        .filter(|d| *d != mastik_core::chart::Dash::default()),
+                    point: style.and_then(|s| s.point),
                 }
             })
             .collect(),

@@ -991,9 +991,11 @@ fn model_type(model: &str) -> Option<&'static str> {
         | "[Stroke]" | "[Reaction]" | "[Flow]" | "TableRows" | "[ColumnName]" | "[TableCell]"
         | "[TableRow]" | "[RowNumber]" | "ListSort" | "[ChartReference]" => Some("array"),
         "Props" | "Args" | "Tree" | "ChartMapping" | "ChartOptions" | "ChartColours"
-        | "ChartHighlight" | "KitModeMap" | "DtcgFile" | "BlockStyle" | "ParagraphStyle"
-        | "TextStyle" | "LayoutItem" | "RepeatLine" | "RepeatGrid" | "LayerPlay" | "PagePlay"
-        | "TableColumns" | "ListFill" | "ListFilter" | "RowRange" => Some("object"),
+        | "ChartSeries" | "ChartHighlight" | "KitModeMap" | "DtcgFile" | "BlockStyle"
+        | "ParagraphStyle" | "TextStyle" | "LayoutItem" | "RepeatLine" | "RepeatGrid"
+        | "LayerPlay" | "PagePlay" | "TableColumns" | "ListFill" | "ListFilter" | "RowRange" => {
+            Some("object")
+        }
         _ => None,
     }
 }
@@ -1269,7 +1271,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 28_700;
-        const ALL_BUDGET: usize = 128_600;
+        const ALL_BUDGET: usize = 128_800;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,
