@@ -20,6 +20,11 @@ through the system clipboard), and the hand-kept lists of transient state. Part 
   text bottom and the frame's top edge, 11pt, at the dark theme's `text::muted()` alpha in either theme, in the page's ink (`canvas::ground_text`), or `color::SELECT` when selected. Drawn
   under every overlay but the pixel grid. A frame whose tag cannot reach the canvas has none, so
   neither the drawing nor a pick lays out the tags of frames out of view.
+- **A tag sits in its frame's stacking.** The part of it under a visible page frame stacked above
+  its frame's own page-level layer is clipped away (`canvas::uncovered`, `rect_minus`; a rotated
+  frame covers its screen box), and that part takes no click: the press goes to what covers it
+  (`frame_label_at`). A selected frame's tag, the entered instance's and the assistant's scoped
+  frame's draw whole and pick whole (`label_on_top`), so a dragged frame keeps its name in sight.
 - Component tags: a main's is a violet chip (same selected or not); an instance's a violet label with
   an outline hexagon (`color::COMPONENT`); neither ever takes `color::SELECT` (§5.3d). **A frame instance
   on its page shows its tag only while it is selected or entered** (a group instance has none); a selected main does not bring its

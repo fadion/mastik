@@ -1633,6 +1633,41 @@ fn set_outline(ground: Color) -> egui::Color32 {
     }
 }
 
+/// What of `r` lies outside `cut`, as up to four rects: the bands above and
+/// below the cut, then the two beside it.
+fn rect_minus(r: egui::Rect, cut: egui::Rect) -> Vec<egui::Rect> {
+    let c = r.intersect(cut);
+    if !c.is_positive() {
+        return vec![r];
+    }
+    let mut out = Vec::new();
+    if c.top() > r.top() {
+        out.push(egui::Rect::from_min_max(
+            r.min,
+            egui::pos2(r.right(), c.top()),
+        ));
+    }
+    if c.bottom() < r.bottom() {
+        out.push(egui::Rect::from_min_max(
+            egui::pos2(r.left(), c.bottom()),
+            r.max,
+        ));
+    }
+    if c.left() > r.left() {
+        out.push(egui::Rect::from_min_max(
+            egui::pos2(r.left(), c.top()),
+            egui::pos2(c.left(), c.bottom()),
+        ));
+    }
+    if c.right() < r.right() {
+        out.push(egui::Rect::from_min_max(
+            egui::pos2(c.right(), c.top()),
+            egui::pos2(r.right(), c.bottom()),
+        ));
+    }
+    out
+}
+
 /// The stroke a freshly drawn pen path and line get, which the pen's preview
 /// shares, and the pencil's first path.
 pub(crate) const PEN_STROKE_COLOR: Color = Color::BLACK;
@@ -9762,9 +9797,16 @@ impl MastikApp {
         rect: egui::Rect,
         ppp: f32,
     ) -> Option<NodeId> {
+        // Where a tag shows: a covered part answers for what covers it.
         self.canvas_tags().into_iter().rev().find(|id| {
-            self.frame_label(ui, *id, rect, ppp)
-                .is_some_and(|(r, _)| r.contains(screen))
+            self.frame_label(ui, *id, rect, ppp).is_some_and(|(r, _)| {
+                r.contains(screen)
+                    && (self.label_on_top(*id)
+                        || self
+                            .uncovered(*id, r, rect, ppp)
+                            .iter()
+                            .any(|p| p.contains(screen)))
+            })
         })
     }
 
@@ -10109,75 +10151,152 @@ impl MastikApp {
             // The assistant's scoped frame takes the selection's ink; a main's chip
             // and an instance's tag stay violet, their scope glyph the mark.
             let scoped = self.assistant.open && !self.prefs.private && self.scoped_to(id);
-            // A main's violet chip and filled hexagon, selected or not.
-            if self.session.doc.get(id).is_some_and(|n| n.component()) {
-                painter.rect_filled(label, 3.0, color::COMPONENT);
-                let at = label.min + CHIP_PAD;
-                if let Some(cell) = galley.rows.first().and_then(|r| {
-                    r.glyphs
-                        .iter()
-                        .find(|g| g.chr.to_string() == icon::HEXAGON)
-                        .map(|g| g.logical_rect().translate(r.pos.to_vec2()))
-                }) {
-                    // A point above the cell's centre, which sat low.
-                    crate::ui::paint_hexagon_filled(
-                        painter,
-                        at + cell.center().to_vec2() - egui::vec2(0.0, 1.0),
-                        LABEL_PT,
-                        color::COMPONENT_INK,
-                    );
-                }
-                painter.galley(at, galley, color::COMPONENT_INK);
-                continue;
-            }
-            // An instance's tag, violet selected or not.
-            if mastik_core::component::instance_root(&self.session.doc, id) == Some(id) {
-                painter.galley(label.min, galley, color::COMPONENT);
-                continue;
-            }
             let is_set = self.session.doc.get(id).is_some_and(|n| n.set().is_some());
-            let is_list = self.session.doc.get(id).is_some_and(|n| n.list().is_some());
-            if is_set || is_list {
-                // A set's tab and resting hairline, neutral selected or not, its
-                // text the selection's ink while scoped. The hairline lies on the
-                // page, so the page picks its ink. A list's tab has no hairline:
-                // the selection draws its box.
-                if is_set && let Some(q) = self.selection_quad(id, rect, ppp) {
-                    let ink = set_outline(self.session.preview_ground());
-                    let stroke = egui::Stroke::new(1.0, ink);
-                    for i in 0..4 {
-                        painter.line_segment([q[i], q[(i + 1) % 4]], stroke);
-                    }
+            // A set's resting hairline lies on the page round the set, not in its tab.
+            if is_set && let Some(q) = self.selection_quad(id, rect, ppp) {
+                let ink = set_outline(self.session.preview_ground());
+                let stroke = egui::Stroke::new(1.0, ink);
+                for i in 0..4 {
+                    painter.line_segment([q[i], q[(i + 1) % 4]], stroke);
                 }
-                painter.rect(
-                    label,
-                    egui::CornerRadius {
-                        nw: 3,
-                        ne: 3,
-                        sw: 0,
-                        se: 0,
-                    },
-                    theme::color::card(),
-                    egui::Stroke::new(1.0, theme::color::card_border()),
-                    egui::StrokeKind::Inside,
-                );
-                let ink = if scoped {
-                    color::SELECT
-                } else {
-                    theme::text::strong()
-                };
-                painter.galley(label.min + SET_TAB_PAD, galley, ink);
+            }
+            // A tag sits in the stacking of its frame: what is drawn above that
+            // frame covers it, except while it is selected, so a dragged frame keeps
+            // its name in sight.
+            let pieces = match self.label_on_top(id) {
+                true => vec![label],
+                false => self.uncovered(id, label, rect, ppp),
+            };
+            for piece in pieces {
+                let clipped = painter.with_clip_rect(piece.intersect(painter.clip_rect()));
+                self.paint_frame_label(&clipped, id, label, galley.clone(), scoped);
+            }
+        }
+    }
+
+    /// Whether `id`'s tag draws and picks over everything: selected, the
+    /// entered instance, whose tag says how to leave, or the assistant's scope.
+    fn label_on_top(&self, id: NodeId) -> bool {
+        self.session.selection.contains(id)
+            || self.entered_instance() == Some(id)
+            || (self.assistant.open && !self.prefs.private && self.scoped_to(id))
+    }
+
+    /// The parts of tag rect `label` that no top-level frame stacked above
+    /// `id`'s own top-level layer covers, on screen; boxes stand in for
+    /// rotated frames.
+    fn uncovered(
+        &self,
+        id: NodeId,
+        label: egui::Rect,
+        rect: egui::Rect,
+        ppp: f32,
+    ) -> Vec<egui::Rect> {
+        let doc = &self.session.doc;
+        let mut top = id;
+        while let Some(p) = doc.get(top).and_then(|n| n.parent())
+            && p != self.session.page
+        {
+            top = p;
+        }
+        let Some(siblings) = doc.get(self.session.page).map(|n| n.children()) else {
+            return vec![label];
+        };
+        let Some(at) = siblings.iter().position(|s| *s == top) else {
+            return vec![label];
+        };
+        let mut pieces = vec![label];
+        for above in &siblings[at + 1..] {
+            let frame = doc
+                .get(*above)
+                .is_some_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }));
+            if !frame || !self.shown_visible(*above) {
                 continue;
             }
-            let ink = if self.session.selection.contains(id) || scoped {
+            let Some(q) = self.selection_quad(*above, rect, ppp) else {
+                continue;
+            };
+            let cover = egui::Rect::from_points(&q);
+            pieces = pieces
+                .into_iter()
+                .flat_map(|p| rect_minus(p, cover))
+                .collect();
+            if pieces.is_empty() {
+                break;
+            }
+        }
+        pieces
+    }
+
+    /// One frame's tag at `label`, into `painter` (clipped to what shows of it).
+    fn paint_frame_label(
+        &self,
+        painter: &egui::Painter,
+        id: NodeId,
+        label: egui::Rect,
+        galley: std::sync::Arc<egui::Galley>,
+        scoped: bool,
+    ) {
+        // A main's violet chip and filled hexagon, selected or not.
+        if self.session.doc.get(id).is_some_and(|n| n.component()) {
+            painter.rect_filled(label, 3.0, color::COMPONENT);
+            let at = label.min + CHIP_PAD;
+            if let Some(cell) = galley.rows.first().and_then(|r| {
+                r.glyphs
+                    .iter()
+                    .find(|g| g.chr.to_string() == icon::HEXAGON)
+                    .map(|g| g.logical_rect().translate(r.pos.to_vec2()))
+            }) {
+                // A point above the cell's centre, which sat low.
+                crate::ui::paint_hexagon_filled(
+                    painter,
+                    at + cell.center().to_vec2() - egui::vec2(0.0, 1.0),
+                    LABEL_PT,
+                    color::COMPONENT_INK,
+                );
+            }
+            painter.galley(at, galley, color::COMPONENT_INK);
+            return;
+        }
+        // An instance's tag, violet selected or not.
+        if mastik_core::component::instance_root(&self.session.doc, id) == Some(id) {
+            painter.galley(label.min, galley, color::COMPONENT);
+            return;
+        }
+        let is_set = self.session.doc.get(id).is_some_and(|n| n.set().is_some());
+        let is_list = self.session.doc.get(id).is_some_and(|n| n.list().is_some());
+        if is_set || is_list {
+            // A set's or a list's tab, neutral selected or not, its text the
+            // selection's ink while scoped. A list's has no hairline: the
+            // selection draws its box.
+            painter.rect(
+                label,
+                egui::CornerRadius {
+                    nw: 3,
+                    ne: 3,
+                    sw: 0,
+                    se: 0,
+                },
+                theme::color::card(),
+                egui::Stroke::new(1.0, theme::color::card_border()),
+                egui::StrokeKind::Inside,
+            );
+            let ink = if scoped {
                 color::SELECT
             } else {
-                // The dark theme's muted alpha in either theme: the page, not the
-                // chrome, sets this ink.
-                ground_text(self.session.preview_ground(), MUTED_ON_PAGE)
+                theme::text::strong()
             };
-            painter.galley(label.min, galley, ink);
+            painter.galley(label.min + SET_TAB_PAD, galley, ink);
+            return;
         }
+        let ink = if self.session.selection.contains(id) || scoped {
+            color::SELECT
+        } else {
+            // The dark theme's muted alpha in either theme: the page, not the
+            // chrome, sets this ink.
+            ground_text(self.session.preview_ground(), MUTED_ON_PAGE)
+        };
+        painter.galley(label.min, galley, ink);
     }
 
     /// The layout columns and rows drawn over every frame that carries them.
@@ -20023,6 +20142,62 @@ mod frame_menu_door_tests {
         assert!(!tagged(&app), "scrolled far left");
         app.session.camera.center = Point::new(100.0, -2000.0);
         assert!(!tagged(&app), "scrolled below");
+    }
+
+    /// A frame's tag under a frame stacked above it is cut where that frame
+    /// covers it, the uncovered part kept, and shows whole while selected.
+    /// flip: `uncovered` skipping the frames above → fails at "covered";
+    /// `label_on_top` false for a selection → fails at "selected, on top".
+    #[test]
+    fn a_frames_tag_is_covered_by_a_frame_above_it() {
+        let mut app = MastikApp::headless(&egui::Context::default());
+        let page = app.session.page;
+        let frame = |app: &mut MastikApp, a: Point, b: Point| {
+            let id = app.session.ids.mint();
+            let index = app.child_count(page);
+            let tx = mastik_core::edit::create_artboard(
+                id,
+                page,
+                index,
+                Affine::IDENTITY,
+                a,
+                b,
+                mastik_core::peniko::Color::WHITE,
+            );
+            assert!(app.session.commit(tx));
+            id
+        };
+        let below = frame(&mut app, Point::new(0.0, 0.0), Point::new(200.0, 200.0));
+        let above = frame(
+            &mut app,
+            Point::new(-100.0, -100.0),
+            Point::new(100.0, 100.0),
+        );
+        app.session.camera.zoom = 1.0;
+        app.session.camera.center = Point::new(0.0, 0.0);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let corner = app.selection_quad(below, rect, 1.0).expect("drawn")[0];
+        // A tag reaching past the frame above's right edge.
+        let label =
+            egui::Rect::from_min_size(corner - egui::vec2(0.0, 14.0), egui::vec2(160.0, 12.0));
+        let cover = egui::Rect::from_points(&app.selection_quad(above, rect, 1.0).unwrap());
+        assert!(
+            cover.contains(label.min),
+            "fixture: the frame above covers the tag's start"
+        );
+        let pieces = app.uncovered(below, label, rect, 1.0);
+        assert!(
+            pieces.iter().all(|p| !p.intersects(cover.shrink(0.5))),
+            "covered"
+        );
+        assert!(!pieces.is_empty(), "the part past the cover kept");
+        assert_eq!(
+            app.uncovered(above, label, rect, 1.0),
+            vec![label],
+            "nothing above it"
+        );
+        app.session.selection.set_one(below);
+        assert!(app.label_on_top(below), "selected, on top");
     }
 
     /// A component set's tag is a tab on the frame's top edge; it adds the variant count
