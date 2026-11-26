@@ -106,6 +106,16 @@ place, saved in the same shape so existing files load. It is matched in about 60
   an off/on pair (a switch's two looks) needs a second variable kept in step by every toggle. A
   negated binding, or a boolean choosing between two values, would drop it.
 
+## Next · Scripts
+
+- **A chart read back.** A script writes a chart through `set_chart` and `set_chart_data`, but
+  no layer property reads one (`mastik-vm` `props.rs`): its kind, mapping, options, colours,
+  highlight, references and style are invisible, so a script cannot adjust a chart relative to
+  what it holds or copy one chart's look onto another. A `chart` property reading the chart's
+  settings in the shapes `set_chart` takes, short forms as `verbs::shorten` gives them, so a
+  read written back changes nothing (*Read and write round-trip* in `design/command-mode.md`),
+  and `data` as the table `set_chart_data` takes. Medium.
+
 ## Later · Player
 
 - **Draw only the room a tall screen shows.** The player renders a screen whole, and one past the
