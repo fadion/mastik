@@ -69,7 +69,8 @@ use std::collections::BTreeMap;
 ///   `list_copy` on a copy and every layer inside one; `ChartSummary::data_id`.
 /// - **30** `ChartSummary::kind` may read *Waterfall* or *Radar*; a chart's parts take the
 ///   new roles (stems, heads, connectors, totals, line ends, references);
-///   `ChartSummary::highlight` and `references`, absent when unset; and
+///   `ChartSummary::highlight` and `references`, absent when unset;
+///   `ChartSummary::options`, the options that differ from the default; and
 ///   `NodeSnapshot::styles` may carry `chart`, a chart style.
 pub const SNAPSHOT_VERSION: u32 = 30;
 
@@ -391,6 +392,29 @@ pub struct ChartSummary {
     /// replaces the whole list: read them to add one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<mastik_core::chart::Reference>,
+    /// The options that differ from a new chart's, as the patch `set_chart`
+    /// takes; absent when every option is at its default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub options: Option<serde_json::Value>,
+}
+
+/// The parts of `v` that differ from `default`, objects compared key by key;
+/// `None` when nothing does.
+fn changed_from(v: &serde_json::Value, default: &serde_json::Value) -> Option<serde_json::Value> {
+    use serde_json::Value;
+    match (v, default) {
+        (Value::Object(own), Value::Object(base)) => {
+            let changed: serde_json::Map<String, Value> = own
+                .iter()
+                .filter_map(|(k, x)| {
+                    let d = base.get(k).unwrap_or(&Value::Null);
+                    changed_from(x, d).map(|x| (k.clone(), x))
+                })
+                .collect();
+            (!changed.is_empty()).then_some(Value::Object(changed))
+        }
+        _ => (v != default).then(|| v.clone()),
+    }
 }
 
 /// A list's description as an agent reads it: the data table it repeats its
@@ -1317,6 +1341,10 @@ fn chart_summary(doc: &Document, id: NodeId, c: &mastik_core::chart::Chart) -> C
         highlight: (c.highlight.target != mastik_core::chart::Highlighted::None)
             .then(|| c.highlight.clone()),
         references: c.references.clone(),
+        options: serde_json::to_value(&c.options).ok().and_then(|own| {
+            let base = serde_json::to_value(mastik_core::chart::Options::default()).ok()?;
+            changed_from(&own, &base)
+        }),
     }
 }
 

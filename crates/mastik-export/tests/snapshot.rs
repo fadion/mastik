@@ -912,6 +912,18 @@ fn a_chart_reports_its_description_and_its_parts_their_roles() {
         "references read back"
     );
     assert_eq!(c.highlight, None, "no highlight, no key");
+    let options = c
+        .options
+        .as_ref()
+        .expect("a stacked chart's options differ");
+    assert_eq!(
+        options["bars"]["stacking"], "Stacked",
+        "options read back: {options}"
+    );
+    assert!(
+        options.get("padding").is_none(),
+        "only what differs: {options}"
+    );
 
     let parts = &doc.get(frame).unwrap().chart().unwrap().parts;
     assert!(parts.len() > 10, "the fixture settled: {}", parts.len());
