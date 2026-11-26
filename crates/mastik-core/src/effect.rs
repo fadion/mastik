@@ -4,12 +4,13 @@
 //! order is the compositing order. [`Effect`] mirrors [`crate::Fill`]: a payload
 //! and a `visible` flag.
 //!
-//! **Seven effects**: drop shadow, inner shadow, layer blur, sharpen, noise,
-//! background blur and colour filters. All but the background blur agree across
-//! the canvas (vello on wgpu), the raster export (`vello_cpu`) and the SVG writer;
-//! a background blur cannot be written to SVG (`BackgroundImage` was never
-//! implemented by any renderer), so that writer leaves it out and reports it, as
-//! it reports a [`Shadow::blend`] it draws Normal. A layer's mode is
+//! **Eight effects**: drop shadow, inner shadow, layer blur, sharpen, noise,
+//! background blur, glass and colour filters. All but the background blur and
+//! the glass agree across the canvas (vello on wgpu), the raster export
+//! (`vello_cpu`) and the SVG writer; neither of those two can be written to SVG
+//! (`BackgroundImage` was never implemented by any renderer), so that writer
+//! leaves them out and reports them, as it reports a [`Shadow::blend`] it draws
+//! Normal. A layer's mode is
 //! `crate::Node::blend`. Noise draws `feTurbulence` (`crate::noise`), whose
 //! specified algorithm is what lets three writers agree on it.
 
@@ -63,6 +64,7 @@ pub fn blur_within_cap(effect: &Effect) -> bool {
             ok(*radius) && (0.0..=MAX_SHARPEN).contains(amount)
         }
         EffectKind::Noise(n) => *n == n.clamped(),
+        EffectKind::Glass(g) => ok(g.blur) && *g == g.clamped(),
         EffectKind::Filters(_) => true,
     }
 }
@@ -92,6 +94,7 @@ pub(crate) fn clamp_blur(effect: &mut Effect) {
             *amount = amount.max(0.0).clamp(0.0, MAX_SHARPEN);
         }
         EffectKind::Noise(n) => *n = n.clamped(),
+        EffectKind::Glass(g) => *g = g.clamped(),
         EffectKind::Filters(_) => {}
     }
 }
@@ -191,6 +194,33 @@ pub fn backdrop_radius(effects: &[Keyed<Effect>]) -> Option<f64> {
                 .sum::<f64>()
                 .sqrt()
     })
+}
+
+/// The visible [`EffectKind::Glass`]es of `effects`, in list order.
+pub fn glasses(effects: &[Keyed<Effect>]) -> impl Iterator<Item = &Glass> {
+    effects
+        .iter()
+        .filter(|e| e.visible)
+        .filter_map(|e| match &e.kind {
+            EffectKind::Glass(g) => Some(g),
+            _ => None,
+        })
+}
+
+/// How far past its outline a layer reads what lies behind it, or `None` when
+/// nothing of `effects` reads it: the background blurs' [`backdrop_radius`]
+/// reached, plus each visible glass's blur reach and its depth, since a glass
+/// bends what lies up to `depth` beyond its outline in and blurs what the one
+/// before it drew. A sum, so it is never short.
+pub fn backdrop_reach(effects: &[Keyed<Effect>]) -> Option<f64> {
+    let blur = backdrop_radius(effects).map(reach);
+    let glass = glasses(effects).fold(None, |acc: Option<f64>, g| {
+        Some(acc.unwrap_or(0.0) + reach(g.blur) + g.depth.max(0.0))
+    });
+    match (blur, glass) {
+        (None, None) => None,
+        (b, g) => Some(b.unwrap_or(0.0) + g.unwrap_or(0.0)),
+    }
 }
 
 /// How many device pixels one pixel of an effect layer's buffer should cover, so
@@ -314,6 +344,7 @@ impl Effect {
             EffectKind::LayerBlur { radius }
             | EffectKind::BackgroundBlur { radius }
             | EffectKind::Sharpen { radius, .. } => [None, None, Some(*radius), None],
+            EffectKind::Glass(g) => [None, None, Some(g.blur), None],
             EffectKind::Noise(_) | EffectKind::Filters(_) => [None; 4],
         }
     }
@@ -340,6 +371,7 @@ impl Effect {
             {
                 *radius = x
             }
+            EffectKind::Glass(g) if slot == EFFECT_BLUR => g.blur = x,
             _ => {}
         }
     }
@@ -405,6 +437,10 @@ pub enum EffectKind {
         /// As [`Self::LayerBlur`]'s.
         radius: f64,
     },
+    /// Frosted glass: what lies behind the layer, read as a background blur's
+    /// is, blurred, bent at the outline and veiled, drawn under the layer's own
+    /// fill; then a lit rim inside the outline, over it.
+    Glass(Glass),
     Filters(Filters),
 }
 
@@ -436,6 +472,8 @@ impl EffectKind {
             // Drawn inside the layer's outline: the blur reads outside it but
             // lands nowhere else.
             Self::BackgroundBlur { .. } => Insets::ZERO,
+            // The bent backdrop and the rim both land inside the outline.
+            Self::Glass(_) => Insets::ZERO,
             // Per-pixel, so every pixel it touches was already there.
             Self::Filters(_) => Insets::ZERO,
         }
@@ -450,6 +488,7 @@ impl EffectKind {
             Self::Sharpen { .. } => "Sharpen",
             Self::Noise(_) => "Noise",
             Self::BackgroundBlur { .. } => "Background blur",
+            Self::Glass(_) => "Glass",
             Self::Filters(_) => "Filters",
         }
     }
@@ -461,8 +500,8 @@ impl EffectKind {
     /// name one differently from the snapshot. A function rather than a `const`
     /// because every variant carries a payload. Sharpen sits beside the layer
     /// blur whose passes it reuses, and Noise after it, the other kind that works
-    /// on the layer's own pixels.
-    pub fn all_defaults() -> [Self; 7] {
+    /// on the layer's own pixels; Glass follows the background blur it extends.
+    pub fn all_defaults() -> [Self; 8] {
         [
             Self::DropShadow(Shadow::default()),
             Self::InnerShadow(Shadow::default()),
@@ -477,6 +516,7 @@ impl EffectKind {
             Self::BackgroundBlur {
                 radius: DEFAULT_BLUR_RADIUS,
             },
+            Self::Glass(Glass::default()),
             Self::Filters(Filters::default()),
         ]
     }
@@ -494,7 +534,8 @@ impl EffectKind {
     ///
     /// Carries across what the two kinds share and defaults the rest, so a retype
     /// does not throw tuned numbers away: the two shadows share every field, the
-    /// shadows and the two blurs share the radius, and [`Filters`] shares nothing.
+    /// shadows, the two blurs and a glass's blur share the radius, and [`Filters`]
+    /// shares nothing.
     /// Nor does a sharpen: its radius is a pixel or two where a blur's is a dozen,
     /// so carrying either across would draw a halo or nothing.
     ///
@@ -529,6 +570,17 @@ impl EffectKind {
                 },
             },
             Self::BackgroundBlur { .. } => Self::BackgroundBlur { radius: blur },
+            Self::Glass(_) => match self {
+                Self::Glass(g) => Self::Glass(g.clone()),
+                // No blur to hand over: the glass's own default, not twelve.
+                Self::Sharpen { .. } | Self::Noise(_) | Self::Filters(_) => {
+                    Self::Glass(Glass::default())
+                }
+                _ => Self::Glass(Glass {
+                    blur,
+                    ..Glass::default()
+                }),
+            },
             // Noise shares nothing with the others: its size is a pixel or two.
             Self::Noise(_) => match self {
                 Self::Noise(n) => Self::Noise(*n),
@@ -550,8 +602,164 @@ impl EffectKind {
         match self {
             Self::DropShadow(s) | Self::InnerShadow(s) => s.blur,
             Self::LayerBlur { radius } | Self::BackgroundBlur { radius } => *radius,
+            Self::Glass(g) => g.blur,
             Self::Sharpen { .. } | Self::Noise(_) | Self::Filters(_) => DEFAULT_BLUR_RADIUS,
         }
+    }
+}
+
+/// A [`EffectKind::Glass`]'s numbers.
+///
+/// Read through [`GlassWire`], which fills what is left out with the default and
+/// holds every number to its range, as [`crate::Noise`] is read.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "GlassWire")]
+pub struct Glass {
+    /// How far what lies behind is blurred, in a background blur's units.
+    pub blur: f64,
+    /// A white veil over the blurred backdrop, `0..=1`, so a clear fill still
+    /// reads as glass.
+    pub frost: f64,
+    /// How far the backdrop bends at the outline, `0..=1`: at 1 the edge reads
+    /// what lies [`Self::depth`] past it.
+    pub bend: f64,
+    /// How far in from the outline the bend reaches, in layer units.
+    pub depth: f64,
+    /// How far the bent edge splits into a warm and a cool fringe, `0..=1`.
+    pub dispersion: f64,
+    pub rim: Rim,
+}
+
+/// A glass's lit inner edge, drawn over the layer's fill.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Rim {
+    /// Where the light comes from, in degrees, as a gradient's angle: the rim is
+    /// brightest where its edge faces along it and on the opposite side.
+    pub angle: f64,
+    /// How far in from the outline the rim reaches, in layer units.
+    pub width: f64,
+    /// Straight sRGB, alpha carrying the opacity, as a shadow's.
+    pub color: Color,
+}
+
+impl Default for Glass {
+    /// What a person gets the moment they pick Glass: a dark card on a busy
+    /// photo already reads as glass.
+    fn default() -> Self {
+        Self {
+            blur: 16.0,
+            frost: 0.1,
+            bend: 0.3,
+            depth: 12.0,
+            dispersion: 0.0,
+            rim: Rim {
+                angle: 135.0,
+                width: 1.0,
+                color: Color::from_rgba8(255, 255, 255, 153),
+            },
+        }
+    }
+}
+
+impl Glass {
+    /// This glass with its numbers held to range: the three fractions to
+    /// `0..=1`, the blur, depth and rim width to `0..=`[`MAX_BLUR`] (each one
+    /// sizes a buffer or a kernel), the angle finite. `NaN` takes the default.
+    pub fn clamped(&self) -> Self {
+        let d = Self::default();
+        let held = |v: f64, hi: f64, or: f64| match v.is_nan() {
+            true => or,
+            false => v.clamp(0.0, hi),
+        };
+        let mut color = self.rim.color;
+        if color.components.iter().all(|v| v.is_finite()) {
+            color.components = color.components.map(|v| v.clamp(0.0, 1.0));
+        } else {
+            color = d.rim.color;
+        }
+        Self {
+            blur: held(self.blur, MAX_BLUR, d.blur),
+            frost: held(self.frost, 1.0, d.frost),
+            bend: held(self.bend, 1.0, d.bend),
+            depth: held(self.depth, MAX_BLUR, d.depth),
+            dispersion: held(self.dispersion, 1.0, d.dispersion),
+            rim: Rim {
+                angle: match self.rim.angle.is_finite() {
+                    true => self.rim.angle,
+                    false => d.rim.angle,
+                },
+                width: held(self.rim.width, MAX_BLUR, d.rim.width),
+                color,
+            },
+        }
+    }
+
+    /// Whether the rim draws anything.
+    pub fn has_rim(&self) -> bool {
+        self.rim.width > 0.0 && self.rim.color.components[3] > 0.0
+    }
+}
+
+/// A [`Glass`] as read: any field may be left out, the rim's too.
+#[derive(Deserialize)]
+#[serde(default)]
+struct GlassWire {
+    blur: f64,
+    frost: f64,
+    bend: f64,
+    depth: f64,
+    dispersion: f64,
+    rim: RimWire,
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+struct RimWire {
+    angle: f64,
+    width: f64,
+    color: Color,
+}
+
+impl Default for GlassWire {
+    fn default() -> Self {
+        let d = Glass::default();
+        Self {
+            blur: d.blur,
+            frost: d.frost,
+            bend: d.bend,
+            depth: d.depth,
+            dispersion: d.dispersion,
+            rim: RimWire::default(),
+        }
+    }
+}
+
+impl Default for RimWire {
+    fn default() -> Self {
+        let d = Glass::default().rim;
+        Self {
+            angle: d.angle,
+            width: d.width,
+            color: d.color,
+        }
+    }
+}
+
+impl From<GlassWire> for Glass {
+    fn from(w: GlassWire) -> Self {
+        Glass {
+            blur: w.blur,
+            frost: w.frost,
+            bend: w.bend,
+            depth: w.depth,
+            dispersion: w.dispersion,
+            rim: Rim {
+                angle: w.rim.angle,
+                width: w.rim.width,
+                color: w.rim.color,
+            },
+        }
+        .clamped()
     }
 }
 
@@ -974,20 +1182,22 @@ pub fn stack_escape(effects: &[Keyed<Effect>]) -> Insets {
     })
 }
 
-/// [`stack_escape`] grown by how far a visible [`EffectKind::Sharpen`]'s blur
-/// reads past the pixel it draws: the escape an effect layer's **buffer** is
-/// clipped with ([`buffer_box_within`]), never the ink bounds.
+/// [`stack_escape`] grown by how far a visible [`EffectKind::Sharpen`]'s blur, or
+/// a glass's blur and bend, reads past the pixel it draws: the escape an effect
+/// layer's **buffer** is clipped with ([`buffer_box_within`]), never the ink
+/// bounds.
 ///
 /// A sharpen lands no ink outside the layer, but at a buffer cut by the target
 /// its blur would read transparency where the layer goes on, and draw a bright
-/// rim along the window's edge.
+/// rim along the window's edge; a glass's backdrop would fade there.
 pub fn buffer_escape(effects: &[Keyed<Effect>]) -> Insets {
     let e = stack_escape(effects);
     let read: f64 = effects
         .iter()
         .filter(|e| e.visible)
-        .filter_map(|e| match e.kind {
-            EffectKind::Sharpen { radius, .. } => Some(reach(radius)),
+        .filter_map(|e| match &e.kind {
+            EffectKind::Sharpen { radius, .. } => Some(reach(*radius)),
+            EffectKind::Glass(g) => Some(reach(g.blur) + g.depth.max(0.0)),
             _ => None,
         })
         .sum();
@@ -1229,7 +1439,8 @@ mod tests {
             color: Color::from_rgba8(10, 20, 30, 40),
             blend: crate::BlendMode::Normal,
         };
-        let [drop, inner, blur, sharpen, noise, backdrop, filters] = EffectKind::all_defaults();
+        let [drop, inner, blur, sharpen, noise, backdrop, glass, filters] =
+            EffectKind::all_defaults();
 
         // Two shadows share everything they have, so nothing is lost either way.
         let EffectKind::InnerShadow(s) = EffectKind::DropShadow(tuned.clone()).retyped(&inner)
@@ -1263,6 +1474,28 @@ mod tests {
         assert_eq!(
             radius, 21.0,
             "a layer blur's radius crosses to a background blur"
+        );
+        // A glass takes a blur's radius as its blur, and gives it back.
+        let EffectKind::Glass(g) = EffectKind::BackgroundBlur { radius: 21.0 }.retyped(&glass)
+        else {
+            panic!("retyping to a glass gave something else");
+        };
+        assert_eq!(g.blur, 21.0, "the radius crosses, not the glass's 16");
+        assert_eq!(
+            g.rim,
+            Glass::default().rim,
+            "the rest is the glass's default"
+        );
+        let EffectKind::BackgroundBlur { radius } =
+            EffectKind::Glass(Glass { blur: 9.0, ..g }).retyped(&backdrop)
+        else {
+            panic!("retyping a glass to a background blur gave something else");
+        };
+        assert_eq!(radius, 9.0, "and a glass's blur crosses back");
+        assert_eq!(
+            EffectKind::Noise(crate::noise::Noise::default()).retyped(&glass),
+            glass,
+            "a noise hands a glass no blur, so it takes its own default"
         );
 
         // A sharpen shares nothing with a blur, either way, and keeps its own.
@@ -1394,6 +1627,90 @@ mod tests {
         );
     }
 
+    /// A glass saves under its own tag with every field, rim nested, loads back
+    /// equal, fills a left-out field with its default, and loads a wild one
+    /// within range.
+    ///
+    /// flip: dropping the `bend` line's clamp from `Glass::clamped` (writing
+    /// `self.bend`) → fails at the `bend` assertion.
+    #[test]
+    fn a_glass_round_trips_and_loads_within_its_range() {
+        let e = Effect::new(EffectKind::Glass(Glass::default()));
+        let json = serde_json::to_value(&e).expect("serializes");
+        assert_eq!(json["kind"]["type"], "glass");
+        assert_eq!(json["kind"]["blur"], 16.0);
+        assert_eq!(json["kind"]["rim"]["angle"], 135.0);
+        let back: Effect = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(back, e);
+        assert!(blur_within_cap(&back));
+
+        let sparse: EffectKind =
+            serde_json::from_value(serde_json::json!({ "type": "glass", "blur": 4.0 }))
+                .expect("a sparse glass reads");
+        assert_eq!(
+            sparse,
+            EffectKind::Glass(Glass {
+                blur: 4.0,
+                ..Glass::default()
+            })
+        );
+
+        let wild: EffectKind = serde_json::from_value(serde_json::json!({
+            "type": "glass", "blur": 1e9, "frost": -1.0, "bend": 7.0, "depth": -3.0,
+            "rim": { "width": 1e9 }
+        }))
+        .expect("a wild glass reads");
+        let EffectKind::Glass(g) = wild else {
+            panic!("not a glass");
+        };
+        assert_eq!(g.blur, MAX_BLUR);
+        assert_eq!(g.frost, 0.0);
+        assert_eq!(g.bend, 1.0, "bend");
+        assert_eq!(g.depth, 0.0);
+        assert_eq!(g.rim.width, MAX_BLUR);
+        assert_eq!(g.rim.angle, 135.0, "a left-out rim field takes the default");
+    }
+
+    /// A glass's bound number is its blur, in the blur slot, and nothing else.
+    #[test]
+    fn a_glass_binds_its_blur_in_the_blur_slot() {
+        let mut e = Effect::new(EffectKind::Glass(Glass::default()));
+        assert_eq!(e.numbers(), [None, None, Some(16.0), None]);
+        e.set_number(EFFECT_BLUR, 30.0);
+        e.set_number(EFFECT_X, 99.0);
+        let EffectKind::Glass(g) = &e.kind else {
+            panic!("not a glass");
+        };
+        assert_eq!((g.blur, g.depth), (30.0, 12.0));
+    }
+
+    /// A glass reads past its outline by its blur's reach and its depth, added
+    /// to a background blur's; it lands no ink outside it. A hidden glass reads
+    /// nothing.
+    ///
+    /// flip: `backdrop_reach` leaving out `g.depth` → fails at the first
+    /// assertion (24 against 36).
+    #[test]
+    fn a_glass_reads_past_its_outline_by_its_blur_and_its_depth() {
+        let glass = Effect::new(EffectKind::Glass(Glass::default()));
+        let stack = crate::keyed_by_position([glass.clone()]);
+        assert_eq!(backdrop_reach(&stack), Some(reach(16.0) + 12.0));
+        assert_eq!(stack_escape(&stack), Insets::ZERO);
+        let both = crate::keyed_by_position([
+            Effect::new(EffectKind::BackgroundBlur { radius: 10.0 }),
+            glass.clone(),
+        ]);
+        assert_eq!(
+            backdrop_reach(&both),
+            Some(reach(10.0) + reach(16.0) + 12.0)
+        );
+        let hidden = crate::keyed_by_position([Effect {
+            visible: false,
+            ..glass
+        }]);
+        assert_eq!(backdrop_reach(&hidden), None);
+    }
+
     /// `same_kind` answers about the variant, not the value; `==` fails the second
     /// assertion.
     #[test]
@@ -1424,6 +1741,9 @@ mod tests {
                     assert!(*amount > 0.0 && *radius > 0.0, "{kind:?}");
                 }
                 EffectKind::Noise(n) => assert!(n.has_ink(), "{kind:?}"),
+                EffectKind::Glass(g) => {
+                    assert!(g.blur > 0.0 && g.frost > 0.0 && g.has_rim(), "{kind:?}");
+                }
                 // Neutral on purpose: off-neutral channels would change the
                 // artwork the instant the row was added.
                 EffectKind::Filters(f) => assert!(f.is_neutral(), "{kind:?}"),

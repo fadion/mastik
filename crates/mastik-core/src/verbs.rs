@@ -830,6 +830,18 @@ const NOISE_KIND_FIELDS: &[&str] = &[
     "type", "size", "density", "seed", "blend", "colors", "multi", "opacity",
 ];
 
+/// A glass effect's kind's fields, its tag first, for [`NOISE_KIND_FIELDS`]'
+/// reason.
+const GLASS_KIND_FIELDS: &[&str] = &[
+    "type",
+    "blur",
+    "frost",
+    "bend",
+    "depth",
+    "dispersion",
+    "rim",
+];
+
 /// The path of a field `serde_ignored` cannot see: one inside a gradient brush,
 /// whose `#[serde(flatten)]` drops what it does not read; inside an untagged
 /// grid track (`minmax` or `repeat`); inside an effect's internally tagged
@@ -849,6 +861,7 @@ fn unseen_field(v: &Value) -> Option<Vec<Option<Step>>> {
             "layer_blur" | "background_blur" => vec!["radius"],
             "sharpen" => vec!["amount", "radius"],
             "noise" => NOISE_KIND_FIELDS[1..].to_vec(),
+            "glass" => GLASS_KIND_FIELDS[1..].to_vec(),
             "filters" => struct_fields::<crate::effect::Filters>()?.to_vec(),
             _ => return None,
         };
@@ -1098,10 +1111,11 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
         let whole = model_fields(model, below, walk_ref(v, &above[..from]));
         // The model's example shows some fields filled in, in the short forms
         // (`gap` for `row_gap` and `column_gap`); the type's own list adds the rest.
-        // Not inside a noise's kind: the example is a shadow, whose fields it lacks.
-        let noise_kind = model == "[Effect]" && below.len() == 2 && whole.is_some();
+        // Not inside a noise's or a glass's kind: the example's kinds are others,
+        // whose fields they lack.
+        let own_kind = model == "[Effect]" && below.len() == 2 && whole.is_some();
         let mut fields = example(model)
-            .filter(|_| !noise_kind)
+            .filter(|_| !own_kind)
             .and_then(|e| walk_ref(&e, below).cloned())
             .and_then(|e| match e {
                 Value::Object(map) => Some(map.keys().cloned().collect::<Vec<_>>()),
@@ -1190,7 +1204,11 @@ fn model_fields(
         ("[Effect]", [Some(Step::Index(_))]) => struct_fields::<Effect>(),
         ("[Effect]", [Some(Step::Index(i)), Some(Step::Key(k))]) if k == "kind" => {
             let kind = at?.get(*i)?.get("kind")?;
-            (kind.get("type")?.as_str()? == "noise").then_some(NOISE_KIND_FIELDS)
+            match kind.get("type")?.as_str()? {
+                "noise" => Some(NOISE_KIND_FIELDS),
+                "glass" => Some(GLASS_KIND_FIELDS),
+                _ => None,
+            }
         }
         ("ParagraphStyle", []) => struct_fields::<ParagraphStyle>(),
         ("TextStyle", []) => struct_fields::<TextStyle>(),

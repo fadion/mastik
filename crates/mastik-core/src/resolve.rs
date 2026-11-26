@@ -701,7 +701,7 @@ pub struct Resolved {
     /// walk's isolation question costs a lookup per child.
     blending: FxHashSet<NodeId>,
     /// Every node whose subtree, the node included, holds a visible background
-    /// blur ([`Self::glass_within`]), kept as [`Self::blending`] is.
+    /// blur or glass ([`Self::glass_within`]), kept as [`Self::blending`] is.
     glassy: FxHashSet<NodeId>,
     /// Shaped layout per `Text` node, invalidated through the `DirtySet`. Shared
     /// between the nodes of one pass whose texts are equal ([`Shaper`]).
@@ -1559,8 +1559,8 @@ impl Resolved {
         }
     }
 
-    /// Whether `id`'s subtree, `id` included, holds a visible background blur —
-    /// where a change behind it can show (`scene::spread_through_backdrops`).
+    /// Whether `id`'s subtree, `id` included, holds a visible background blur or
+    /// glass — where a change behind it can show (`scene::spread_through_backdrops`).
     pub fn glass_within(&self, id: NodeId) -> bool {
         self.glassy.contains(&id)
     }
@@ -1798,11 +1798,16 @@ fn resolve_subtree(
     (bounds, ink)
 }
 
-/// Whether `node` carries a visible background blur ([`Resolved::glass_within`]).
+/// Whether `node` carries a visible effect that reads what lies behind it, a
+/// background blur or a glass ([`Resolved::glass_within`]).
 fn holds_glass(node: &crate::Node) -> bool {
-    node.effects()
-        .iter()
-        .any(|e| e.visible && matches!(e.kind, crate::EffectKind::BackgroundBlur { .. }))
+    node.effects().iter().any(|e| {
+        e.visible
+            && matches!(
+                e.kind,
+                crate::EffectKind::BackgroundBlur { .. } | crate::EffectKind::Glass(_)
+            )
+    })
 }
 
 /// Whether `node` blends with what lies under it: its own mode, or a visible
