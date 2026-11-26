@@ -161,6 +161,18 @@ Ideas worth weighing, not yet decided or scheduled.
   adjusted-pixel cache, and exports as an SVG luminance `<mask>` and CSS `mask-image`. The matte is
   scaled to full size by a guided filter over the photograph, since a plain upscale softens hair,
   and the card's *Shift edge* and *Feather* edit it without running the model again.
+- **Gradient stops bound to a colour variable.** A colour binds a whole solid paint, never a
+  gradient stop (`design/styles-variables.md` *Variables*), so a chart's *Fade* and a Sankey's
+  *Gradient* flows draw flat on a bound colour and say so (`chart::generate::faded`,
+  `flow_gradient`), and Colour review's merge writes a stop the variable's default-mode value
+  (`color_review::Merged::unbound`). Binding a stop app-wide means a stop that holds a
+  `BrushSource`-style binding, saved with a format bump and a migration and resolved wherever a
+  paint is (`Document::resolved_paint`); every reader of a bound colour checked, about 130
+  matches of `BrushSource::Bound` across core, render and export; the SVG, CSS, code, Sketch
+  and DTCG writers writing a stop's variable; and a way to bind one stop in the gradient editor.
+  It reverses the rule above. A chart-only fix that draws a fade or flow from the bound colour's
+  value at the chart, redrawing when a variable's value changes as the ground stamp does
+  (`Chart::grounded`), is about a day, but its parts and exports hold plain colours.
 
 ## Parked decisions
 
