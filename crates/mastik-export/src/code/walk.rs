@@ -1566,6 +1566,8 @@ impl Walk<'_> {
                 EffectKind::DropShadow(s) if s.spread == 0.0 => shadows += 1,
                 EffectKind::DropShadow(_) => return Some("a shadow with spread".into()),
                 EffectKind::InnerShadow(_) => return Some("an inner shadow".into()),
+                // `backdrop-filter` neither bends at the edge nor lights a rim.
+                EffectKind::Glass(_) => return Some("a glass".into()),
                 // CSS `filter` has no unsharp mask, nor a noise. One that draws
                 // nothing (`effects::any_ink`'s reading) blocks nothing.
                 EffectKind::Sharpen { amount, radius } if *amount > 0.0 && *radius > 0.0 => {

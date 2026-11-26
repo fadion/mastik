@@ -1075,7 +1075,24 @@ impl Writer<'_> {
                         "type": if matches!(e.kind, EffectKind::BackgroundBlur { .. }) { 3 } else { 0 },
                     });
                 }
-                EffectKind::LayerBlur { .. } | EffectKind::BackgroundBlur { .. } => {
+                // Its blur as a background blur, without the bend, the frost or
+                // the rim.
+                EffectKind::Glass(g) if !blur => {
+                    blur = true;
+                    st["blur"] = json!({
+                        "_class": "blur",
+                        "isEnabled": e.visible,
+                        "center": "{0.5, 0.5}",
+                        "motionAngle": 0,
+                        "radius": g.blur,
+                        "saturation": 1,
+                        "type": 3,
+                    });
+                    self.approximate("Glass, as a background blur");
+                }
+                EffectKind::LayerBlur { .. }
+                | EffectKind::BackgroundBlur { .. }
+                | EffectKind::Glass(_) => {
                     self.approximate("A second blur, left out");
                 }
                 EffectKind::Sharpen { .. } => self.approximate("Sharpen, left out"),

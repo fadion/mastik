@@ -569,7 +569,20 @@ impl Writer<'_> {
                         "hidden": !e.visible,
                     });
                 }
-                EffectKind::LayerBlur { .. } | EffectKind::BackgroundBlur { .. } => {
+                // Its blur, without the bend, the frost or the rim.
+                EffectKind::Glass(g) if !backdrop => {
+                    backdrop = true;
+                    s["backgroundBlur"] = json!({
+                        "id": eid,
+                        "type": "background-blur",
+                        "value": g.blur,
+                        "hidden": !e.visible,
+                    });
+                    self.approximate("Glass, as a background blur");
+                }
+                EffectKind::LayerBlur { .. }
+                | EffectKind::BackgroundBlur { .. }
+                | EffectKind::Glass(_) => {
                     self.approximate("A second blur of the same kind, left out");
                 }
                 EffectKind::Sharpen { .. } => self.approximate("Sharpen, left out"),

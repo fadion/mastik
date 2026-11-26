@@ -298,6 +298,14 @@ pub fn design_context(doc: &Document, res: &Resolved, asked: NodeId) -> Result<V
                 E::BackgroundBlur { radius } => {
                     json!({ "kind": "background_blur", "blur": r2(*radius) })
                 }
+                E::Glass(g) => json!({
+                    "kind": "glass",
+                    "blur": r2(g.blur),
+                    "frost": r2(g.frost),
+                    "bend": r2(g.bend),
+                    "depth": r2(g.depth),
+                    "rim": hex(g.rim.color),
+                }),
                 E::Noise(n) => json!({
                     "kind": "noise",
                     "size": [r2(n.size[0]), r2(n.size[1])],
