@@ -205,6 +205,30 @@ fn touches_within(
         .any(|c| doc.shown(*c) && touches_within(res, doc, *c, lasso, reach, flatness))
 }
 
+/// Whether world point `p` lands on what `id` paints: its own shape or a shown
+/// layer inside it, minding the clips and masks over each. Unlike [`hit_test`],
+/// a locked layer counts, since locking hides nothing; a slice never paints.
+pub fn paints_at(res: &Resolved, doc: &Document, id: NodeId, p: Point) -> bool {
+    let Some(page) = doc.page_of(id) else {
+        return false;
+    };
+    if !doc.shown_through(id) {
+        return false;
+    }
+    res.candidates_intersecting(page, Rect::new(p.x, p.y, p.x, p.y))
+        .into_iter()
+        .any(|c| {
+            is_within(doc, c, id)
+                && doc
+                    .get(c)
+                    .is_some_and(|n| !matches!(n.kind, crate::NodeKind::Slice { .. }))
+                && doc.shown_through(c)
+                && !masked_away(doc, res, c, p)
+                && !clipped_away(doc, res, c, p)
+                && hits_own_shape(res, doc, c, p, 0.0)
+        })
+}
+
 /// Whether `p` lies in the area of the closed loop `lasso`, read non-zero: what a
 /// lasso holds. A loop of fewer than three points has no area.
 pub fn inside_loop(lasso: &[Point], p: Point) -> bool {

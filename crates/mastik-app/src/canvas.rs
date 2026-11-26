@@ -1633,6 +1633,69 @@ fn set_outline(ground: Color) -> egui::Color32 {
     }
 }
 
+/// The sampling cell [`carve`] tests a tag on, in points across and down: fine
+/// across, where a shape's edge usually crosses a tag, and coarser down a tag a
+/// few cells tall, to keep the test cheap.
+const CARVE_CELL: egui::Vec2 = egui::vec2(1.0, 2.0);
+
+/// What of `pieces` `covered` leaves uncovered, tested at each [`CARVE_CELL`]'s
+/// centre: each piece cut into bands, each band into runs of uncovered cells, and
+/// a run merged with the identical run in the band above.
+fn carve(pieces: &[egui::Rect], covered: impl Fn(egui::Pos2) -> bool) -> Vec<egui::Rect> {
+    let mut out: Vec<egui::Rect> = Vec::new();
+    for piece in pieces {
+        // The runs of the band above, to extend downward rather than stack.
+        let mut above: Vec<usize> = Vec::new();
+        let mut y = piece.top();
+        while y < piece.bottom() {
+            let y1 = (y + CARVE_CELL.y).min(piece.bottom());
+            let cy = (y + y1) * 0.5;
+            let mut band = Vec::new();
+            let mut x = piece.left();
+            let mut run: Option<f32> = None;
+            while x < piece.right() {
+                let x1 = (x + CARVE_CELL.x).min(piece.right());
+                let open = !covered(egui::pos2((x + x1) * 0.5, cy));
+                match (open, run) {
+                    (true, None) => run = Some(x),
+                    (false, Some(x0)) => {
+                        band.push((x0, x));
+                        run = None;
+                    }
+                    _ => {}
+                }
+                x = x1;
+            }
+            if let Some(x0) = run {
+                band.push((x0, piece.right()));
+            }
+            let mut next = Vec::new();
+            for (x0, x1) in band {
+                let same = above
+                    .iter()
+                    .copied()
+                    .find(|&i| out[i].left() == x0 && out[i].right() == x1);
+                match same {
+                    Some(i) => {
+                        out[i].max.y = y1;
+                        next.push(i);
+                    }
+                    None => {
+                        out.push(egui::Rect::from_min_max(
+                            egui::pos2(x0, y),
+                            egui::pos2(x1, y1),
+                        ));
+                        next.push(out.len() - 1);
+                    }
+                }
+            }
+            above = next;
+            y = y1;
+        }
+    }
+    out
+}
+
 /// What of `r` lies outside `cut`, as up to four rects: the bands above and
 /// below the cut, then the two beside it.
 fn rect_minus(r: egui::Rect, cut: egui::Rect) -> Vec<egui::Rect> {
@@ -10194,9 +10257,13 @@ impl MastikApp {
             || (self.assistant.open && !self.prefs.private && self.scoped_to(id))
     }
 
-    /// The parts of tag rect `label` that no top-level frame stacked above
-    /// `id`'s own top-level layer covers, on screen; boxes stand in for
-    /// rotated frames.
+    /// The parts of tag rect `label` that no top-level layer stacked above `id`'s
+    /// own top-level layer covers, on screen.
+    ///
+    /// A frame covers its box (a box stands in for a rotated one). Any other layer
+    /// covers what it paints ([`mastik_core::paints_at`]), [`carve`]d out cell by
+    /// cell, read through its gesture in flight so a dragged layer covers where
+    /// it is drawn.
     fn uncovered(
         &self,
         id: NodeId,
@@ -10218,26 +10285,53 @@ impl MastikApp {
             return vec![label];
         };
         let mut pieces = vec![label];
+        // The tag's world box, to pass over the layers nowhere near it.
+        let corners = [label.left_top(), label.right_bottom()].map(|p| self.to_world(p, rect, ppp));
+        let reach = mastik_core::kurbo::Rect::from_points(corners[0], corners[1]);
+        // Each painted layer that reaches the tag, with the map from where the
+        // gesture draws it to where the document holds it.
+        let mut shapes: Vec<(NodeId, mastik_core::kurbo::Affine)> = Vec::new();
         for above in &siblings[at + 1..] {
+            if !self.shown_visible(*above) {
+                continue;
+            }
             let frame = doc
                 .get(*above)
                 .is_some_and(|n| matches!(n.kind(), NodeKind::Artboard { .. }));
-            if !frame || !self.shown_visible(*above) {
+            if frame {
+                let Some(q) = self.selection_quad(*above, rect, ppp) else {
+                    continue;
+                };
+                let cover = egui::Rect::from_points(&q);
+                pieces = pieces
+                    .into_iter()
+                    .flat_map(|p| rect_minus(p, cover))
+                    .collect();
+                if pieces.is_empty() {
+                    return pieces;
+                }
                 continue;
             }
-            let Some(q) = self.selection_quad(*above, rect, ppp) else {
-                continue;
-            };
-            let cover = egui::Rect::from_points(&q);
-            pieces = pieces
-                .into_iter()
-                .flat_map(|p| rect_minus(p, cover))
-                .collect();
-            if pieces.is_empty() {
-                break;
+            // Inclusive: a level line's bounds have no height.
+            let near = self.session.preview_world_bounds(*above).is_some_and(|b| {
+                b.x0 <= reach.x1 && b.x1 >= reach.x0 && b.y0 <= reach.y1 && b.y1 >= reach.y0
+            });
+            let held = self.session.resolved.world_transform(*above);
+            let drawn = self.session.preview_world_transform(*above);
+            if let (true, Some(held), Some(drawn)) = (near, held, drawn) {
+                shapes.push((*above, held * drawn.inverse()));
             }
         }
-        pieces
+        if shapes.is_empty() {
+            return pieces;
+        }
+        let res = &self.session.resolved;
+        carve(&pieces, |p| {
+            let world = self.to_world(p, rect, ppp);
+            shapes
+                .iter()
+                .any(|(id, back)| mastik_core::paints_at(res, doc, *id, *back * world))
+        })
     }
 
     /// One frame's tag at `label`, into `painter` (clipped to what shows of it).
@@ -20210,6 +20304,54 @@ mod frame_menu_door_tests {
         );
         app.session.selection.set_one(below);
         assert!(app.label_on_top(below), "selected, on top");
+    }
+
+    /// A frame's tag under any top-level layer stacked above it is cut where that
+    /// layer paints, not where its box reaches: an oval crossing the tag hides the
+    /// tag under its ink and leaves it showing in its box's empty corner.
+    /// flip: `uncovered` skipping the layers that are not frames → fails at
+    /// "under the oval's ink".
+    #[test]
+    fn a_frames_tag_is_covered_by_what_any_layer_above_paints() {
+        let mut app = MastikApp::headless(&egui::Context::default());
+        let page = app.session.page;
+        let id = app.session.ids.mint();
+        let tx = mastik_core::edit::create_artboard(
+            id,
+            page,
+            0,
+            Affine::IDENTITY,
+            Point::new(0.0, 0.0),
+            Point::new(200.0, 200.0),
+            mastik_core::peniko::Color::WHITE,
+        );
+        assert!(app.session.commit(tx));
+        // An oval 70 across centred at (60, 25): its top reaches y = -10.
+        let oval = app.session.ids.mint();
+        assert!(app.session.commit(Transaction(vec![Operation::CreateNode {
+            id: oval,
+            parent: page,
+            index: 1,
+            kind: NodeKind::Ellipse {
+                size: Size::new(70.0, 70.0),
+                arc: Default::default(),
+            },
+            transform: Some(Affine::translate((25.0, -10.0))),
+            name: None,
+        }])));
+        app.session.camera.zoom = 1.0;
+        app.session.camera.center = Point::new(0.0, 0.0);
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        let at = |app: &MastikApp, x, y| app.to_screen(Point::new(x, y), rect, 1.0);
+        let label = egui::Rect::from_min_max(at(&app, 0.0, -14.0), at(&app, 160.0, -2.0));
+        let pieces = app.uncovered(id, label, rect, 1.0);
+        let shows = |p: egui::Pos2| pieces.iter().any(|r| r.contains(p));
+        assert!(!shows(at(&app, 60.0, -4.0)), "under the oval's ink");
+        assert!(
+            shows(at(&app, 30.0, -4.0)),
+            "in the oval's box but off its ink"
+        );
+        assert!(shows(at(&app, 120.0, -8.0)), "past the oval");
     }
 
     /// A component set's tag is a tab on the frame's top edge; it adds the variant count

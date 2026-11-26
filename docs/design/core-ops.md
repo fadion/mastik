@@ -411,6 +411,7 @@ pub fn nodes_in_view(res, page: NodeId, view: Rect) -> Vec<NodeId>;
 pub fn outline_at(res, doc, page: NodeId, p: Point, slop: f64) -> Option<NodeId>;
 pub fn touches_loop(res, doc, id, lasso: &[Point], flatness: f64) -> bool;
 pub fn inside_loop(lasso: &[Point], p: Point) -> bool;
+pub fn paints_at(res, doc, id, p: Point) -> bool;  // id or a shown descendant paints p; locks ignored
 pub fn bounds(res, id) -> Option<Rect>;      // world AABB, from Resolved
 pub fn local_box(doc, res, id) -> Option<Rect>;
 pub fn pivot_world(doc, res, id) -> Option<Point>;
