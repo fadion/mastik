@@ -2859,11 +2859,21 @@ impl MastikApp {
         if self.session.style_edit.is_none()
             && let Some(p) = &self.picker
         {
+            use crate::panels::paint::ChartColour;
             use mastik_core::style::StyleSlot;
             let slot = match p.slot {
                 PaintSlot::Fill(_) => Some(StyleSlot::Fills),
                 PaintSlot::Stroke(_) => Some(StyleSlot::Strokes),
                 PaintSlot::Effect(..) => Some(StyleSlot::Effects),
+                // Series, named marks, references and the highlight are the chart's own,
+                // not its style's look.
+                PaintSlot::Chart(
+                    ChartColour::Series(_)
+                    | ChartColour::Node(_)
+                    | ChartColour::Reference(_)
+                    | ChartColour::Muted,
+                ) => None,
+                PaintSlot::Chart(_) => Some(StyleSlot::Chart),
                 _ => None,
             };
             let styled = slot.is_some_and(|s| {

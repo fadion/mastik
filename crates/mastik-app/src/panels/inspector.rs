@@ -11987,12 +11987,7 @@ impl MastikApp {
                 ("Reference colour", icon::CHART)
             }
             PaintSlot::Chart(super::paint::ChartColour::Role(r)) => (
-                [
-                    "Tick labels colour",
-                    "Values colour",
-                    "Legend colour",
-                    "Axis titles colour",
-                ][usize::from(r).min(3)],
+                super::chart::ROLE_STEPS[usize::from(r).min(3)].1,
                 icon::CHART,
             ),
             PaintSlot::Backdrop(_) => ("Overlay", icon::OVERLAY_OPEN),

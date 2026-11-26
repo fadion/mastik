@@ -1513,6 +1513,8 @@ impl Item {
                 "bridge",
                 "lollipop",
                 "dumbbell",
+                "radar",
+                "spider",
             ],
             Item::Library => &["open", "files", "dashboard", "home"],
             Item::GoToDocument => &["open", "switch", "file", "recent"],

@@ -2238,4 +2238,63 @@ mod tests {
             "the style stays"
         );
     }
+
+    /// An undo that lands a chart style under a picker open on one of its look's
+    /// colours closes the picker; one on a series' colour, the chart's own, stays.
+    /// flip: `document_rewound` without its `PaintSlot::Chart` arm → fails at
+    /// "the axis picker closes".
+    #[test]
+    fn an_undo_landing_a_chart_style_closes_a_look_picker() {
+        use crate::panels::PaintSlot;
+        use crate::panels::paint::ChartColour;
+        use mastik_core::chart::{Chart, ChartKind};
+        let ctx = egui::Context::default();
+        let (mut app, _, _) = app(&ctx);
+        let id = app.session.ids.mint();
+        let page = app.session.doc.first_page();
+        let tx = mastik_core::edit::create_chart(
+            id,
+            page,
+            0,
+            mastik_core::kurbo::Affine::IDENTITY,
+            mastik_core::kurbo::Point::new(-4000.0, 0.0),
+            mastik_core::kurbo::Point::new(-3520.0, 280.0),
+            Some(Color::WHITE),
+            Chart::sample(ChartKind::Column),
+        );
+        assert!(app.session.commit(tx));
+        app.create_style(StyleSlot::Chart, &[id]);
+        app.style_naming = None;
+        app.detach_styles(StyleSlot::Chart, &[id]);
+        let styled = |app: &MastikApp| {
+            app.session
+                .doc
+                .get(id)
+                .is_some_and(|n| n.styles().get(StyleSlot::Chart).is_some())
+        };
+        assert!(!styled(&app), "detached");
+        let open = |app: &mut MastikApp, c| {
+            app.picker = Some(crate::panels::Picker::new(
+                id,
+                PaintSlot::Chart(c),
+                egui::pos2(500.0, 300.0),
+            ));
+        };
+        let series = app
+            .session
+            .doc
+            .get(id)
+            .and_then(|n| n.chart())
+            .unwrap()
+            .mapping
+            .series[0];
+        open(&mut app, ChartColour::Series(series));
+        app.undo();
+        assert!(styled(&app), "the undo lands the style");
+        assert!(app.picker.is_some(), "a series picker stays");
+        app.redo();
+        open(&mut app, ChartColour::Axis(true));
+        app.undo();
+        assert!(app.picker.is_none(), "the axis picker closes");
+    }
 }

@@ -48,9 +48,9 @@ const FORMAT_POPUP_W: f32 = 220.0;
 const SERIES_MENU_W: f32 = 140.0;
 
 /// The category and the series of chart `id`'s mark at world point `world`,
-/// as a highlight names them: a bar's both (a one-series chart's category
-/// only), a line's or legend entry's series, a slice's category. A scatter
-/// names its series or group.
+/// as a highlight names them: a bar's or lollipop's both (a one-series chart's
+/// category only), a line's or legend entry's series (a radar's too), a slice's
+/// category, a waterfall step's name. A scatter names its series or group.
 pub(crate) fn mark_names(
     app: &MastikApp,
     id: NodeId,
@@ -94,7 +94,17 @@ pub(crate) fn mark_names(
             });
             (None, name)
         }
-        (ChartKind::Column | ChartKind::Bar, R::Bar | R::ValueLabel | R::Total) => (
+        // A waterfall is one series: a step names its category, counted over its steps.
+        (ChartKind::Waterfall, R::Bar | R::ValueLabel | R::CategoryLabel) => (
+            chart::waterfall_steps(chart)
+                .into_iter()
+                .nth(key.index as usize),
+            None,
+        ),
+        (
+            ChartKind::Column | ChartKind::Bar,
+            R::Bar | R::ValueLabel | R::Total | R::Head | R::Stem,
+        ) => (
             drawn(key.index),
             if many && key.role != R::Total {
                 series_name(key.series)
@@ -104,7 +114,7 @@ pub(crate) fn mark_names(
         ),
         (_, R::CategoryLabel) => (drawn(key.index), None),
         (
-            ChartKind::Line | ChartKind::Area,
+            ChartKind::Line | ChartKind::Area | ChartKind::Radar,
             R::Line
             | R::Area
             | R::Point
@@ -191,12 +201,13 @@ fn toggled(now: &chart::Highlighted, pick: Option<Result<String, String>>) -> ch
     }
 }
 
-/// Each label role's undo steps: its colour, its weight.
-const ROLE_STEPS: [(&str, &str); 4] = [
-    ("Tick labels colour", "Tick labels weight"),
-    ("Values colour", "Values weight"),
-    ("Legend colour", "Legend weight"),
-    ("Axis titles colour", "Axis titles weight"),
+/// Each label role in `ChartColour::Role`'s order: its row's name, and its undo
+/// steps for its colour and its weight.
+pub(super) const ROLE_STEPS: [(&str, &str, &str); 4] = [
+    ("Tick labels", "Tick labels colour", "Tick labels weight"),
+    ("Values", "Values colour", "Values weight"),
+    ("Legend", "Legend colour", "Legend weight"),
+    ("Axis titles", "Axis titles colour", "Axis titles weight"),
 ];
 
 /// The orders a column, bar or pie chart draws its categories in.
@@ -824,8 +835,7 @@ impl MastikApp {
 
     /// *Data*, and *Series* (or a waterfall's *Steps*) for one chart. `styled`
     /// adds *This chart* to Data: the rows a chart style never holds that
-    /// otherwise sit among the look's — the background, and the axis titles
-    /// and typed ranges.
+    /// otherwise sit among the look's (`Self::chart_own_rows`).
     fn chart_data_sections(
         &mut self,
         ui: &mut egui::Ui,
@@ -860,11 +870,20 @@ impl MastikApp {
         }
     }
 
-    /// *This chart*: a styled chart's background, axis titles and typed
-    /// ranges, live under Data since the style holds none of them.
+    /// *This chart*: a styled chart's background, bar shape and order, slice
+    /// order and grouping, axis titles and typed ranges, live under Data since
+    /// the style holds none of them.
     fn chart_own_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
         ui.label(ui::eyebrow("This chart"));
         self.chart_background_row(ui, id);
+        match chart.kind {
+            ChartKind::Column | ChartKind::Bar => {
+                self.chart_bar_shape_row(ui, id, chart);
+                self.chart_bar_order_rows(ui, id, chart);
+            }
+            ChartKind::Pie => self.chart_slice_own_rows(ui, id, chart),
+            _ => {}
+        }
         if !chart.kind.has_axes() {
             return;
         }
@@ -876,6 +895,106 @@ impl MastikApp {
                 self.chart_axis_range(ui, id, chart, value);
             }
             self.chart_axis_title(ui, id, chart, value, label);
+        }
+    }
+
+    /// *Bars* or *Lollipops*, lollipops disabled on a stacked chart.
+    fn chart_bar_shape_row(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        let b = &chart.options.bars;
+        let lollipops = b.shape == chart::BarShape::Lollipops;
+        // One reason on both controls: lollipops don't stack.
+        let stacked = b.stacking != chart::Stacking::Apart;
+        let pick = ui::segmented_tipped(
+            ui,
+            ui.available_width(),
+            ui::SEGMENT_CELL_H,
+            2,
+            usize::from(lollipops),
+            |i| i == 0 || !stacked,
+            |i| {
+                if i == 1 && stacked {
+                    "Lollipops don't stack"
+                } else {
+                    "Bar shape"
+                }
+            },
+            |p, i, r, on| match i {
+                0 => ui::segment_label(p, r, "Bars", on),
+                _ if stacked => ui::segment_label_disabled(p, r, "Lollipops"),
+                _ => ui::segment_label(p, r, "Lollipops", on),
+            },
+        );
+        if let Some(i) = pick {
+            self.chart_each(id, chart, "Bar shape", |c| {
+                c.options.bars.shape = if i == 1 {
+                    chart::BarShape::Lollipops
+                } else {
+                    chart::BarShape::Bars
+                };
+            });
+        }
+    }
+
+    /// *Bar order*, and what a sorted chart sorts by.
+    fn chart_bar_order_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        self.chart_menu_of(
+            ui,
+            id,
+            chart,
+            "chart-bar-order",
+            "Bar order",
+            ORDERS,
+            chart.options.bars.order,
+            |c, v| c.options.bars.order = v,
+        );
+        if chart.options.bars.order == chart::Order::Table {
+            return;
+        }
+        let by = if chart.options.bars.stacking == chart::Stacking::Apart {
+            let first = chart
+                .mapping
+                .series
+                .iter()
+                .find(|c| !chart.series.iter().any(|s| s.column == **c && !s.visible));
+            let name = first
+                .and_then(|c| chart.table.column(*c))
+                .map_or("the first series", |c| c.name.as_str());
+            format!("By {name}, the first series shown")
+        } else {
+            "By each stack's total".to_string()
+        };
+        ui::selection_note(ui, &by);
+    }
+
+    /// *Slice order* and *Group small slices* with its threshold.
+    fn chart_slice_own_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        self.chart_menu_of(
+            ui,
+            id,
+            chart,
+            "chart-slice-order",
+            "Slice order",
+            ORDERS,
+            chart.options.slices.order,
+            |c, v| c.options.slices.order = v,
+        );
+        let group = chart.options.slices.group_below.is_some();
+        self.chart_switch(ui, id, chart, "Group small slices", group, |c, on| {
+            c.options.slices.group_below = on.then_some(3.0);
+        });
+        if group {
+            self.chart_number(
+                ui,
+                id,
+                chart,
+                ui.available_width(),
+                "Below",
+                "Group small slices",
+                Scrub::fine(0.1, 1).range(0.0..=100.0),
+                1,
+                |c| c.options.slices.group_below.unwrap_or(3.0),
+                |c, v| c.options.slices.group_below = Some(v),
+            );
         }
     }
 
@@ -1492,8 +1611,8 @@ impl MastikApp {
 
     /// *Background*: the chart frame's own fill, edited where it is one plain
     /// colour (a single visible solid or bound fill, no fill style); otherwise
-    /// disabled, naming why. With no fill it reads *None*, and a click gives the
-    /// frame a white one to edit.
+    /// disabled, naming why. With no visible fill it reads *None*, and a click
+    /// adds a white one to edit, keeping any hidden fills.
     fn chart_background_row(&mut self, ui: &mut egui::Ui, id: NodeId) {
         let doc = &self.session.doc;
         let Some(node) = doc.get(id) else { return };
@@ -1577,10 +1696,21 @@ impl MastikApp {
                     brush: Brush::Solid(mastik_core::peniko::Color::WHITE).into(),
                     visible: true,
                 };
-                let fills = mastik_core::item::keyed_by_position([fill]);
+                // Added over any hidden fills, which stay.
+                let mut fills = self
+                    .session
+                    .doc
+                    .get(id)
+                    .map(|n| n.paint().fills.clone())
+                    .unwrap_or_default();
+                fills.push(mastik_core::item::Keyed::new(
+                    self.session.ids.mint_item(),
+                    fill,
+                ));
+                let at_index = fills.len() - 1;
                 self.session.name_step("Chart background", icon::CHART);
                 self.commit_edit(Transaction(vec![Operation::SetFills { id, fills }]));
-                self.open_picker(ui, id, PaintSlot::Fill(0), at);
+                self.open_picker(ui, id, PaintSlot::Fill(at_index), at);
             }
         }
     }
@@ -2078,6 +2208,20 @@ impl MastikApp {
             Highlighted::Categories(n) => (n.clone(), Vec::new()),
             Highlighted::Series(n) => (Vec::new(), n.clone()),
         };
+        // A waterfall's final total is a step it can light.
+        for step in chart::waterfall_steps(chart) {
+            if !categories.contains(&step) {
+                categories.push(step);
+            }
+        }
+        // A lit name the data no longer has stays listed, so it can be turned off.
+        for (names, lit) in [(&mut categories, &lit_cats), (&mut series, &lit_series)] {
+            for n in lit {
+                if !names.contains(n) {
+                    names.push(n.clone());
+                }
+            }
+        }
         let shown = match (&h.target, lit_cats.len() + lit_series.len()) {
             (Highlighted::None, _) | (_, 0) => "None".to_string(),
             (_, n) if n <= 2 => lit_cats
@@ -2150,6 +2294,11 @@ impl MastikApp {
         if h.others == chart::Others::Muted {
             self.chart_slot_row(ui, id, chart, ChartColour::Muted, "Muted colour");
         }
+        // The highlight's own, so it stays live where a chart style holds Values.
+        let only = h.values_only;
+        self.chart_switch(ui, id, chart, "Highlighted only", only, |c, on| {
+            c.highlight.values_only = on;
+        });
     }
 
     /// *Flat* or *Fade*, and *Fade to*: areas and bars from their colour at the
@@ -2412,6 +2561,7 @@ impl MastikApp {
         } else if several {
             Err("Edit references one chart at a time")
         } else if chart.references.len() >= chart::MAX_REFERENCES {
+            const _: () = assert!(chart::MAX_REFERENCES == 16, "the reason names the limit");
             Err("At most 16 references")
         } else {
             Ok(())
@@ -2600,8 +2750,22 @@ impl MastikApp {
             },
         );
         self.chart_reference_at(ui, id, chart, &r, false);
-        if r.kind == chart::RefKind::Band {
-            self.chart_reference_at(ui, id, chart, &r, true);
+        // A line keeps the band's far end, disabled: the popover holds the same
+        // rows whatever is picked, as a popup never grows back.
+        let band = r.kind == chart::RefKind::Band;
+        let far = ui::disable_unless(ui, band, |ui| {
+            ui.scope(|ui| self.chart_reference_at(ui, id, chart, &r, true))
+                .response
+                .rect
+        })
+        .inner;
+        if !band {
+            ui.interact(
+                far,
+                ui.id().with(("chart-ref-far", rid)),
+                egui::Sense::hover(),
+            )
+            .on_hover_text("A line stands at one place; a band has a far end");
         }
         let w = ui.available_width();
         self.chart_text(
@@ -2826,7 +2990,28 @@ impl MastikApp {
                     },
                 );
             }
-            _ => {}
+            // Every pick keeps one row under it, so the popover holds its size.
+            ref other => {
+                let why = match other {
+                    At::Stat { .. } => "A far end's statistic is over every series shown",
+                    At::Category(_) => "A category reference stands at its category",
+                    _ => "It stands at the axis's end",
+                };
+                let w = ui.available_width();
+                self.chart_number_if(
+                    ui,
+                    Err(why),
+                    id,
+                    chart,
+                    w,
+                    "Value",
+                    "Reference value",
+                    Scrub::fine(0.1, 2),
+                    2,
+                    |_| 0.0,
+                    |_, _| {},
+                );
+            }
         }
     }
 
@@ -3116,37 +3301,7 @@ impl MastikApp {
                 let waterfall = chart.kind == ChartKind::Waterfall;
                 let lollipops = !waterfall && b.shape == chart::BarShape::Lollipops;
                 if !waterfall {
-                    // One reason on both controls: lollipops don't stack.
-                    let stacked = b.stacking != chart::Stacking::Apart;
-                    let pick = ui::segmented_tipped(
-                        ui,
-                        ui.available_width(),
-                        ui::SEGMENT_CELL_H,
-                        2,
-                        usize::from(lollipops),
-                        |i| i == 0 || !stacked,
-                        |i| {
-                            if i == 1 && stacked {
-                                "Lollipops don't stack"
-                            } else {
-                                "Bar shape"
-                            }
-                        },
-                        |p, i, r, on| match i {
-                            0 => ui::segment_label(p, r, "Bars", on),
-                            _ if stacked => ui::segment_label_disabled(p, r, "Lollipops"),
-                            _ => ui::segment_label(p, r, "Lollipops", on),
-                        },
-                    );
-                    if let Some(i) = pick {
-                        self.chart_each(id, chart, "Bar shape", |c| {
-                            c.options.bars.shape = if i == 1 {
-                                chart::BarShape::Lollipops
-                            } else {
-                                chart::BarShape::Bars
-                            };
-                        });
-                    }
+                    self.chart_bar_shape_row(ui, id, chart);
                 }
                 // The slots a bar or a lollipop takes, either way.
                 let bar_gap = if waterfall {
@@ -3209,31 +3364,7 @@ impl MastikApp {
                 }
                 // A waterfall runs in table order: its walk is the order.
                 if !waterfall {
-                    self.chart_menu_of(
-                        ui,
-                        id,
-                        chart,
-                        "chart-bar-order",
-                        "Bar order",
-                        ORDERS,
-                        chart.options.bars.order,
-                        |c, v| c.options.bars.order = v,
-                    );
-                }
-                if !waterfall && chart.options.bars.order != chart::Order::Table {
-                    let by = if chart.options.bars.stacking == chart::Stacking::Apart {
-                        let first =
-                            chart.mapping.series.iter().find(|c| {
-                                !chart.series.iter().any(|s| s.column == **c && !s.visible)
-                            });
-                        let name = first
-                            .and_then(|c| chart.table.column(*c))
-                            .map_or("the first series", |c| c.name.as_str());
-                        format!("By {name}, the first series shown")
-                    } else {
-                        "By each stack's total".to_string()
-                    };
-                    ui::selection_note(ui, &by);
+                    self.chart_bar_order_rows(ui, id, chart);
                 }
             }
             ChartKind::Line | ChartKind::Area => {
@@ -3373,34 +3504,7 @@ impl MastikApp {
                         |c, v| c.options.slices.start_angle = v,
                     );
                 });
-                self.chart_menu_of(
-                    ui,
-                    id,
-                    chart,
-                    "chart-slice-order",
-                    "Slice order",
-                    ORDERS,
-                    chart.options.slices.order,
-                    |c, v| c.options.slices.order = v,
-                );
-                let group = chart.options.slices.group_below.is_some();
-                self.chart_switch(ui, id, chart, "Group small slices", group, |c, on| {
-                    c.options.slices.group_below = on.then_some(3.0);
-                });
-                if group {
-                    self.chart_number(
-                        ui,
-                        id,
-                        chart,
-                        ui.available_width(),
-                        "Below",
-                        "Group small slices",
-                        Scrub::fine(0.1, 1).range(0.0..=100.0),
-                        1,
-                        |c| c.options.slices.group_below.unwrap_or(3.0),
-                        |c, v| c.options.slices.group_below = Some(v),
-                    );
-                }
+                self.chart_slice_own_rows(ui, id, chart);
                 if self
                     .chart_card
                     .as_ref()
@@ -4277,12 +4381,6 @@ impl MastikApp {
                 c.options.values.totals = on;
             });
         }
-        if chart.highlight.target != chart::Highlighted::None {
-            let only = chart.highlight.values_only;
-            self.chart_switch(ui, id, chart, "Highlighted only", only, |c, on| {
-                c.highlight.values_only = on;
-            });
-        }
         // Offered while some label can sit inside its mark.
         let v = &chart.options.values;
         let inside = match chart.kind {
@@ -4538,10 +4636,7 @@ impl MastikApp {
         }
         // Each kind of label's own ink and weight, the chart's while unset.
         ui.label(ui::eyebrow("By role"));
-        for (r, name) in ["Tick labels", "Values", "Legend", "Axis titles"]
-            .into_iter()
-            .enumerate()
-        {
+        for (r, (name, ..)) in ROLE_STEPS.into_iter().enumerate() {
             let r = r as u8;
             let slot = ChartColour::Role(r);
             let own = role_of(chart, r);
@@ -4587,7 +4682,7 @@ impl MastikApp {
                 );
                 ui.scope(|ui| {
                     ui::combo_height(ui);
-                    egui::ComboBox::from_id_salt(("chart-role-weight", r))
+                    egui::ComboBox::from_id_salt(("chart-role-weight", id, r))
                         .icon(ui::combo_chevron)
                         .width(ui.available_width())
                         .selected_text(ui::combo_text(&shown))
@@ -4610,12 +4705,12 @@ impl MastikApp {
                 });
             });
             if reset {
-                self.chart_each(id, chart, ROLE_STEPS[usize::from(r)].0, |c| {
+                self.chart_each(id, chart, ROLE_STEPS[usize::from(r)].1, |c| {
                     role_of_mut(c, r).ink = None;
                 });
             }
             if let Some(w) = pick {
-                self.chart_each(id, chart, ROLE_STEPS[usize::from(r)].1, |c| {
+                self.chart_each(id, chart, ROLE_STEPS[usize::from(r)].2, |c| {
                     role_of_mut(c, r).weight = w;
                 });
             }
@@ -5638,6 +5733,55 @@ mod tests {
         assert_eq!(step.note.label, "Highlight");
     }
 
+    /// A lollipop's head, a waterfall's step and a radar's line each name what
+    /// the card's Highlight dropdown offers for that kind.
+    /// flip: `mark_names` without its waterfall arm → fails at "a waterfall step".
+    #[test]
+    fn every_kind_names_its_marks_for_a_highlight() {
+        let ctx = egui::Context::default();
+        let world_of = |app: &MastikApp, id: NodeId, role: chart::PartRole| {
+            let chart = chart_at(app, id);
+            let n = chart
+                .parts
+                .iter()
+                .find(|(k, _)| k.role == role && k.index == 0)
+                .map(|(_, n)| *n)
+                .unwrap_or_else(|| panic!("{role:?} drawn"));
+            app.session
+                .resolved
+                .world_bounds(n)
+                .expect("drawn")
+                .center()
+        };
+        let first_category = |app: &MastikApp, id: NodeId| {
+            let c = chart_at(app, id);
+            let col = c.table.index_of(c.mapping.category.unwrap()).unwrap();
+            c.table.rows[0][col].trim().to_string()
+        };
+
+        let (mut app, id) = charted(&ctx, ChartKind::Column);
+        let mut chart = chart_at(&app, id);
+        chart.options.bars.shape = chart::BarShape::Lollipops;
+        app.chart_commit(id, "Bar shape", chart);
+        pass(&ctx, &mut app);
+        let at = world_of(&app, id, chart::PartRole::Head);
+        let (cat, _) = mark_names(&app, id, at);
+        assert_eq!(cat, Some(first_category(&app, id)), "a lollipop's head");
+
+        let (mut app, id) = charted(&ctx, ChartKind::Waterfall);
+        pass(&ctx, &mut app);
+        let at = world_of(&app, id, chart::PartRole::Bar);
+        let (cat, series) = mark_names(&app, id, at);
+        assert_eq!(cat, Some(first_category(&app, id)), "a waterfall step");
+        assert_eq!(series, None);
+
+        let (mut app, id) = charted(&ctx, ChartKind::Radar);
+        pass(&ctx, &mut app);
+        let at = world_of(&app, id, chart::PartRole::Line);
+        let (_, series) = mark_names(&app, id, at);
+        assert!(series.is_some(), "a radar's line names its series");
+    }
+
     /// The card offers the chart's own spacing, order, totals, mark stroke and
     /// role rows, and a column chart keeps *Label line ends* shown, disabled.
     /// flip: `chart_style_rows` leaving out the padding pair → fails at
@@ -5738,7 +5882,8 @@ mod tests {
     /// section, *This chart* under Data and the palette held *From the style*;
     /// detached, Marks is back and *This chart* gone.
     /// flip: `inspector_charts` reading every chart as unstyled, so the whole
-    /// card goes under the capsule → fails at "Data stays".
+    /// card goes under the capsule → fails at "Data stays"; `chart_own_rows`
+    /// without the bar rows → fails at "the bar shape is the chart's own".
     #[test]
     fn a_styled_chart_folds_its_look_into_the_capsule() {
         let ctx = egui::Context::default();
@@ -5769,6 +5914,8 @@ mod tests {
         assert!(!drawn(&out, "Marks"), "no Marks under the capsule");
         assert!(drawn(&out, "Data"), "Data stays");
         assert!(drawn(&out, "THIS CHART"), "the chart's own rows");
+        assert!(drawn(&out, "Lollipops"), "the bar shape is the chart's own");
+        assert!(drawn(&out, "BAR ORDER"), "and so is its order");
         assert!(
             drawn(&out, "From the style · Detach to change"),
             "the palette is the style's"

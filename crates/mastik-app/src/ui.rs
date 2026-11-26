@@ -1970,7 +1970,9 @@ pub fn fold_rule_add(
         ink,
     );
     let clicked = match add {
-        Ok(()) => plus.on_hover_text(format!("Add to {label}")).clicked(),
+        Ok(()) => plus
+            .on_hover_text(format!("Add to {}", label.to_lowercase()))
+            .clicked(),
         Err(why) => {
             plus.on_hover_text(why);
             false

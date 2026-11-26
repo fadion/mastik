@@ -675,7 +675,7 @@ A chart has no title or caption of its own: a text layer next to it does that, a
   mask makes nothing and says *A chart can't go inside a component, an instance or a mask*
   (tried on a copy of the document, so the placement rule stays the core's).
 - **Other doors**: the palette's *Insert chart* (aliases *chart*, *graph*, *plot*, *waterfall*,
-  *bridge*, *lollipop*, *dumbbell*), which arms the tool on the rail's current kind; an alias
+  *bridge*, *lollipop*, *dumbbell*, *radar*, *spider*), which arms the tool on the rail's current kind; an alias
   finds the row but does not pick its kind; a `.csv` or `.tsv` dropped on the canvas, which makes a chart at the drop from the file
   (*Import*, below): a Scatter when the file's first column is numeric, a Sankey when it has
   exactly two text columns followed by one number column, else a Column chart.
@@ -823,8 +823,8 @@ References starts open):
     areas and scatters list series only, pies categories only, and a one-series chart
     categories only. Each pick turns one name on or off, a pick of the other kind starts over,
     and the dropdown closes after each pick. Steps *Highlight* and *Clear highlight*. While
-    something is highlighted, *Highlight others* (*Muted* / *Faded*) and under *Muted* the
-    *Muted colour* row.
+    something is highlighted, *Highlight others* (*Muted* / *Faded*), under *Muted* the
+    *Muted colour* row, and *Highlighted only* (values on the lit marks only).
 - **Marks**, **Axes**, **Values**, **Legend** — the options above for the kind, as
   `ui::value_field`, `ui::switch_row`, `ui::segmented` and dropdown rows, number fields two to a
   line. Each field's undo step is its label (*Bar radius*, *Legend position*). Each segmented or
@@ -848,7 +848,7 @@ References starts open):
   (`ui::labelled` over *Auto* / *Text*) only while some label can sit inside its mark: a bar
   label Inside or End, or Outside on a stack, or a pie label on its slice. Values on columns
   and bars has *Stack totals*, disabled with *Every stack of a 100% chart totals 100%* or *Only
-  stacked bars have a total*; while something is highlighted, *Highlighted only*.
+  stacked bars have a total*.
   - *Marks* on a radar: *Radar grid* (*Polygon* / *Circle*), *Spokes*, a pair *Start* (step
     *Radar start angle*) and *Width* (*Line width*), *Points* (*None* / *Hollow* / *Filled*) and
     *Area* opacity, disabled with *Only a filled radar paints its area* unless filled. Its
@@ -929,8 +929,9 @@ lead, live, above the capsule (`style_card_parts`' `head`). Styled, the sections
 — Style, Marks, Axes, Values, Legend, Text — fold into the capsule and are read-only, as on any
 styled card; Data, Series or Steps, and References follow it live, then *Flatten chart*. Data
 then ends with a *This chart* eyebrow over what sits among the look's rows but is the chart's
-own: the *Background* row (the frame's fill, never the style's) and, on a chart with axes, each
-axis's typed range and title. Outside the capsule, what the look holds is shown disabled with
+own: the *Background* row (the frame's fill, never the style's); a column or bar chart's bar
+shape and *Bar order*; a pie's *Slice order* and *Group small slices*; and, on a chart with
+axes, each axis's typed range and title (`chart::Options::look` leaves all of these out). Outside the capsule, what the look holds is shown disabled with
 *From the style · Detach to change*: the palette dropdown reads that, and so does a type
 variant that would change the look (a line's curve, a donut, a filled radar), while stacking and
 a waterfall's direction stay live. The series' own swatches stay live. Under the browser's
