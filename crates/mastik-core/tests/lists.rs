@@ -519,6 +519,58 @@ fn a_list_read_by_get_tree_inserts_as_a_list() {
     assert!(refused.contains("omitted"), "{refused}");
 }
 
+/// A board holding the main and a list of its instance, read with `get_tree`
+/// and inserted, fills the new list's rows from the new main's properties,
+/// which `insert_subtree` mints afresh.
+/// flip: `insert_subtree` skipping `list_fills_onto_new_props` → fails at
+/// "rows filled". `referenced` keeping a properties layer's id does not bite
+/// here: the instance's `copy_of` keeps the main's anyway.
+#[test]
+fn a_list_read_with_its_main_fills_its_rows() {
+    let (mut doc, mut ids, page) = blank();
+    let frame = serde_json::to_value(NodeKind::Artboard {
+        size: Size::new(800.0, 400.0),
+        corner_radii: Default::default(),
+        corner_smoothing: 0.0,
+    })
+    .unwrap();
+    let board = run(
+        &mut doc,
+        &mut ids,
+        "create_node",
+        json!({ "parent": page.to_wire(), "kind": frame, "name": "Board" }),
+    )[0];
+    let (_, inst) = row_component(&mut doc, &mut ids, board);
+    let set = data(&mut ids, &[("Linen", "yes"), ("Wool", "no"), ("Tote", "1")]);
+    let res = Resolved::rebuild(&doc);
+    let (tx, _) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).unwrap();
+    let mut history = History::default();
+    commit(&mut history, &mut doc, &mut ids, tx);
+
+    let read = verbs::tree(&doc, board).expect("the board");
+    let made = edit(
+        &mut history,
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": read }),
+    );
+    let new_list = doc
+        .get(made[0])
+        .unwrap()
+        .children()
+        .iter()
+        .copied()
+        .find(|c| doc.get(*c).unwrap().list().is_some())
+        .expect("a list in the new board");
+    assert_eq!(
+        titles(&doc, new_list),
+        ["Linen", "Wool", "Tote"],
+        "rows filled"
+    );
+    assert_eq!(badges(&doc, new_list), [true, false, true]);
+}
+
 /// A verb naming a layer inside a list's copy is refused, pointing at the
 /// template; the same verb on the template's layer runs.
 /// flip: `verbs::call` skipping `refuse_list_copies` → fails at "refused".

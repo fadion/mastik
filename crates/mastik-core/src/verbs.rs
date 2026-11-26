@@ -3102,6 +3102,7 @@ pub static VERBS: &[Verb] = &[
             tree_ops(
                 ctx, a, &tree, parent, index, &mut ids, &minted, &mut done, &mut late,
             )?;
+            list_fills_onto_new_props(ctx.doc, &minted, &mut late);
             done.tx.0.extend(late);
             if let Some(&root) = done.created.first() {
                 place_corner(ctx.doc, a, &mut done.tx, root);
@@ -8678,6 +8679,36 @@ fn mint_tree(ids: &mut IdSource, tree: &Tree, out: &mut Vec<NodeId>, minted: &mu
     }
 }
 
+/// Move each list fill in `late` naming a property of a main the tree also
+/// holds onto that property's new item id: the tree writes properties without
+/// theirs, so the new main mints fresh ones, matched to the read main's by
+/// position. A fill naming a main outside the tree keeps its id.
+fn list_fills_onto_new_props(doc: &Document, minted: &Minted, late: &mut Late) {
+    use crate::item::ItemId;
+    let mut moved: rustc_hash::FxHashMap<ItemId, ItemId> = Default::default();
+    for (read, new) in minted {
+        let Some(old) = doc.get(*read) else { continue };
+        let made = late.iter().find_map(|op| match op {
+            Operation::SetProperties { id, props } if id == new => Some(props),
+            _ => None,
+        });
+        for (o, n) in old.props().iter().zip(made.into_iter().flatten()) {
+            moved.insert(o.id, n.id);
+        }
+    }
+    for op in late.iter_mut() {
+        if let Operation::SetList { list: Some(l), .. } = op {
+            for f in &mut l.fill {
+                if let crate::list::Target::Prop(p) = &mut f.target
+                    && let Some(n) = moved.get(p)
+                {
+                    *p = *n;
+                }
+            }
+        }
+    }
+}
+
 /// A layer a tree refers to by `wire`: the tree's own layer read under it, else
 /// the document's.
 fn tree_ref(a: &Args<'_>, minted: &Minted, wire: &str) -> Result<NodeId, VerbError> {
@@ -9706,9 +9737,16 @@ fn unlink_members(doc: &Document, outer: NodeId, v: &mut Value) {
 }
 
 /// Every layer id a layer of `v` refers to: its link, its swap, its lineage
-/// key, and its properties' bound layers and preferred mains.
+/// key, and its properties' bound layers and preferred mains; and a layer
+/// holding properties itself, whose read id `insert_subtree` moves a list's
+/// fills by.
 fn referenced(v: &Value, out: &mut std::collections::HashSet<String>) {
     let Value::Object(map) = v else { return };
+    if map.contains_key("props")
+        && let Some(Value::String(id)) = map.get("id")
+    {
+        out.insert(id.clone());
+    }
     for key in ["copy_of", "swap", "lineage"] {
         if let Some(Value::String(s)) = map.get(key) {
             out.insert(s.clone());
