@@ -198,7 +198,10 @@ everything below.
   Scrubbing an option field generates the edited description the same way, into
   `RenderOverrides::replace_chart`, the new parts drawn as ghosts in place of the frame's own,
   since a patch cannot add a tick or a bar; their bound colours read in the modes in force at
-  the chart (`RenderOverrides::paint_owner`). Each generation is kept by chart, description and
+  the chart (`RenderOverrides::paint_owner`). A previewed `SetFills` on a chart frame (a picker
+  drag on its background) generates the chart the same way for the ground those fills make
+  (`chart::ground_with`), so *Auto* and the colours derived from the ground turn during the drag
+  rather than on release. Each generation is kept by chart, description and
   size until the next preview (`EditorSession::chart_generated`), so a field held focused, which
   previews the same edit every frame, lays the chart out once, and a chart past its limits is
   refused once. Nothing enters the document until release (invariant 5).
@@ -520,7 +523,9 @@ it applies to; switching kind keeps the others' values.
   - Each palette has dark colours (`chart::palette(p, dark)`), each its light twin at the same
     place lifted for a dark ground, so a series keeps its hue. Dark *Mono* runs brightest first,
     so the first series still leads. An unset series or mark draws `palette(p, drawn_dark)`.
-  - The theme does not paint the frame's background, which stays the frame's fill.
+  - The frame's background stays the frame's fill. Only the card's *Light* and *Dark* pick turn
+    it, and only while it is still a theme's ground (*The Chart card*, *Style*); the generator
+    never paints it.
 - **Plot background** (`Options::plot`: a fill, unset by default, and a radius) — a
   `PartRole::Ground` `Rect` named *Ground*, the Plot's first child, under the grid. Only kinds
   with a rectangular plot (`ChartKind::rect_plot`) draw one. Hollow points fill with it. A progress ring's track is `PartRole::Track`.
@@ -673,9 +678,8 @@ A chart has no title or caption of its own: a text layer next to it does that, a
   *From*, *To*, *Value* with eight flows over three columns; a waterfall's *Step* and *Change*:
   *Revenue* 420, *COGS* −180, *Gross* as a total, *Opex* −120, *Other* 20, *Tax* −30, then the
   final total *Net*; a line chart's legend on the *Line* swatch), the *Clean* preset and the *Mastik*
-  palette, and the data window
-  opens on it with the first cell selected, so typing or pasting replaces the sample. Undo step
-  *Insert chart*. A press where the chart would land inside a main component, an instance or a
+  palette. The data window stays closed: drawing is not the moment to edit the table, and
+  double-click or the card's *Edit data…* opens it. Undo step *Insert chart*. A press where the chart would land inside a main component, an instance or a
   mask makes nothing and says *A chart can't go inside a component, an instance or a mask*
   (tried on a copy of the document, so the placement rule stays the core's).
 - **Other doors**: the palette's *Insert chart* (aliases *chart*, *graph*, *plot*, *waterfall*,
@@ -684,7 +688,8 @@ A chart has no title or caption of its own: a text layer next to it does that, a
   Radar, `menu::Item::CHART_KIND_WORDS`), which the rail then keeps; *lollipop* and *dumbbell* are
   column options, not kinds, and only find the row; a `.csv` or `.tsv` dropped on the canvas, which makes a chart at the drop from the file
   (*Import*, below): a Scatter when the file's first column is numeric, a Sankey when it has
-  exactly two text columns followed by one number column, else a Column chart.
+  exactly two text columns followed by one number column, else a Column chart. A dropped file's
+  chart opens with the data window on it (`insert_chart_at`).
 
 ### On the canvas and in the layers tree
 
@@ -759,23 +764,29 @@ References starts open):
   and the app theme are unchanged (`ChartCardCache`), so a bound variable's new value, a mode
   switch or a theme switch redraws them (`style_pictures_follow_a_bound_variables_value`). The
   preset the options are exactly at lights. Undo step *Chart style*. Under the cells, in order:
+  - The theme, `ui::segmented_tipped` *Auto* / *Light* / *Dark* (`chart_theme_row`, tooltip and
+    undo step *Chart theme*), setting every chart the card writes; it sits here rather than
+    beside the palette dropdown because Series serves one chart only. Picking *Light* or *Dark*
+    also turns, in the same step, each such chart's background that is a lone visible literal
+    solid (no fill style, no variable) still at either theme's ground (`theme_default`:
+    `chart::chrome(false).ground` white, `chrome(true).ground` `#18181B`) to the picked theme's ground,
+    since such a background is no choice of the person's; one they chose stays. *Auto* leaves
+    the background alone.
   - *Background*, a colour row on the chart frame's own fill, opening the picker on the frame's
     Fill slot (`chart_background_row`), so its steps are the Fill slot's and it offers
-    gradients as Fill does. Disabled, naming why, over a fill style, several fills, a gradient
-    or an image (*The background is a gradient: edit it in Fill*). With no fill it reads *None*,
-    and a click gives the frame a white fill (undo step *Chart background*) and opens the picker.
-    It writes only the shown chart, even with several selected: it edits that frame's own fill,
-    as the Fill card does.
-  - The theme, `ui::segmented` *Auto* / *Light* / *Dark* (`chart_segments_of`, tooltip and undo
-    step *Chart theme*), setting every chart the card writes (`chart_each`); it sits here rather
-    than beside the palette dropdown because Series serves one chart only. Under *Auto* a note
-    (`ui::selection_note`) says what it picked and where it read the ground (*Dark, read from Card*; *the
-    background*, *the page*).
-  - *Plot background*, reading *None* until a click sets `F2F3F5` and opens the picker; set, a
-    `×` (*No plot background*) clears it. Undo step *Plot background*. Then *Radius* (undo step
-    *Plot radius*), disabled with *No plot background to round* while unset. Both are disabled
-    off a rectangular plot (pies, Sankeys, radars): *Only a chart with a rectangular plot has a
-    plot background*.
+    gradients as Fill does; a gradient shows its ramp in the swatch and reads *Gradient*.
+    Disabled, naming why, over a fill style, several fills or an image (*The background is an
+    image: edit it in Fill*). With no fill it reads *None*, and a click gives the frame the
+    drawn theme's ground (undo step *Chart background*) and opens the picker. Beside it the
+    restore button (*Restorable colours*, below) is live while the lone fill is anything but
+    the drawn theme's ground and writes that ground (step *Chart background*; *Use the theme's
+    background* / *Already the theme's background*). It writes only the shown chart, even with
+    several selected: it edits that frame's own fill, as the Fill card does.
+  - *Plot background*, reading *None* until a click sets `F2F3F5` and opens the picker; its
+    restore button clears it (*No plot background* / *No plot background to remove*). Undo step
+    *Plot background*. Then *Plot radius* (undo step *Plot radius*), disabled with *No plot
+    background to round* while unset. Both are disabled off a rectangular plot (pies, Sankeys,
+    radars): *Only a chart with a rectangular plot has a plot background*.
   - *Padding* and *Gap* as a pair (undo steps *Chart padding*, *Chart gap*). The canvas offers
     no spacing handles for them, since padding is one value.
 - **Data** — led by the table the chart reads (`chart_table_dropdown`), the List card's Data
@@ -796,7 +807,7 @@ References starts open):
   set's, the List card's `data_set_link_rows`; both painted by `chart_import::link_rows`), the
   left-out line (*2
   values left out*, the reasons in its tooltip) or the refusal (*Too many marks: …*, *Flows loop
-  back: …*) in the warning ink, and the mapping: *Category* (*X* for a scatter) or a Sankey's
+  back: …*) in the warning ink, and the mapping: *Category* (*X axis* for a scatter) or a Sankey's
   *From*, *To* and *Value* as dropdowns of columns.
 - **Steps** (a waterfall, in place of Series): the *Increase*, *Decrease* and *Total* colour
   rows (`ChartColour::Step`, *From the theme* while unset), *Totals at* (a labelled dropdown of
@@ -813,7 +824,8 @@ References starts open):
   right-aligned in a capsule (`binding::capsule`, at most half the row, `binding::chip_tip` its
   tooltip). On a
   line, area or scatter chart a `…` button between them opens the series' style menu: its line's
-  dash (*Solid*, *Dashed*, *Dotted*; not a scatter) and its points' shape (a line's unshaped
+  dash (*Solid*, *Dashed*, *Dotted*; not a scatter) and its points' shape, each group under a
+  `ui::menu_eyebrow` (*Line*, *Points*) parted by `ui::menu_sep` (a line's unshaped
   points are circles; a scatter's take the chart's shape), undo steps *Series dash* and *Series
   point shape*. A chart coloured by name lists its named marks here instead
   (`chart::named_marks`, written through `chart::with_node_fill`): a Sankey's *Nodes*, a pie's
@@ -826,8 +838,9 @@ References starts open):
   - *Colour by category* (columns and bars), disabled with *Colour by category needs one
     series* unless one series is shown.
   - *Highlight* (not Sankey): a labelled dropdown reading *None*, the one or two names lit, or
-    *‹n› categories* / *‹n› series*. It lists *None*, then a *Categories* eyebrow over the
-    categories and a *Series* eyebrow over the series (a grouped scatter's groups); lines,
+    *‹n› categories* / *‹n› series*. It lists *None*, then, each after a `ui::menu_sep`, a
+    *Categories* `ui::menu_eyebrow` over the categories and a *Series* one over the series (a
+    grouped scatter's groups); lines,
     areas and scatters list series only, pies categories only, and a one-series chart
     categories only. Each pick turns one name on or off, a pick of the other kind starts over,
     and the dropdown closes after each pick. Steps *Highlight* and *Clear highlight*. While
@@ -863,8 +876,8 @@ References starts open):
     Series rows have the style button (the dash) as a line's, and its *Highlight* lists series
     only.
   - *Fade* (*Flat* / *Fade*, step *Fade*) and, while on, *Fade to* (a percent field, step
-    *Fade to*) sit in the Bars group after *Radius* (not on lollipops) and in an area chart's
-    Marks.
+    *Fade to*) sit in the Bars group after *Radius* and *Round every corner* (not on lollipops)
+    and in an area chart's Marks.
   - *Marks*: the Bars group (columns, bars, waterfalls). Columns and bars lead with a *Bars* /
     *Lollipops* text segment (step *Bar shape*; *Lollipops* disabled with *Lollipops don't
     stack* while stacked). Every bar chart has *Group gap* / *Bar gap* (*Bar gap* disabled with
@@ -872,8 +885,9 @@ References starts open):
     radius: *Stem* /
     *Head* (steps *Stem width*, *Head size*), *Head shape*, *Head fill* (*Filled* / *Hollow*),
     *Connect series* (disabled with *Connecting needs two series*) and the *Stem colour* row,
-    whose unset chip reads *Series*, with a reset button while set (*Use each series' colour*;
-    step *Stem colour*). A waterfall's *Bar gap* is disabled with *A waterfall draws one bar a
+    whose unset chip reads *Series*, with its restore button (*Use each series' colour* /
+    *Already each series' colour*; step *Stem colour*). Bars that are not lollipops have
+    *Radius* and, but on a waterfall, *Round every corner* right after it. A waterfall's *Bar gap* is disabled with *A waterfall draws one bar a
     step*, it has no *Round every corner* (its steps round every corner already) and no *Bar
     order*. On columns and bars, a *Bar order* dropdown (*Table order*, *Largest first*,
     *Smallest first*) with a note naming the key while sorted (*By Revenue, the first series
@@ -881,13 +895,17 @@ References starts open):
     bars, lines and areas, *Colour below zero* (disabled on a 100% chart with *A 100% chart
     draws shares, none below zero*), and while on its *Below zero* colour row, which has no
     reset: turning the switch off is the way back. Every kind's
-    Marks ends with *Mark stroke* (*Solid* / *Outline*) and a pair: *Width* (step *Mark stroke
-    width*) and a *Stroke* colour row whose unset chip reads *Background* (Solid) or *Series*
-    (Outline), with a reset button while set (tooltip *Use the default stroke colour*, step
-    *Mark stroke colour*).
-  - *Axes*: a half-width *Width* field under each axis colour row and each gridline colour row,
-    0.5 to 8 in steps of 0.5 (steps *Axis line width*, *Gridline width*); a colour row is one
-    `field_row_pressable`, so the width cannot sit inside it.
+    Marks ends with a *Stroke* eyebrow over the mark stroke's rows: *Solid* / *Outline* (step
+    *Mark stroke*), a full-width *Width* (step *Mark stroke width*) and a full-width *Colour* row
+    whose unset chip reads *Background* (Solid) or *Series* (Outline), with its restore button
+    (*Use the default stroke colour* / *Already the default stroke colour*, step *Mark stroke
+    colour*). A Sankey's *Node labels* reads *Name* / *Both* / *Off*.
+  - *Axes*: a full-width *Width* field under each axis colour row and each gridline colour row,
+    0.5 to 8, scrubbed in tenths (steps *Axis line width*, *Gridline width*): snapped to halves,
+    a slow scrub's tenth rounded back to where it started every frame and never moved. A colour
+    row is one `field_row_pressable`, so the width cannot sit inside it. An axis's *Min* and
+    *Max* scrub in whole numbers while the span is 10 or more, in the span's own fractions
+    below that.
   - *Legend*: *Label line ends*, disabled off lines and areas with *Only lines and areas end
     where a label can sit*, with *Line end label* (*Name* / *Name, value*) and *Line end ink*
     (*Series* / *Text*) under it while on;
@@ -900,30 +918,46 @@ References starts open):
   Neutral, and *Track colour* last on a pie drawn as a progress ring (`ChartCardCache::track`,
   read off the generated parts). Undo steps *Chart axis colour*, *Chart gridline colour*,
   *Neutral flow colour* and *Track colour*. While unset such a row reads *From the theme*
-  (tooltip *Derived from the theme and the background; pick a colour to set it*); set, it has a
-  reset button after it (`ARROW_COUNTER_CLOCKWISE`, tooltip and undo step *Use the theme's
-  colour*) that unsets it. The picker's Solid list has no unset row: the reset button is the
-  way back.
-- **References** — headed by `ui::fold_rule_add`, its count the references held. The `+` adds a
-  line at the middle of the drawn value extent (step *Add reference*), disabled with *A radar
-  takes no references*, *Only a chart with axes takes references*, *Edit references one chart at
-  a time* or *At most 16 references*; all but the last also stand as the section's note in place
-  of its rows. Each row:
+  (tooltip *Derived from the theme and the background; pick a colour to set it*). The
+  *Muted colour*, the Steps colours and *Text colour* are such rows too.
+  - **Restorable colours.** A colour row with a way back wears the restore button beside it
+    (`restore_button`, `ARROW_COUNTER_CLOCKWISE`, through `chart_restorable_row`) at all times,
+    disabled (`FieldButton::enabled_if`) while there is nothing to restore, with a live tooltip
+    and a dead one. A `chart_slot_row`'s unsets it
+    (tooltip and undo step *Use the theme's colour*; dead, *Already the theme's colour*); the
+    *Background*, *Plot background*, *Stem colour* and mark stroke *Colour* rows have their
+    own words, above. The picker's Solid list has no unset row: the restore button is the way
+    back. Text › *By role* rows, two to a line, show theirs only while set.
+- **References** — headed by a plain `ui::fold_rule`, its count the references held. Each row:
   the reference's swatch, its label, where it stands right-aligned in the muted ink (a band's
-  *from–to*), then an eye (*Show reference*) and a × (*Remove reference*). The row opens a
-  popover (`Popup::menu`, closing on a click outside, 240 wide): *Line* / *Band*, *Value* /
-  *Category* axis (a switch of axis puts it at the axis's start to end), the *At* dropdown (a
-  band's *From* and *To*) listing *Value*, *Average*, *Median*, *Minimum*, *Maximum* on the value
-  axis, the categories on the category axis (a scatter's X takes *Value*), and *Start* / *End*
-  for a band's ends, with a *Value* field under a typed value or an *Of* dropdown (*Every series
-  shown*, then each series) under a statistic; *Label* (`{value}` writes where it stands);
-  *Colour* and *Width*; the dash; the label place; and *Take into the range*, disabled for a
-  computed or category reference. Each field is one step named for it (*Reference kind*,
-  *Reference value*, *Reference label*, *Reference width*, …). Rows are not reordered.
+  *from–to*), then an eye (*Show reference*) and a × (*Remove reference*). After the rows, *Add
+  reference* (`ui::action_button`, `PLUS`, one card column wide) adds a line at the rounded
+  middle of the drawn value extent (step *Add reference*), disabled with its reason: *A radar
+  takes no references*, *Only a chart with axes takes references*, *Edit references one chart at
+  a time* or *At most 16 references*; all but the last stand instead as the section's note in
+  place of its rows and the button. The row opens the reference's popover
+  (`chart_reference_card`): an `Area` in the inspector's popover lane, `POPOVER_W` wide at
+  `popover_anchor` level with the row, as the effect popover sits, so a colour picker it opens
+  takes the lane to its left. A click away or `Escape` closes it. Its state is
+  `MastikApp::open_reference`, one of the lane's popovers (`inspector_popover_open`,
+  `close_inspector_popovers`), and opening a context menu or the palette closes it (R4,
+  `context-menus.md`). In it: *Line* / *Band*, *Value* / *Category* axis, the *At* dropdown (a band's
+  *From*) listing *Value*, *Average*, *Median*, *Minimum*, *Maximum* on the value axis, the
+  categories on the category axis (a scatter's X takes *Value*), and *Start* / *End* for a
+  band's ends; the *To* dropdown, disabled on a line; a *Value* field, live under a typed value
+  and scrubbed in whole numbers, or an *Of* dropdown (*Every series shown*, then each series)
+  under a statistic; *Label* (`{value}` writes where it stands); *Colour* and *Width*; the
+  dash; the label place; and *Take into the range*, disabled for a computed or category
+  reference. The popover holds the same rows whatever is picked, as a popup never grows back.
+  A switch of axis puts a band at the axis's start to end; a switch of axis or kind that would
+  leave a line at an axis end moves it to a place with a number to type: on the value axis the
+  rounded middle of the drawn extent, on the category axis the first category (a scatter's X,
+  its rounded middle). Each field is one step named for it (*Reference kind*, *Reference
+  value*, *Reference label*, *Reference width*, …). Rows are not reordered.
 - **Text** — the family (the Type card's family dropdown, `family_dropdown`; empty is the
   document's default family and shows its name), *Text colour* (the ink, a series row's swatch
   field on `ChartColour::Ink`, bindable the same way, its tooltip on a missing family the Type
-  card's), the four sizes and the weight, a dropdown of the family's upright faces as the Type
+  card's), the four sizes (scrubbed in whole numbers) and the weight, a dropdown of the family's upright faces as the Type
   card's variant dropdown is (*Custom* when the weight matches none; a family whose faces cannot
   be read keeps a number field). Undo steps *Chart font* and *Chart text colour*. Then a *By
   role* eyebrow over four rows, *Tick labels*, *Values*, *Legend* and *Axis titles*: each the

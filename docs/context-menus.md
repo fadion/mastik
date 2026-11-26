@@ -32,8 +32,8 @@ variable*).
   menu, or only its open submenu. While open the menu holds the keyboard (`input::resolve` does not run). The same
   one-press-one-rung rule holds for the top-bar dropdowns and the inspector popovers.
 - **R4** — One floating slot: opening a context menu closes the top-bar dropdowns, the colour
-  picker and the five inspector popovers (type, stroke, effects, Export row settings, Export
-  menu); the image-editing card is a mode and is not closed. A second right-click replaces the
+  picker and the inspector popovers (type, stroke, effects, a chart's reference, Export row
+  settings, Export menu); the image-editing card is a mode and is not closed. A second right-click replaces the
   menu. The release that opens a menu is not also read as a click-away.
 - A right-click inside an open menu does nothing. A left-click outside closes it and is spent —
   it does not also select (canvas, layers panel and library screen all honour this).

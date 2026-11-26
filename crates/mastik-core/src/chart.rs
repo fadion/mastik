@@ -1622,9 +1622,18 @@ fn over(top: peniko::Color, under: peniko::Color) -> peniko::Color {
 /// gradient read as its first stop, an image not at all); `None` when nothing
 /// is painted.
 fn painted(doc: &crate::Document, n: &Node) -> Option<peniko::Color> {
+    painted_by(doc, n.id, &n.paint.fills)
+}
+
+/// [`painted`] over `fills`, resolved at node `id`.
+fn painted_by(
+    doc: &crate::Document,
+    id: NodeId,
+    fills: &[crate::item::Keyed<crate::node::Fill>],
+) -> Option<peniko::Color> {
     let mut colour: Option<peniko::Color> = None;
-    for f in n.paint.fills.iter().filter(|f| f.visible) {
-        let c = match &*doc.resolve_brush(n.id, &f.brush) {
+    for f in fills.iter().filter(|f| f.visible) {
+        let c = match &*doc.resolve_brush(id, &f.brush) {
             crate::Brush::Solid(c) => *c,
             crate::Brush::Gradient(g) => match g.gradient.stops.first() {
                 Some(s) => s.color.to_alpha_color::<peniko::color::Srgb>(),
@@ -1635,6 +1644,23 @@ fn painted(doc: &crate::Document, n: &Node) -> Option<peniko::Color> {
         colour = Some(colour.map_or(c, |under| over(c, under)));
     }
     colour.filter(|c| c.components[3] > 0.0)
+}
+
+/// The ground colour chart `id` would read ([`ground_of`]) with `fills` as its
+/// own: a picker's preview of the chart's background, so *Auto* turns with
+/// the drag rather than on release.
+pub fn ground_with(
+    doc: &crate::Document,
+    id: NodeId,
+    fills: &[crate::item::Keyed<crate::node::Fill>],
+) -> peniko::Color {
+    let under = match doc.get(id).and_then(|n| n.parent) {
+        Some(p) => ground_of(doc, p).colour,
+        None => ground_of(doc, id).colour,
+    };
+    painted_by(doc, id, fills)
+        .map_or(under, |c| over(c, under))
+        .with_alpha(1.0)
 }
 
 /// The fill a chart made under `parent` starts with: white on an unpainted

@@ -252,8 +252,8 @@ A hit inside the selection leaves it whole (right-click one of five layers and s
 that menu exists.
 
 **Opening the next floating thing closes the last** (R4). `MastikApp::context_menu` is the one slot;
-opening it clears `open_menu`, `picker`, `stroke_menu`, `type_menu`, `effect_menu`, `export_menu` and
-`export_row_open`. The image-editing card is left out: it is a mode, not a popover. Two popover
+opening it clears `open_menu`, `picker`, `stroke_menu`, `type_menu`, `effect_menu`, `open_reference`,
+`export_menu` and `export_row_open`. The image-editing card is left out: it is a mode, not a popover. Two popover
 lists exist:
 
 | List | Members |
@@ -276,7 +276,7 @@ and the second leaves focus mode.
 **A press that dismisses a floating thing is spent on it.** By door:
 
 - the context menu, the tab menu, the rail's members row, a bound field's `--` variable list, its chip's field menu and a frame's *Mode* menu call `ui::keep_escape` as they draw, so `ui::claim_popup_escape` takes the press out of the input at the top of the next frame; the context menu's and the tab menu's arms in `frame_body` close them on `ui::popup_escaped` (the context menu's submenu first);
-- the top-bar dropdowns (`dropdown_padded`) and the five inspector and Export popovers call `ui::keep_popover_escape` as they draw; the claim leaves the press in the input for their fields, `frame_body`'s arm on `ui::popover_escaped` keeps it from the ladder, and they close themselves later in the frame;
+- the top-bar dropdowns (`dropdown_padded`) and the inspector and Export popovers (a chart's reference among them) call `ui::keep_popover_escape` as they draw; the claim leaves the press in the input for their fields, `frame_body`'s arm on `ui::popover_escaped` keeps it from the ladder, and they close themselves later in the frame;
 - the modals are gated out of `input::resolve` and answer `should_close()` or `ui::modal_escaped`; `frame_body` asks `ui::keep_modal_escape` for them and the palette, and the command bar, the player and the Scripts window holding the keys and the chart data grid ask it themselves, so a popover left open under any of them keeps its press;
 - the colour picker is a rung of `escape`'s `else if` chain, which pays out one rung (an armed pick button is the rung above it); an open menu of the picker's, such as the gradient's *Ends and mixing*, is an egui popup, so `ui::claim_popup_escape` spends that press before `escape` runs and the next one closes the picker;
 - a script run in flight stops on a press no popover took (`tend_script_run` asks `ui::popover_escaped`): one press closes an open popover, the next stops the run.

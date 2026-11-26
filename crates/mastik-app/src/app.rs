@@ -849,8 +849,9 @@ pub struct MastikApp {
     /// The Chart card's Style pictures and left-out values for the chart it last
     /// showed, kept while that description is unchanged.
     pub(crate) chart_card: Option<crate::panels::ChartCardCache>,
-    /// A reference double-clicked on the canvas, by chart and id: the Chart card
-    /// opens its popover at its next draw and clears this.
+    /// The chart reference whose popover is open in the popover lane, by chart
+    /// and id: set by its row on the Chart card or by a double-click on the
+    /// canvas, and cleared when the row is no longer drawn.
     pub(crate) open_reference: Option<(NodeId, u32)>,
     /// The other charts a multi-selection's Chart card writes with the one it
     /// shows; empty on one chart. Set by the card each frame it draws.
@@ -9912,6 +9913,7 @@ impl MastikApp {
         self.type_menu.is_some()
             || self.stroke_menu.is_some()
             || self.effect_menu.is_some()
+            || self.open_reference.is_some()
             || self.export_menu
             || self.export_row_open.is_some()
             || self.proto.open.is_some()
@@ -9923,6 +9925,7 @@ impl MastikApp {
         self.stroke_menu = None;
         self.stroke_dash_text = None;
         self.effect_menu = None;
+        self.open_reference = None;
         self.export_menu = false;
         self.export_row_open = None;
         self.proto.open = None;

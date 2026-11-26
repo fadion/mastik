@@ -3297,6 +3297,7 @@ impl MastikApp {
         self.picker = None;
         self.stroke_menu = None;
         self.effect_menu = None;
+        self.open_reference = None;
         self.export_menu = false;
         self.export_row_open = None;
         // Image editing's card is not cleared: it is the mode's own chrome, and

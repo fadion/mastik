@@ -1414,6 +1414,32 @@ impl EditorSession {
                 }
             }
         }
+        // A chart's own background previewed is a new ground: its parts are drawn
+        // for it, so *Auto*'s theme turns during the drag, as the commit's settle will.
+        for op in &tx.0 {
+            let Operation::SetFills { id, fills } = op else {
+                continue;
+            };
+            if described.iter().any(|(d, _)| d == id) {
+                continue;
+            }
+            let Some(chart) = self.doc.get(*id).and_then(|n| n.chart()) else {
+                continue;
+            };
+            let ground = mastik_core::chart::ground_with(&self.doc, *id, fills);
+            if chart.grounded == Some(ground) {
+                continue;
+            }
+            let Some(NodeKind::Artboard { size, .. }) =
+                self.resolved.used_kind(&self.doc, *id).cloned()
+            else {
+                continue;
+            };
+            let on = chart.on(ground);
+            if let Some(parts) = generated_once(&mut kept, &mut last, *id, &on, size) {
+                self.overrides.replace_chart(*id, parts);
+            }
+        }
         // A pie keeps round by sitting centred at its own size, so no inset
         // reflows it as its chart resizes: a pie the preview resizes is
         // generated again at the size drawn, as the commit's settle will.
@@ -4701,6 +4727,50 @@ mod tests {
             s.overrides.ghosts_of(column).count(),
             0,
             "the column chart reflows its own parts"
+        );
+    }
+
+    /// A chart's background previewed dark draws its parts for the dark ground
+    /// during the drag, so *Auto* turns before the release; the same colour
+    /// again draws the chart's own parts.
+    /// flip: `set_preview`'s fills pass removed → fails at "drawn for the new ground".
+    #[test]
+    fn a_previewed_background_redraws_an_auto_chart() {
+        use mastik_core::chart::{Chart, ChartKind};
+        let mut s = EditorSession::new();
+        let id = s.ids.mint();
+        let page = s.doc.first_page();
+        let index = s.doc.get(page).map_or(0, |n| n.children().len());
+        let tx = mastik_core::edit::create_chart(
+            id,
+            page,
+            index,
+            Affine::IDENTITY,
+            Point::new(-4000.0, 0.0),
+            Point::new(-3520.0, 280.0),
+            Some(mastik_core::peniko::Color::WHITE),
+            Chart::sample(ChartKind::Column),
+        );
+        assert!(s.commit(tx));
+        let fill = |c| {
+            let mut fills = s.doc.get(id).unwrap().paint().fills.clone();
+            fills[0].value.brush = mastik_core::Brush::Solid(c).into();
+            Transaction(vec![Operation::SetFills { id, fills }])
+        };
+        let dark = mastik_core::peniko::Color::from_rgb8(0x10, 0x10, 0x10);
+        let (to_dark, to_white) = (fill(dark), fill(mastik_core::peniko::Color::WHITE));
+        s.set_preview(&to_dark);
+        assert_eq!(
+            s.overrides.children_of(id),
+            Some(&[][..]),
+            "drawn for the new ground"
+        );
+        assert!(s.overrides.ghosts_of(id).count() > 0, "the new parts drawn");
+        s.set_preview(&to_white);
+        assert_eq!(
+            s.overrides.ghosts_of(id).count(),
+            0,
+            "its own ground: its own parts"
         );
     }
 }

@@ -1939,48 +1939,6 @@ pub fn fold_rule_noted(
     resp
 }
 
-/// [`fold_rule`] heading a list that adds rows: a `+` before the caret, which
-/// answers `Ok(true)` when clicked. `add` says why it is disabled, when it is
-/// (a list at its limit). The head's own response folds as any rule's does.
-pub fn fold_rule_add(
-    ui: &mut egui::Ui,
-    label: &str,
-    open: bool,
-    count: usize,
-    add: Result<(), &str>,
-) -> (egui::Response, bool) {
-    let head = fold_rule(ui, label, open, count);
-    let side = FOLD_HEAD_H - FOLD_ROW_TRIM;
-    let at = egui::pos2(
-        head.rect.right() - FOLD_CARET_PT - CARD_COL_GAP - side / 2.0,
-        head.rect.bottom() - side / 2.0,
-    );
-    let rect = egui::Rect::from_center_size(at, egui::vec2(side, side));
-    let plus = ui.interact(rect, head.id.with("add"), egui::Sense::click());
-    let ink = match (&add, plus.hovered()) {
-        (Err(_), _) => theme::text::off(),
-        (Ok(()), true) => theme::color::text(),
-        (Ok(()), false) => theme::text::muted(),
-    };
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        icon::PLUS,
-        theme::icon_font(FOLD_CARET_PT),
-        ink,
-    );
-    let clicked = match add {
-        Ok(()) => plus
-            .on_hover_text(format!("Add to {}", label.to_lowercase()))
-            .clicked(),
-        Err(why) => {
-            plus.on_hover_text(why);
-            false
-        }
-    };
-    (head, clicked)
-}
-
 /// The air under a [`fold_rule`]'s hairline, above its title row.
 const FOLD_RULE_AIR: f32 = 5.0;
 /// What a [`fold_rule`]'s title row gives back under the title. A title centred

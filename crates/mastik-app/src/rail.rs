@@ -56,15 +56,15 @@ pub(crate) enum Member {
 }
 
 /// The chart slot's members, in [`ChartKind::ALL`]'s order.
-const CHART_MEMBERS: [Member; 7] = [
-    Member::Chart(ChartKind::Column),
-    Member::Chart(ChartKind::Bar),
-    Member::Chart(ChartKind::Line),
-    Member::Chart(ChartKind::Area),
-    Member::Chart(ChartKind::Pie),
-    Member::Chart(ChartKind::Scatter),
-    Member::Chart(ChartKind::Sankey),
-];
+const CHART_MEMBERS: [Member; ChartKind::ALL.len()] = {
+    let mut out = [Member::Chart(ChartKind::Column); ChartKind::ALL.len()];
+    let mut i = 0;
+    while i < out.len() {
+        out[i] = Member::Chart(ChartKind::ALL[i]);
+        i += 1;
+    }
+    out
+};
 
 /// A chart kind's glyph, wherever the kind is named: the rail, the Chart card's
 /// type menu.

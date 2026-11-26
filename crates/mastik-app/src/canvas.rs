@@ -5219,10 +5219,6 @@ impl MastikApp {
                 // Slices are cut in runs, so the tool stays on.
                 self.session
                     .info("Slice cut; it exports PNG at 1× until you change it");
-            } else if shape == Tool::Chart {
-                // Typing or pasting replaces the sample from the first cell.
-                self.choose_tool(Tool::Select);
-                self.open_chart_data(id, (0, 0));
             } else {
                 self.choose_tool(Tool::Select);
                 self.session.info("Created shape");
@@ -13591,8 +13587,8 @@ mod tests {
     }
 
     /// A click with the chart tool on bare canvas makes a chart of the slot's kind,
-    /// selected and generated, and a marquee over the page offers the chart, not
-    /// its parts.
+    /// selected and generated, with the data window shut, and a marquee over the
+    /// page offers the chart, not its parts.
     /// flip: `marquee_range`'s chart arm removed → fails at "the chart, not its parts".
     #[test]
     fn the_chart_tool_clicks_a_chart_that_picks_whole() {
@@ -13616,6 +13612,10 @@ mod tests {
         );
         assert!(!node.children().is_empty(), "settle generated the parts");
         assert_eq!(app.tool, Tool::Select, "the tool hands back to Select");
+        assert!(
+            app.chart_data.is_none(),
+            "drawing leaves the data window shut"
+        );
         let range = app.marquee_candidates();
         assert!(range.contains(&id), "the chart, not its parts");
         assert!(

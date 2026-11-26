@@ -148,9 +148,6 @@ impl MastikApp {
     }
 }
 
-/// A reference popover's width.
-const REFERENCE_POPOVER_W: f32 = 240.0;
-
 /// The inside of every colour row on the Chart card, drawn into a
 /// `ui::field_row_pressable`: the swatch chip on `ground`, then `name` in `ink`,
 /// cut to fit, and whatever `right` adds right-aligned. A muted `detail` text
@@ -176,6 +173,70 @@ fn colour_row_face(
             );
         });
     });
+}
+
+/// The restore button beside a colour row: always shown, live only while the
+/// colour is `set`, tipped with `tips.0` then and `tips.1` otherwise. True on a
+/// live press.
+fn restore_button(ui: &mut egui::Ui, set: bool, tips: (&str, &str)) -> bool {
+    ui::field_button(
+        ui,
+        icon::ARROW_COUNTER_CLOCKWISE,
+        ui::CONTROL_H,
+        ui::FieldButton::enabled_if(set),
+    )
+    .on_hover_text(if set { tips.0 } else { tips.1 })
+    .clicked()
+        && set
+}
+
+/// Chart frame `id`'s background when it is one visible solid of its own, no
+/// fill style or variable: its index among the fills and its colour.
+fn own_solid(
+    doc: &mastik_core::Document,
+    id: NodeId,
+) -> Option<(usize, mastik_core::peniko::Color)> {
+    let node = doc.get(id)?;
+    if node.styles().fills.is_some() {
+        return None;
+    }
+    let mut visible = node
+        .paint()
+        .fills
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| f.visible);
+    let (i, f) = visible.next()?;
+    if visible.next().is_some() {
+        return None;
+    }
+    match &f.brush {
+        mastik_core::BrushSource::Literal(Brush::Solid(c)) => Some((i, *c)),
+        _ => None,
+    }
+}
+
+/// Whether `c` is the light or the dark theme's background: a background the
+/// person has not chosen, which a theme pick may turn.
+fn theme_default(c: mastik_core::peniko::Color) -> bool {
+    c == chart::chrome(false).ground || c == chart::chrome(true).ground
+}
+
+/// Chart frame `id`'s fills with fill `at` made solid `c`, the rest kept.
+fn fills_with(
+    doc: &mastik_core::Document,
+    id: NodeId,
+    at: usize,
+    c: mastik_core::peniko::Color,
+) -> Operation {
+    let mut fills = doc
+        .get(id)
+        .map(|n| n.paint().fills.clone())
+        .unwrap_or_default();
+    if let Some(f) = fills.get_mut(at) {
+        f.value.brush = Brush::Solid(c).into();
+    }
+    Operation::SetFills { id, fills }
 }
 
 /// A colour row's muted right-hand text.
@@ -911,7 +972,7 @@ impl MastikApp {
     /// the style holds none of them.
     fn chart_own_rows(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
         ui.label(ui::eyebrow("This chart"));
-        self.chart_background_row(ui, id);
+        self.chart_background_row(ui, id, chart);
         match chart.kind {
             ChartKind::Column | ChartKind::Bar => {
                 self.chart_bar_shape_row(ui, id, chart);
@@ -1580,40 +1641,9 @@ impl MastikApp {
                 c.options = p.apply(c.kind, &c.options);
             });
         }
+        self.chart_theme_row(ui, id, chart);
         if background {
-            self.chart_background_row(ui, id);
-        }
-        // The theme the unset colours are derived for; a colour of the
-        // person's own stays whatever it is.
-        self.chart_segments_of(
-            ui,
-            id,
-            chart,
-            "Chart theme",
-            &[
-                (chart::Theme::Auto, "Auto"),
-                (chart::Theme::Light, "Light"),
-                (chart::Theme::Dark, "Dark"),
-            ],
-            chart.options.theme,
-            |c, t| c.options.theme = t,
-        );
-        if chart.options.theme == chart::Theme::Auto {
-            let doc = &self.session.doc;
-            let ground = chart::ground_of(doc, id);
-            let picked = if chart::dark_on(ground.colour) {
-                "Dark"
-            } else {
-                "Light"
-            };
-            let from = match ground.from {
-                chart::GroundFrom::Own => "the background".to_string(),
-                chart::GroundFrom::Ancestor(a) => doc
-                    .get(a)
-                    .map_or_else(|| "the frame".to_string(), |n| n.name().to_string()),
-                chart::GroundFrom::Page => "the page".to_string(),
-            };
-            ui::selection_note(ui, &format!("{picked}, read from {from}"));
+            self.chart_background_row(ui, id, chart);
         }
         self.chart_plot_rows(ui, id, chart);
         // Padding round the chart and the gap between its legend and body.
@@ -1645,11 +1675,64 @@ impl MastikApp {
         });
     }
 
-    /// *Background*: the chart frame's own fill, edited where it is one plain
-    /// colour (a single visible solid or bound fill, no fill style); otherwise
-    /// disabled, naming why. With no visible fill it reads *None*, and a click
-    /// adds a white one to edit, keeping any hidden fills.
-    fn chart_background_row(&mut self, ui: &mut egui::Ui, id: NodeId) {
+    /// *Theme*: the theme the unset colours are derived for; a colour of the
+    /// person's own stays whatever it is. A background still at either theme's
+    /// default ([`theme_default`]) turns with a pick of *Light* or *Dark*, in the
+    /// same step; one the person set stays.
+    fn chart_theme_row(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
+        let options = [
+            (chart::Theme::Auto, "Auto"),
+            (chart::Theme::Light, "Light"),
+            (chart::Theme::Dark, "Dark"),
+        ];
+        let names: Vec<&str> = options.iter().map(|(_, n)| *n).collect();
+        let pick = ui::segmented_tipped(
+            ui,
+            ui.available_width(),
+            ui::SEGMENT_CELL_H,
+            names.len(),
+            lit(&options, chart.options.theme),
+            |_| true,
+            |_| "Chart theme",
+            |p, i, r, on| ui::segment_label(p, r, names[i], on),
+        );
+        let Some(i) = pick else { return };
+        let theme = options[i].0;
+        let mut tx = self.chart_each_tx(id, chart, |c| c.options.theme = theme);
+        if theme != chart::Theme::Auto {
+            let to = chart::chrome(theme == chart::Theme::Dark).ground;
+            let charts: Vec<NodeId> = std::iter::once(id)
+                .chain(self.chart_others.iter().copied())
+                .collect();
+            for c in charts {
+                if let Some((at, now)) = own_solid(&self.session.doc, c)
+                    && theme_default(now)
+                    && now != to
+                {
+                    tx.0.push(fills_with(&self.session.doc, c, at, to));
+                }
+            }
+        }
+        let changes = tx.0.len() > 1
+            || self
+                .session
+                .doc
+                .get(id)
+                .and_then(|n| n.chart())
+                .map(|c| c.options.theme)
+                != Some(theme);
+        if changes {
+            self.session.name_step("Chart theme", icon::CHART);
+            self.commit_edit(tx);
+        }
+    }
+
+    /// *Background*: the chart frame's own fill, edited where it is one colour
+    /// or gradient (a single visible fill, no fill style); otherwise disabled,
+    /// naming why. With no visible fill it reads *None*, and a click adds the
+    /// theme's background to edit, keeping any hidden fills. The restore button
+    /// puts a solid background back to the drawn theme's default.
+    fn chart_background_row(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart) {
         let doc = &self.session.doc;
         let Some(node) = doc.get(id) else { return };
         let fills: Vec<(usize, &mastik_core::BrushSource)> = node
@@ -1669,8 +1752,7 @@ impl MastikApp {
             (Some(name), _) => Some(format!("The background is the style {name}")),
             (None, [_, _, ..]) => Some("The background has several fills: edit it in Fill".into()),
             (None, [(_, b)]) => match &*doc.resolve_brush(id, b) {
-                Brush::Solid(_) => None,
-                Brush::Gradient(_) => Some("The background is a gradient: edit it in Fill".into()),
+                Brush::Solid(_) | Brush::Gradient(_) => None,
                 _ => Some("The background is an image: edit it in Fill".into()),
             },
             (None, []) => None,
@@ -1678,8 +1760,10 @@ impl MastikApp {
         let shown = fills
             .first()
             .map(|(_, b)| doc.resolve_brush(id, b).into_owned());
+        let stops = shown.as_ref().map(super::picker::ramp).unwrap_or_default();
         let (swatch, hex) = match &shown {
             Some(Brush::Solid(c)) => (ui::Swatch::Solid(ui::color_to_egui(*c)), ui::hex_of(*c)),
+            Some(Brush::Gradient(_)) => (ui::Swatch::Ramp(&stops), "Gradient".to_string()),
             Some(_) => (ui::Swatch::Mixed, String::new()),
             None => (
                 ui::Swatch::Solid(egui::Color32::TRANSPARENT),
@@ -1691,20 +1775,45 @@ impl MastikApp {
             .picker
             .as_ref()
             .is_some_and(|p| Some(p.slot) == slot && self.session.selection.ids() == [id]);
-        let size = egui::vec2(ui.available_width(), ui::CONTROL_H);
         let live = why.is_none();
+        let default = chart::chrome(chart.drawn_dark()).ground;
+        let restorable =
+            live && fills.len() == 1 && !matches!(&shown, Some(Brush::Solid(c)) if *c == default);
+        let restore_at = fills.first().map(|(i, _)| *i);
+        let width = ui.available_width() - ui::CONTROL_H - ui::CARD_COL_GAP;
+        let size = egui::vec2(width, ui::CONTROL_H);
         let ink = if live {
             color::text()
         } else {
             theme::text::off()
         };
-        let (_, resp) = ui::field_row_pressable(ui, size, open, live, |ui, ground| {
-            colour_row_face(ui, ground, swatch, "Background", ink, |ui| {
-                detail_text(ui, &hex);
-            });
-        });
+        let (resp, restore) = ui
+            .horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                let (_, resp) = ui::field_row_pressable(ui, size, open, live, |ui, ground| {
+                    colour_row_face(ui, ground, swatch, "Background", ink, |ui| {
+                        detail_text(ui, &hex);
+                    });
+                });
+                let restore = restore_button(
+                    ui,
+                    restorable,
+                    (
+                        "Use the theme's background",
+                        "Already the theme's background",
+                    ),
+                );
+                (resp, restore)
+            })
+            .inner;
         if let Some(why) = why {
             resp.on_hover_text(why);
+            return;
+        }
+        if restore && let Some(i) = restore_at {
+            let tx = Transaction(vec![fills_with(&self.session.doc, id, i, default)]);
+            self.session.name_step("Chart background", icon::CHART);
+            self.commit_edit(tx);
             return;
         }
         if !resp.clicked() {
@@ -1715,7 +1824,7 @@ impl MastikApp {
             Some(slot) => self.open_picker(ui, id, slot, at),
             None => {
                 let fill = mastik_core::Fill {
-                    brush: Brush::Solid(mastik_core::peniko::Color::WHITE).into(),
+                    brush: Brush::Solid(default).into(),
                     visible: true,
                 };
                 // Added over any hidden fills, which stay.
@@ -1747,18 +1856,13 @@ impl MastikApp {
             .map_or(ui::Swatch::Solid(egui::Color32::TRANSPARENT), |c| {
                 ui::Swatch::Solid(ui::color_to_egui(c))
             });
-        let full = ui.available_width();
-        let width = if set {
-            full - ui::CONTROL_H - ui::CARD_COL_GAP
-        } else {
-            full
-        };
+        let width = ui.available_width() - ui::CONTROL_H - ui::CARD_COL_GAP;
         let why = "Only a chart with a rectangular plot has a plot background";
         let mut clear = false;
         let disabled = ui::disable_unless(ui, rect_plot, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                if set {
+                let resp = if set {
                     self.chart_colour_row(
                         ui,
                         id,
@@ -1769,9 +1873,6 @@ impl MastikApp {
                         true,
                         None,
                     );
-                    clear = ui::field_button(ui, icon::X, ui::CONTROL_H, ui::FieldButton::Off)
-                        .on_hover_text("No plot background")
-                        .clicked();
                     None
                 } else {
                     let (_, resp) = ui::field_row_pressable(
@@ -1793,7 +1894,13 @@ impl MastikApp {
                         },
                     );
                     Some(resp)
-                }
+                };
+                clear = restore_button(
+                    ui,
+                    set,
+                    ("No plot background", "No plot background to remove"),
+                );
+                resp
             })
             .inner
         });
@@ -1824,7 +1931,7 @@ impl MastikApp {
             id,
             chart,
             ui.available_width(),
-            "Radius",
+            "Plot radius",
             "Plot radius",
             Scrub::whole(0.25).range(0.0..=100.0),
             0,
@@ -1951,7 +2058,7 @@ impl MastikApp {
             }
             kind => {
                 let label = if kind == ChartKind::Scatter {
-                    "X"
+                    "X axis"
                 } else {
                     "Category"
                 };
@@ -2258,7 +2365,8 @@ impl MastikApp {
                         pick = Some(None);
                     }
                     if !categories.is_empty() {
-                        ui.label(ui::eyebrow("Categories"));
+                        ui::menu_sep(ui);
+                        ui::menu_eyebrow(ui, "Categories");
                         for c in &categories {
                             if ui.selectable_label(lit_cats.contains(c), c).clicked() {
                                 pick = Some(Some(Ok(c.clone())));
@@ -2266,7 +2374,8 @@ impl MastikApp {
                         }
                     }
                     if !series.is_empty() {
-                        ui.label(ui::eyebrow("Series"));
+                        ui::menu_sep(ui);
+                        ui::menu_eyebrow(ui, "Series");
                         for s in &series {
                             if ui.selectable_label(lit_series.contains(s), s).clicked() {
                                 pick = Some(Some(Err(s.clone())));
@@ -2421,37 +2530,17 @@ impl MastikApp {
                 ui::Swatch::Solid(ui::color_to_egui(c))
             });
         let set = chart.options.bars.stem_colour.is_some();
-        let full = ui.available_width();
-        let reset = ui
-            .horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                let w = if set {
-                    full - ui::CONTROL_H - ui::CARD_COL_GAP
-                } else {
-                    full
-                };
-                let chip = (!set)
-                    .then_some(("Series", "Each series' own colour; pick a colour to set it"));
-                self.chart_colour_row(
-                    ui,
-                    id,
-                    ChartColour::Stem,
-                    w,
-                    swatch,
-                    "Stem colour",
-                    true,
-                    chip,
-                );
-                set && ui::field_button(
-                    ui,
-                    icon::ARROW_COUNTER_CLOCKWISE,
-                    ui::CONTROL_H,
-                    ui::FieldButton::Off,
-                )
-                .on_hover_text("Use each series' colour")
-                .clicked()
-            })
-            .inner;
+        let chip = (!set).then_some(("Series", "Each series' own colour; pick a colour to set it"));
+        let reset = self.chart_restorable_row(
+            ui,
+            id,
+            ChartColour::Stem,
+            swatch,
+            "Stem colour",
+            chip,
+            set,
+            ("Use each series' colour", "Already each series' colour"),
+        );
         if reset {
             self.chart_each(id, chart, "Stem colour", |c| {
                 c.options.bars.stem_colour = None
@@ -2553,8 +2642,8 @@ impl MastikApp {
         self.chart_highlight_rows(ui, id, chart);
     }
 
-    /// *References*: lines and bands on an axis, a fold headed by a `+` that
-    /// adds a line at the value axis's middle, each row opening its popover.
+    /// *References*: lines and bands on an axis, each row opening its popover,
+    /// then *Add reference*, which adds a line at the value axis's middle.
     fn chart_references_section(
         &mut self,
         ui: &mut egui::Ui,
@@ -2576,7 +2665,7 @@ impl MastikApp {
         } else {
             Ok(())
         };
-        let (head, added) = ui::fold_rule_add(ui, "References", open, chart.references.len(), add);
+        let head = ui::fold_rule(ui, "References", open, chart.references.len());
         if head.clicked() {
             if open {
                 self.collapsed_panels.insert(KEY);
@@ -2584,17 +2673,13 @@ impl MastikApp {
                 self.collapsed_panels.remove(KEY);
             }
         }
-        if added {
-            let next_id = chart.references.iter().map(|r| r.id + 1).max().unwrap_or(1);
-            let (lo, hi) = self.drawn_extent(id, chart, true);
-            let mut next = chart.clone();
-            next.references.push(chart::Reference {
-                id: next_id,
-                at: chart::At::Value(((lo + hi) / 2.0 * 100.0).round() / 100.0),
-                ..chart::Reference::default()
-            });
-            self.chart_commit(id, "Add reference", next);
-            self.collapsed_panels.remove(KEY);
+        // A popover whose row is not drawn this frame goes with it.
+        let shown = open && (chart.kind.rect_plot() && !several);
+        if self
+            .open_reference
+            .is_some_and(|(n, r)| !shown || n != id || !chart.references.iter().any(|x| x.id == r))
+        {
+            self.open_reference = None;
         }
         if !open {
             return;
@@ -2608,6 +2693,36 @@ impl MastikApp {
         }
         for r in chart.references.clone() {
             self.chart_reference_row(ui, id, chart, &r);
+        }
+        // One card column wide, after the rows, as the List card's *Add test*.
+        let size = egui::vec2(
+            (ui.available_width() - ui::CARD_COL_GAP) / 2.0,
+            ui::CONTROL_H,
+        );
+        let state = match add {
+            Ok(()) => ui::FieldButton::Off,
+            Err(_) => ui::FieldButton::Disabled,
+        };
+        let button = ui::action_button(ui, icon::PLUS, "Add reference", state, size);
+        let added = match add {
+            Ok(()) => button
+                .on_hover_text("Add a reference line at the middle of the values")
+                .clicked(),
+            Err(why) => {
+                button.on_hover_text(why);
+                false
+            }
+        };
+        if added {
+            let next_id = chart.references.iter().map(|r| r.id + 1).max().unwrap_or(1);
+            let (lo, hi) = self.drawn_extent(id, chart, true);
+            let mut next = chart.clone();
+            next.references.push(chart::Reference {
+                id: next_id,
+                at: chart::At::Value(((lo + hi) / 2.0).round()),
+                ..chart::Reference::default()
+            });
+            self.chart_commit(id, "Add reference", next);
         }
     }
 
@@ -2670,20 +2785,17 @@ impl MastikApp {
                 resp
             })
             .inner;
-        // Double-clicked on the canvas: this row's popover opens.
-        if self.open_reference == Some((id, rid)) {
-            self.open_reference = None;
-            egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&row));
+        if row.clicked() {
+            let open = self.open_reference == Some((id, rid));
+            if !open {
+                // One popover in the lane at a time.
+                self.close_inspector_popovers();
+            }
+            self.open_reference = (!open).then_some((id, rid));
         }
-        egui::Popup::menu(&row)
-            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-            .gap(ui::MENU_GAP)
-            .show(|ui| {
-                ui::popup_rows(ui);
-                ui.set_min_width(REFERENCE_POPOVER_W);
-                ui.set_max_width(REFERENCE_POPOVER_W);
-                self.chart_reference_popover(ui, id, chart, rid);
-            });
+        if self.open_reference == Some((id, rid)) {
+            self.chart_reference_card(ui, &row, id, chart, rid);
+        }
         if eye {
             self.chart_each(id, chart, "Show reference", |c| {
                 if let Some(r) = c.references.iter_mut().find(|r| r.id == rid) {
@@ -2695,6 +2807,69 @@ impl MastikApp {
             self.chart_each(id, chart, "Remove reference", |c| {
                 c.references.retain(|r| r.id != rid);
             });
+        }
+    }
+
+    /// Reference `rid`'s popover, in the inspector's popover lane level with
+    /// its `row`, as the effect popover sits; a colour it opens takes the lane
+    /// left of it. A click away or Escape closes it.
+    fn chart_reference_card(
+        &mut self,
+        ui: &egui::Ui,
+        row: &egui::Response,
+        id: NodeId,
+        chart: &Chart,
+        rid: u32,
+    ) {
+        const MENU_W: f32 = crate::app::POPOVER_W;
+        let ctx = ui.ctx().clone();
+        // A dropdown's list is its own `Area` above this one, so a pick there
+        // misses `contains_pointer`; asked by layer order.
+        let over_overlay = ctx
+            .pointer_interact_pos()
+            .and_then(|p| ctx.layer_id_at(p))
+            .is_some_and(|l| l.order >= egui::Order::Foreground);
+        let anchor = Self::popover_anchor(&ctx, row.rect, MENU_W);
+        let menu = egui::Area::new(egui::Id::new(("chart-reference", id, rid)))
+            .order(egui::Order::Foreground)
+            .fixed_pos(anchor)
+            .constrain_to(ctx.input(|i| i.content_rect()).shrink(ui::SCREEN_MARGIN))
+            .show(&ctx, |ui| {
+                ui::hold_tab(ui);
+                ui::menu_frame(ui::POPOVER_PAD).show(ui, |ui| {
+                    ui.set_width(ui::menu_inner_w(MENU_W, ui::POPOVER_PAD));
+                    ui.spacing_mut().item_spacing.y = ui::POPOVER_SECTION_GAP;
+                    self.chart_reference_popover(ui, id, chart, rid);
+                });
+            })
+            .response;
+        let on_picker = ctx
+            .pointer_interact_pos()
+            .and_then(|p| ctx.layer_id_at(p))
+            .is_some_and(|l| l.id == super::picker::layer_id());
+        // Recorded every frame, never from inside the short-circuiting `&&`.
+        let press_away = super::press_began_away(&ctx, menu.layer_id.id, menu.rect, row.rect);
+        // Not on its first frame: a canvas double-click opens it with a click
+        // that began away from it.
+        let pass = ctx.cumulative_pass_nr();
+        let seen = menu.layer_id.id.with("drawn-at");
+        let fresh = ctx.data(|d| d.get_temp::<u64>(seen)) != Some(pass.wrapping_sub(1));
+        ctx.data_mut(|d| d.insert_temp(seen, pass));
+        if !fresh
+            && super::dismissed_by_click(super::ClickAway {
+                clicked: ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)),
+                over_overlay,
+                on_menu: menu.contains_pointer(),
+                on_head: row.contains_pointer(),
+                on_picker,
+                in_gesture: ctx.dragged_id().is_some() || self.gesture_cancelled,
+                press_away,
+            })
+            || ui::popover_escaped(&ctx)
+        {
+            self.open_reference = None;
+        } else {
+            ui::keep_popover_escape(&ctx);
         }
     }
 
@@ -2710,6 +2885,40 @@ impl MastikApp {
                 f(r);
             }
         };
+        // Where a line lands on each axis: an axis end is a band's alone, and a
+        // line left there would show no place to type.
+        let value_mid = {
+            let (lo, hi) = self.drawn_extent(id, chart, true);
+            chart::At::Value(((lo + hi) / 2.0).round())
+        };
+        let category_first = if chart.kind == ChartKind::Scatter {
+            let (lo, hi) = self.drawn_extent(id, chart, false);
+            chart::At::Value(((lo + hi) / 2.0).round())
+        } else {
+            let t = &chart.table;
+            chart
+                .mapping
+                .category
+                .and_then(|c| t.index_of(c))
+                .and_then(|c| {
+                    t.rows
+                        .iter()
+                        .map(|row| row[c].trim())
+                        .find(|n| !n.is_empty())
+                })
+                .map_or(chart::At::AxisStart, |n| chart::At::Category(n.into()))
+        };
+        let line_at = move |r: &mut chart::Reference| {
+            if r.kind == chart::RefKind::Line
+                && matches!(r.at, chart::At::AxisStart | chart::At::AxisEnd)
+            {
+                r.at = match r.axis {
+                    chart::RefAxis::Value => value_mid.clone(),
+                    chart::RefAxis::Category => category_first.clone(),
+                };
+            }
+        };
+        let line_at_kind = line_at.clone();
         self.chart_segments_of(
             ui,
             id,
@@ -2720,7 +2929,12 @@ impl MastikApp {
                 (chart::RefKind::Band, "Band"),
             ],
             r.kind,
-            move |c, v| with(c, &|r| r.kind = v),
+            move |c, v| {
+                with(c, &|r| {
+                    r.kind = v;
+                    line_at_kind(r);
+                })
+            },
         );
         let axes: &[(chart::RefAxis, &str)] = &[
             (chart::RefAxis::Value, "Value"),
@@ -2739,6 +2953,7 @@ impl MastikApp {
                         r.axis = v;
                         r.at = chart::At::AxisStart;
                         r.to = chart::At::AxisEnd;
+                        line_at(r);
                     }
                 })
             },
@@ -2945,7 +3160,7 @@ impl MastikApp {
                     w,
                     "Value",
                     "Reference value",
-                    Scrub::fine(0.1, 2),
+                    Scrub::whole(0.25),
                     2,
                     move |_| v,
                     move |c, v| {
@@ -3002,7 +3217,7 @@ impl MastikApp {
                     w,
                     "Value",
                     "Reference value",
-                    Scrub::fine(0.1, 2),
+                    Scrub::whole(0.25),
                     2,
                     |_| 0.0,
                     |_, _| {},
@@ -3031,26 +3246,16 @@ impl MastikApp {
             "From the theme",
             "Derived from the theme and the background; pick a colour to set it",
         ));
-        let full = ui.available_width();
-        let reset = ui
-            .horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                let width = if set {
-                    full - ui::CONTROL_H - ui::CARD_COL_GAP
-                } else {
-                    full
-                };
-                self.chart_colour_row(ui, id, slot, width, swatch, name, true, derived);
-                set && ui::field_button(
-                    ui,
-                    icon::ARROW_COUNTER_CLOCKWISE,
-                    ui::CONTROL_H,
-                    ui::FieldButton::Off,
-                )
-                .on_hover_text("Use the theme's colour")
-                .clicked()
-            })
-            .inner;
+        let reset = self.chart_restorable_row(
+            ui,
+            id,
+            slot,
+            swatch,
+            name,
+            derived,
+            set,
+            ("Use the theme's colour", "Already the theme's colour"),
+        );
         if reset {
             self.chart_each(id, chart, "Use the theme's colour", |c| {
                 *c = with_paint(c, slot, None);
@@ -3140,7 +3345,7 @@ impl MastikApp {
                 ui::popup_rows(ui);
                 ui.set_min_width(SERIES_MENU_W);
                 if lined {
-                    ui.label(ui::eyebrow("Line"));
+                    ui::menu_eyebrow(ui, "Line");
                     for (d, name) in [
                         (chart::Dash::Solid, "Solid"),
                         (chart::Dash::Dashed, "Dashed"),
@@ -3150,7 +3355,8 @@ impl MastikApp {
                             pick = Some(Ok(d));
                         }
                     }
-                    ui.label(ui::eyebrow("Points"));
+                    ui::menu_sep(ui);
+                    ui::menu_eyebrow(ui, "Points");
                 }
                 // A line's unshaped points are circles, so it lists Circle once;
                 // a scatter's take the chart's shape.
@@ -3336,7 +3542,6 @@ impl MastikApp {
                         |c| c.options.bars.radius,
                         |c, v| c.options.bars.radius = v,
                     );
-                    self.chart_fade_rows(ui, id, chart);
                     // A floating step rounds every corner already.
                     if !waterfall {
                         let all = chart.options.bars.radius_all;
@@ -3344,6 +3549,7 @@ impl MastikApp {
                             c.options.bars.radius_all = on;
                         });
                     }
+                    self.chart_fade_rows(ui, id, chart);
                 }
                 // A waterfall runs in table order: its walk is the order.
                 if !waterfall {
@@ -3657,7 +3863,7 @@ impl MastikApp {
                     "Node labels",
                     &[
                         (NodeLabels::Name, "Name"),
-                        (NodeLabels::NameAndValue, "Name and value"),
+                        (NodeLabels::NameAndValue, "Both"),
                         (NodeLabels::Off, "Off"),
                     ],
                     chart.options.flows.labels,
@@ -3706,6 +3912,7 @@ impl MastikApp {
         // The marks' stroke: on a solid mark (a separator, in the background
         // unless set) or over a tint of it (an outline, in the mark's colour).
         let stroke = &chart.options.stroke;
+        ui.label(ui::eyebrow("Stroke"));
         self.chart_segments_of(
             ui,
             id,
@@ -3718,58 +3925,78 @@ impl MastikApp {
             stroke.style,
             |c, v| c.options.stroke.style = v,
         );
-        let half = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-            self.chart_number(
-                ui,
-                id,
-                chart,
-                half,
-                "Width",
-                "Mark stroke width",
-                Scrub::fine(0.1, 1).range(0.0..=20.0),
-                1,
-                |c| c.options.stroke.width,
-                |c, v| c.options.stroke.width = v.max(0.0),
-            );
-            let swatch = colour_of(&self.session.doc, id, chart, ChartColour::Stroke)
-                .map_or(ui::Swatch::Mixed, |c| {
-                    ui::Swatch::Solid(ui::color_to_egui(c))
-                });
-            // Unset, the stroke is the background's or each mark's own.
-            let chip = match (stroke.colour.is_some(), stroke.style) {
-                (true, _) => None,
-                (false, chart::StrokeStyle::Solid) => Some((
-                    "Background",
-                    "The background's colour; pick a colour to set it",
-                )),
-                (false, chart::StrokeStyle::Outline) => {
-                    Some(("Series", "Each mark's own colour; pick a colour to set it"))
-                }
-            };
-            let set = stroke.colour.is_some();
-            let w = if set {
-                half - ui::CONTROL_H - ui::CARD_COL_GAP
-            } else {
-                half
-            };
-            self.chart_colour_row(ui, id, ChartColour::Stroke, w, swatch, "Stroke", true, chip);
-            set && ui::field_button(
-                ui,
-                icon::ARROW_COUNTER_CLOCKWISE,
-                ui::CONTROL_H,
-                ui::FieldButton::Off,
-            )
-            .on_hover_text("Use the default stroke colour")
-            .clicked()
-        })
-        .inner
-        .then(|| {
+        self.chart_number(
+            ui,
+            id,
+            chart,
+            ui.available_width(),
+            "Width",
+            "Mark stroke width",
+            Scrub::fine(0.1, 1).range(0.0..=20.0),
+            1,
+            |c| c.options.stroke.width,
+            |c, v| c.options.stroke.width = v.max(0.0),
+        );
+        let swatch = colour_of(&self.session.doc, id, chart, ChartColour::Stroke)
+            .map_or(ui::Swatch::Mixed, |c| {
+                ui::Swatch::Solid(ui::color_to_egui(c))
+            });
+        // Unset, the stroke is the background's or each mark's own.
+        let set = stroke.colour.is_some();
+        let chip = match (set, stroke.style) {
+            (true, _) => None,
+            (false, chart::StrokeStyle::Solid) => Some((
+                "Background",
+                "The background's colour; pick a colour to set it",
+            )),
+            (false, chart::StrokeStyle::Outline) => {
+                Some(("Series", "Each mark's own colour; pick a colour to set it"))
+            }
+        };
+        let reset = self.chart_restorable_row(
+            ui,
+            id,
+            ChartColour::Stroke,
+            swatch,
+            "Colour",
+            chip,
+            set,
+            (
+                "Use the default stroke colour",
+                "Already the default stroke colour",
+            ),
+        );
+        if reset {
             self.chart_each(id, chart, "Mark stroke colour", |c| {
                 c.options.stroke.colour = None;
             });
-        });
+        }
+    }
+
+    /// A full-width [`Self::chart_colour_row`] with the restore button beside
+    /// it, always there and live only while the colour is `set`, as Settings'
+    /// colours have it; `tips` is the button's live and dead tip.
+    /// True when the button was pressed.
+    #[allow(clippy::too_many_arguments)]
+    fn chart_restorable_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        slot: ChartColour,
+        swatch: ui::Swatch,
+        name: &str,
+        detail: Option<(&str, &str)>,
+        set: bool,
+        tips: (&str, &str),
+    ) -> bool {
+        let full = ui.available_width();
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+            let w = full - ui::CONTROL_H - ui::CARD_COL_GAP;
+            self.chart_colour_row(ui, id, slot, w, swatch, name, true, detail);
+            restore_button(ui, set, tips)
+        })
+        .inner
     }
 
     /// The *Axes* section's rows; `own` leaves out each axis's typed range and
@@ -3853,13 +4080,13 @@ impl MastikApp {
                     "Category axis colour"
                 };
                 self.chart_slot_row(ui, id, chart, ChartColour::Axis(value), name);
-                // Its own half-width field, since the colour row is one control.
-                let half = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
+                // Not snapped to halves: a slow scrub's tenth would round back
+                // to where it started every frame and never move.
                 self.chart_number(
                     ui,
                     id,
                     chart,
-                    half,
+                    ui.available_width(),
                     "Width",
                     "Axis line width",
                     Scrub::fine(0.05, 1).range(0.5..=8.0),
@@ -3867,7 +4094,7 @@ impl MastikApp {
                     move |c| pick(c).line_width,
                     move |c, v| {
                         let mut a = pick(c);
-                        a.line_width = (v * 2.0).round().clamp(1.0, 16.0) / 2.0;
+                        a.line_width = v.clamp(0.5, 8.0);
                         put(c, a);
                     },
                 );
@@ -3925,12 +4152,11 @@ impl MastikApp {
                     "Category gridline colour"
                 };
                 self.chart_slot_row(ui, id, chart, ChartColour::Grid(value), name);
-                let half = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
                 self.chart_number(
                     ui,
                     id,
                     chart,
-                    half,
+                    ui.available_width(),
                     "Width",
                     "Gridline width",
                     Scrub::fine(0.05, 1).range(0.5..=8.0),
@@ -3938,7 +4164,7 @@ impl MastikApp {
                     move |c| pick(c).grid.width,
                     move |c, v| {
                         let mut a = pick(c);
-                        a.grid.width = (v * 2.0).round().clamp(1.0, 16.0) / 2.0;
+                        a.grid.width = v.clamp(0.5, 8.0);
                         put(c, a);
                     },
                 );
@@ -4104,9 +4330,13 @@ impl MastikApp {
                     }
                 }
                 if let Some((lo, hi)) = axis.range {
-                    let step = ((hi - lo).abs() / 100.0).max(0.01);
-                    let places = chart::scale::decimals_of(step).min(3);
-                    let decimals = usize::from(places);
+                    // A drag settles on whole numbers unless the span is small
+                    // enough to need fractions; a typed fraction still shows.
+                    let span = (hi - lo).abs();
+                    let step = (span / 100.0).max(0.01);
+                    let fine = chart::scale::decimals_of(step).min(3);
+                    let places = if span >= 10.0 { 0 } else { fine };
+                    let decimals = usize::from(fine.max(2));
                     let scrub = Scrub::fine(step, u32::from(places));
                     self.chart_pair(ui, |app, ui, w| {
                         app.chart_number(
@@ -4549,8 +4779,8 @@ impl MastikApp {
                 w,
                 "Ticks",
                 "Tick label size",
-                Scrub::fine(0.1, 1).range(1.0..=200.0),
-                1,
+                Scrub::whole(0.25).range(1.0..=200.0),
+                0,
                 |c| c.options.text.tick_size,
                 |c, v| c.options.text.tick_size = v,
             );
@@ -4561,8 +4791,8 @@ impl MastikApp {
                 w,
                 "Values",
                 "Value label size",
-                Scrub::fine(0.1, 1).range(1.0..=200.0),
-                1,
+                Scrub::whole(0.25).range(1.0..=200.0),
+                0,
                 |c| c.options.text.value_size,
                 |c, v| c.options.text.value_size = v,
             );
@@ -4575,8 +4805,8 @@ impl MastikApp {
                 w,
                 "Legend",
                 "Legend size",
-                Scrub::fine(0.1, 1).range(1.0..=200.0),
-                1,
+                Scrub::whole(0.25).range(1.0..=200.0),
+                0,
                 |c| c.options.text.legend_size,
                 |c, v| c.options.text.legend_size = v,
             );
@@ -4587,8 +4817,8 @@ impl MastikApp {
                 w,
                 "Titles",
                 "Axis title size",
-                Scrub::fine(0.1, 1).range(1.0..=200.0),
-                1,
+                Scrub::whole(0.25).range(1.0..=200.0),
+                0,
                 |c| c.options.text.title_size,
                 |c, v| c.options.text.title_size = v,
             );
@@ -5768,7 +5998,11 @@ mod tests {
         for _ in 0..3 {
             out = shapes(&ctx, &mut app);
         }
-        assert_eq!(app.open_reference, None, "taken by the card");
+        assert_eq!(
+            app.open_reference,
+            Some((id, 1)),
+            "still open after drawing"
+        );
         assert!(drawn(&out, "Take into the range"), "the popover is open");
     }
 
@@ -5858,27 +6092,69 @@ mod tests {
         }
     }
 
+    /// The chart frame's background as one solid colour, for a test.
+    fn background(app: &MastikApp, id: NodeId) -> Option<mastik_core::peniko::Color> {
+        own_solid(&app.session.doc, id).map(|(_, c)| c)
+    }
+
+    /// Clicks the Style section's theme segment reading `name`.
+    fn pick_theme(ctx: &egui::Context, app: &mut MastikApp, name: &str) {
+        app.collapsed_panels.remove("Chart style");
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            out = shapes(ctx, app);
+        }
+        let at = text_at(&out, name).expect("the theme segment");
+        click(ctx, app, at);
+    }
+
     /// The Style section's *Dark* turns the chart dark as one *Chart theme*
-    /// step: its ink, unset, follows to the dark colour.
-    /// flip: the row's setter leaving the theme as it is → fails at "dark".
+    /// step: its ink, unset, follows to the dark colour, and its background,
+    /// still the light theme's, to the dark theme's.
+    /// flip: the row's setter leaving the theme as it is → fails at "dark";
+    /// `chart_theme_row` without its fills pass → fails at "the background turns".
     #[test]
     fn the_theme_row_turns_the_chart_dark() {
         let ctx = egui::Context::default();
         let (mut app, id) = charted(&ctx, ChartKind::Column);
-        app.collapsed_panels.remove("Chart style");
-        let mut out = Vec::new();
-        for _ in 0..3 {
-            out = shapes(&ctx, &mut app);
-        }
-        assert!(drawn(&out, "Auto"), "the row's other segment");
-        let at = text_at(&out, "Dark").expect("the Dark segment");
-        click(&ctx, &mut app, at);
+        assert_eq!(background(&app, id), Some(chart::chrome(false).ground));
+        pick_theme(&ctx, &mut app, "Dark");
         let chart = chart_at(&app, id);
         assert_eq!(chart.options.theme, chart::Theme::Dark, "dark");
         let night = chart::chrome(true);
         assert_eq!(chart.ink(), Brush::Solid(night.ink).into());
+        assert_eq!(
+            background(&app, id),
+            Some(night.ground),
+            "the background turns"
+        );
         let step = app.session.history.done().last().unwrap();
         assert_eq!(step.note.label, "Chart theme");
+        assert!(app.session.undo());
+        assert_eq!(
+            background(&app, id),
+            Some(chart::chrome(false).ground),
+            "one step"
+        );
+    }
+
+    /// A background the person picked stays when the theme changes.
+    /// flip: `chart_theme_row` turning every background (no `theme_default`)
+    /// → fails at "the person's colour stays".
+    #[test]
+    fn a_chosen_background_stays_through_a_theme_pick() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = charted(&ctx, ChartKind::Column);
+        let own = mastik_core::peniko::Color::from_rgb8(0x33, 0x66, 0x99);
+        let tx = Transaction(vec![fills_with(&app.session.doc, id, 0, own)]);
+        assert!(app.session.commit(tx));
+        pick_theme(&ctx, &mut app, "Dark");
+        assert_eq!(
+            chart_at(&app, id).options.theme,
+            chart::Theme::Dark,
+            "fixture"
+        );
+        assert_eq!(background(&app, id), Some(own), "the person's colour stays");
     }
 
     /// A pie lists its slices, by category, where a series chart lists its
