@@ -11632,6 +11632,7 @@ impl MastikApp {
                 Some(n) => n.effects().to_vec(),
                 None => return,
             };
+            let before = effects.clone();
             if let Some(entry) = effects.get_mut(index) {
                 entry.kind = entry.kind.retyped(&kind);
                 let numbers = entry.value.numbers();
@@ -11640,9 +11641,45 @@ impl MastikApp {
                         entry.vars[slot] = None;
                     }
                 }
-                self.write_effects(subjects, effects);
+                let glyph = effect_glyph(&entry.kind);
+                let mut tx = self.effects_tx(subjects, &before, &effects, |_, _| {});
+                let fills = self.see_through_ops(subjects, &kind);
+                let thinned = !fills.is_empty();
+                tx.0.extend(fills);
+                self.session.name_step("Effects", glyph);
+                if self.commit_edit(tx) && thinned {
+                    self.session.info(format!(
+                        "Fill set to {:.0}% so what is behind shows through",
+                        paint::SEE_THROUGH_ALPHA * 100.0
+                    ));
+                }
             }
         }
+    }
+
+    /// The fills to write when an effect row is retyped to `kind`: on each
+    /// subject whose stack held no background blur or glass yet,
+    /// [`paint::see_through_fills`]. Empty for any other kind.
+    fn see_through_ops(&mut self, subjects: &[NodeId], kind: &EffectKind) -> Vec<Operation> {
+        let backdrop =
+            |k: &EffectKind| matches!(k, EffectKind::BackgroundBlur { .. } | EffectKind::Glass(_));
+        if !backdrop(kind) {
+            return Vec::new();
+        }
+        let session = &mut self.session;
+        subjects
+            .iter()
+            .filter_map(|id| {
+                let node = session.doc.get(*id)?;
+                // The stack before the retype, the retyped row included: a
+                // background blur retyped to a glass is not a first backdrop.
+                if node.effects().iter().any(|e| backdrop(&e.kind)) {
+                    return None;
+                }
+                let fills = paint::see_through_fills(node, || session.ids.mint_item())?;
+                Some(Operation::SetFills { id: *id, fills })
+            })
+            .collect()
     }
     /// A single colour on the Fill row's pattern (chip, hex, opacity) for a shadow
     /// ([`PaintSlot::Effect`]), a layout grid ([`PaintSlot::Grid`]), an overlay's
@@ -19779,6 +19816,105 @@ mod effects_panel_tests {
             card.app.effect_menu.is_some(),
             "and the popover is still open — you retype in order to look at it"
         );
+    }
+
+    /// Retyping a row to a background blur gives an unfilled layer a see-through white fill,
+    /// in the same undo step; retyping a second row to a glass leaves that fill alone.
+    ///
+    /// flip: `see_through_ops` answering nothing → fails at "an unfilled layer gains one fill".
+    #[test]
+    fn the_first_backdrop_effect_makes_the_fill_see_through_in_one_step() {
+        let mut card = Card::new(vec![
+            EffectKind::DropShadow(Default::default()),
+            EffectKind::DropShadow(Default::default()),
+        ]);
+        let fills = |card: &Card| {
+            card.app
+                .session
+                .doc
+                .get(card.id)
+                .map(|n| n.paint().fills.clone())
+                .unwrap_or_default()
+        };
+        assert!(fills(&card).is_empty(), "the fixture's rect is unfilled");
+        let retype = |card: &mut Card, index: usize, to: String| {
+            card.app.effect_menu = Some((card.id, index));
+            let out = card.settle();
+            let closed = format!("{}Drop shadow", icon::DROP_HALF_BOTTOM);
+            card.click(word(&out, &closed).center());
+            let out = card.settle();
+            card.click(word(&out, &to).center());
+        };
+        retype(
+            &mut card,
+            0,
+            format!("{}Background blur", icon::SQUARE_DOTS),
+        );
+        assert!(
+            matches!(card.committed()[0].kind, EffectKind::BackgroundBlur { .. }),
+            "the row is a background blur"
+        );
+        let white =
+            Brush::Solid(mastik_core::peniko::Color::WHITE.with_alpha(paint::SEE_THROUGH_ALPHA));
+        let now = fills(&card);
+        assert_eq!(now.len(), 1, "an unfilled layer gains one fill");
+        assert_eq!(now[0].brush.literal(), Some(&white));
+
+        retype(&mut card, 1, format!("{}Glass", icon::GLASS));
+        assert!(
+            matches!(card.committed()[1].kind, EffectKind::Glass(_)),
+            "the second row is a glass"
+        );
+        assert_eq!(
+            fills(&card),
+            now,
+            "a second backdrop effect leaves the fill alone"
+        );
+
+        card.app.session.undo();
+        card.app.session.undo();
+        assert!(
+            fills(&card).is_empty(),
+            "one undo step took the fill and the background blur together"
+        );
+    }
+
+    /// A background blur retyped to a glass is not a first backdrop: an opaque fill the user
+    /// restored under it stays opaque.
+    ///
+    /// flip: `see_through_ops` skipping the retyped row in its search → fails at the fill.
+    #[test]
+    fn a_backdrop_retyped_to_another_leaves_the_fill_alone() {
+        let mut card = Card::new(vec![EffectKind::background_blur(8.0)]);
+        let red = Brush::Solid(mastik_core::peniko::Color::from_rgba8(255, 0, 0, 255));
+        card.app
+            .session
+            .try_commit(Transaction(vec![Operation::SetFills {
+                id: card.id,
+                fills: mastik_core::keyed_by_position([Fill {
+                    brush: red.clone().into(),
+                    visible: true,
+                }]),
+            }]))
+            .expect("an opaque fill");
+        card.app.effect_menu = Some((card.id, 0));
+        let out = card.settle();
+        let closed = format!("{}Background blur", icon::SQUARE_DOTS);
+        card.click(word(&out, &closed).center());
+        let out = card.settle();
+        card.click(word(&out, &format!("{}Glass", icon::GLASS)).center());
+        assert!(
+            matches!(card.committed()[0].kind, EffectKind::Glass(_)),
+            "the row is a glass"
+        );
+        let fill = card
+            .app
+            .session
+            .doc
+            .get(card.id)
+            .and_then(|n| n.paint().fills.first().cloned())
+            .expect("the fill");
+        assert_eq!(fill.brush.literal(), Some(&red));
     }
 
     /// A scrub in the popover previews every frame and commits once: the offset accumulates

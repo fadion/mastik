@@ -842,6 +842,50 @@ pub fn new_solid() -> Brush {
     Brush::Solid(Color::from_rgba8(217, 217, 217, 255))
 }
 
+/// The alpha a layer's fill takes when a backdrop effect is first added to it.
+pub const SEE_THROUGH_ALPHA: f32 = 0.2;
+
+/// The fills `node` should take when it first gets a background blur or a glass,
+/// which show only through a fill that is not opaque; `None` leaves them alone.
+///
+/// One visible solid opaque fill drops to [`SEE_THROUGH_ALPHA`]; no fill gains
+/// white at that alpha. A styled, bound, gradient, image, hidden or second fill
+/// is the user's choice and stays, as does a text's (its fill is its glyphs) and
+/// a line's (it has no inside).
+pub fn see_through_fills(
+    node: &mastik_core::Node,
+    mint: impl FnOnce() -> mastik_core::ItemId,
+) -> Option<Vec<mastik_core::Keyed<mastik_core::Fill>>> {
+    let kind = node.kind();
+    if !kind.takes_paint()
+        || matches!(
+            kind,
+            mastik_core::NodeKind::Text { .. } | mastik_core::NodeKind::Line { .. }
+        )
+        || node.styles().fills.is_some()
+    {
+        return None;
+    }
+    match node.paint().fills.as_slice() {
+        [] => Some(vec![mastik_core::Keyed::new(
+            mint(),
+            mastik_core::Fill {
+                brush: Brush::Solid(Color::WHITE.with_alpha(SEE_THROUGH_ALPHA)).into(),
+                visible: true,
+            },
+        )]),
+        [one] if one.visible => match one.brush.literal() {
+            Some(Brush::Solid(c)) if c.components[3] >= 1.0 => {
+                let mut fill = one.clone();
+                fill.value.brush = Brush::Solid(c.with_alpha(SEE_THROUGH_ALPHA)).into();
+                Some(vec![fill])
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 // --- linear geometry -------------------------------------------------------
 
 /// The geometry accessors below speak the shape's space, while a `GradientBrush`
@@ -2263,5 +2307,109 @@ mod reorder_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod see_through_tests {
+    //! Which fills a first background blur or glass thins.
+
+    use super::*;
+    use mastik_core::{Document, Fill, IdSource, Keyed, NodeKind, Operation, Transaction};
+
+    /// A layer of `kind` holding `fills`, and the document it lives in.
+    fn layer(kind: NodeKind, fills: Vec<(Brush, bool)>) -> (Document, NodeId) {
+        let mut ids = IdSource::new(1);
+        let root = ids.mint();
+        let mut doc = Document::new(root);
+        let id = ids.mint();
+        let fills = fills
+            .into_iter()
+            .map(|(b, visible)| {
+                Keyed::new(
+                    ids.mint_item(),
+                    Fill {
+                        brush: b.into(),
+                        visible,
+                    },
+                )
+            })
+            .collect();
+        doc.apply(&Transaction(vec![
+            Operation::CreateNode {
+                id,
+                parent: root,
+                index: 0,
+                kind,
+                transform: None,
+                name: None,
+            },
+            Operation::SetFills { id, fills },
+        ]))
+        .expect("a layer");
+        (doc, id)
+    }
+
+    fn rect() -> NodeKind {
+        NodeKind::Rect {
+            size: Size::new(10.0, 10.0),
+            corner_radii: Default::default(),
+            corner_smoothing: 0.0,
+        }
+    }
+
+    /// The fills `see_through_fills` answers for a layer of `kind` holding `fills`.
+    fn thinned(kind: NodeKind, fills: Vec<(Brush, bool)>) -> Option<Vec<Brush>> {
+        let (doc, id) = layer(kind, fills);
+        let mut ids = IdSource::new(100);
+        let node = doc.get(id).expect("the layer");
+        see_through_fills(node, || ids.mint_item()).map(|f| {
+            f.iter()
+                .filter_map(|f| f.brush.literal().cloned())
+                .collect()
+        })
+    }
+
+    /// An opaque solid keeps its colour at the see-through alpha; no fill gains white.
+    #[test]
+    fn an_opaque_solid_thins_and_no_fill_gains_white() {
+        let red = Color::from_rgba8(255, 0, 0, 255);
+        assert_eq!(
+            thinned(rect(), vec![(Brush::Solid(red), true)]),
+            Some(vec![Brush::Solid(red.with_alpha(SEE_THROUGH_ALPHA))])
+        );
+        assert_eq!(
+            thinned(rect(), vec![]),
+            Some(vec![Brush::Solid(
+                Color::WHITE.with_alpha(SEE_THROUGH_ALPHA)
+            )])
+        );
+    }
+
+    /// What the user already chose stays: a translucent, hidden, second or image
+    /// fill, and a line's fill, which has no inside.
+    ///
+    /// flip: dropping the opaque-alpha test → fails at the translucent fill.
+    #[test]
+    fn a_fill_the_user_chose_stays() {
+        let half = Brush::Solid(Color::from_rgba8(0, 0, 255, 128));
+        let solid = Brush::Solid(Color::BLACK);
+        assert_eq!(thinned(rect(), vec![(half, true)]), None, "translucent");
+        assert_eq!(
+            thinned(rect(), vec![(solid.clone(), false)]),
+            None,
+            "hidden"
+        );
+        assert_eq!(
+            thinned(rect(), vec![(solid.clone(), true), (solid.clone(), true)]),
+            None,
+            "two fills"
+        );
+        let image = mastik_core::image_brush(mastik_core::ImageId("sha256:photo".into()));
+        assert_eq!(thinned(rect(), vec![(image, true)]), None, "an image");
+        let line = NodeKind::Line {
+            end: mastik_core::kurbo::Point::new(10.0, 0.0),
+        };
+        assert_eq!(thinned(line, vec![]), None, "a line");
     }
 }
