@@ -151,6 +151,42 @@ impl MastikApp {
 /// A reference popover's width.
 const REFERENCE_POPOVER_W: f32 = 240.0;
 
+/// The inside of every colour row on the Chart card, drawn into a
+/// `ui::field_row_pressable`: the swatch chip on `ground`, then `name` in `ink`,
+/// cut to fit, and whatever `right` adds right-aligned. A muted `detail` text
+/// is the usual right side ([`detail_text`]).
+fn colour_row_face(
+    ui: &mut egui::Ui,
+    ground: egui::Color32,
+    swatch: ui::Swatch,
+    name: &str,
+    ink: egui::Color32,
+    right: impl FnOnce(&mut egui::Ui),
+) {
+    ui.spacing_mut().item_spacing.x = ui::COLOUR_CHIP_GAP;
+    let (chip, _) =
+        ui.allocate_exact_size(egui::Vec2::splat(ui::COLOUR_CHIP), egui::Sense::hover());
+    ui::paint_swatch(ui.painter(), chip, ground, swatch);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        right(ui);
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.add(
+                egui::Label::new(egui::RichText::new(name).size(ui::CONTROL_PT).color(ink))
+                    .truncate(),
+            );
+        });
+    });
+}
+
+/// A colour row's muted right-hand text.
+fn detail_text(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    ui.label(
+        egui::RichText::new(text)
+            .size(ui::CONTROL_PT)
+            .color(theme::text::muted()),
+    )
+}
+
 /// Where a reference stands, in a row's words.
 fn at_words(a: &chart::At) -> String {
     use chart::{At, Stat};
@@ -1657,28 +1693,14 @@ impl MastikApp {
             .is_some_and(|p| Some(p.slot) == slot && self.session.selection.ids() == [id]);
         let size = egui::vec2(ui.available_width(), ui::CONTROL_H);
         let live = why.is_none();
+        let ink = if live {
+            color::text()
+        } else {
+            theme::text::off()
+        };
         let (_, resp) = ui::field_row_pressable(ui, size, open, live, |ui, ground| {
-            ui.spacing_mut().item_spacing.x = 7.0;
-            let (chip, _) = ui.allocate_exact_size(egui::Vec2::splat(14.0), egui::Sense::hover());
-            ui::paint_swatch(ui.painter(), chip, ground, swatch);
-            let ink = if live {
-                color::text()
-            } else {
-                theme::text::off()
-            };
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new(&hex)
-                        .size(ui::CONTROL_PT)
-                        .color(theme::text::muted()),
-                );
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.label(
-                        egui::RichText::new("Background")
-                            .size(ui::CONTROL_PT)
-                            .color(ink),
-                    );
-                });
+            colour_row_face(ui, ground, swatch, "Background", ink, |ui| {
+                detail_text(ui, &hex);
             });
         });
         if let Some(why) = why {
@@ -1758,28 +1780,14 @@ impl MastikApp {
                         false,
                         true,
                         |ui, ground| {
-                            ui.spacing_mut().item_spacing.x = 7.0;
-                            let (chip, _) = ui
-                                .allocate_exact_size(egui::Vec2::splat(14.0), egui::Sense::hover());
-                            ui::paint_swatch(ui.painter(), chip, ground, swatch);
-                            ui.with_layout(
-                                egui::Layout::right_to_left(egui::Align::Center),
+                            colour_row_face(
+                                ui,
+                                ground,
+                                swatch,
+                                "Plot background",
+                                color::text(),
                                 |ui| {
-                                    ui.label(
-                                        egui::RichText::new("None")
-                                            .size(ui::CONTROL_PT)
-                                            .color(theme::text::muted()),
-                                    );
-                                    ui.with_layout(
-                                        egui::Layout::left_to_right(egui::Align::Center),
-                                        |ui| {
-                                            ui.label(
-                                                egui::RichText::new("Plot background")
-                                                    .size(ui::CONTROL_PT)
-                                                    .color(color::text()),
-                                            );
-                                        },
-                                    );
+                                    detail_text(ui, "None");
                                 },
                             );
                         },
@@ -1794,7 +1802,7 @@ impl MastikApp {
         } else if let Some(resp) = disabled.inner
             && resp.clicked()
         {
-            let grey = Brush::Solid(mastik_core::peniko::Color::from_rgb8(0xF2, 0xF3, 0xF5));
+            let grey = Brush::Solid(chart::PLOT_GREY);
             self.chart_each(id, chart, "Plot background", |c| {
                 c.options.plot.fill = Some(grey.clone().into());
             });
@@ -2523,10 +2531,12 @@ impl MastikApp {
                 "The final total's name",
                 "Final total",
                 |c| {
-                    c.options
-                        .waterfall
-                        .final_total
-                        .get_or_insert_with(|| "Total".into())
+                    Some(
+                        c.options
+                            .waterfall
+                            .final_total
+                            .get_or_insert_with(|| "Total".into()),
+                    )
                 },
             );
         }
@@ -2637,29 +2647,8 @@ impl MastikApp {
                     false,
                     r.visible,
                     |ui, ground| {
-                        ui.spacing_mut().item_spacing.x = 7.0;
-                        let (chip, _) =
-                            ui.allocate_exact_size(egui::Vec2::splat(14.0), egui::Sense::hover());
-                        ui::paint_swatch(ui.painter(), chip, ground, swatch);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(
-                                egui::RichText::new(&at)
-                                    .size(ui::CONTROL_PT)
-                                    .color(theme::text::muted()),
-                            );
-                            ui.with_layout(
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(&name)
-                                                .size(ui::CONTROL_PT)
-                                                .color(color::text()),
-                                        )
-                                        .truncate(),
-                                    );
-                                },
-                            );
+                        colour_row_face(ui, ground, swatch, &name, color::text(), |ui| {
+                            detail_text(ui, &at);
                         });
                     },
                 );
@@ -2778,8 +2767,10 @@ impl MastikApp {
             "Reference label: {value} writes where it stands",
             "Reference label",
             move |c| {
-                let i = c.references.iter().position(|r| r.id == rid).unwrap_or(0);
-                &mut c.references[i].label
+                c.references
+                    .iter_mut()
+                    .find(|r| r.id == rid)
+                    .map(|r| &mut r.label)
             },
         );
         let swatch = colour_of(&self.session.doc, id, chart, ChartColour::Reference(rid))
@@ -3083,26 +3074,19 @@ impl MastikApp {
             .as_ref()
             .is_some_and(|p| p.slot == PaintSlot::Chart(slot));
         let size = egui::vec2(width, ui::CONTROL_H);
+        let ink = if live {
+            color::text()
+        } else {
+            theme::text::off()
+        };
+        let binding = self.chart_binding(id, slot).map(|(var, _)| var);
+        let doc = &self.session.doc;
         let (_, resp) = ui::field_row_pressable(ui, size, open, live, |ui, ground| {
-            ui.spacing_mut().item_spacing.x = 7.0;
-            let (chip, _) = ui.allocate_exact_size(egui::Vec2::splat(14.0), egui::Sense::hover());
-            ui::paint_swatch(ui.painter(), chip, ground, swatch);
-            let ink = if live {
-                color::text()
-            } else {
-                theme::text::off()
-            };
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            colour_row_face(ui, ground, swatch, name, ink, |ui| {
                 if let Some((text, tip)) = detail {
-                    ui.label(
-                        egui::RichText::new(text)
-                            .size(ui::CONTROL_PT)
-                            .color(theme::text::muted()),
-                    )
-                    .on_hover_text(tip);
+                    detail_text(ui, text).on_hover_text(tip);
                 }
-                if let Some((var, _)) = self.chart_binding(id, slot) {
-                    let doc = &self.session.doc;
+                if let Some(var) = binding {
                     let var_name = doc.variables().get(var).map_or("", |v| v.name.as_str());
                     let max_w = (ui.available_width() / 2.0).max(0.0);
                     let w = super::binding::capsule_width(ui, var_name, max_w);
@@ -3113,12 +3097,6 @@ impl MastikApp {
                     super::binding::capsule(ui, rect.left_center(), var_name, max_w);
                     resp.on_hover_text(super::binding::chip_tip(doc, id, var));
                 }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(name).size(ui::CONTROL_PT).color(ink))
-                            .truncate(),
-                    );
-                });
             });
         });
         if !live {
@@ -3699,9 +3677,7 @@ impl MastikApp {
             };
             let on = chart.options.below_zero.is_some();
             self.chart_switch_if(ui, live, id, chart, "Colour below zero", on, |c, on| {
-                c.options.below_zero = on.then(|| {
-                    Brush::Solid(mastik_core::peniko::Color::from_rgb8(0xC0, 0x39, 0x2B)).into()
-                });
+                c.options.below_zero = on.then(|| Brush::Solid(chart::ALERT_RED).into());
             });
             // Its own colour only: unset is the switch off, so no reset.
             if on && live.is_ok() {
@@ -4190,11 +4166,11 @@ impl MastikApp {
             &format!("{label} title"),
             "Axis title",
             move |c| {
-                if value {
+                Some(if value {
                     &mut c.options.value_axis.title
                 } else {
                     &mut c.options.category_axis.title
-                }
+                })
             },
         );
     }
@@ -4212,10 +4188,13 @@ impl MastikApp {
         hint: &str,
         tip: &str,
         label: &'static str,
-        slot: impl Fn(&mut Chart) -> &mut String,
+        slot: impl Fn(&mut Chart) -> Option<&mut String>,
     ) {
         let mut probe = chart.clone();
-        let stored = slot(&mut probe).clone();
+        // A chart without the slot (a reference gone) has nothing to edit.
+        let Some(stored) = slot(&mut probe).cloned() else {
+            return;
+        };
         let key = egui::Id::new(("chart-text", id, salt));
         let mut text = ui
             .data(|d| d.get_temp::<String>(key))
@@ -4229,7 +4208,11 @@ impl MastikApp {
         }
         if ui::defocus_commits(&resp) && text != stored {
             let text: String = text.chars().take(chart::MAX_TEXT_CHARS).collect();
-            self.chart_each(id, chart, label, |c| *slot(c) = text.clone());
+            self.chart_each(id, chart, label, |c| {
+                if let Some(s) = slot(c) {
+                    *s = text.clone();
+                }
+            });
         }
     }
 
@@ -4271,7 +4254,7 @@ impl MastikApp {
                             "Prefix",
                             "Written before the number, as $",
                             "Number prefix",
-                            move |c| &mut slot(c).prefix,
+                            move |c| Some(&mut slot(c).prefix),
                         );
                         self.chart_text(
                             ui,
@@ -4282,7 +4265,7 @@ impl MastikApp {
                             "Suffix",
                             "Written after the number, as kg",
                             "Number suffix",
-                            move |c| &mut slot(c).suffix,
+                            move |c| Some(&mut slot(c).suffix),
                         );
                     });
                     ui.label(ui::eyebrow("Decimals"));

@@ -135,6 +135,12 @@ pub enum Others {
 /// The share of its alpha a faded mark keeps.
 pub const FADED: f32 = 0.3;
 
+/// The red a new reference and a switched-on *Colour below zero* start in.
+pub const ALERT_RED: peniko::Color = peniko::Color::from_rgb8(0xC0, 0x39, 0x2B);
+
+/// The light grey a switched-on plot background starts in.
+pub const PLOT_GREY: peniko::Color = peniko::Color::from_rgb8(0xF2, 0xF3, 0xF5);
+
 /// A chart's highlight (`Chart::highlight`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -249,9 +255,7 @@ impl Default for Reference {
             at: At::Value(0.0),
             to: At::AxisEnd,
             label: "Reference".into(),
-            colour: BrushSource::Literal(crate::Brush::Solid(peniko::Color::from_rgb8(
-                0xC0, 0x39, 0x2B,
-            ))),
+            colour: BrushSource::Literal(crate::Brush::Solid(ALERT_RED)),
             width: 1.5,
             dash: Dash::Dashed,
             label_at: LabelAt::End,

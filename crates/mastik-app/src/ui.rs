@@ -3024,8 +3024,8 @@ pub fn colour_text_field(
 /// A [`colour_text_field`]'s chip, the size the type card's colour row draws.
 pub const COLOUR_CHIP: f32 = 14.0;
 
-/// Between a [`colour_text_field`]'s chip and its text.
-const COLOUR_CHIP_GAP: f32 = 7.0;
+/// Between a [`colour_text_field`]'s chip and its text, and a colour row's.
+pub const COLOUR_CHIP_GAP: f32 = 7.0;
 
 /// The ink each run of a [`code_editor`]'s text takes, by byte range; the rest
 /// is `color::text()`.
