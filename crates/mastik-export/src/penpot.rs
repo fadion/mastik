@@ -551,8 +551,13 @@ impl Writer<'_> {
                     }));
                 }
                 // Penpot's layer blur value is the deviation; Mastik's is a radius.
-                EffectKind::LayerBlur { radius } if !blur => {
+                // A progressive blur is written even, at its larger radius.
+                EffectKind::LayerBlur { .. } if !blur => {
                     blur = true;
+                    if e.kind.is_progressive() {
+                        self.approximate("Progressive blurs, written even at the larger radius");
+                    }
+                    let radius = e.kind.larger_blur().unwrap_or(0.0);
                     s["blur"] = json!({
                         "id": eid,
                         "type": "layer-blur",
@@ -560,12 +565,15 @@ impl Writer<'_> {
                         "hidden": !e.visible,
                     });
                 }
-                EffectKind::BackgroundBlur { radius } if !backdrop => {
+                EffectKind::BackgroundBlur { .. } if !backdrop => {
                     backdrop = true;
+                    if e.kind.is_progressive() {
+                        self.approximate("Progressive blurs, written even at the larger radius");
+                    }
                     s["backgroundBlur"] = json!({
                         "id": eid,
                         "type": "background-blur",
-                        "value": radius,
+                        "value": e.kind.larger_blur().unwrap_or(0.0),
                         "hidden": !e.visible,
                     });
                 }

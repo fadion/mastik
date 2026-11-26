@@ -3710,7 +3710,7 @@ fn a_background_blur_is_left_out_of_svg_and_reported() {
                 id: f.rect,
                 effects: keyed_by_position([Effect {
                     visible,
-                    ..Effect::new(EffectKind::BackgroundBlur { radius: 10.0 })
+                    ..Effect::new(EffectKind::background_blur(10.0))
                 }]),
             }]))
             .unwrap();
@@ -3733,6 +3733,84 @@ fn a_background_blur_is_left_out_of_svg_and_reported() {
         .unwrap();
     assert_eq!(rect.effects[0].kind, "BackgroundBlur");
     assert_eq!(rect.effects[0].blur, Some(10.0));
+}
+
+/// A progressive layer blur is written as three blurred copies under gradient
+/// masks and reported as approximated and as not read back; `resvg` draws it
+/// with the start's edge crisp and the end's soft. A progressive background blur
+/// is left out under its own words.
+///
+/// flip: `effect_def` without its progressive arm → fails at the `feImage`
+/// count (an even blur of the start's 0 writes nothing).
+#[test]
+fn a_progressive_blur_is_drawn_in_three_steps_and_reported() {
+    let mut f = common::fixture();
+    let set = |f: &mut common::Fixture, kind: EffectKind| {
+        f.doc
+            .apply(&Transaction(vec![Operation::SetEffects {
+                id: f.rect,
+                effects: keyed_by_position([Effect::new(kind)]),
+            }]))
+            .unwrap();
+        f.res = Resolved::rebuild(&f.doc);
+        mastik_export::svg::svg_with(&f.doc, &f.res, &[f.rect], mastik_core::ExportText::Live)
+    };
+    let ramp = mastik_core::BlurRamp::framed(90.0, 12.0, mastik_core::RampEase::Linear);
+    let out = set(
+        &mut f,
+        EffectKind::LayerBlur {
+            radius: 0.0,
+            ramp: Some(ramp),
+        },
+    );
+    assert_eq!(out.svg.matches("<feImage").count(), 3, "{}", out.svg);
+    assert!(
+        out.approximated
+            .iter()
+            .any(|s| s == "a progressive blur, drawn in three steps"),
+        "{:?}",
+        out.approximated
+    );
+    assert!(
+        out.round_trip
+            .iter()
+            .any(|s| s.starts_with("a progressive blur")),
+        "{:?}",
+        out.round_trip
+    );
+    let tree = resvg::usvg::Tree::from_str(&out.svg, &resvg::usvg::Options::default())
+        .expect("the writer's SVG parses");
+    let size = tree.size().to_int_size();
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(size.width(), size.height()).unwrap();
+    resvg::render(
+        &tree,
+        resvg::tiny_skia::Transform::identity(),
+        &mut pixmap.as_mut(),
+    );
+    let (w, h) = (size.width() as usize, size.height() as usize);
+    let x = w / 2;
+    let alpha = |y: usize| pixmap.data()[(y * w + x) * 4 + 3];
+    let soft = |ys: std::ops::Range<usize>| ys.filter(|y| (20..235).contains(&alpha(*y))).count();
+    let (top, bottom) = (soft(0..h / 2), soft(h / 2..h));
+    assert!(
+        top <= 4 && bottom >= 8,
+        "a crisp start and a soft end: {top} soft rows above the middle, {bottom} below"
+    );
+
+    let out = set(
+        &mut f,
+        EffectKind::BackgroundBlur {
+            radius: 20.0,
+            ramp: Some(ramp),
+        },
+    );
+    assert!(
+        out.approximated
+            .iter()
+            .any(|s| s == "a progressive background blur, left out"),
+        "{:?}",
+        out.approximated
+    );
 }
 
 /// **The viewBox has to grow to hold the shadow**, which is the visible half of
@@ -3899,10 +3977,7 @@ fn a_stack_that_draws_nothing_leaves_the_markup_untouched() {
             "neutral filters",
             vec![Effect::new(EffectKind::Filters(Filters::default()))],
         ),
-        (
-            "zero blur",
-            vec![Effect::new(EffectKind::LayerBlur { radius: 0.0 })],
-        ),
+        ("zero blur", vec![Effect::new(EffectKind::layer_blur(0.0))]),
     ] {
         let out = with_effects(stack);
         assert_eq!(

@@ -458,6 +458,50 @@ fn an_export_by_width_goes_out_as_a_multiplier_and_is_reported() {
     }
 }
 
+/// A progressive background blur goes out as an even one at its larger radius,
+/// reported.
+/// flip: the blur written at `radius` (the start) → fails at the value.
+#[test]
+fn a_progressive_blur_goes_out_even_at_its_larger_radius() {
+    let mut f = fixture();
+    let avatar = named(&f.doc, "Avatar");
+    f.doc
+        .apply(&mastik_core::Transaction(vec![
+            mastik_core::Operation::SetEffects {
+                id: avatar,
+                effects: mastik_core::keyed_by_position([mastik_core::Effect::new(
+                    mastik_core::EffectKind::BackgroundBlur {
+                        radius: 4.0,
+                        ramp: Some(mastik_core::BlurRamp::down(24.0)),
+                    },
+                )]),
+            },
+        ]))
+        .unwrap();
+    f.res = mastik_core::Resolved::rebuild(&f.doc);
+    let out = mastik_export::penpot::export(&f.doc, &f.res, "Fixture").unwrap();
+    assert!(
+        out.approximated
+            .iter()
+            .any(|s| s == "Progressive blurs, written even at the larger radius"),
+        "{:?}",
+        out.approximated
+    );
+    fn find(v: &Value) -> Option<&Value> {
+        match v {
+            Value::Object(m) if m.get("name").and_then(Value::as_str) == Some("Avatar") => {
+                m.get("backgroundBlur")
+            }
+            Value::Object(m) => m.values().find_map(find),
+            Value::Array(a) => a.iter().find_map(find),
+            _ => None,
+        }
+    }
+    let z = unzip(&out.bytes);
+    let blur = z.json.values().find_map(find).expect("the avatar's blur");
+    assert_eq!(blur["value"], 24.0, "{blur}");
+}
+
 /// Writing the same document twice gives the same bytes.
 #[test]
 fn the_same_document_writes_the_same_file() {

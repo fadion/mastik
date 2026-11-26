@@ -560,6 +560,25 @@ pub struct EffectSummary {
     pub colors: Option<[String; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi: Option<bool>,
+    /// A progressive blur's ramp; its start radius is `blur`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ramp: Option<RampSummary>,
+}
+
+/// A progressive blur's ramp as the MCP writes it: the end radius, the direction
+/// across the box in degrees (90 runs down, `BlurRamp::framed`), and the ease.
+/// The ends themselves, on the box normalised to `0..1`, only where the angle
+/// alone does not place them.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RampSummary {
+    pub end: f64,
+    pub angle: f64,
+    /// `"linear"` or `"smooth"`.
+    pub ease: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to: Option<[f64; 2]>,
 }
 
 /// A node's kind-specific geometry, as drawn. Lengths and coordinates are at
@@ -1436,6 +1455,7 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
         seed: None,
         colors: None,
         multi: None,
+        ramp: None,
     };
     match &e.kind {
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
@@ -1453,8 +1473,9 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
                 })
             }
         }
-        EffectKind::LayerBlur { radius } => EffectSummary {
+        EffectKind::LayerBlur { radius, ramp } => EffectSummary {
             blur: Some(round4(*radius)),
+            ramp: ramp.as_ref().map(ramp_summary),
             ..base("LayerBlur")
         },
         EffectKind::Sharpen { amount, radius } => EffectSummary {
@@ -1477,8 +1498,9 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
             blend: (n.blend != mastik_core::BlendMode::Normal).then(|| n.blend.label().to_string()),
             ..base("Noise")
         },
-        EffectKind::BackgroundBlur { radius } => EffectSummary {
+        EffectKind::BackgroundBlur { radius, ramp } => EffectSummary {
             blur: Some(round4(*radius)),
+            ramp: ramp.as_ref().map(ramp_summary),
             ..base("BackgroundBlur")
         },
         EffectKind::Filters(f) => EffectSummary {
@@ -1488,6 +1510,21 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
             hue: Some(f.hue),
             ..base("Filters")
         },
+    }
+}
+
+fn ramp_summary(r: &mastik_core::BlurRamp) -> RampSummary {
+    let ends = (!r.is_framed()).then_some(());
+    RampSummary {
+        end: round4(r.end),
+        angle: round4(r.angle()),
+        ease: match r.ease {
+            mastik_core::RampEase::Linear => "linear",
+            mastik_core::RampEase::Smooth => "smooth",
+        }
+        .to_string(),
+        from: ends.map(|()| [r.from.x, r.from.y].map(round4)),
+        to: ends.map(|()| [r.to.x, r.to.y].map(round4)),
     }
 }
 
