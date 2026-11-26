@@ -2086,6 +2086,11 @@ fn both_backends_blend_alike() {
 /// them a 40×40 glass at (30, 30) at `opacity`, tinted blue at a quarter, with
 /// a background blur of 8.
 fn glass(stripes: bool, opacity: f32) -> (Document, Resolved) {
+    glass_of(stripes, opacity, EffectKind::BackgroundBlur { radius: 8.0 })
+}
+
+/// `glass` with `effect` in place of its background blur.
+fn glass_of(stripes: bool, opacity: f32, effect: EffectKind) -> (Document, Resolved) {
     let mut ids = IdSource::new(1);
     let root = ids.mint();
     let mut doc = Document::new(root);
@@ -2131,7 +2136,7 @@ fn glass(stripes: bool, opacity: f32) -> (Document, Resolved) {
     ));
     ops.push(Operation::SetEffects {
         id: g,
-        effects: keyed_by_position([Effect::new(EffectKind::BackgroundBlur { radius: 8.0 })]),
+        effects: keyed_by_position([Effect::new(effect)]),
     });
     if opacity < 1.0 {
         ops.push(Operation::SetOpacity { id: g, opacity });
@@ -2164,6 +2169,64 @@ fn both_backends_draw_the_same_background_blur() {
             "the fixture blurs the columns at {opacity}"
         );
         for y in (0..SIDE as usize).step_by(3) {
+            for x in 0..SIDE as usize {
+                let (a, b) = (at(&gpu_px, x, y), at(&cpu_px, x, y));
+                let d = [
+                    a.0.abs_diff(b.0),
+                    a.1.abs_diff(b.1),
+                    a.2.abs_diff(b.2),
+                    a.3.abs_diff(b.3),
+                ];
+                assert!(
+                    d.iter().all(|d| *d <= 2),
+                    "at ({x}, {y}), opacity {opacity}: gpu {a:?} vs cpu {b:?}"
+                );
+            }
+        }
+    }
+}
+
+/// The canvas draws a Glass effect as the CPU reference does: the backdrop
+/// blurred, bent with dispersion and frosted in the glass's own layer, and the
+/// rim over the fill in another, at full and half opacity. Within 2/255, as
+/// the background blur; the edge must differ from a plain blur's, or two
+/// pictures that never bent would agree.
+///
+/// flip: `fx.wgsl`'s `gl_field` reading `src_a` → fails at the glass's corner,
+/// (30, 30).
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn both_backends_draw_the_same_glass() {
+    let Some(mut g) = gpu() else {
+        return;
+    };
+    let mut lens = mastik_core::Glass {
+        blur: 4.0,
+        bend: 0.8,
+        depth: 10.0,
+        dispersion: 0.5,
+        frost: 0.2,
+        ..Default::default()
+    };
+    lens.rim.width = 2.0;
+    for opacity in [1.0, 0.5] {
+        let (doc, res) = glass_of(true, opacity, EffectKind::Glass(lens.clone()));
+        let gpu_px = render_gpu(&mut g, &doc, &res);
+        let cpu_px = render_cpu(&doc, &res);
+        let (plain, plain_res) = glass_of(
+            true,
+            opacity,
+            EffectKind::Glass(mastik_core::Glass {
+                bend: 0.0,
+                ..lens.clone()
+            }),
+        );
+        let flat = render_cpu(&plain, &plain_res);
+        assert!(
+            (31..40).any(|x| at(&cpu_px, x, 50) != at(&flat, x, 50)),
+            "the fixture bends the edge at {opacity}"
+        );
+        for y in 0..SIDE as usize {
             for x in 0..SIDE as usize {
                 let (a, b) = (at(&gpu_px, x, y), at(&cpu_px, x, y));
                 let d = [

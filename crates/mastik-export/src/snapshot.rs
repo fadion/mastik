@@ -516,7 +516,7 @@ pub struct EffectSummary {
     /// The effect's item id, which `bind_variable` names an effect's number by.
     pub id: mastik_core::ItemId,
     /// `"DropShadow"`, `"InnerShadow"`, `"LayerBlur"`, `"Sharpen"`, `"Noise"`,
-    /// `"Texture"`, `"BackgroundBlur"` or `"Filters"`.
+    /// `"Texture"`, `"BackgroundBlur"`, `"Glass"` or `"Filters"`.
     pub kind: String,
     /// Shadows only: offset, blur radius, spread, and the colour whose alpha is
     /// the shadow's opacity.
@@ -565,6 +565,27 @@ pub struct EffectSummary {
     /// `Texture` only: octaves of finer grain, 1–5.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<u8>,
+    /// `Glass` only, beside its `blur`: the frost, bend and dispersion as
+    /// fractions, the depth in document units, and the rim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frost: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bend: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispersion: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rim: Option<RimSummary>,
+}
+
+/// A glass's rim: its light's angle in degrees, its width in document units and
+/// its colour as `#rrggbbaa`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RimSummary {
+    pub angle: f64,
+    pub width: f64,
+    pub color: String,
 }
 
 /// A node's kind-specific geometry, as drawn. Lengths and coordinates are at
@@ -1442,6 +1463,15 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
         colors: None,
         multi: None,
         detail: None,
+        frost: None,
+        bend: None,
+        depth: None,
+        dispersion: None,
+        rim: None,
+    };
+    let hex8 = |c: mastik_core::peniko::Color| {
+        let [r, g, b, a] = c.to_rgba8().to_u8_array();
+        format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
     };
     match &e.kind {
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
@@ -1472,12 +1502,7 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
             size: Some(n.size.map(round4)),
             density: Some(round4(n.density)),
             seed: Some(n.seed),
-            colors: (!n.multi).then(|| {
-                n.colors.map(|c| {
-                    let [r, g, b, a] = c.to_rgba8().to_u8_array();
-                    format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
-                })
-            }),
+            colors: (!n.multi).then(|| n.colors.map(hex8)),
             opacity: n.multi.then_some(n.opacity as f32),
             multi: Some(n.multi),
             blend: (n.blend != mastik_core::BlendMode::Normal).then(|| n.blend.label().to_string()),
@@ -1493,6 +1518,19 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
         EffectKind::BackgroundBlur { radius } => EffectSummary {
             blur: Some(round4(*radius)),
             ..base("BackgroundBlur")
+        },
+        EffectKind::Glass(g) => EffectSummary {
+            blur: Some(round4(g.blur)),
+            frost: Some(round4(g.frost)),
+            bend: Some(round4(g.bend)),
+            depth: Some(round4(g.depth)),
+            dispersion: Some(round4(g.dispersion)),
+            rim: Some(RimSummary {
+                angle: round4(g.rim.angle),
+                width: round4(g.rim.width),
+                color: hex8(g.rim.color),
+            }),
+            ..base("Glass")
         },
         EffectKind::Filters(f) => EffectSummary {
             brightness: Some(f.brightness),

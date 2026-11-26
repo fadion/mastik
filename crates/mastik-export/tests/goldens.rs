@@ -76,6 +76,7 @@ fn effect_name(k: &mastik_core::EffectKind) -> &'static str {
         E::Noise(_) => "noise",
         E::Texture(_) => "texture",
         E::BackgroundBlur { .. } => "background-blur",
+        E::Glass(_) => "glass",
         E::Filters(_) => "filters",
     }
 }
@@ -478,6 +479,11 @@ fn golden_document() -> (Document, Resolved) {
                     ..mastik_core::Texture::default()
                 })),
                 mastik_core::Effect::new(mastik_core::EffectKind::BackgroundBlur { radius: 5.0 }),
+                mastik_core::Effect::new(mastik_core::EffectKind::Glass(mastik_core::Glass {
+                    blur: 6.0,
+                    dispersion: 0.2,
+                    ..mastik_core::Glass::default()
+                })),
                 mastik_core::Effect::new(mastik_core::EffectKind::Filters(mastik_core::Filters {
                     brightness: 1.1,
                     contrast: 0.9,

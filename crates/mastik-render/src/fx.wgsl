@@ -632,3 +632,79 @@ fn texture_fx(@builtin(global_invocation_id) gid: vec3<u32>) {
     let bottom = d0 + (d1 - d0) * w.x;
     textureStore(dst, c, q(top + (bottom - top) * w.y));
 }
+
+// ---- glass: `effects::glass_bend_pixel` and `effects::rim_pixel` ------------
+//
+// `src_b` is the edge field, the outline's alpha blurred: ½ on the outline, 1 a
+// depth in. Read as 0 outside the buffer, as `effects::field_at` does.
+
+fn gl_field(c: vec2<i32>) -> f32 {
+    if (!inside(c)) { return 0.0; }
+    return textureLoad(src_b, c, 0).a;
+}
+
+// `effects::edge_at`: how near the outline (1 on and past it, 0 a depth in),
+// then the outward unit normal, zero where the field is flat.
+fn gl_edge(c: vec2<i32>) -> vec3<f32> {
+    let f = gl_field(c);
+    let gx = (gl_field(c + vec2<i32>(1, 0)) - gl_field(c - vec2<i32>(1, 0))) * 0.5;
+    let gy = (gl_field(c + vec2<i32>(0, 1)) - gl_field(c - vec2<i32>(0, 1))) * 0.5;
+    let near = clamp(2.0 * (1.0 - f), 0.0, 1.0);
+    let len = sqrt(gx * gx + gy * gy);
+    var n = vec2<f32>(0.0);
+    if (len > 1e-6) {
+        n = vec2<f32>(-gx / len, -gy / len);
+    }
+    return vec3<f32>(near, n);
+}
+
+// `effects::bilinear`: `src_a` at a point in pixel indices, clamped to the edge.
+fn gl_sample(pt: vec2<f32>) -> vec4<f32> {
+    let f0 = floor(pt);
+    let t = pt - f0;
+    let hi = vec2<i32>(p.size) - vec2<i32>(1);
+    let i0 = clamp(vec2<i32>(f0), vec2<i32>(0), hi);
+    let i1 = clamp(vec2<i32>(f0) + vec2<i32>(1), vec2<i32>(0), hi);
+    let a = textureLoad(src_a, vec2<i32>(i0.x, i0.y), 0);
+    let b = textureLoad(src_a, vec2<i32>(i1.x, i0.y), 0);
+    let cc = textureLoad(src_a, vec2<i32>(i0.x, i1.y), 0);
+    let d = textureLoad(src_a, vec2<i32>(i1.x, i1.y), 0);
+    let top = a + (b - a) * t.x;
+    let bot = cc + (d - cc) * t.x;
+    return top + (bot - top) * t.y;
+}
+
+// The backdrop moved outward along the outline's normal by
+// `bend × near × depth`, red a little further and blue a little less, then
+// frosted. `nz[0]` is bend, depth across, depth down, split; `nz[1].x` frost.
+@compute @workgroup_size(8, 8)
+fn glass_bend(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let c = vec2<i32>(gid.xy);
+    if (!inside(c)) { return; }
+    let e = gl_edge(c);
+    let m = p.nz[0].x * e.x;
+    let d = vec2<f32>(e.y * m * p.nz[0].y, e.z * m * p.nz[0].z);
+    let at = vec2<f32>(c);
+    let split = p.nz[0].w;
+    let r = gl_sample(at + d * (1.0 + split));
+    let g = gl_sample(at + d);
+    let b = gl_sample(at + d * (1.0 - split));
+    let o = vec4<f32>(r.r, g.g, b.b, max(max(r.a, g.a), b.a));
+    let frost = p.nz[1].x;
+    textureStore(dst, c, q(o * (1.0 - frost) + vec4<f32>(frost)));
+}
+
+// The rim colour (`tint`) over a band in from the outline, weighted by how
+// squarely the edge faces the light (`nz[0].xy`). `src_a` is the outline.
+@compute @workgroup_size(8, 8)
+fn glass_rim(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let c = vec2<i32>(gid.xy);
+    if (!inside(c)) { return; }
+    let shape = textureLoad(src_a, c, 0).a;
+    let e = gl_edge(c);
+    // `effects::RIM_GONE` and `RIM_SPAN`.
+    let band = clamp((0.9938 - gl_field(c)) / 0.0606, 0.0, 1.0);
+    let facing = e.y * p.nz[0].x + e.z * p.nz[0].y;
+    let a = shape * band * facing * facing * p.tint.a;
+    textureStore(dst, c, q(vec4<f32>(p.tint.rgb * a, a)));
+}

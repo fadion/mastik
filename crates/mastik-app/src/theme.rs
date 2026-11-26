@@ -1363,6 +1363,9 @@ pub mod icon {
     /// The **texture** effect's row glyph: a square whose right and bottom edges
     /// are torn, the outline the effect roughens.
     pub const TEXTURE: &str = "\u{f09a}";
+    /// The **glass** effect's row glyph: a rounded pane with a highlight arc in
+    /// its top-left corner. Not [`SQUARE_DOTS`], the background blur it extends.
+    pub const GLASS: &str = "\u{f099}";
     /// *System health*: a pulse line. Not [`GAUGE`], whose dial is JPEG quality.
     pub const PULSE: &str = "\u{f089}";
     /// A prototype's interactions: a pointer clicking, with the click's rays.
@@ -1687,6 +1690,7 @@ pub mod icon {
         ("chart-waterfall", CHART_WATERFALL),
         ("chart-radar", CHART_RADAR),
         ("texture", TEXTURE),
+        ("glass", GLASS),
         ("table", TABLE),
         ("visual-centre", VISUAL_CENTRE),
         ("size-preview", SIZE_PREVIEW),

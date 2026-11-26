@@ -129,8 +129,8 @@ pub use document::{
 };
 pub use effect::{
     BLUR_CUTOFF, BLUR_DEVIATION, DEFAULT_BLUR_RADIUS, EFFECT_BLUR, EFFECT_SPREAD, EFFECT_X,
-    EFFECT_Y, Effect, EffectKind, EffectVars, FilterChannel, Filters, Shadow, deviation, reach,
-    stack_escape,
+    EFFECT_Y, Effect, EffectKind, EffectVars, FilterChannel, Filters, Glass, Rim, Shadow,
+    deviation, reach, stack_escape,
 };
 pub use export::{
     ExportBackground, ExportFormat, ExportScale, ExportSpec, ExportText, IconSet, PerRow, RowsAs,

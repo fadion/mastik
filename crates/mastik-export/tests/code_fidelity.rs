@@ -5092,6 +5092,30 @@ fn a_background_blur_is_a_backdrop_filter_on_a_box() {
     );
 }
 
+/// A glass has no CSS: `backdrop-filter` neither bends nor lights a rim, so the
+/// layer is a picture and says why, as an inner shadow's is, and no
+/// `backdrop-filter` stands in for it.
+///
+/// flip: `walk`'s blocker letting a glass through (its arm answering nothing)
+/// → fails at the report.
+#[test]
+fn a_glass_makes_its_layer_a_picture() {
+    let mut d = Doc::new();
+    let f = d.frame(None, 0.0, 0.0, 100.0, 100.0, "Board");
+    let r = d.rect(f, 20.0, 20.0, 60.0, 60.0, 0.0);
+    d.fill(r, solid(255, 255, 255, 64));
+    d.effects(r, vec![EffectKind::Glass(mastik_core::Glass::default())]);
+    let (doc, res) = d.done();
+    let out = html_of(&doc, &res, &[f]);
+    assert!(
+        out.approximated.iter().any(|s| s.contains("a glass")),
+        "{:?}",
+        out.approximated
+    );
+    let css = String::from_utf8(out.file("styles.css").unwrap().to_vec()).unwrap();
+    assert!(!css.contains("backdrop-filter"), "{css}");
+}
+
 /// A feature the SVG writer approximates goes to a PNG and is reported, not
 /// passed off as exact.
 #[test]

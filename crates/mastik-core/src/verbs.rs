@@ -834,6 +834,18 @@ const NOISE_KIND_FIELDS: &[&str] = &[
 /// reason.
 const TEXTURE_KIND_FIELDS: &[&str] = &["type", "size", "amount", "seed", "detail"];
 
+/// A glass effect's kind's fields, its tag first, for [`NOISE_KIND_FIELDS`]'
+/// reason.
+const GLASS_KIND_FIELDS: &[&str] = &[
+    "type",
+    "blur",
+    "frost",
+    "bend",
+    "depth",
+    "dispersion",
+    "rim",
+];
+
 /// The path of a field `serde_ignored` cannot see: one inside a gradient brush,
 /// whose `#[serde(flatten)]` drops what it does not read; inside an untagged
 /// grid track (`minmax` or `repeat`); inside an effect's internally tagged
@@ -854,6 +866,7 @@ fn unseen_field(v: &Value) -> Option<Vec<Option<Step>>> {
             "sharpen" => vec!["amount", "radius"],
             "noise" => NOISE_KIND_FIELDS[1..].to_vec(),
             "texture" => TEXTURE_KIND_FIELDS[1..].to_vec(),
+            "glass" => GLASS_KIND_FIELDS[1..].to_vec(),
             "filters" => struct_fields::<crate::effect::Filters>()?.to_vec(),
             _ => return None,
         };
@@ -1103,10 +1116,11 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
         let whole = model_fields(model, below, walk_ref(v, &above[..from]));
         // The model's example shows some fields filled in, in the short forms
         // (`gap` for `row_gap` and `column_gap`); the type's own list adds the rest.
-        // Not inside a noise's kind: the example is a shadow, whose fields it lacks.
-        let noise_kind = model == "[Effect]" && below.len() == 2 && whole.is_some();
+        // Not inside a noise's or a glass's kind: the example's kinds are others,
+        // whose fields they lack.
+        let own_kind = model == "[Effect]" && below.len() == 2 && whole.is_some();
         let mut fields = example(model)
-            .filter(|_| !noise_kind)
+            .filter(|_| !own_kind)
             .and_then(|e| walk_ref(&e, below).cloned())
             .and_then(|e| match e {
                 Value::Object(map) => Some(map.keys().cloned().collect::<Vec<_>>()),
@@ -1198,6 +1212,7 @@ fn model_fields(
             match kind.get("type")?.as_str()? {
                 "noise" => Some(NOISE_KIND_FIELDS),
                 "texture" => Some(TEXTURE_KIND_FIELDS),
+                "glass" => Some(GLASS_KIND_FIELDS),
                 _ => None,
             }
         }
@@ -1854,6 +1869,8 @@ pub fn more_examples(model: &str) -> Vec<Value> {
             serde_json::json!({ "chart": chart_look_example() }),
             serde_json::json!({ "effects": [
                 { "kind": { "type": "texture", "size": 2, "amount": 4, "seed": 1, "detail": 3 } },
+                { "kind": { "type": "glass", "blur": 16, "frost": 0.1, "bend": 0.3, "depth": 12,
+                            "rim": { "angle": 135, "width": 1, "color": "#ffffff99" } } },
             ] }),
         ],
         _ => Vec::new(),

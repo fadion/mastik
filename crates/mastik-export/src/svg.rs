@@ -1750,6 +1750,9 @@ fn report_node(
     if mastik_core::effect::backdrop_radius(effects).is_some() {
         report.approximate("a background blur, left out");
     }
+    if mastik_core::effect::glasses(effects).next().is_some() {
+        report.approximate("a glass, left out");
+    }
     // Everything below is about `<text>`; outlined text is our own glyphs, placed.
     if outlined {
         return;

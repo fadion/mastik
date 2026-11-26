@@ -81,6 +81,9 @@ struct FxFrame {
     layer: bool,
     /// A buffer pixel's corner → the layer's own space, where noise lives.
     to_local: Affine,
+    /// A glass's layer and its top half's height (`push_glass_layer`): the
+    /// buffer is twice that tall, and only the top half is drawn back.
+    glass: Option<(crate::effects::GlassPart, u32)>,
 }
 
 /// A subtree that has to be rasterized, filtered and handed back as an image
@@ -104,6 +107,8 @@ pub struct EffectJob {
     layer: bool,
     /// As [`FxFrame::to_local`].
     to_local: Affine,
+    /// As [`FxFrame::glass`].
+    glass: Option<(crate::effects::GlassPart, u32)>,
     /// The atlas slot the enclosing scene draws.
     ///
     /// Built with a **fake, empty blob**, as `Renderer::register_texture` does:
@@ -213,6 +218,17 @@ fn coarse(effects: &[mastik_core::Keyed<mastik_core::Effect>], scale: (f64, f64)
                 let (sx, sy) = crate::effects::device_sigma(*radius, scale.0 / k, scale.1 / k);
                 mastik_core::effect::shadow_downscale(f64::from(sx.max(sy))) > 1
             }
+            // `effects::run_glass` blurs the backdrop and the outline that way too.
+            EffectKind::Glass(g) => [
+                g.blur,
+                crate::effects::glass_field_radius(g.depth),
+                g.rim.width,
+            ]
+            .into_iter()
+            .any(|r| {
+                let (sx, sy) = crate::effects::device_sigma(r, scale.0 / k, scale.1 / k);
+                mastik_core::effect::shadow_downscale(f64::from(sx.max(sy))) > 1
+            }),
             _ => false,
         })
 }
@@ -389,57 +405,40 @@ impl ScenePainter for GpuScenePainter<'_> {
         bounds: Rect,
         effects: &[mastik_core::Keyed<mastik_core::Effect>],
     ) {
-        let device = (self.base * transform).transform_rect_bbox(bounds);
-        let m = (self.base * transform).as_coeffs();
-        let scale = (
-            (m[0] * m[0] + m[1] * m[1]).sqrt(),
-            (m[2] * m[2] + m[3] * m[3]).sqrt(),
+        self.open_fx(transform, bounds, effects, None);
+    }
+
+    /// `CpuPainter::push_glass_layer`'s twin: the outline filled opaque into the
+    /// bottom half of a buffer twice as tall, and what is drawn until the pop
+    /// clipped to the top half.
+    fn push_glass_layer(
+        &mut self,
+        transform: Affine,
+        bounds: Rect,
+        effects: &[mastik_core::Keyed<mastik_core::Effect>],
+        part: crate::effects::GlassPart,
+        outline: &BezPath,
+        rule: ClipRule,
+    ) {
+        let top = self.open_fx(transform, bounds, effects, Some(part));
+        let base = self.base;
+        let Some(f) = self.fx.last_mut() else {
+            return;
+        };
+        let fill = match rule {
+            ClipRule::NonZero => Fill::NonZero,
+            ClipRule::EvenOdd => Fill::EvenOdd,
+        };
+        let below = Affine::translate((0.0, f64::from(top))) * base * transform;
+        f.scene.fill(fill, below, Color::WHITE, None, outline);
+        let head = Rect::new(0.0, 0.0, f64::from(f.size.0), f64::from(top));
+        f.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &head,
         );
-        // The target grown by the escape, not the bare target (§15 D342).
-        let escape = mastik_core::effect::buffer_escape(effects);
-        let clipped =
-            mastik_core::effect::buffer_box_within(device, self.limit, escape, scale, self.budget);
-        let (x0, y0) = (clipped.x0.floor(), clipped.y0.floor());
-        // **The buffer is not always at device resolution** (§15 D395): a heavily
-        // blurred layer is rasterized coarse (`effect::buffer_downscale`, as in
-        // `CpuPainter::push_effect_layer`) and scaled back up, which bounds the
-        // convolution as someone zooms in.
-        //
-        // **The texture-size cap is reached by resampling** (§15 D744):
-        // `effect_buffer` grows `k` until the buffer fits, since `fx_gpu` allocates
-        // scratch textures at `job.size`. `pack`'s `min(limit)` is not this guard;
-        // it only bounds where a layer is placed in the batch texture.
-        let wanted = mastik_core::effect::buffer_downscale(effects, scale);
-        let ((w, h), k) =
-            crate::effects::effect_buffer((clipped.x1.ceil() - x0, clipped.y1.ceil() - y0), wanted);
-        if !self.pinned {
-            let whole = mastik_core::effect::buffer_box(device, self.limit, escape, scale);
-            self.pinned =
-                clipped != whole || k != wanted || (whole != device && coarse(effects, scale, k));
-        }
-        let saved_base = self.base;
-        let saved_limit = self.limit;
-        // Shift so the buffer's top-left is the origin and scale into its resolution,
-        // so a nested effect layer clamps to this buffer and inherits the coarser
-        // scale through `self.base`.
-        self.base = Affine::scale(1.0 / k) * Affine::translate((-x0, -y0)) * saved_base;
-        self.limit = Rect::new(0.0, 0.0, w as f64, h as f64);
-        self.fx.push(FxFrame {
-            scene: Scene::new(),
-            origin: (x0 as i32, y0 as i32),
-            size: (w, h),
-            effects: effects.to_vec(),
-            saved_base,
-            saved_limit,
-            // The passes work in buffer units, keeping the kernel `BLUR_SIGMA_BUDGET`
-            // wide at any zoom.
-            scale: (scale.0 / k, scale.1 / k),
-            downscale: k,
-            depth: 0,
-            level: self.fx.len(),
-            layer: true,
-            to_local: crate::effects::buffer_to_local(saved_base * transform, (x0, y0), k),
-        });
     }
 
     fn push_shadow_layer(
@@ -474,9 +473,13 @@ impl ScenePainter for GpuScenePainter<'_> {
                 return;
             }
         }
-        let frame = self.fx.pop().expect("an effect frame, checked above");
+        let mut frame = self.fx.pop().expect("an effect frame, checked above");
         self.base = frame.saved_base;
         self.limit = frame.saved_limit;
+        if frame.glass.is_some() {
+            // The top half's clip, which `push_glass_layer` opened uncounted.
+            frame.scene.pop_layer();
+        }
         let image = ImageData {
             // Never read (`override_image` points it at a texture), but vello sizes
             // the atlas slot from the dimensions.
@@ -505,7 +508,14 @@ impl ScenePainter for GpuScenePainter<'_> {
         };
         let at = Affine::translate((frame.origin.0 as f64, frame.origin.1 as f64))
             * Affine::scale(frame.downscale);
-        self.scene().draw_image(&brush, at);
+        match frame.glass {
+            // A glass's bottom half is its outline, never drawn back.
+            Some((_, top)) => {
+                let head = Rect::new(0.0, 0.0, f64::from(frame.size.0), f64::from(top));
+                self.scene().fill(Fill::NonZero, at, &brush, None, &head);
+            }
+            None => self.scene().draw_image(&brush, at),
+        }
         self.jobs.push(EffectJob {
             scene: frame.scene,
             size: frame.size,
@@ -514,8 +524,81 @@ impl ScenePainter for GpuScenePainter<'_> {
             level: frame.level,
             layer: frame.layer,
             to_local: frame.to_local,
+            glass: frame.glass,
             image,
         });
+    }
+}
+
+impl GpuScenePainter<'_> {
+    /// Open an effect frame for `effects` over `bounds` under `transform`; a
+    /// glass's buffer is twice as tall (`effects::glass_buffer`). Returns the
+    /// height drawing goes into: the buffer's, or its top half's.
+    fn open_fx(
+        &mut self,
+        transform: Affine,
+        bounds: Rect,
+        effects: &[mastik_core::Keyed<mastik_core::Effect>],
+        glass: Option<crate::effects::GlassPart>,
+    ) -> u32 {
+        let device = (self.base * transform).transform_rect_bbox(bounds);
+        let m = (self.base * transform).as_coeffs();
+        let scale = (
+            (m[0] * m[0] + m[1] * m[1]).sqrt(),
+            (m[2] * m[2] + m[3] * m[3]).sqrt(),
+        );
+        // The target grown by the escape, not the bare target (§15 D342).
+        let escape = mastik_core::effect::buffer_escape(effects);
+        let clipped =
+            mastik_core::effect::buffer_box_within(device, self.limit, escape, scale, self.budget);
+        let (x0, y0) = (clipped.x0.floor(), clipped.y0.floor());
+        // **The buffer is not always at device resolution** (§15 D395): a heavily
+        // blurred layer is rasterized coarse (`effect::buffer_downscale`, as in
+        // `CpuPainter::push_effect_layer`) and scaled back up, which bounds the
+        // convolution as someone zooms in.
+        //
+        // **The texture-size cap is reached by resampling** (§15 D744):
+        // `effect_buffer` grows `k` until the buffer fits, since `fx_gpu` allocates
+        // scratch textures at `job.size`. `pack`'s `min(limit)` is not this guard;
+        // it only bounds where a layer is placed in the batch texture.
+        let wanted = mastik_core::effect::buffer_downscale(effects, scale);
+        let extent = (clipped.x1.ceil() - x0, clipped.y1.ceil() - y0);
+        let ((w, top), k) = match glass {
+            Some(_) => crate::effects::glass_buffer(extent, wanted),
+            None => crate::effects::effect_buffer(extent, wanted),
+        };
+        let h = if glass.is_some() { 2 * top } else { top };
+        if !self.pinned {
+            let whole = mastik_core::effect::buffer_box(device, self.limit, escape, scale);
+            self.pinned =
+                clipped != whole || k != wanted || (whole != device && coarse(effects, scale, k));
+        }
+        let saved_base = self.base;
+        let saved_limit = self.limit;
+        // Shift so the buffer's top-left is the origin and scale into its resolution,
+        // so a nested effect layer clamps to this buffer and inherits the coarser
+        // scale through `self.base`.
+        self.base = Affine::scale(1.0 / k) * Affine::translate((-x0, -y0)) * saved_base;
+        // A glass's drawing stays in its top half.
+        self.limit = Rect::new(0.0, 0.0, w as f64, top as f64);
+        self.fx.push(FxFrame {
+            scene: Scene::new(),
+            origin: (x0 as i32, y0 as i32),
+            size: (w, h),
+            effects: effects.to_vec(),
+            saved_base,
+            saved_limit,
+            // The passes work in buffer units, keeping the kernel `BLUR_SIGMA_BUDGET`
+            // wide at any zoom.
+            scale: (scale.0 / k, scale.1 / k),
+            downscale: k,
+            depth: 0,
+            level: self.fx.len(),
+            layer: true,
+            to_local: crate::effects::buffer_to_local(saved_base * transform, (x0, y0), k),
+            glass: glass.map(|part| (part, top)),
+        });
+        top
     }
 }
 
@@ -1023,6 +1106,7 @@ impl VelloGpuRenderer {
                         scale: jobs[i].scale,
                         layer: jobs[i].layer,
                         to_local: jobs[i].to_local,
+                        glass: jobs[i].glass,
                     })
                     .collect();
                 fx_gpu::run_batch(

@@ -915,6 +915,20 @@
         },
         {
           "id": "0:7",
+          "kind": "Glass",
+          "blur": 6.0,
+          "frost": 0.1,
+          "bend": 0.3,
+          "depth": 12.0,
+          "dispersion": 0.2,
+          "rim": {
+            "angle": 135.0,
+            "width": 1.0,
+            "color": "#ffffff99"
+          }
+        },
+        {
+          "id": "0:8",
           "kind": "Filters",
           "brightness": 1.1,
           "contrast": 0.9,

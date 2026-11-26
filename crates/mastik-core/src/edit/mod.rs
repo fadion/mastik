@@ -1265,6 +1265,11 @@ fn scale_effect(kind: &mut crate::effect::EffectKind, sx: f64, sy: f64, s: f64) 
             let range = crate::noise::TEXTURE_AMOUNT_RANGE;
             t.amount = (t.amount * s).clamp(*range.start(), *range.end());
         }
+        K::Glass(g) => {
+            g.blur *= s;
+            g.depth *= s;
+            g.rim.width *= s;
+        }
         K::Filters(_) => {}
     }
 }

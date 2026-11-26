@@ -3735,6 +3735,62 @@ fn a_background_blur_is_left_out_of_svg_and_reported() {
     assert_eq!(rect.effects[0].blur, Some(10.0));
 }
 
+/// A glass is left out of SVG and reported as one, never as a background blur;
+/// a hidden one is not. The snapshot names the kind with every number, its rim
+/// nested.
+///
+/// flip: `report_node` without the glass note → fails at the visible arm.
+#[test]
+fn a_glass_is_left_out_of_svg_and_reported() {
+    const NOTE: &str = "a glass, left out";
+    let mut f = common::fixture();
+    for (visible, reported) in [(false, false), (true, true)] {
+        f.doc
+            .apply(&Transaction(vec![Operation::SetEffects {
+                id: f.rect,
+                effects: keyed_by_position([Effect {
+                    visible,
+                    ..Effect::new(EffectKind::Glass(mastik_core::Glass::default()))
+                }]),
+            }]))
+            .unwrap();
+        f.res = Resolved::rebuild(&f.doc);
+        let out =
+            mastik_export::svg::svg_with(&f.doc, &f.res, &[f.rect], mastik_core::ExportText::Live);
+        assert_eq!(
+            out.approximated.iter().any(|s| s == NOTE),
+            reported,
+            "visible {visible}: {:?}",
+            out.approximated
+        );
+        assert!(
+            !out.approximated
+                .iter()
+                .any(|s| s.contains("background blur")),
+            "{:?}",
+            out.approximated
+        );
+        assert!(!out.svg.contains("<filter"), "nothing is written for it");
+    }
+    let snap = mastik_export::snapshot::snapshot(&f.doc, &f.res);
+    let rect = snap
+        .nodes
+        .iter()
+        .find(|n| n.id == f.rect.to_wire())
+        .unwrap();
+    let e = &rect.effects[0];
+    assert_eq!(e.kind, "Glass");
+    assert_eq!(
+        (e.blur, e.frost, e.bend, e.depth),
+        (Some(16.0), Some(0.1), Some(0.3), Some(12.0))
+    );
+    let rim = e.rim.as_ref().expect("the rim");
+    assert_eq!(
+        (rim.angle, rim.width, rim.color.as_str()),
+        (135.0, 1.0, "#ffffff99")
+    );
+}
+
 /// **The viewBox has to grow to hold the shadow**, which is the visible half of
 /// why `world_bounds` and `ink_bounds` are two questions (§5.3a).
 ///

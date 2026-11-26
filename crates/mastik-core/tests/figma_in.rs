@@ -1016,6 +1016,37 @@ fn a_texture_lands_as_one() {
     );
 }
 
+/// Figma's glass lands as a Glass: its frost radius the blur, its refraction
+/// the bend, its depth, dispersion and light angle as they are, its light's
+/// strength the white rim's alpha, and no white veil. Not reported.
+///
+/// flip: the `GLASS` arm in `figma_in`'s effects removed → fails at the report
+/// (the glass is left out).
+#[test]
+fn a_glass_lands_as_one() {
+    let pane = node(
+        "10:2",
+        "RECTANGLE",
+        (0.0, 0.0, 20.0, 10.0),
+        json!({
+            "effects": [{ "type": "GLASS", "radius": 8, "refraction": 0.5, "depth": 20,
+                          "dispersion": 0.25, "lightAngle": 45, "lightIntensity": 0.8 }],
+        }),
+    );
+    let r = import(fetched(vec![pane], json!({}), &[]));
+    assert!(r.report.is_empty(), "{:?}", r.report);
+    let fx = r.doc.get(one(&r.doc, "10:2")).unwrap().effects().to_vec();
+    let [ref e] = fx[..] else {
+        panic!("one effect: {fx:?}");
+    };
+    let mastik_core::EffectKind::Glass(g) = &e.kind else {
+        panic!("not a glass: {fx:?}");
+    };
+    assert_eq!((g.blur, g.frost, g.bend, g.depth), (8.0, 0.0, 0.5, 20.0));
+    assert_eq!((g.dispersion, g.rim.angle), (0.25, 45.0));
+    assert!((g.rim.color.components[3] - 0.8).abs() < 1e-6);
+}
+
 /// What the reader builds is a document the loader accepts.
 #[test]
 fn an_imported_file_saves_and_loads() {

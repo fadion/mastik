@@ -525,3 +525,49 @@ fn penpot_import_reads_the_export_back() {
         "the copy's label is linked to the main's"
     );
 }
+
+/// Whether some object in `v` answers `pred`.
+fn any_object(v: &Value, pred: &dyn Fn(&serde_json::Map<String, Value>) -> bool) -> bool {
+    match v {
+        Value::Object(m) => pred(m) || m.values().any(|c| any_object(c, pred)),
+        Value::Array(a) => a.iter().any(|c| any_object(c, pred)),
+        _ => false,
+    }
+}
+
+/// A glass goes out as a background blur of its blur radius alone, and the
+/// report says so.
+/// flip: the `Glass` arm in `penpot`'s effects writing nothing → fails at the
+/// written blur.
+#[test]
+fn a_glass_goes_out_as_its_background_blur_and_is_reported() {
+    let mut f = fixture();
+    let glow = named(&f.doc, "Glow");
+    f.doc
+        .apply(&mastik_core::Transaction(vec![
+            mastik_core::Operation::SetEffects {
+                id: glow,
+                effects: mastik_core::keyed_by_position([mastik_core::Effect::new(
+                    mastik_core::EffectKind::Glass(mastik_core::Glass::default()),
+                )]),
+            },
+        ]))
+        .unwrap();
+    f.res = mastik_core::Resolved::rebuild(&f.doc);
+    let out = mastik_export::penpot::export(&f.doc, &f.res, "Fixture").unwrap();
+    assert!(
+        out.approximated
+            .iter()
+            .any(|s| s == "Glass, as a background blur"),
+        "{:?}",
+        out.approximated
+    );
+    let z = unzip(&out.bytes);
+    assert!(
+        z.json.values().any(|v| any_object(v, &|m| {
+            m.get("type") == Some(&Value::from("background-blur"))
+                && m.get("value").and_then(Value::as_f64) == Some(16.0)
+        })),
+        "the glass's blur as Penpot's background blur"
+    );
+}

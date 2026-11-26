@@ -888,8 +888,9 @@ fn mix(a: f64, b: f64, t: f64) -> f64 {
 }
 
 /// Two effect stacks at `t` between them: shadows' offsets, blurs, spreads and
-/// colours and the blurs' radii move. `None` when the stacks are not the same
-/// kinds in the same order, which then show the end's at once.
+/// colours, the blurs' radii and a glass's numbers and rim move. `None` when the
+/// stacks are not the same kinds in the same order, which then show the end's at
+/// once.
 fn lerp_effects(a: &[Keyed<Effect>], b: &[Keyed<Effect>], t: f64) -> Option<Vec<Keyed<Effect>>> {
     if a.len() != b.len() {
         return None;
@@ -922,6 +923,22 @@ fn lerp_effects(a: &[Keyed<Effect>], b: &[Keyed<Effect>], t: f64) -> Option<Vec<
                 ) => EffectKind::BackgroundBlur {
                     radius: mix(*p, *q, t).max(0.0),
                 },
+                (EffectKind::Glass(p), EffectKind::Glass(q)) => EffectKind::Glass(
+                    mastik_core::Glass {
+                        blur: mix(p.blur, q.blur, t),
+                        frost: mix(p.frost, q.frost, t),
+                        bend: mix(p.bend, q.bend, t),
+                        depth: mix(p.depth, q.depth, t),
+                        dispersion: mix(p.dispersion, q.dispersion, t),
+                        rim: mastik_core::Rim {
+                            angle: mix(p.rim.angle, q.rim.angle, t),
+                            width: mix(p.rim.width, q.rim.width, t),
+                            color: lerp_color(p.rim.color, q.rim.color, t.clamp(0.0, 1.0) as f32),
+                        },
+                    }
+                    // An overshooting ease must not leave a fraction's range.
+                    .clamped(),
+                ),
                 (p, q) if std::mem::discriminant(p) == std::mem::discriminant(q) => q.clone(),
                 _ => return None,
             };
@@ -1252,5 +1269,36 @@ mod tests {
             .to_alpha_color::<mastik_core::peniko::color::Srgb>();
         assert!((first.components[0] - 0.5).abs() < 1e-6);
         assert!((first.components[2] - 0.5).abs() < 1e-6);
+    }
+
+    /// Two glasses move every number half way, the rim's too, and a fraction
+    /// pushed past its range by an overshooting ease is held to it.
+    ///
+    /// flip: `lerp_effects` dropping its glass arm (the end shown at once) →
+    /// fails at the blur.
+    #[test]
+    fn two_glasses_move_their_numbers() {
+        let a = mastik_core::Glass::default();
+        let mut b = mastik_core::Glass {
+            blur: 32.0,
+            bend: 0.9,
+            ..Default::default()
+        };
+        b.rim.angle = 45.0;
+        let stack = |g: &mastik_core::Glass| {
+            mastik_core::keyed_by_position([Effect::new(EffectKind::Glass(g.clone()))])
+        };
+        let mid = lerp_effects(&stack(&a), &stack(&b), 0.5).expect("two glasses move");
+        let EffectKind::Glass(g) = &mid[0].kind else {
+            panic!("not a glass");
+        };
+        assert_eq!(g.blur, 24.0, "the blur");
+        assert!((g.bend - 0.6).abs() < 1e-9);
+        assert_eq!(g.rim.angle, 90.0);
+        let past = lerp_effects(&stack(&a), &stack(&b), 1.5).expect("two glasses move");
+        let EffectKind::Glass(g) = &past[0].kind else {
+            panic!("not a glass");
+        };
+        assert_eq!(g.bend, 1.0, "held to its range");
     }
 }

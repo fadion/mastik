@@ -675,7 +675,7 @@ pub fn texture(s: &mut Surface<'_>, t: &mastik_core::Texture, to_local: kurbo::A
                 x as f32 + step[0] * cx + step[2] * cy,
                 y as f32 + step[1] * cx + step[3] * cy,
             );
-            *px = bilinear(&src, w, h, at);
+            *px = bilinear_clear(&src, w, h, at);
         }
     });
 }
@@ -683,7 +683,7 @@ pub fn texture(s: &mut Surface<'_>, t: &mastik_core::Texture, to_local: kurbo::A
 /// Premultiplied `src` read at `at`, a position in pixels from the buffer's
 /// top-left pixel centre, mixing the four pixels around it; outside the buffer is
 /// transparent. Rounded half-up per channel, as every pass here rounds.
-fn bilinear(src: &[u8], w: usize, h: usize, at: (f32, f32)) -> [u8; 4] {
+fn bilinear_clear(src: &[u8], w: usize, h: usize, at: (f32, f32)) -> [u8; 4] {
     let (fx, fy) = (at.0.floor(), at.1.floor());
     let (wx, wy) = (at.0 - fx, at.1 - fy);
     let (x0, y0) = (fx as i64, fy as i64);
@@ -1157,8 +1157,9 @@ fn over(dst: &mut [u8], src: &[u8]) {
 ///
 /// **Not `!effects.is_empty()`**: hidden entries and neutral `Filters` rows must
 /// answer `false`, or the layer pays for an offscreen buffer every frame. A
-/// background blur answers `false` too: it is drawn behind the layer by the walk
-/// (`scene::paint_backdrop`), not by a pass over the layer.
+/// background blur and a glass answer `false` too: the walk draws them in
+/// layers of their own (`scene::paint_backdrop`, `scene::paint_rims`), not by a
+/// pass over the layer.
 pub fn any_ink(effects: &[Keyed<Effect>]) -> bool {
     effects.iter().any(|e| {
         e.visible
@@ -1170,10 +1171,307 @@ pub fn any_ink(effects: &[Keyed<Effect>]) -> bool {
                 EffectKind::Sharpen { amount, radius } => *amount > 0.0 && *radius > 0.0,
                 EffectKind::Noise(n) => n.has_ink(),
                 EffectKind::Texture(t) => t.has_ink(),
-                EffectKind::BackgroundBlur { .. } => false,
+                EffectKind::BackgroundBlur { .. } | EffectKind::Glass(_) => false,
                 EffectKind::Filters(f) => !f.is_neutral(),
             }
     })
+}
+
+/// Which of a glass's two layers a buffer is: what lies behind it, blurred,
+/// bent and frosted (`scene::paint_backdrop`), or the lit rim over its fill
+/// (`scene::paint_rims`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlassPart {
+    Backdrop,
+    Rim,
+}
+
+/// A glass layer's buffer: as [`effect_buffer`], but twice as tall, the top half
+/// for what is drawn and the bottom half for the outline the edge is measured
+/// from, filled opaque. Returns the width, the **top half's** height and `k`;
+/// twice that height stays inside [`MAX_EFFECT_BUFFER_SIDE`].
+///
+/// One buffer rather than two so that both backends carry the outline through
+/// the machinery an effect layer already has: one raster, one texture.
+pub fn glass_buffer(extent: (f64, f64), k: f64) -> ((u32, u32), f64) {
+    let ((w, h2), k) = effect_buffer((extent.0, 2.0 * extent.1), k);
+    ((w, h2.div_ceil(2)), k)
+}
+
+/// The radius, in a blur's units, whose blur of a glass's outline fades out
+/// `depth` in: a reach of `depth` ([`mastik_core::effect::reach`]).
+pub fn glass_field_radius(depth: f64) -> f64 {
+    depth.max(0.0) / (mastik_core::effect::BLUR_CUTOFF * mastik_core::effect::BLUR_DEVIATION)
+}
+
+/// A glass layer's passes over its buffer, in place: `px` is `w` wide and
+/// `2 · top` tall ([`glass_buffer`]), the outline's alpha in the bottom half.
+/// Only the top half is composited; the bottom is left as it was.
+///
+/// For [`GlassPart::Backdrop`], `effects` is the layer's backdrop chain in list
+/// order: a [`EffectKind::LayerBlur`] for the background blurs, and each glass
+/// blurring, bending and frosting what the one before it left. For
+/// [`GlassPart::Rim`], the first visible glass's rim replaces the top half.
+/// `fx_gpu`'s glass item repeats these steps.
+pub fn run_glass(
+    px: &mut [u8],
+    w: usize,
+    top: usize,
+    effects: &[Keyed<Effect>],
+    part: GlassPart,
+    scale: (f64, f64),
+    to_local: kurbo::Affine,
+) {
+    let half = w * top * 4;
+    let (head, tail) = px.split_at_mut(half);
+    // The outline as a shadow's silhouette is held: alpha alone, colour zero.
+    let mut outline = vec![0u8; half];
+    for (o, t) in outline
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(tail.as_chunks::<4>().0)
+    {
+        o[3] = t[3];
+    }
+    let mut s = Surface::new(head, w, top);
+    let mut visible = effects.iter().filter(|e| e.visible);
+    match part {
+        GlassPart::Backdrop => {
+            for e in visible {
+                match &e.kind {
+                    EffectKind::LayerBlur { radius } if *radius > 0.0 => {
+                        let (sx, sy) = device_sigma(*radius, scale.0, scale.1);
+                        blur(&mut s, sx, sy);
+                    }
+                    EffectKind::Glass(g) => glass_backdrop(&mut s, &outline, g, scale),
+                    _ => {}
+                }
+            }
+        }
+        GlassPart::Rim => {
+            if let Some(g) = visible.find_map(|e| match &e.kind {
+                EffectKind::Glass(g) => Some(g),
+                _ => None,
+            }) {
+                glass_rim(&mut s, &outline, g, scale, to_local);
+            }
+        }
+    }
+}
+
+/// A blur of `s` at `radius` (in a blur's units), resampled past the budget as a
+/// shadow's silhouette is ([`mastik_core::effect::shadow_downscale`]); the GPU
+/// makes the same choice.
+fn blur_budgeted(s: &mut Surface<'_>, radius: f64, scale: (f64, f64), channels: Channels) {
+    let (sx, sy) = device_sigma(radius, scale.0, scale.1);
+    let k = mastik_core::effect::shadow_downscale(f64::from(sx.max(sy))) as usize;
+    if k > 1 {
+        blur_coarse_channels(s, sx / k as f32, sy / k as f32, k, channels);
+    } else {
+        blur_channels(s, sx, sy, channels);
+    }
+}
+
+/// The outline's alpha blurred by `radius`: 1 deep inside, ½ on the outline,
+/// falling to 0 outside. Its gradient points inward.
+fn glass_field(outline: &[u8], w: usize, h: usize, radius: f64, scale: (f64, f64)) -> Vec<u8> {
+    let mut field = outline.to_vec();
+    if radius > 0.0 {
+        blur_budgeted(
+            &mut Surface::new(&mut field, w, h),
+            radius,
+            scale,
+            Channels::Alpha,
+        );
+    }
+    field
+}
+
+/// One glass over the backdrop: blurred, bent by [`glass_bend_pixel`], frosted.
+fn glass_backdrop(
+    s: &mut Surface<'_>,
+    outline: &[u8],
+    g: &mastik_core::effect::Glass,
+    scale: (f64, f64),
+) {
+    if g.blur > 0.0 {
+        blur_budgeted(s, g.blur, scale, Channels::Rgba);
+    }
+    let bends = g.bend > 0.0 && g.depth > 0.0;
+    let field = match bends {
+        true => glass_field(outline, s.w, s.h, glass_field_radius(g.depth), scale),
+        false => outline.to_vec(),
+    };
+    let params = GlassBend::of(g, scale);
+    let src = s.px.to_vec();
+    let (w, h) = (s.w, s.h);
+    for y in 0..h {
+        for x in 0..w {
+            let v = glass_bend_pixel(&src, &field, w, h, x, y, &params);
+            let p = (y * w + x) * 4;
+            for c in 0..4 {
+                s.px[p + c] = (v[c].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            }
+        }
+    }
+}
+
+/// A glass's bend and frost as the pass reads them, in buffer pixels: `fx.wgsl`'s
+/// `glass_bend` takes these four numbers and the frost.
+pub struct GlassBend {
+    pub bend: f32,
+    /// The depth along each axis, in buffer pixels.
+    pub depth: (f32, f32),
+    /// How far the red and blue samples go past and short of the green: half the
+    /// dispersion.
+    pub split: f32,
+    pub frost: f32,
+}
+
+impl GlassBend {
+    pub fn of(g: &mastik_core::effect::Glass, scale: (f64, f64)) -> Self {
+        Self {
+            bend: g.bend as f32,
+            depth: (
+                (g.depth * scale.0.abs()) as f32,
+                (g.depth * scale.1.abs()) as f32,
+            ),
+            split: (0.5 * g.dispersion) as f32,
+            frost: g.frost as f32,
+        }
+    }
+}
+
+/// The edge field's value at `(x, y)`, 0 outside the buffer.
+fn field_at(field: &[u8], w: usize, h: usize, x: isize, y: isize) -> f32 {
+    if x < 0 || y < 0 || x >= w as isize || y >= h as isize {
+        return 0.0;
+    }
+    f32::from(field[(y as usize * w + x as usize) * 4 + 3]) / 255.0
+}
+
+/// The field's value at a pixel, how near the outline that is (1 on and past
+/// it, 0 a depth in), and the outward unit normal there (zero where the field is
+/// flat).
+fn edge_at(field: &[u8], w: usize, h: usize, x: usize, y: usize) -> (f32, f32, [f32; 2]) {
+    let (xi, yi) = (x as isize, y as isize);
+    let f = field_at(field, w, h, xi, yi);
+    let gx = (field_at(field, w, h, xi + 1, yi) - field_at(field, w, h, xi - 1, yi)) * 0.5;
+    let gy = (field_at(field, w, h, xi, yi + 1) - field_at(field, w, h, xi, yi - 1)) * 0.5;
+    let near = (2.0 * (1.0 - f)).clamp(0.0, 1.0);
+    let len = (gx * gx + gy * gy).sqrt();
+    let n = match len > 1e-6 {
+        true => [-gx / len, -gy / len],
+        false => [0.0, 0.0],
+    };
+    (f, near, n)
+}
+
+/// `src` (premultiplied, `w`×`h`) read bilinearly at a point in pixel indices,
+/// clamped to the edge, as 0..1 floats.
+fn bilinear(src: &[u8], w: usize, h: usize, x: f32, y: f32) -> [f32; 4] {
+    let (x0, y0) = (x.floor(), y.floor());
+    let (tx, ty) = (x - x0, y - y0);
+    let clamp = |v: f32, n: usize| (v.max(0.0) as usize).min(n - 1);
+    let (xa, xb) = (clamp(x0, w), clamp(x0 + 1.0, w));
+    let (ya, yb) = (clamp(y0, h), clamp(y0 + 1.0, h));
+    let at = |px: usize, py: usize, c: usize| f32::from(src[(py * w + px) * 4 + c]) / 255.0;
+    std::array::from_fn(|c| {
+        let top = at(xa, ya, c) + (at(xb, ya, c) - at(xa, ya, c)) * tx;
+        let bot = at(xa, yb, c) + (at(xb, yb, c) - at(xa, yb, c)) * tx;
+        top + (bot - top) * ty
+    })
+}
+
+/// One pixel of a glass's backdrop: read from `src` moved outward along the
+/// outline's normal by `bend × near × depth`, so the edge shows what lies up to
+/// a depth past it as a thick lens's rim does; red a little further and blue a
+/// little less for dispersion; then a white veil at `frost`.
+fn glass_bend_pixel(
+    src: &[u8],
+    field: &[u8],
+    w: usize,
+    h: usize,
+    x: usize,
+    y: usize,
+    p: &GlassBend,
+) -> [f32; 4] {
+    let (_, near, n) = edge_at(field, w, h, x, y);
+    let m = p.bend * near;
+    let d = [n[0] * m * p.depth.0, n[1] * m * p.depth.1];
+    let at = |f: f32| bilinear(src, w, h, x as f32 + d[0] * f, y as f32 + d[1] * f);
+    let (r, g, b) = (at(1.0 + p.split), at(1.0), at(1.0 - p.split));
+    let o = [r[0], g[1], b[2], r[3].max(g[3]).max(b[3])];
+    o.map(|v| v * (1.0 - p.frost) + p.frost)
+}
+
+/// The rim's light in buffer pixels: `angle` (degrees, counter-clockwise from
+/// the layer's right with up positive) carried by the inverse of `to_local`'s
+/// linear part, so it turns with the layer; unit length.
+pub fn rim_light(angle: f64, to_local: kurbo::Affine) -> [f32; 2] {
+    let t = angle.to_radians();
+    let (lx, ly) = (t.cos(), -t.sin());
+    let [a, b, c, d, _, _] = to_local.as_coeffs();
+    let det = a * d - b * c;
+    let (x, y) = match det.is_finite() && det != 0.0 {
+        true => ((d * lx - c * ly) / det, (a * ly - b * lx) / det),
+        false => (lx, ly),
+    };
+    let len = x.hypot(y);
+    match len.is_finite() && len > 0.0 {
+        true => [(x / len) as f32, (y / len) as f32],
+        false => [lx as f32, ly as f32],
+    }
+}
+
+/// A glass's rim into `s`, replacing it: the rim colour over a band `width` in
+/// from the outline, strongest where the edge faces along the light or against
+/// it and fading to nothing where it runs along it.
+fn glass_rim(
+    s: &mut Surface<'_>,
+    outline: &[u8],
+    g: &mastik_core::effect::Glass,
+    scale: (f64, f64),
+    to_local: kurbo::Affine,
+) {
+    let (w, h) = (s.w, s.h);
+    let field = glass_field(outline, w, h, g.rim.width, scale);
+    let light = rim_light(g.rim.angle, to_local);
+    let colour = g.rim.color.components;
+    for y in 0..h {
+        for x in 0..w {
+            let p = (y * w + x) * 4;
+            let shape = f32::from(outline[p + 3]) / 255.0;
+            let v = rim_pixel(shape, edge_at(&field, w, h, x, y), light, colour);
+            for c in 0..4 {
+                s.px[p + c] = (v[c].clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            }
+        }
+    }
+}
+
+/// Where a rim's band ends, read on its field (the outline blurred by the rim's
+/// width, deviation half of it): full up to ¾ of the width in (`Φ(1.5)`), gone
+/// by 1¼ (`Φ(2.5)`), so a one-unit rim at 1× is one solid pixel. `fx.wgsl`'s
+/// `glass_rim` spells the same numbers.
+const RIM_GONE: f32 = 0.9938;
+/// `RIM_GONE − Φ(1.5)`, written out so both backends divide by one `f32`.
+const RIM_SPAN: f32 = 0.0606;
+
+/// One pixel of a rim, premultiplied, from the outline's coverage `shape`, the
+/// edge there ([`edge_at`]) and the light.
+fn rim_pixel(
+    shape: f32,
+    edge: (f32, f32, [f32; 2]),
+    light: [f32; 2],
+    colour: [f32; 4],
+) -> [f32; 4] {
+    let (f, _, n) = edge;
+    let band = ((RIM_GONE - f) / RIM_SPAN).clamp(0.0, 1.0);
+    let facing = n[0] * light[0] + n[1] * light[1];
+    let a = shape * band * facing * facing * colour[3];
+    [colour[0] * a, colour[1] * a, colour[2] * a, a]
 }
 
 #[cfg(test)]

@@ -3,7 +3,10 @@
 //! (`scene::paint_backdrop`, §5.3a).
 //!
 //! The oracle is the layer blur: what a background blur shows inside the glass
-//! is what the same artwork draws there when it carries a layer blur itself.
+//! is what the same artwork draws there when it carries a layer blur itself. A
+//! Glass effect reads the same backdrop through its own layer
+//! (`effects::run_glass`), and a glass with nothing but its blur is the oracle
+//! for that.
 
 use mastik_core::kurbo::{Affine, Rect, Size};
 use mastik_core::peniko::Color;
@@ -666,4 +669,170 @@ fn a_glass_along_a_frames_edge_reads_only_the_frame() {
             "the edge at ({x}, {y})"
         );
     }
+}
+
+/// A glass with no bend, frost or rim: a background blur of its blur.
+fn plain_glass(blur: f64) -> mastik_core::Glass {
+    let mut g = mastik_core::Glass {
+        blur,
+        frost: 0.0,
+        bend: 0.0,
+        depth: 0.0,
+        dispersion: 0.0,
+        ..Default::default()
+    };
+    g.rim.width = 0.0;
+    g
+}
+
+/// A glass with nothing but its blur draws what a background blur of that
+/// radius draws, byte for byte, inside and out: the glass's own layer carries
+/// the outline but runs the blur the same way.
+///
+/// flip: `glass_backdrop` skipping its blur → fails at the glass's corner pixel.
+#[test]
+fn a_glass_with_only_its_blur_is_a_background_blur() {
+    let mut glass = Page::new();
+    let root = glass.root;
+    glass.stripes(root);
+    let n = glass.rect(root, GLASS, None);
+    glass.effects(n, vec![EffectKind::Glass(plain_glass(8.0))]);
+    let got = glass.render();
+
+    let mut blur = Page::new();
+    let root = blur.root;
+    blur.stripes(root);
+    let n = blur.rect(root, GLASS, None);
+    blur.effects(n, vec![BLUR]);
+    let want = blur.render();
+
+    for y in 0..SIDE {
+        for x in 0..SIDE {
+            assert_eq!(at(&got, x, y), at(&want, x, y), "at ({x}, {y})");
+        }
+    }
+}
+
+/// The frost is a white veil over the backdrop: half frost over black is
+/// mid-grey. A second glass works on what the first left, so two halves are
+/// three quarters (of the first's 128, rounded). A solid fill over the glass
+/// hides it.
+///
+/// flip: `run_glass` stopping after its first glass → fails at "the second
+/// glass sees the first".
+#[test]
+fn frost_veils_the_backdrop_and_a_second_glass_sees_the_first() {
+    let frosted = |frosts: &[f64], fill: Option<Color>| {
+        let mut p = Page::new();
+        let root = p.root;
+        p.rect(root, (0.0, 0.0, 100.0, 100.0), Some(Color::BLACK));
+        let n = p.rect(root, GLASS, fill);
+        let glasses = frosts
+            .iter()
+            .map(|f| {
+                EffectKind::Glass(mastik_core::Glass {
+                    frost: *f,
+                    ..plain_glass(4.0)
+                })
+            })
+            .collect();
+        p.effects(n, glasses);
+        at(&p.render(), 50, 50)
+    };
+    assert_eq!(frosted(&[0.5], None), [128, 128, 128, 255], "half frost");
+    assert_eq!(
+        frosted(&[0.5, 0.5], None),
+        [192, 192, 192, 255],
+        "the second glass sees the first"
+    );
+    assert_eq!(
+        frosted(&[0.5], Some(Color::from_rgba8(255, 0, 0, 255))),
+        [255, 0, 0, 255],
+        "a solid fill hides the glass"
+    );
+}
+
+/// The bend pulls what lies past the outline in at the edge: a glass whose
+/// backdrop is blue inside and red outside shows red just inside its left edge
+/// once it bends, and blue there when it does not; its middle, deeper than the
+/// depth, is blue either way.
+///
+/// flip: `edge_at` answering the inward normal → fails at "red pulled in at the
+/// edge".
+#[test]
+fn the_bend_pulls_what_lies_past_the_outline_in_at_the_edge() {
+    let bent = |bend: f64| {
+        let mut p = Page::new();
+        let root = p.root;
+        p.rect(
+            root,
+            (0.0, 0.0, 100.0, 100.0),
+            Some(Color::from_rgba8(255, 0, 0, 255)),
+        );
+        p.rect(root, GLASS, Some(Color::from_rgba8(0, 0, 255, 255)));
+        // The glass sits over the blue square exactly.
+        let n = p.rect(root, GLASS, None);
+        p.effects(
+            n,
+            vec![EffectKind::Glass(mastik_core::Glass {
+                bend,
+                depth: 10.0,
+                ..plain_glass(0.0)
+            })],
+        );
+        p.render()
+    };
+    let flat = bent(0.0);
+    let bent = bent(1.0);
+    assert_eq!(
+        at(&flat, 31, 50),
+        [0, 0, 255, 255],
+        "no bend, blue at the edge"
+    );
+    let edge = at(&bent, 31, 50);
+    assert!(
+        edge[0] > 128 && edge[2] < 128,
+        "red pulled in at the edge: {edge:?}"
+    );
+    assert_eq!(
+        at(&bent, 50, 50),
+        [0, 0, 255, 255],
+        "the middle is not bent"
+    );
+}
+
+/// The rim lies over the fill and is brightest where the edge faces the light:
+/// lit from the left (180°), a black glass shows white along its left and right
+/// edges and stays black along its top and bottom, and in its middle.
+///
+/// flip: `rim_pixel` dropping its `facing` weight → fails at "the top runs
+/// along the light".
+#[test]
+fn the_rim_is_lit_where_the_edge_faces_the_light() {
+    let mut p = Page::new();
+    let root = p.root;
+    let n = p.rect(root, GLASS, Some(Color::BLACK));
+    let mut g = plain_glass(0.0);
+    g.rim.width = 2.0;
+    g.rim.angle = 180.0;
+    g.rim.color = Color::WHITE;
+    p.effects(n, vec![EffectKind::Glass(g)]);
+    let px = p.render();
+    let lum = |x, y| at(&px, x, y)[0];
+    assert!(
+        lum(30, 50) > 200,
+        "the left edge faces the light: {}",
+        lum(30, 50)
+    );
+    assert!(
+        lum(69, 50) > 200,
+        "and the right edge away from it: {}",
+        lum(69, 50)
+    );
+    assert!(
+        lum(50, 30) < 20,
+        "the top runs along the light: {}",
+        lum(50, 30)
+    );
+    assert_eq!(at(&px, 50, 50), [0, 0, 0, 255], "the middle keeps its fill");
 }
