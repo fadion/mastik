@@ -1411,7 +1411,7 @@ pub fn review(
         for (m, c) in &w.var.cells {
             let mut at = c.clone();
             let mut steps = 0;
-            while let Cell::Alias(to) = at {
+            while let Some(to) = at.target() {
                 steps += 1;
                 if steps > wanted.len() + t.iter().count() + 1 {
                     return refuse(&token_path(&w.var.name), "its references loop");
@@ -2396,12 +2396,13 @@ impl Review {
                     .and_then(|w| w.var.cells.get(&m.id))
                     .or_else(|| default.and_then(|d| v.cells.get(&d)))
                     .cloned()
-                    .map(|cell| match cell {
-                        // A removal turns aliases to it into values; so does this.
-                        Cell::Alias(to) if removed.contains(&to) => default
+                    .map(|cell| match cell.target() {
+                        // A removal turns aliases and opposites of it into
+                        // values; so does this.
+                        Some(to) if removed.contains(&to) => default
                             .and_then(|d| t.resolve(v.id, d))
                             .map_or(cell, Cell::from),
-                        cell => cell,
+                        _ => cell,
                     });
                 if let Some(cell) = cell {
                     cells.push((v.id, cell));

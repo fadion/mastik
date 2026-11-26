@@ -567,8 +567,9 @@ impl Tokens {
     }
 
     /// The variables read that alias into another collection of several modes
-    /// by a different target per mode of their own: no block of that collection
-    /// can redeclare them, so a frame setting its mode reads the root's value.
+    /// by a different target per mode of their own, or are an opposite of one
+    /// there: no block of that collection can redeclare them, so a frame setting
+    /// its mode reads the root's value.
     pub fn unfollowed<'a>(&self, doc: &'a Document) -> Vec<&'a str> {
         let t = doc.variables();
         let mut out = Vec::new();
@@ -582,12 +583,12 @@ impl Tokens {
             if one_alias(t, v).is_some() {
                 continue;
             }
-            let into_other = v.cells.values().any(|cell| match cell {
-                Cell::Alias(to) => t
-                    .collections()
+            // An opposite is written as its value, so one reading another
+            // collection of several modes is never followed either.
+            let into_other = v.cells.values().filter_map(Cell::target).any(|to| {
+                t.collections()
                     .iter()
-                    .any(|c| c.id != own && c.modes.len() > 1 && reaches(t, *to, c.id)),
-                _ => false,
+                    .any(|c| c.id != own && c.modes.len() > 1 && reaches(t, to, c.id))
             });
             if into_other {
                 out.push(v.name.as_str());
@@ -702,11 +703,7 @@ fn reaches_by(t: &Variables, from: VarId, hit: impl Fn(&variable::Variable) -> b
         if hit(v) {
             return true;
         }
-        for cell in v.cells.values() {
-            if let Cell::Alias(next) = cell {
-                stack.push(*next);
-            }
-        }
+        stack.extend(v.cells.values().filter_map(Cell::target));
     }
     false
 }
@@ -810,5 +807,63 @@ mod tests {
         tokens.shown(off, "block");
         let css = tokens.css(&doc).expect("a tokens file");
         assert!(css.contains("--off: none;"), "--off: none\n{css}");
+    }
+
+    /// An opposite of a variable in another collection of several modes is
+    /// written once, so a frame set to the other mode cannot follow it: the
+    /// export names it among the variables it does not follow.
+    /// flip: `unfollowed` reading `Cell::Alias` alone → fails at "named".
+    #[test]
+    fn an_opposite_across_collections_is_named_unfollowed() {
+        let mut ids = IdSource::new(0x70C6);
+        let mut doc = Document::new(ids.mint());
+        let (own, light, dark) = (ids.mint_mode(), ids.mint_mode(), ids.mint_mode());
+        let theme = ids.mint_collection();
+        let (is_dark, is_light) = (ids.mint_var(), ids.mint_var());
+        let boolean = |id, name: &str, cells: Vec<(ModeId, Cell)>| Variable {
+            id,
+            name: name.into(),
+            kind: VarKind::Boolean,
+            cells: cells.into_iter().collect(),
+            scope: None,
+            origin: None,
+            forked: None,
+            description: String::new(),
+        };
+        let mode = |id, name: &str| variable::Mode {
+            id,
+            name: name.into(),
+        };
+        doc.apply(&Transaction(vec![
+            Operation::AddMode {
+                collection: variable::CollectionId::FIRST,
+                mode: mode(own, "Mode 1"),
+                index: 0,
+                cells: vec![],
+            },
+            Operation::AddCollection {
+                collection: variable::Collection {
+                    id: theme,
+                    name: "Theme".into(),
+                    modes: vec![mode(light, "Light"), mode(dark, "Dark")],
+                    breakpoints: None,
+                },
+                index: 1,
+            },
+            Operation::AddVariable {
+                var: boolean(
+                    is_dark,
+                    "is dark",
+                    vec![(light, Cell::Boolean(false)), (dark, Cell::Boolean(true))],
+                ),
+            },
+            Operation::AddVariable {
+                var: boolean(is_light, "is light", vec![(own, Cell::Not(is_dark))]),
+            },
+        ]))
+        .unwrap();
+        let mut tokens = Tokens::new(&doc);
+        tokens.shown(is_light, "block");
+        assert_eq!(tokens.unfollowed(&doc), ["is light"], "named");
     }
 }
