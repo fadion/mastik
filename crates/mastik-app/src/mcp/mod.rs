@@ -1344,13 +1344,14 @@ fn run(conn: &Connection, s: &mut EditorSession, call: &Call) -> Result<Answer, 
                     id.to_wire()
                 ));
             }
-            let tree = mastik_core::verbs::tree(&s.doc, id)
+            let depth = index(args, "depth").map(|d| d as usize);
+            let tree = mastik_core::verbs::tree_to(&s.doc, id, depth)
                 .ok_or_else(|| format!("no layer `{}`", id.to_wire()))?;
             let answer = json!({ "tree": tree });
             within_budget(
                 &answer.to_string(),
                 "This tree",
-                "read the layers inside it one `get_tree` at a time",
+                "pass a `depth`, then read each layer it cut one `get_tree` at a time",
             )?;
             json(answer)
         }
@@ -2252,10 +2253,12 @@ mod tests {
 
     /// A board holding a main and its instance, read with `get_tree` in short ids
     /// and inserted back through the commit door, is a main and an instance of
-    /// it again, not a plain copy.
+    /// it again, not a plain copy; read with a `depth`, a cut layer gives
+    /// `omitted` and its short id.
     ///
     /// flip: `verbs::tree` dropping every `id` → fails at "an instance of the
-    /// new main", the copy linked to the first main instead.
+    /// new main", the copy linked to the first main instead; `get_tree` not
+    /// passing `depth` on → fails at "the main's text is cut".
     #[test]
     fn get_tree_round_trips_a_main_and_its_instance() {
         fn short(engine: &mut Engine, docs: &mut One, tool: &str, args: Value) -> Output {
@@ -2291,6 +2294,15 @@ mod tests {
         assert!(
             link.starts_with('n') && !link.contains(':'),
             "short ids: {tree}"
+        );
+        let args = json!({ "id": board, "depth": 1 });
+        let out = short(&mut engine, &mut docs, "get_tree", args);
+        let cut = &ok(&out)["tree"]["children"][0];
+        assert_eq!(cut["omitted"], 1, "the main's text is cut: {cut}");
+        let at = cut["id"].as_str().unwrap_or_default();
+        assert!(
+            at.starts_with('n') && !at.contains(':'),
+            "a short id to read on from: {cut}"
         );
         let args = json!({ "parent": page, "tree": tree });
         let out = short(&mut engine, &mut docs, "insert_subtree", args);

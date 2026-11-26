@@ -8642,6 +8642,12 @@ pub struct Tree {
     pub reactions: Option<Value>,
     /// The layer's prototype settings, as `set_play` takes them.
     pub play: Option<Value>,
+    /// A list frame's description; its copies are made from the template once
+    /// the tree is in, so any it names are dropped.
+    pub list: Option<crate::list::List>,
+    /// How many children a read cut by `depth` left out here; refused, since
+    /// inserting the cut tree would drop them.
+    pub omitted: Option<usize>,
     /// Bottom first.
     #[serde(default)]
     pub children: Vec<Tree>,
@@ -8708,6 +8714,12 @@ fn tree_ops(
         return Err(a.invalid(
             "tree",
             "a tree's corners are part of its `kind`, as `{\"Artboard\": {\"size\": {\"width\": 320, \"height\": 200}, \"corner_radii\": 20}}`",
+        ));
+    }
+    if tree.omitted.is_some() {
+        return Err(a.invalid(
+            "tree",
+            "a layer with `omitted` was read with a `depth` that left its children out; read it with `get_tree` without `depth` to insert it whole",
         ));
     }
     let kind = tree.kind.clone().ok_or_else(|| {
@@ -8957,6 +8969,16 @@ fn tree_ops(
     if let Some(written) = &tree.reactions {
         let reactions = tree_reactions(ctx, a, written, minted)?;
         late.push(Operation::SetReactions { id, reactions });
+    }
+    if let Some(list) = &tree.list {
+        let mut list = list.clone();
+        list.copies.clear();
+        list.validate(id)
+            .map_err(|rule| a.invalid("tree", format!("at `list`: {rule}")))?;
+        late.push(Operation::SetList {
+            id,
+            list: Some(Box::new(list)),
+        });
     }
     for (i, child) in tree.children.iter().enumerate() {
         tree_ops(ctx, a, child, id, i, ids, minted, done, late)?;
@@ -9465,14 +9487,25 @@ fn explicit_kind(kind: &NodeKind, mine: &mut Value, theirs: &Value) {
 /// SVG data. A layer keeps its `id` only where another layer of the tree refers
 /// to it, and a link that leaves the tree for an instance the read is inside of
 /// is dropped: that copy is placed as a plain one, as a layer pasted out of an
-/// instance is.
+/// instance is. A list frame gives its `list` and its template, not its copies.
 pub fn tree(doc: &Document, id: NodeId) -> Option<Value> {
+    tree_to(doc, id, None)
+}
+
+/// [`tree`] cut `depth` levels below `id` when given: a layer at the cut keeps
+/// its `id` and gives `omitted`, how many children it has, in their place.
+pub fn tree_to(doc: &Document, id: NodeId, depth: Option<usize>) -> Option<Value> {
     let mut v = full_tree(doc, id, false)?;
     // A layer inside an instance the read starts within is linked through that
     // instance's root, which the tree does not hold.
     let outer = crate::component::instance_root(doc, id).filter(|r| *r != id);
     if let Some(outer) = outer {
         unlink_members(doc, outer, &mut v);
+    }
+    collapse_lists(doc, &mut v);
+    let mut cut = std::collections::HashSet::new();
+    if let Some(depth) = depth {
+        cut_at(&mut v, depth, &mut cut);
     }
     let mut layers = Vec::new();
     layer_ids(&v, &mut layers);
@@ -9492,11 +9525,79 @@ pub fn tree(doc: &Document, id: NodeId) -> Option<Value> {
         let target = doc.get(*l).and_then(|n| n.play().layer_target());
         referred.extend(target.map(|t| t.to_wire()));
     }
+    referred.extend(cut);
     keep_referred_ids(&mut v, &referred);
     loose::tighten("tree", &mut v);
     keep_copy_italics(doc, &mut v);
     put_prototype(doc, &mut v, &mut layers.into_iter());
     Some(v)
+}
+
+/// Each list frame of `v` given its `list` and left without its copies: the
+/// list makes them again from its template once inserted, and copies written
+/// out would land as plain instances beside the ones it makes.
+fn collapse_lists(doc: &Document, v: &mut Value) {
+    let Value::Object(map) = v else { return };
+    let list = map
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(NodeId::from_wire)
+        .and_then(|id| doc.get(id))
+        .and_then(|n| n.list());
+    if let Some(list) = list {
+        let copies: std::collections::HashSet<String> =
+            list.copies.iter().map(|c| c.to_wire()).collect();
+        if let Some(Value::Array(children)) = map.get_mut("children") {
+            children.retain(|c| {
+                c.get("id")
+                    .and_then(Value::as_str)
+                    .is_none_or(|id| !copies.contains(id))
+            });
+        }
+        let mut own = list.clone();
+        own.copies.clear();
+        map.insert(
+            "list".into(),
+            serde_json::to_value(&own).unwrap_or_default(),
+        );
+    }
+    for child in map
+        .get_mut("children")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        collapse_lists(doc, child);
+    }
+}
+
+/// `v` cut `depth` levels below its root: a layer at the cut with children
+/// gives `omitted`, their count, in their place, and its id goes into `cut`
+/// so the tree keeps it for the next read to start from.
+fn cut_at(v: &mut Value, depth: usize, cut: &mut std::collections::HashSet<String>) {
+    let Value::Object(map) = v else { return };
+    if depth == 0 {
+        let count = map
+            .get("children")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        if count > 0 {
+            map.remove("children");
+            map.insert("omitted".into(), Value::from(count));
+            if let Some(Value::String(id)) = map.get("id") {
+                cut.insert(id.clone());
+            }
+        }
+        return;
+    }
+    for child in map
+        .get_mut("children")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        cut_at(child, depth - 1, cut);
+    }
 }
 
 /// The ids of a tree's layers, pre-order, as [`full_tree`] writes each.

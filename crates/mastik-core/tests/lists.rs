@@ -461,6 +461,64 @@ fn a_list_saves_and_duplicates() {
     assert_eq!(titles(&doc, copy), ["A", "B"]);
 }
 
+/// `get_tree` reads a list frame as its `list` and its template, without the
+/// copies, and `insert_subtree` of that tree makes a list again, its rows
+/// made from the data; a read cut by `depth` is refused by `insert_subtree`.
+/// flip: `tree_to` skipping `collapse_lists` → fails at "no copies in the read";
+/// `tree_ops` ignoring `list` → panics at the new frame's `list()`.
+#[test]
+fn a_list_read_by_get_tree_inserts_as_a_list() {
+    let (mut doc, mut ids, page) = blank();
+    let (_, inst) = row_component(&mut doc, &mut ids, page);
+    let set = data(&mut ids, &[("Linen", "yes"), ("Wool", "no"), ("Tote", "1")]);
+    let res = Resolved::rebuild(&doc);
+    let (tx, l) = list::make(&doc, &res, &mut ids, inst, Source::New(set)).unwrap();
+    let mut history = History::default();
+    commit(&mut history, &mut doc, &mut ids, tx);
+    assert_eq!(doc.get(l).unwrap().list().unwrap().copies.len(), 2);
+
+    let read = verbs::tree(&doc, l).expect("the list's tree");
+    assert_eq!(
+        read["children"].as_array().unwrap().len(),
+        1,
+        "no copies in the read"
+    );
+    assert!(read["list"].is_object(), "the read names the list: {read}");
+    assert!(read["list"].get("copies").is_none());
+
+    let made = edit(
+        &mut history,
+        &mut doc,
+        &mut ids,
+        "insert_subtree",
+        json!({ "parent": page.to_wire(), "tree": read }),
+    );
+    let again = made[0];
+    let list = doc.get(again).unwrap().list().expect("a list again");
+    assert_eq!(list.data, doc.get(l).unwrap().list().unwrap().data);
+    assert_eq!(list.copies.len(), 2, "its rows are made from the data");
+    assert_eq!(titles(&doc, again), ["Linen", "Wool", "Tote"]);
+
+    let cut = verbs::tree_to(&doc, l, Some(0)).unwrap();
+    assert_eq!(cut["omitted"], 1, "the template is left out: {cut}");
+    assert_eq!(cut["id"], l.to_wire(), "the cut layer keeps its id");
+    let res = Resolved::rebuild(&doc);
+    let refused = verbs::call(
+        &mut Ctx {
+            doc: &mut doc,
+            res: &res,
+            ids: &mut ids,
+            images: None,
+            contrast: None,
+        },
+        "insert_subtree",
+        &json!({ "parent": page.to_wire(), "tree": cut }),
+    )
+    .expect_err("a cut tree is refused")
+    .to_string();
+    assert!(refused.contains("omitted"), "{refused}");
+}
+
 /// A verb naming a layer inside a list's copy is refused, pointing at the
 /// template; the same verb on the template's layer runs.
 /// flip: `verbs::call` skipping `refuse_list_copies` → fails at "refused".

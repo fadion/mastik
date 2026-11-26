@@ -99,9 +99,6 @@ place, saved in the same shape so existing files load. It is matched in about 60
 - **A list sorted by a date column.** Every cell is text, so a sort on *Due* puts *Dec 12*
   before *Dec 2*; a sort that reads dates (or a date column kind) would let a task list sort by
   due date.
-- **`get_tree` with a depth, and list copies collapsed.** `get_tree` takes only `id`, and a
-  frame holding lists answers every copy expanded, tens of KB. A `depth`, and list copies shown
-  as their template plus a count, would keep a read small.
 - **A visibility bound to a boolean's negation.** A boolean binds visibility only as it is, so
   an off/on pair (a switch's two looks) needs a second variable kept in step by every toggle. A
   negated binding, or a boolean choosing between two values, would drop it.

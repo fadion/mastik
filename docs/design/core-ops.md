@@ -238,7 +238,8 @@ it created. A verb never commits; its caller does, as every edit is committed.
 - **`insert_subtree` takes a tree, not the save format's node list** (`verbs::Tree`): each layer is
   `create_node`'s `kind`, `name` and `transform`, the properties the single-layer verbs set in the
   same forms (visibility, lock, opacity, blend, clip, mask, fills, strokes, effects, exports,
-  display, padding, layout item), and its `children`, bottom first. A caller never writes an id or
+  display, padding, layout item), a list frame's `list` (any copies it names dropped; the list
+  makes them from its data once committed), and its `children`, bottom first. A caller never writes an id or
   a parent link; the verb mints them and emits `CreateNode` then the `Set*` ops per layer, in one
   transaction, so every op's own check applies. Unknown fields are refused. A layer may name
   another in `like` to take its fills, strokes, effects, opacity and blend, and a text another
