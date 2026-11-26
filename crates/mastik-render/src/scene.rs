@@ -4188,6 +4188,32 @@ mod tests {
         pub(super) static UNION_ELEMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     }
 
+    /// Beside a glass a progressive background blur enters the chain even, at
+    /// its larger radius, since the glass's passes read a blur's radius alone;
+    /// without one the ramp is kept.
+    ///
+    /// flip: `backdrop_chain` keeping the ramp beside a glass → fails at "even".
+    #[test]
+    fn a_ramp_beside_a_glass_is_blurred_at_its_larger_radius() {
+        use mastik_core::EffectKind;
+        let ramped = Effect::new(EffectKind::BackgroundBlur {
+            radius: 4.0,
+            ramp: Some(mastik_core::BlurRamp::down(20.0)),
+        });
+        let glass = Effect::new(EffectKind::Glass(mastik_core::Glass::default()));
+        let chain = backdrop_chain(&mastik_core::keyed_by_position([ramped.clone(), glass]));
+        assert_eq!(
+            chain[0].kind,
+            EffectKind::LayerBlur {
+                radius: 20.0,
+                ramp: None
+            },
+            "even"
+        );
+        let alone = backdrop_chain(&mastik_core::keyed_by_position([ramped]));
+        assert!(alone[0].kind.is_progressive(), "{:?}", alone[0].kind);
+    }
+
     /// A tight thick stroke inside a dragged group costs about as much to measure
     /// as to draw: the measure flattens its union at the screen's tolerance, not
     /// at its own grid's.

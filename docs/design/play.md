@@ -405,7 +405,9 @@ or no scrolling frame above, means no effect (`effect_now`).
   star's one)
   interpolate; so do fills and strokes, brush by brush, when both ends have as many (and stroke
   widths; colours mix premultiplied), and effects when both stacks are the same kinds in the same order (shadows' offset,
-  blur, spread and colour; layer and background blur radii). Two gradients of one kind move
+  blur, spread and colour; layer and background blur radii, and a ramp's end radius and ends, the
+  ease the end's, an even blur moving as a ramp that holds its radius; every glass number and its
+  rim colour, held to range). Two gradients of one kind move
   their geometry, transform and opacity, their ramps sampled at every offset either has; a
   colour against a gradient reads as a flat ramp of its kind (`lerp_brush`). An image, two
   kinds of gradient, a stack that differs and other effect kinds jump to the end's. The frame's

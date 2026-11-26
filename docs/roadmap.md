@@ -15,17 +15,6 @@ someone to another app or a plugin. Not in order. Two items share one prerequisi
 gradient and image, so a pattern fill and a mesh gradient each need Mastik's own paint enum in its
 place, saved in the same shape so existing files load. It is matched in about 60 files.
 
-- **Progressive blur.** A layer or background blur whose radius ramps across the layer along a
-  gradient. Effects are our own passes, so nothing upstream blocks it: a new `EffectKind` (or a
-  ramp on the two blurs), and a variable-radius pass in both backends, `effects::blur` and
-  `fx.wgsl` (a blur pyramid blended by the ramp), reusing `scene::paint_backdrop` for the
-  background form. SVG has no variable blur: stack blurred copies under gradient masks, or leave
-  it out and report it as the background blur is. Medium.
-- **Glass.** A background blur plus refraction at the edges, a specular rim and optional
-  dispersion. The backdrop repaint and its damage (`scene::spread_through_backdrops`) exist; new is
-  a displacement pass over the backdrop driven by distance to the outline, on both backends. The rim
-  reuses inner shadow and stroke. SVG, PDF and the Penpot and Sketch writers leave it out and report
-  it, as the background blur; CSS gets the blur and the rim only. Large.
 - **Pattern fill.** A fill tiling any layer, frame or component, kept live as the source changes,
   with spacing, offset rows (a hexagonal layout) and scale. A tiled picture exists (`ImageFit::Tile`,
   drawn with `Extend::Repeat`). vello cannot take a scene as a brush, so the tile renders offscreen

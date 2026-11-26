@@ -390,8 +390,14 @@ chrome hides, and the box handles, a lone line's ends and the rail handle do not
   is edited on the box it is drawn on. The geometry is `paint::linear_ends`/`with_linear_ends`,
   `radial_axes`/`with_radial_axes`, `sweep_geom`/`with_sweep_geom`/`sweep_dir`, `guide_point` and
   `offset_at`, all in the shape's space.
-- A readout pill (the spacing handles' `paint_label`) shows angle and length, the radii (and turn), or
-  the start angle. Cursor: the arrow with a Dot badge over a handle or dot and through its drag, the
+- **A progressive blur's ramp is the same mode** while its effect popover is open (`edited_ramp`, the
+  layer the whole selection): its ends are a linear gradient's line and `HANDLE_R` handles, each end
+  filled grey by its radius, darker for more (`ramp_grey`: data, so not a theme colour), with no
+  stops. An end drags as a linear end does (`moved_end`, `box_snapped`: Shift holds it to eighths of a
+  turn, else it snaps to the box's nine points) and is written back on the normalised box.
+  `Drag::BlurRamp` previews the stack and commits one *Effects* step.
+- A readout pill (the spacing handles' `paint_label`) shows angle and length, the radii (and turn),
+  the start angle, or a ramp end's radius. Cursor: the arrow with a Dot badge over a handle or dot and through its drag, the
   plain arrow over the bare guide, where the ghost dot is the affordance. A locked layer draws the handles and arms none
   of them.
 

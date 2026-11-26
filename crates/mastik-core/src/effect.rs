@@ -983,8 +983,9 @@ pub struct Glass {
 /// A glass's lit inner edge, drawn over the layer's fill.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Rim {
-    /// Where the light comes from, in degrees, as a gradient's angle: the rim is
-    /// brightest where its edge faces along it and on the opposite side.
+    /// Where the light comes from, in degrees counter-clockwise from the right
+    /// with up positive (90° above, 180° the left), unlike a gradient's angle:
+    /// the rim is brightest where its edge faces the light and on the opposite side.
     pub angle: f64,
     /// How far in from the outline the rim reaches, in layer units.
     pub width: f64,
