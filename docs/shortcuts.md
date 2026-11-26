@@ -549,7 +549,7 @@ combinations asserts the two **partition** the space.
 | `Shift`+arrows | nudge (10) | ✅ `NudgeStep::large`; need not exceed the small step |
 | `Ctrl`+arrows | resize: `→` wider, `←` narrower, `↓` taller, `↑` shorter | ✅ (§15 D346); no convention behind it. Distance is the nudge step, held by the top-left corner |
 | `Tab` / `Shift+Tab` | step the point selection | ✅ node tool only (§10: nests in TextInsert) |
-| `Enter` | step **into** the selection, or back out | ✅ `MastikApp::enter_action`: the node tool and image editing toggle out; with one layer selected an instance with children first (§12), then text, picture, path, group/boolean, in `double_click_pick`'s order so key and double-click cannot disagree. On text with no pointer it **selects the whole string**; a group is a *depth*, so `Escape` is the way out |
+| `Enter` | step **into** the selection, or back out | ✅ `MastikApp::enter_action`: the node tool and image editing toggle out; with one layer selected an instance with children first (§12), then text, picture, path or primitive, group/boolean, in `double_click_pick`'s order so key and double-click cannot disagree. A path or primitive opens its points through `MastikApp::edit_points_of`, a primitive by a trial *Outline shape* taken back if nothing is edited (`app-selection.md`, *Double-click*). On text with no pointer it **selects the whole string**; a group is a *depth*, so `Escape` is the way out |
 | `Escape` | unwind one rung | ✅ |
 
 `MastikApp::escape` is an `else if` chain, so the order is the whole content; re-derive it from the

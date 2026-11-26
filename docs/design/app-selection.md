@@ -135,6 +135,14 @@ The canvas never selects a locked layer by a gesture that describes a **set**:
 - Goes one level in, **group step first**; only with no group left does it open the layer's contents:
   text → caret, picture → image editing, path → points. So the third double-click on a picture nested
   one group deep crops it.
+- **A primitive opens as points on trial.** A rect, ellipse, polygon, star, line, spiral or arc
+  (one with an image fill is a picture, above) runs *Outline shape* and enters the node tool on the
+  path (`begin_trial_outline`), as `Enter` does: both go through `MastikApp::edit_points_of`, which
+  refuses a locked path or primitive with *This layer is locked — unlock it to edit its points*.
+  Inside an instance the outline is refused and the double-click only selects. When point editing ends (another tool, or the path no longer the sole selection)
+  with the document unmoved since the outline, `settle_trial_outline` takes it back silently: no
+  redo left, the unsaved mark restored, and the shape, same id, selected if the path was. Any
+  edit, even one undone again, keeps the path; undo then runs the edit, then *Outline shape*.
 - What counts as a double-click is `ui::double_clicked`: a primary click whose previous click was
   within egui's `max_double_click_delay` and `max_click_dist` and was not itself the second of a
   double. All six readers use it (select arm, pen finish, node tool's added point, text word select,

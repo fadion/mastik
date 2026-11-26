@@ -759,6 +759,10 @@ pub struct MastikApp {
     /// Points selected inside a path, for the node tool — a third kind of subject,
     /// beside the layer selection and the guide selection.
     pub(crate) points: PointSet,
+    /// A shape a double-click outlined into a path for point editing, which goes
+    /// back to the shape if editing ends with nothing changed
+    /// (`MastikApp::settle_trial_outline`).
+    pub(crate) trial_outline: Option<crate::canvas::TrialOutline>,
     /// Layer-tree rows the user has collapsed (default: everything expanded).
     pub(crate) collapsed: crate::panels::layers::Folds,
     /// The layer tree flattened into rows, cached between frames.
@@ -1953,6 +1957,7 @@ impl MastikApp {
             dropper_press: None,
             text: None,
             points: PointSet::default(),
+            trial_outline: None,
             collapsed: Default::default(),
             layers_flat: Default::default(),
             layers_hover: None,
@@ -3742,21 +3747,7 @@ impl MastikApp {
             self.begin_image_edit(id);
             return;
         }
-        if matches!(
-            self.session.doc.get(id).map(|n| n.kind()),
-            Some(mastik_core::NodeKind::Path { .. })
-        ) {
-            // A lock refuses here: nothing in `tools/` re-checks it once armed.
-            if mastik_core::is_effectively_locked(&self.session.doc, id) {
-                self.session
-                    .info("This layer is locked — unlock it to edit its points");
-                return;
-            }
-            self.choose_tool(Tool::Node);
-            self.session.info(
-                "Editing points: drag an anchor or a segment, Ctrl+drag to shape the curve, \
-                 double-click a segment to add a point",
-            );
+        if self.edit_points_of(id) {
             return;
         }
         // A group is a depth, not a mode: `Enter` goes deeper and `Escape` comes out.

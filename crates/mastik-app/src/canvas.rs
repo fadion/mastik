@@ -1633,6 +1633,19 @@ fn set_outline(ground: Color) -> egui::Color32 {
     }
 }
 
+/// A shape a double-click outlined for point editing, kept to take back if the
+/// editing changes nothing ([`MastikApp::settle_trial_outline`]).
+pub(crate) struct TrialOutline {
+    /// The shape outlined, which comes back.
+    shape: NodeId,
+    /// The path it became, being point-edited.
+    path: NodeId,
+    /// Where the document stood before the outline.
+    before: crate::session::Mark,
+    /// The revision the outline left, which any edit moves.
+    revision: u64,
+}
+
 /// The sampling cell [`carve`] tests a tag on, in points across and down: fine
 /// across, where a shape's edge usually crosses a tag, and coarser down a tag a
 /// few cells tall, to keep the test cheap.
@@ -2222,6 +2235,7 @@ impl MastikApp {
         if std::mem::take(&mut self.session.home_pending) {
             self.home_camera();
         }
+        self.settle_trial_outline();
 
         // A second finger turns the first finger's press into a pinch: what that
         // press started is abandoned, and the tools sit the touch out.
@@ -3315,17 +3329,105 @@ impl MastikApp {
             self.begin_image_edit(leaf);
             return;
         }
-        if self.is_path(leaf) {
-            self.session.selection.set_one(leaf);
-            self.points.clear();
-            self.choose_tool(Tool::Node);
-            self.session.info(
-                "Editing points: drag an anchor, a handle or a segment; double-click a segment to \
-                 add a point; Delete to remove",
-            );
+        if self.edit_points_of(leaf) {
             return;
         }
         self.session.selection.set_one(leaf);
+    }
+
+    /// Take the node tool to `id`'s points: a path's own, or a primitive's through
+    /// a trial outline ([`Self::begin_trial_outline`]). Answers whether `id` is
+    /// either; a locked one is refused with a word, since nothing in `tools/`
+    /// re-checks the lock once armed. The double-click and `Enter` both come here.
+    pub(crate) fn edit_points_of(&mut self, id: NodeId) -> bool {
+        let pointed = self.session.doc.get(id).is_some_and(|n| {
+            mastik_core::build::can_outline(n.kind()) || matches!(n.kind(), NodeKind::Path { .. })
+        });
+        if !pointed {
+            return false;
+        }
+        if mastik_core::is_effectively_locked(&self.session.doc, id) {
+            self.session
+                .info("This layer is locked — unlock it to edit its points");
+            return true;
+        }
+        let path = match self.is_path(id) {
+            true => id,
+            false => match self.begin_trial_outline(id) {
+                Some(path) => path,
+                None => return false,
+            },
+        };
+        self.session.selection.set_one(path);
+        self.points.clear();
+        self.choose_tool(Tool::Node);
+        self.session.info(
+            "Editing points: drag an anchor, a handle or a segment, Ctrl+drag to shape the \
+             curve; double-click a segment to add a point; Delete to remove",
+        );
+        true
+    }
+
+    /// Outline shape `id` (a rect, oval, polygon, star, line, spiral or arc) into
+    /// the path it traces, on trial: [`Self::settle_trial_outline`] takes it back
+    /// if point editing ends with nothing changed. Answers the path it made.
+    fn begin_trial_outline(&mut self, id: NodeId) -> Option<NodeId> {
+        let outlinable = self.session.doc.get(id).is_some_and(|n| {
+            mastik_core::build::can_outline(n.kind()) && !matches!(n.kind(), NodeKind::Path { .. })
+        });
+        if !outlinable {
+            return None;
+        }
+        let before = self.session.mark();
+        // A layer an instance holds is refused here; the double-click then selects it.
+        let Ok((tx, path)) = mastik_core::build::outline(
+            &self.session.doc,
+            &self.session.resolved,
+            &mut self.session.ids,
+            id,
+        ) else {
+            return None;
+        };
+        self.name_step_as(crate::menu::Item::OutlineShape);
+        if !self.commit_edit(tx) {
+            return None;
+        }
+        self.trial_outline = Some(TrialOutline {
+            shape: id,
+            path,
+            before,
+            revision: self.session.revision(),
+        });
+        Some(path)
+    }
+
+    /// End a trial outline once its path is no longer being point-edited: when
+    /// the document has not moved since the outline, nothing was edited, so it is
+    /// taken back with no redo left and no unsaved mark, and the shape is selected
+    /// in the path's place. An edit undone again still counts as an edit. Run
+    /// every frame, before the canvas reads its tools.
+    pub(crate) fn settle_trial_outline(&mut self) {
+        let Some(t) = &self.trial_outline else {
+            return;
+        };
+        if self.tool == Tool::Node && self.session.selection.ids() == [t.path] {
+            return;
+        }
+        let Some(t) = self.trial_outline.take() else {
+            return;
+        };
+        if self.session.revision() != t.revision {
+            return;
+        }
+        // Read first: taking the step back drops the path from the selection.
+        let held = self.session.selection.contains(t.path);
+        if self.session.take_back() {
+            self.session.rewind(&t.before);
+            self.points.clear();
+            if held {
+                self.session.selection.set_one(t.shape);
+            }
+        }
     }
 
     /// `Alt+Shift`+click: make `id` the key — the layer align aligns *to*, and the
@@ -21381,6 +21483,82 @@ mod frame_menu_door_tests {
         assert_eq!(outlines(&s, color::COMPONENT), 1, "mixed: the main's own");
         assert_eq!(handles(&s, color::COMPONENT), 0, "mixed: SELECT handles");
         assert!(badge(&s, color::BADGE), "mixed: the plain badge");
+    }
+
+    /// A headless app holding one 40×40 rect on its page, and the rect.
+    fn app_with_a_rect() -> (MastikApp, NodeId) {
+        let mut app = MastikApp::headless(&egui::Context::default());
+        let page = app.session.page;
+        let id = app.session.ids.mint();
+        assert!(app.session.commit(Transaction(vec![Operation::CreateNode {
+            id,
+            parent: page,
+            index: 0,
+            kind: NodeKind::Rect {
+                size: Size::new(40.0, 40.0),
+                corner_radii: Default::default(),
+                corner_smoothing: 0.0,
+            },
+            transform: None,
+            name: None,
+        }])));
+        app.session.mark_clean();
+        (app, id)
+    }
+
+    /// A double-click on a rect outlines it and takes the node tool to its points;
+    /// leaving with nothing edited gives back the rect, under its own id, with no
+    /// redo and no unsaved mark.
+    /// flip: `settle_trial_outline` never taking back → fails at "the rect again".
+    #[test]
+    fn a_double_clicked_shape_left_unedited_is_the_shape_again() {
+        let (mut app, rect) = app_with_a_rect();
+        app.double_click_pick(Some(rect), Point::new(20.0, 20.0));
+        let [path] = app.session.selection.ids() else {
+            panic!("one layer selected");
+        };
+        let path = *path;
+        assert!(app.is_path(path), "outlined to a path");
+        assert_eq!(app.tool, Tool::Node, "editing its points");
+        app.settle_trial_outline();
+        assert!(
+            app.is_path(path),
+            "still on trial while its points are edited"
+        );
+
+        app.choose_tool(Tool::Select);
+        app.settle_trial_outline();
+        assert!(
+            matches!(
+                app.session.doc.get(rect).map(|n| n.kind()),
+                Some(NodeKind::Rect { .. })
+            ),
+            "the rect again"
+        );
+        assert!(app.session.doc.get(path).is_none(), "the path gone");
+        assert_eq!(app.session.selection.ids(), [rect], "the rect selected");
+        assert!(!app.session.history.can_redo(), "no redo left behind");
+        assert!(!app.session.is_dirty(), "no unsaved mark");
+    }
+
+    /// A trial outline whose path was edited stays a path, edit and all, when
+    /// editing ends.
+    /// flip: `settle_trial_outline` ignoring the revision → fails at "with its edit".
+    #[test]
+    fn a_double_clicked_shape_once_edited_stays_a_path() {
+        let (mut app, rect) = app_with_a_rect();
+        app.double_click_pick(Some(rect), Point::new(20.0, 20.0));
+        let path = app.session.selection.ids()[0];
+        app.points.set_one(path, (0, 0));
+        let before = app.session.revision();
+        app.nudge_points(Vec2::new(5.0, 0.0));
+        let edited = app.session.revision();
+        assert_ne!(edited, before, "the fixture moved a point");
+        app.session.selection.clear();
+        app.settle_trial_outline();
+        assert!(app.is_path(path), "kept");
+        assert_eq!(app.session.revision(), edited, "with its edit");
+        assert!(app.trial_outline.is_none(), "and the trial over");
     }
 
     /// A double-click on an instance's own background steps in, as `Enter` does.

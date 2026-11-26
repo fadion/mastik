@@ -256,7 +256,9 @@ exceptions as the mirror's leave an edit as it is.
 ## The node tool (`A`)
 
 - A tool, not a mode. Subject: the layer selection when it is a single `Path`. Ways in: `A` with one
-  selected, a click with the tool armed, a double-click, `Enter`, or the context menu's *Edit points*.
+  selected, a click with the tool armed, a double-click or `Enter` (on a primitive, through a trial
+  *Outline shape*; `app-selection.md`, *Double-click*), or the context menu's *Edit points*. The
+  double-click and `Enter` share `MastikApp::edit_points_of`, which refuses a locked layer.
   It has no button on the tool rail: like image editing it is entered on a subject, and the path bar
   is its chrome.
 - Anchors draw as markers (square = corner, round = smooth); the selection box is hidden while they

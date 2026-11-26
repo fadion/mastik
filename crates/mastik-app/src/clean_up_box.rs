@@ -850,9 +850,13 @@ mod tests {
             app.clean_up.is_some(),
             "Enter does not run or close the box"
         );
-        assert!(app.session.doc.contains(painted));
         app.escape(&ctx);
         assert!(app.clean_up.is_none(), "Escape closes it");
+        // Enter took the rect to its points on trial; leaving them unedited gives
+        // it back, so nothing was cleaned up.
+        app.escape(&ctx);
+        pass(&ctx, &mut app, Vec::new());
+        assert!(app.session.doc.contains(painted));
     }
 
     /// The canvas stays live under the box: no modal is up, and an edit made
