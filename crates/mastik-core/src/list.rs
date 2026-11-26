@@ -417,30 +417,36 @@ pub fn column_order(table: &Table, id: ColumnId) -> Order {
     }
 }
 
-/// A date as (year, month, day): ISO `2026-12-02`, numeric `12/2/2026` (with
-/// its year; `day_first` reads `2/12/2026` as the same day), or by an English
-/// month name with or without a year and a weekday: `Dec 2`, `2 December
-/// 2026`, `Tue, Dec 2nd, 2026`. A date without a year sorts before any with one.
+/// A date as (year, month, day): ISO `2026-12-02`, numeric `12/2/2026` (its
+/// four-digit year required; `day_first` reads `2/12/2026` as the same day), or
+/// by an English month name with or without a year and a weekday: `Dec 2`,
+/// `2 December 2026`, `Tue, Dec 2nd, 2026`, `May 2026` (its first day). A date
+/// without a year sorts before any with one.
 pub fn parse_date(s: &str, day_first: bool) -> Option<(Option<i32>, u32, u32)> {
     let s = s.trim();
-    let numeric: Vec<&str> = s.split(['-', '/', '.']).collect();
+    // Every date has a digit; a text column is refused before any allocation.
+    if !s.bytes().any(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    // One separator throughout and a four-digit year, so a version (`2.1.10`)
+    // or a code (`10-12-25`) is not a date.
+    let sep = s.chars().find(|c| matches!(c, '-' | '/' | '.'));
+    let numeric: Vec<&str> = sep.map_or_else(Vec::new, |c| s.split(c).collect());
     if numeric.len() == 3
         && numeric
             .iter()
             .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()))
     {
         let n = |p: &str| p.parse::<u32>().ok();
-        let (y, m, d) = if numeric[0].len() == 4 {
-            (n(numeric[0])?, n(numeric[1])?, n(numeric[2])?)
-        } else {
-            let (a, b) = (n(numeric[0])?, n(numeric[1])?);
-            let y = match (numeric[2].len(), n(numeric[2])?) {
-                (2, y) => 2000 + y,
-                (4, y) => y,
-                _ => return None,
-            };
-            let (m, d) = if day_first { (b, a) } else { (a, b) };
-            (y, m, d)
+        let short = |p: &str| p.len() <= 2;
+        let (y, m, d) = match (numeric[0], numeric[1], numeric[2]) {
+            (y, m, d) if y.len() == 4 && short(m) && short(d) => (n(y)?, n(m)?, n(d)?),
+            (a, b, y) if y.len() == 4 && short(a) && short(b) => {
+                let (a, b) = (n(a)?, n(b)?);
+                let (m, d) = if day_first { (b, a) } else { (a, b) };
+                (n(y)?, m, d)
+            }
+            _ => return None,
         };
         return valid(Some(y as i32), m, d);
     }
@@ -466,6 +472,8 @@ pub fn parse_date(s: &str, day_first: bool) -> Option<(Option<i32>, u32, u32)> {
     let year = |w: &str| (w.len() == 4).then(|| w.parse::<i32>().ok()).flatten();
     let (m, d, y) = match words {
         [a, b] => match (month(a), month(b)) {
+            // `May 2026`: a month of a year, read as its first day.
+            (Some(m), _) if year(b).is_some() => (m, 1, year(b)),
             (Some(m), _) => (m, day(b)?, None),
             (_, Some(m)) => (m, day(a)?, None),
             _ => return None,
@@ -2111,6 +2119,10 @@ mod tests {
             Some((Some(2026), 12, 12))
         );
         assert_eq!(parse_date("Dec 32", false), None);
+        assert_eq!(parse_date("May 2026", false), Some((Some(2026), 5, 1)));
+        for not_a_date in ["2.1.10", "10-12-25", "1.2-2011", "1.2.3", "May"] {
+            assert_eq!(parse_date(not_a_date, false), None, "{not_a_date}");
+        }
 
         let mixed = table(&["D"], &[&["Dec 2"], &["soon"]]);
         assert_eq!(column_order(&mixed, mixed.columns[0].id), Order::Text);

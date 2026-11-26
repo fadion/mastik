@@ -160,7 +160,8 @@ list's description as it drops a misplaced one.
   freed id and would otherwise be read in its place.
 - **Sort** compares by `list::sort_order` over `list::cell_order`, in the column's
   `list::column_order`: a number column by value; a date column (every non-empty cell a date
-  `list::parse_date` reads: ISO, numeric with a year, or an English month name with or without a
+  `list::parse_date` reads: ISO, numeric with a four-digit year and one separator (so a version
+  `2.1.10` or a code `10-12-25` is text), or an English month name with or without a
   year and weekday) by date, numeric dates month first unless a cell only reads day first, a date
   without a year before any with one; anything else as text ignoring case. Empty cells last
   whichever way it runs; stable, so equal rows keep table order. The type is read, never set, as
