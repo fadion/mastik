@@ -44,6 +44,8 @@ enum Pass {
     Upsample,
     Sharpen,
     Noise,
+    GlassBend,
+    GlassRim,
 }
 
 impl Pass {
@@ -64,10 +66,12 @@ impl Pass {
             Self::Upsample => "upsample",
             Self::Sharpen => "sharpen",
             Self::Noise => "noise_fx",
+            Self::GlassBend => "glass_bend",
+            Self::GlassRim => "glass_rim",
         }
     }
 
-    const ALL: [Pass; 14] = [
+    const ALL: [Pass; 16] = [
         Self::Premul,
         Self::Unpremul,
         Self::Copy,
@@ -82,6 +86,8 @@ impl Pass {
         Self::Upsample,
         Self::Sharpen,
         Self::Noise,
+        Self::GlassBend,
+        Self::GlassRim,
     ];
 }
 
@@ -115,7 +121,9 @@ struct Params {
     amount: f32,
     /// The noise pass's numbers, `nz` in `fx.wgsl`: the lattice map's origin,
     /// x step and y step, a multicolour noise's opacity, the density floor (−1
-    /// for none), then the two straight colours.
+    /// for none), then the two straight colours. The glass passes keep theirs
+    /// here too: a bend's `effects::GlassBend` (bend, depth across and down,
+    /// split, frost), a rim's light.
     noise: [f32; 16],
     /// `nzi` in `fx.wgsl`: octaves, the fractal sum, the noise's blend code and
     /// its multicolour switch.
@@ -674,12 +682,16 @@ pub struct Item<'a> {
     pub layer: bool,
     /// A buffer pixel's corner → the layer's own space (`effects::buffer_to_local`).
     pub to_local: kurbo::Affine,
+    /// A glass's layer and its top half's height: `effects::run_glass` rather
+    /// than the stack, over a slice twice that tall whose bottom half is the
+    /// outline. Only the top half reaches the destination.
+    pub glass: Option<(effects::GlassPart, u32)>,
 }
 
 impl Item<'_> {
     /// Whether this layer has anything for the passes to do.
     fn has_ink(&self) -> bool {
-        effects::any_ink(self.effects)
+        self.glass.is_some() || effects::any_ink(self.effects)
     }
 }
 
@@ -729,6 +741,7 @@ pub fn run(
         scale,
         layer: true,
         to_local,
+        glass: None,
     };
     if !item.has_ink() {
         return None;
@@ -903,8 +916,13 @@ impl Runner<'_> {
             scale,
             layer,
             to_local,
+            glass,
         } = *item;
         let run = self;
+        if let Some((part, top)) = glass {
+            run.glass(item, part, top);
+            return;
+        }
 
         // --- the layer's own appearance, in list order -----------------------
         run.step(
@@ -1118,6 +1136,128 @@ struct Runner<'a> {
 }
 
 impl Runner<'_> {
+    /// Plan a glass's layer: `effects::run_glass`, step for step. The ingest and
+    /// the outline's silhouette cover the whole slice, twice `top` tall; every
+    /// pass after them covers the top half, so a blur reads below it as
+    /// transparent, as the CPU's top-half surface does.
+    fn glass(&mut self, item: &Item<'_>, part: effects::GlassPart, top: u32) {
+        let Slice { at, size: (w, h) } = item.slice;
+        self.step(
+            Pass::Premul,
+            At::Src,
+            At::Src,
+            At::Scratch(A),
+            Params {
+                src_origin: (at.0 as i32, at.1 as i32),
+                ..Default::default()
+            },
+            (w, h),
+        );
+        // The outline's alpha moved up into the top half's rows; below them the
+        // silhouette reads past the slice and is empty.
+        self.step(
+            Pass::Silhouette,
+            At::Scratch(A),
+            At::Scratch(A),
+            At::Scratch(GRAPHIC),
+            Params {
+                off: (0, -(top as i32)),
+                ..Default::default()
+            },
+            (w, h),
+        );
+        self.h = top;
+        let scale = item.scale;
+        let mut cur = A;
+        let mut alt = B;
+        let visible = item.effects.iter().filter(|e| e.visible);
+        match part {
+            effects::GlassPart::Backdrop => {
+                for e in visible {
+                    match &e.kind {
+                        EffectKind::LayerBlur { radius, .. } if *radius > 0.0 => {
+                            let (sx, sy) = effects::device_sigma(*radius, scale.0, scale.1);
+                            self.blur(&mut cur, &mut alt, sx, sy);
+                        }
+                        EffectKind::Glass(g) => {
+                            if g.blur > 0.0 {
+                                self.blur_budgeted(&mut cur, &mut alt, g.blur, scale);
+                            }
+                            let field = match g.bend > 0.0 && g.depth > 0.0 {
+                                true => {
+                                    let r = effects::glass_field_radius(g.depth);
+                                    self.field(r, scale)
+                                }
+                                false => GRAPHIC,
+                            };
+                            let b = effects::GlassBend::of(g, scale);
+                            let mut p = Params::default();
+                            p.noise[..5]
+                                .copy_from_slice(&[b.bend, b.depth.0, b.depth.1, b.split, b.frost]);
+                            self.slot(Pass::GlassBend, cur, field, alt, p);
+                            std::mem::swap(&mut cur, &mut alt);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            effects::GlassPart::Rim => {
+                let first = visible.into_iter().find_map(|e| match &e.kind {
+                    EffectKind::Glass(g) => Some(g),
+                    _ => None,
+                });
+                match first {
+                    Some(g) => {
+                        let field = self.field(g.rim.width, scale);
+                        let light = effects::rim_light(g.rim.angle, item.to_local);
+                        let mut p = Params {
+                            tint: g.rim.color.components,
+                            ..Default::default()
+                        };
+                        p.noise[..2].copy_from_slice(&light);
+                        self.slot(Pass::GlassRim, GRAPHIC, field, alt, p);
+                    }
+                    // Nothing to draw: a tint of no colour at no alpha writes zeros.
+                    None => self.slot(Pass::Tint, cur, cur, alt, Params::default()),
+                }
+                std::mem::swap(&mut cur, &mut alt);
+            }
+        }
+        self.step(
+            Pass::Unpremul,
+            At::Scratch(cur),
+            At::Scratch(cur),
+            At::Dst,
+            Params {
+                dst_origin: (item.dst_at.0 as i32, item.dst_at.1 as i32),
+                ..Default::default()
+            },
+            (w, top),
+        );
+    }
+
+    /// The outline in `GRAPHIC` blurred by `radius` into `O0` or `O1`, which is
+    /// returned: `effects::glass_field`.
+    fn field(&mut self, radius: f64, scale: (f64, f64)) -> usize {
+        self.slot(Pass::Copy, GRAPHIC, GRAPHIC, O0, Params::default());
+        let (mut f, mut f_alt) = (O0, O1);
+        if radius > 0.0 {
+            self.blur_budgeted(&mut f, &mut f_alt, radius, scale);
+        }
+        f
+    }
+
+    /// `effects::blur_budgeted`: a blur of `radius`, over blocks past the budget.
+    fn blur_budgeted(&mut self, cur: &mut usize, alt: &mut usize, radius: f64, scale: (f64, f64)) {
+        let (sx, sy) = effects::device_sigma(radius, scale.0, scale.1);
+        let k = mastik_core::effect::shadow_downscale(f64::from(sx.max(sy)));
+        if k > 1 {
+            self.blur_coarse(cur, alt, sx / k as f32, sy / k as f32, k);
+        } else {
+            self.blur(cur, alt, sx, sy);
+        }
+    }
+
     /// A dispatch whose sources and destination are scratch slots.
     fn slot(&mut self, pass: Pass, a: usize, b: usize, dst: usize, p: Params) {
         let dom = (self.w, self.h);

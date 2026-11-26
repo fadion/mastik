@@ -18,7 +18,7 @@ use crate::color;
 use crate::images::ImageStore;
 use crate::renderer::{RenderOverrides, Viewport};
 use crate::scene::{self, ClipRule, ScenePainter, StrokePaint, TextRun};
-use kurbo::{Affine, BezPath, Rect, Stroke};
+use kurbo::{Affine, BezPath, Rect, Shape, Stroke};
 use mastik_core::peniko::{
     BlendMode, Brush as BackendBrush, Color, Compose, Fill as VelloFill, ImageSampler, Mix,
 };
@@ -315,6 +315,13 @@ enum Pass {
     Effects,
     /// Only the shadows the layer casts (`push_shadow_layer`).
     Shadows,
+    /// A glass's passes (`effects::run_glass`) over a buffer whose bottom half,
+    /// from row `top`, holds the outline; the top half alone is painted back,
+    /// and drawing into it is clipped to it until the pop.
+    Glass {
+        part: crate::effects::GlassPart,
+        top: u16,
+    },
     /// Turned into its luminance as alpha and composited `DestIn`: a luminance
     /// mask, which `vello_cpu` has no drawn-layer form of.
     Luminance,
@@ -614,73 +621,40 @@ impl ScenePainter for CpuPainter<'_> {
         bounds: Rect,
         effects: &[mastik_core::Keyed<Effect>],
     ) {
-        let device = (self.base * transform).transform_rect_bbox(bounds);
-        let limit = match self.fx.last() {
-            Some(f) => Rect::new(0.0, 0.0, f.size.0 as f64, f.size.1 as f64),
-            None => Rect::new(
-                0.0,
-                0.0,
-                self.root.width() as f64,
-                self.root.height() as f64,
-            ),
+        self.open_fx(transform, bounds, effects, false);
+    }
+
+    /// The effect layer, twice as tall ([`crate::effects::glass_buffer`]): the
+    /// outline filled opaque into the bottom half now, and what is drawn until
+    /// the pop clipped to the top half.
+    fn push_glass_layer(
+        &mut self,
+        transform: Affine,
+        bounds: Rect,
+        effects: &[mastik_core::Keyed<Effect>],
+        part: crate::effects::GlassPart,
+        outline: &BezPath,
+        rule: ClipRule,
+    ) {
+        let top = self.open_fx(transform, bounds, effects, true);
+        let base = self.base;
+        let Some(f) = self.fx.last_mut() else {
+            return;
         };
-        // The target grown by the escape: the silhouette is read from this buffer,
-        // so clipping at the target's edge would cast a shadow from the visible
-        // sliver of a half-scrolled layer (§15 D342).
-        let m0 = (self.base * transform).as_coeffs();
-        let s0 = (
-            (m0[0] * m0[0] + m0[1] * m0[1]).sqrt(),
-            (m0[2] * m0[2] + m0[3] * m0[3]).sqrt(),
-        );
-        // The same budget the GPU backend holds a buffer to
-        // (`effect::buffer_box_within`, §15 D402), so the two backends cannot
-        // choose different buffer boxes for one drawing.
-        let clipped = mastik_core::effect::buffer_box_within(
-            device,
-            limit,
-            mastik_core::effect::buffer_escape(effects),
-            s0,
-            self.root.width() as f64 * self.root.height() as f64,
-        );
-        // Rounded outward, so a fractional edge keeps the pixel it touches.
-        let (x0, y0) = (clipped.x0.floor(), clipped.y0.floor());
-
-        // The scale the passes work in: from the composed device transform, so a
-        // layer in a skewed ancestor blurs by how far its pixels are stretched.
-        let m = (self.base * transform).as_coeffs();
-        let scale = (
-            (m[0] * m[0] + m[1] * m[1]).sqrt(),
-            (m[2] * m[2] + m[3] * m[3]).sqrt(),
-        );
-
-        // The buffer is not always at device resolution (`effect::buffer_downscale`),
-        // and `GpuScenePainter::push_effect_layer` must choose identically or the
-        // backends blur by different amounts (§15 D395). Both go through
-        // `crate::effects::effect_buffer` rather than hand-kept copies; a layer past
-        // `MAX_EFFECT_BUFFER_SIDE` is resampled into the cap, not truncated (§15 D744).
-        let k = mastik_core::effect::buffer_downscale(effects, scale);
-        let ((w, h), k) =
-            crate::effects::effect_buffer((clipped.x1.ceil() - x0, clipped.y1.ceil() - y0), k);
-        // Both sides are inside `MAX_EFFECT_BUFFER_SIDE`, well inside a `u16`.
-        let (w, h) = (w as u16, h as u16);
-
-        let ctx = RenderContext::new_with(w, h, export_settings());
-        let saved_base = self.base;
-        // Drawing inside is shifted to the buffer's top-left and scaled to its resolution.
-        self.base = Affine::scale(1.0 / k) * Affine::translate((-x0, -y0)) * saved_base;
-        self.fx.push(FxFrame {
-            ctx,
-            origin: (x0 as i32, y0 as i32),
-            size: (w, h),
-            effects: effects.to_vec(),
-            saved_base,
-            // Buffer pixels per document unit — see the `scale` field.
-            scale: (scale.0 / k, scale.1 / k),
-            downscale: k,
-            to_local: crate::effects::buffer_to_local(saved_base * transform, (x0, y0), k),
-            depth: 0,
-            pass: Pass::Effects,
+        f.pass = Pass::Glass { part, top };
+        let w = f64::from(f.size.0);
+        let ctx = &mut f.ctx;
+        ctx.set_transform(Affine::translate((0.0, f64::from(top))) * base * transform);
+        ctx.set_fill_rule(match rule {
+            ClipRule::NonZero => VelloFill::NonZero,
+            ClipRule::EvenOdd => VelloFill::EvenOdd,
         });
+        ctx.set_paint(BackendBrush::Solid(Color::WHITE));
+        ctx.fill_path(outline);
+        ctx.set_fill_rule(VelloFill::NonZero);
+        ctx.set_transform(Affine::IDENTITY);
+        let head = Rect::new(0.0, 0.0, w, f64::from(top)).to_path(0.1);
+        ctx.push_layer(Some(&head), None, None, None, None);
     }
 
     /// Redirect the mask's drawing into a buffer the size of the enclosing target,
@@ -734,6 +708,10 @@ impl ScenePainter for CpuPainter<'_> {
         }
         let mut frame = self.fx.pop().expect("an effect frame, checked above");
         self.base = frame.saved_base;
+        if matches!(frame.pass, Pass::Glass { .. }) {
+            // The top half's clip, which `push_glass_layer` opened uncounted.
+            frame.ctx.pop_layer();
+        }
 
         // Rasterize the layer, run the passes over it, and paint the result back.
         frame.ctx.flush();
@@ -745,6 +723,7 @@ impl ScenePainter for CpuPainter<'_> {
         // not a conversion, so the backends cannot round differently.
         let (w, h) = (pixmap.width() as usize, pixmap.height() as usize);
         let data = pixmap.data_as_u8_slice_mut();
+        let mut shown = h;
         match frame.pass {
             Pass::Effects => {
                 let mut surface = crate::effects::Surface::new(data, w, h);
@@ -755,6 +734,18 @@ impl ScenePainter for CpuPainter<'_> {
                 crate::effects::run_shadows(
                     &mut surface,
                     &frame.effects,
+                    frame.scale,
+                    frame.to_local,
+                );
+            }
+            Pass::Glass { part, top } => {
+                shown = usize::from(top);
+                crate::effects::run_glass(
+                    data,
+                    w,
+                    shown,
+                    &frame.effects,
+                    part,
                     frame.scale,
                     frame.to_local,
                 );
@@ -783,15 +774,96 @@ impl ScenePainter for CpuPainter<'_> {
             image: ImageSource::Pixmap(std::sync::Arc::new(pixmap)),
             sampler: Default::default(),
         });
-        ctx.fill_rect(&Rect::new(
-            0.0,
-            0.0,
-            frame.size.0 as f64,
-            frame.size.1 as f64,
-        ));
+        ctx.fill_rect(&Rect::new(0.0, 0.0, frame.size.0 as f64, shown as f64));
         if mask {
             ctx.pop_layer();
         }
+    }
+}
+
+impl CpuPainter<'_> {
+    /// Open an effect frame for `effects` over `bounds` under `transform`; `glass`
+    /// makes its buffer twice as tall ([`crate::effects::glass_buffer`]). Returns
+    /// the height drawing goes into: the buffer's, or its top half's.
+    fn open_fx(
+        &mut self,
+        transform: Affine,
+        bounds: Rect,
+        effects: &[mastik_core::Keyed<Effect>],
+        glass: bool,
+    ) -> u16 {
+        let device = (self.base * transform).transform_rect_bbox(bounds);
+        let limit = match self.fx.last() {
+            Some(f) => Rect::new(0.0, 0.0, f.size.0 as f64, f.size.1 as f64),
+            None => Rect::new(
+                0.0,
+                0.0,
+                self.root.width() as f64,
+                self.root.height() as f64,
+            ),
+        };
+        // The target grown by the escape: the silhouette is read from this buffer,
+        // so clipping at the target's edge would cast a shadow from the visible
+        // sliver of a half-scrolled layer (§15 D342).
+        let m0 = (self.base * transform).as_coeffs();
+        let s0 = (
+            (m0[0] * m0[0] + m0[1] * m0[1]).sqrt(),
+            (m0[2] * m0[2] + m0[3] * m0[3]).sqrt(),
+        );
+        // The same budget the GPU backend holds a buffer to
+        // (`effect::buffer_box_within`, §15 D402), so the two backends cannot
+        // choose different buffer boxes for one drawing.
+        let clipped = mastik_core::effect::buffer_box_within(
+            device,
+            limit,
+            mastik_core::effect::buffer_escape(effects),
+            s0,
+            self.root.width() as f64 * self.root.height() as f64,
+        );
+        // Rounded outward, so a fractional edge keeps the pixel it touches.
+        let (x0, y0) = (clipped.x0.floor(), clipped.y0.floor());
+
+        // The scale the passes work in: from the composed device transform, so a
+        // layer in a skewed ancestor blurs by how far its pixels are stretched.
+        let m = (self.base * transform).as_coeffs();
+        let scale = (
+            (m[0] * m[0] + m[1] * m[1]).sqrt(),
+            (m[2] * m[2] + m[3] * m[3]).sqrt(),
+        );
+
+        // The buffer is not always at device resolution (`effect::buffer_downscale`),
+        // and `GpuScenePainter::push_effect_layer` must choose identically or the
+        // backends blur by different amounts (§15 D395). Both go through
+        // `crate::effects::effect_buffer` rather than hand-kept copies; a layer past
+        // `MAX_EFFECT_BUFFER_SIDE` is resampled into the cap, not truncated (§15 D744).
+        let k = mastik_core::effect::buffer_downscale(effects, scale);
+        let extent = (clipped.x1.ceil() - x0, clipped.y1.ceil() - y0);
+        let ((w, top), k) = match glass {
+            true => crate::effects::glass_buffer(extent, k),
+            false => crate::effects::effect_buffer(extent, k),
+        };
+        let h = if glass { 2 * top } else { top };
+        // Both sides are inside `MAX_EFFECT_BUFFER_SIDE`, well inside a `u16`.
+        let (w, h, top) = (w as u16, h as u16, top as u16);
+
+        let ctx = RenderContext::new_with(w, h, export_settings());
+        let saved_base = self.base;
+        // Drawing inside is shifted to the buffer's top-left and scaled to its resolution.
+        self.base = Affine::scale(1.0 / k) * Affine::translate((-x0, -y0)) * saved_base;
+        self.fx.push(FxFrame {
+            ctx,
+            origin: (x0 as i32, y0 as i32),
+            size: (w, h),
+            effects: effects.to_vec(),
+            saved_base,
+            // Buffer pixels per document unit — see the `scale` field.
+            scale: (scale.0 / k, scale.1 / k),
+            downscale: k,
+            to_local: crate::effects::buffer_to_local(saved_base * transform, (x0, y0), k),
+            depth: 0,
+            pass: Pass::Effects,
+        });
+        top
     }
 }
 

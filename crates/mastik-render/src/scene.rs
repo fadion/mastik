@@ -196,6 +196,24 @@ pub trait ScenePainter {
         self.push_effect_layer(transform, bounds, effects);
     }
 
+    /// Begin one of a glass's layers (`effects::run_glass`): `effects` run over
+    /// what is drawn until [`Self::pop_layer`], with `outline` (in `transform`'s
+    /// space, filled by `rule`) as the silhouette the glass's edge is measured
+    /// from. The default is the plain effect layer, which draws a backdrop as an
+    /// even blur and a rim as nothing; shipping backends override.
+    fn push_glass_layer(
+        &mut self,
+        transform: Affine,
+        bounds: Rect,
+        effects: &[mastik_core::Keyed<Effect>],
+        part: crate::effects::GlassPart,
+        outline: &BezPath,
+        rule: ClipRule,
+    ) {
+        let _ = (part, outline, rule);
+        self.push_effect_layer(transform, bounds, effects);
+    }
+
     /// Begin an unclipped layer composited over the enclosing one by `mode`
     /// ([`mastik_core::Node::blend`]). Normal is an isolation group. The default
     /// composites plainly; shipping backends override.
@@ -736,8 +754,8 @@ pub fn damage(
 }
 
 /// `damage` (device boxes on `page`) with what it changes through a background
-/// blur added: a change behind a glass shows in the glass as far as the blur
-/// reaches, past the box of the change itself. Followed through glass behind
+/// blur or a glass added: a change behind one shows in it as far as it reads
+/// ([`mastik_core::effect::backdrop_reach`]), past the box of the change itself. Followed through glass behind
 /// glass, one glass further each round, and given up once the boxes cover half
 /// the canvas, past which the canvas draws whole.
 ///
@@ -785,13 +803,10 @@ pub fn spread_through_backdrops(
                 .get(id)
                 .and_then(|o| o.effects.as_deref())
                 .unwrap_or(node.effects());
-            let radius = mastik_core::effect::backdrop_radius(&doc.resolved_effects(id, stack))?;
+            let reach = mastik_core::effect::backdrop_reach(&doc.resolved_effects(id, stack))?;
             let world = res.world_transform(id)?;
             let ink = base.transform_rect_bbox(res.ink_bounds(id)?);
-            Some((
-                ink,
-                mastik_core::effect::reach(radius) * stretch(base * world),
-            ))
+            Some((ink, reach * stretch(base * world)))
         })
         .collect();
     let canvas = Rect::new(
@@ -2045,32 +2060,40 @@ fn paint_node_pass<P: ScenePainter>(
         false => std::borrow::Cow::Borrowed(view),
     };
     let view: &[Rect] = &child_view;
-    // Behind everything the layer draws, its own shadows and blend included: what
-    // a background blur shows is what was there before the layer. A mask's ink
-    // is drawn into its mask layer, where a backdrop would become mask, and so
-    // is all of a mask group's.
-    if pass.is_none()
-        && !bare
+    // The outline a background blur or a glass shows through, measured once for
+    // the backdrop and the rims. A mask's ink is drawn into its mask layer, where
+    // a backdrop or a rim would become mask, and so is all of a mask group's.
+    let draws_backdrop = pass.is_none() && walk.backdrop.is_none();
+    let draws_rims = pass.is_none_or(|p| !p.shadows)
+        && painter.paints_backdrops()
+        && mastik_core::effect::glasses(stack).any(|g| g.has_rim());
+    let outline = (!bare
         && !node.mask()
         && walk.in_mask.get() == 0
-        && walk.backdrop.is_none()
         && opacity > 0.0
-        && let Some(radius) = mastik_core::effect::backdrop_radius(stack)
-        && let Some(shape) = backdrop_shape(doc, res, ov, id, &painted)
+        && (draws_rims
+            || (draws_backdrop && mastik_core::effect::backdrop_reach(stack).is_some())))
+    .then(|| backdrop_shape(doc, res, ov, id, &painted))
+    .flatten();
+    // Behind everything the layer draws, its own shadows and blend included: what
+    // a background blur shows is what was there before the layer.
+    if draws_backdrop
+        && let Some(reach) = mastik_core::effect::backdrop_reach(stack)
+        && let Some(shape) = &outline
     {
         if !painter.paints_backdrops() {
             painter.backdrop_box(shape_world, shape.bounding_box());
         } else {
             let at = Outline {
                 at: shape_world,
-                path: &shape,
+                path: shape,
                 rule: painted.rule,
             };
             paint_backdrop(
                 (doc, res, ov),
                 id,
                 at,
-                radius,
+                (stack, reach),
                 opacity,
                 base,
                 edges,
@@ -2171,6 +2194,14 @@ fn paint_node_pass<P: ScenePainter>(
     // A boolean's children are its inputs, not artwork: the walk stops here.
     if matches!(painted.kind, NodeKind::Boolean { .. }) {
         close(painter, &mut open, &mut mask);
+        if draws_rims && let Some(shape) = &outline {
+            let at = Outline {
+                at: shape_world,
+                path: shape,
+                rule: painted.rule,
+            };
+            paint_rims(painter, stack, at, opacity);
+        }
         debug_assert!(!outer_opacity, "only a frame opens the outer opacity layer");
         // Popped here, not in `close`, which the children loop also calls while the
         // node's effect layer must stay open; leaking it hides every later layer.
@@ -2284,6 +2315,23 @@ fn paint_node_pass<P: ScenePainter>(
             ClipRule::NonZero,
             || frame.bounding_box(),
             None,
+        );
+    }
+    // Over the fill, the children and a frame's border: the glass's lit edge.
+    if !stopped
+        && draws_rims
+        && let Some(shape) = &outline
+    {
+        let at = Outline {
+            at: shape_world,
+            path: shape,
+            rule: painted.rule,
+        };
+        paint_rims(
+            painter,
+            stack,
+            at,
+            if outer_opacity { 1.0 } else { opacity },
         );
     }
     if outer_opacity {
@@ -2568,7 +2616,8 @@ fn detail_effects(
             EffectKind::LayerBlur { radius }
             | EffectKind::BackgroundBlur { radius }
             | EffectKind::Sharpen { radius, .. } => reach(*radius),
-            EffectKind::Filters(_) | EffectKind::Noise(_) => return false,
+            // A rim under a pixel still reads as the glass's edge.
+            EffectKind::Filters(_) | EffectKind::Noise(_) | EffectKind::Glass(_) => return false,
         };
         local * stretch < 1.0
     };
@@ -2731,9 +2780,13 @@ struct Outline<'a> {
     rule: ClipRule,
 }
 
-/// Draw what lies behind node `id`, blurred by `radius`, inside its outline,
-/// replacing what is already there at the node's `opacity`: its background
-/// blur.
+/// Draw what lies behind node `id` inside its outline, through the background
+/// blurs and glasses of `effects` (which read as far as `reach` past it),
+/// replacing what is already there at the node's `opacity`.
+///
+/// With no glass, the background blurs are one blur ([`backdrop_chain`]); a
+/// glass's layer carries the outline as well, which its bend is measured from,
+/// and a second glass works on what the first one left.
 ///
 /// What lies behind is everything the walk drew before the node inside the
 /// nearest enclosing container that draws into a layer of its own (CSS's
@@ -2753,14 +2806,13 @@ fn paint_backdrop<P: ScenePainter>(
     (doc, res, ov): (&Document, &Resolved, &RenderOverrides),
     id: NodeId,
     shape: Outline<'_>,
-    radius: f64,
+    (effects, reach): (&[mastik_core::Keyed<Effect>], f64),
     opacity: f32,
     base: Affine,
     edges: &Edges<'_>,
     painter: &mut P,
     walk: &Walk<'_>,
 ) {
-    let reach = mastik_core::effect::reach(radius);
     // What the blur reads: the outline's box grown by the blur's reach.
     let local = shape.path.bounding_box().inflate(reach, reach);
     // The repaint culls to that box in the world, a little wider so an edge's
@@ -2782,10 +2834,18 @@ fn paint_backdrop<P: ScenePainter>(
 
     painter.push_add_layer();
     painter.push_layer(shape.at, Some(shape.path), shape.rule, opacity);
-    let blur = mastik_core::keyed_by_position([Effect::new(mastik_core::EffectKind::LayerBlur {
-        radius,
-    })]);
-    painter.push_effect_layer(shape.at, local, &blur);
+    let chain = backdrop_chain(effects);
+    match mastik_core::effect::glasses(effects).next() {
+        Some(_) => painter.push_glass_layer(
+            shape.at,
+            local,
+            &chain,
+            crate::effects::GlassPart::Backdrop,
+            shape.path,
+            shape.rule,
+        ),
+        None => painter.push_effect_layer(shape.at, local, &chain),
+    }
     let root = walk
         .open
         .borrow()
@@ -2906,6 +2966,74 @@ fn paint_backdrop<P: ScenePainter>(
     painter.pop_layer();
     painter.pop_layer();
     painter.pop_layer();
+}
+
+/// The passes a layer's backdrop buffer runs, in list order: each run of
+/// background blurs as one layer blur of their composed radius (blurs in turn
+/// convolve, [`mastik_core::effect::backdrop_radius`]) and each glass as itself.
+/// With no glass this is the single blur a background blur draws.
+fn backdrop_chain(effects: &[mastik_core::Keyed<Effect>]) -> Vec<mastik_core::Keyed<Effect>> {
+    use mastik_core::EffectKind;
+    let mut out = Vec::new();
+    let mut run = Vec::new();
+    let flush = |run: &mut Vec<mastik_core::Keyed<Effect>>, out: &mut Vec<Effect>| {
+        if let Some(radius) = mastik_core::effect::backdrop_radius(run) {
+            out.push(Effect::new(EffectKind::LayerBlur { radius }));
+        }
+        run.clear();
+    };
+    for e in effects.iter().filter(|e| e.visible) {
+        match &e.kind {
+            EffectKind::BackgroundBlur { .. } => run.push(e.clone()),
+            EffectKind::Glass(g) => {
+                flush(&mut run, &mut out);
+                out.push(Effect::new(EffectKind::Glass(g.clone())));
+            }
+            _ => {}
+        }
+    }
+    flush(&mut run, &mut out);
+    mastik_core::keyed_by_position(out)
+}
+
+/// Each visible glass's rim of `effects` over what the layer drew, inside
+/// `shape`, at `opacity`: one glass layer apiece, holding only the rim.
+fn paint_rims<P: ScenePainter>(
+    painter: &mut P,
+    effects: &[mastik_core::Keyed<Effect>],
+    shape: Outline<'_>,
+    opacity: f32,
+) {
+    let rims: Vec<_> = mastik_core::effect::glasses(effects)
+        .filter(|g| g.has_rim())
+        .collect();
+    if rims.is_empty() {
+        return;
+    }
+    if opacity < 1.0 {
+        painter.push_layer(shape.at, None, ClipRule::NonZero, opacity);
+    }
+    for g in rims {
+        // The rim lands inside the outline; the box is grown by what its blur
+        // reads, so the edge's antialiasing is not cut.
+        let pad = mastik_core::effect::reach(g.rim.width) + 1.0;
+        let local = shape.path.bounding_box().inflate(pad, pad);
+        let one = mastik_core::keyed_by_position([Effect::new(mastik_core::EffectKind::Glass(
+            g.clone(),
+        ))]);
+        painter.push_glass_layer(
+            shape.at,
+            local,
+            &one,
+            crate::effects::GlassPart::Rim,
+            shape.path,
+            shape.rule,
+        );
+        painter.pop_layer();
+    }
+    if opacity < 1.0 {
+        painter.pop_layer();
+    }
 }
 
 /// The device box of the clipping frame nearest the glass the walk is at, when
