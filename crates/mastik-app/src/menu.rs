@@ -2968,7 +2968,7 @@ pub const KIND_VERBS: &[(Item, &str)] = &[
     (Item::FlattenChart, "Select a chart"),
     (Item::HighlightCategory, "Right-click a mark on a chart"),
     (Item::HighlightSeries, "Right-click a mark on a chart"),
-    (Item::ClearHighlight, "Select a chart"),
+    (Item::ClearHighlight, "Needs a chart with a highlight"),
     // *Make a list from data* is a submenu head the palette never runs; its
     // two rows stand for it.
     (Item::MakeListFile, "Needs an instance"),
