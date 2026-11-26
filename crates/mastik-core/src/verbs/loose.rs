@@ -394,12 +394,16 @@ fn loosen_ramp(kind: &mut Map<String, Value>) {
     let Some(Value::Object(ramp)) = kind.get_mut("ramp") else {
         return;
     };
+    // Any other word is left as written, for the read to refuse.
     if let Some(Value::String(e)) = ramp.get("ease") {
-        let word = match snake(e).as_str() {
-            "linear" => "linear",
-            _ => "smooth",
+        let word = match e.to_ascii_lowercase().replace([' ', '_', '-'], "").as_str() {
+            "linear" => Some("linear"),
+            "smooth" | "easeinandout" => Some("smooth"),
+            _ => None,
         };
-        ramp.insert("ease".into(), Value::String(word.into()));
+        if let Some(word) = word {
+            ramp.insert("ease".into(), Value::String(word.into()));
+        }
     }
     for end in ["from", "to"] {
         if let Some(Value::Array(xy)) = ramp.get(end)
@@ -1168,5 +1172,22 @@ mod tests {
         loosen("effects", &mut v);
         let back: Vec<crate::Effect> = serde_json::from_value(v).expect("reads back");
         assert_eq!(back[0].kind, odd.kind);
+    }
+
+    /// An ease word that names neither ease is refused, never read as Smooth.
+    ///
+    /// flip: `loosen_ramp` writing `smooth` for any other word → fails at "refused".
+    #[test]
+    fn a_misspelt_ease_is_refused() {
+        let mut v = serde_json::json!([{
+            "type": "layer_blur",
+            "radius": 8,
+            "ramp": { "end": 0, "angle": 90, "ease": "bounce" },
+        }]);
+        loosen("effects", &mut v);
+        assert!(
+            serde_json::from_value::<Vec<crate::Effect>>(v).is_err(),
+            "refused"
+        );
     }
 }
