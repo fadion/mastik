@@ -143,7 +143,7 @@ fn nearest_hex(components: &[Value]) -> Option<String> {
 }
 
 /// A colour as [`nearest_hex`] writes it, `None` outside sRGB's 0–1.
-fn nearest_hex_of(c: peniko::Color) -> Option<String> {
+pub(super) fn nearest_hex_of(c: peniko::Color) -> Option<String> {
     let components: Vec<Value> = c
         .components
         .iter()

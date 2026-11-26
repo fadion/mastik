@@ -7700,6 +7700,290 @@ fn chart_set(
     Ok(chart)
 }
 
+/// The parts of a chart the `chart` value holds ([`chart_value`]), in order.
+const CHART_VALUE_KEYS: [&str; 7] = [
+    "kind",
+    "mapping",
+    "options",
+    "colours",
+    "highlight",
+    "references",
+    "style",
+];
+
+/// Chart `id`'s settings in the shapes `set_chart` takes, for a script's `chart`
+/// property: `kind` as its word, `mapping` by column id, `options` as the patch
+/// from a new chart's, `colours` for each series or named mark with its own,
+/// `highlight` and `references` when set, and `style`, the chart style it is
+/// bound to, by name. Colours are `"#rrggbb"`, a bound mark colour its
+/// variable's name. `None` on a layer that is not a chart. [`chart_whole`]
+/// writes it back.
+pub fn chart_value(doc: &Document, id: NodeId) -> Option<Value> {
+    let node = doc.get(id)?;
+    let chart = node.chart()?;
+    let mut out = Map::new();
+    let kind = crate::chart::ChartKind::ALL
+        .iter()
+        .position(|k| *k == chart.kind)
+        .map_or("column", |i| CHART_KINDS[i]);
+    out.insert("kind".into(), Value::from(kind));
+    out.insert(
+        "mapping".into(),
+        serde_json::to_value(&chart.mapping).unwrap_or_default(),
+    );
+    let own = chart_short(&serde_json::to_value(&chart.options).unwrap_or_default());
+    let base =
+        chart_short(&serde_json::to_value(crate::chart::Options::default()).unwrap_or_default());
+    if let Some(options) = differs_from(&own, &base) {
+        out.insert("options".into(), options);
+    }
+    let colours = chart_colours_value(doc, chart);
+    if !colours.is_empty() {
+        out.insert("colours".into(), Value::Object(colours));
+    }
+    if chart.highlight != crate::chart::Highlight::default() {
+        let h = serde_json::to_value(&chart.highlight).unwrap_or_default();
+        out.insert("highlight".into(), chart_short(&h));
+    }
+    if !chart.references.is_empty() {
+        let r = serde_json::to_value(&chart.references).unwrap_or_default();
+        out.insert("references".into(), chart_short(&r));
+    }
+    if let Some(style) = node.styles().chart.and_then(|s| doc.styles().get(s)) {
+        out.insert("style".into(), Value::from(style.name.clone()));
+    }
+    Some(Value::Object(out))
+}
+
+/// The marks `chart` colours of its own, by the name `set_chart`'s `colours`
+/// takes: a series by its column's name, or on a chart coloured by name each
+/// named mark. A mark it no longer draws keeps its colour unread.
+fn chart_colours_value(doc: &Document, chart: &crate::chart::Chart) -> Map<String, Value> {
+    let mut out = Map::new();
+    let mut put = |name: String, fill: &crate::variable::BrushSource| {
+        out.insert(name, chart_colour_value(doc, fill));
+    };
+    match crate::chart::named_marks(chart) {
+        Some(marks) => {
+            for style in &chart.nodes {
+                if let Some(fill) = &style.fill
+                    && marks.iter().any(|(n, _)| *n == style.name)
+                {
+                    put(style.name.clone(), fill);
+                }
+            }
+        }
+        None => {
+            for column in &chart.mapping.series {
+                let fill = chart.series.iter().find(|s| s.column == *column);
+                if let Some(fill) = fill.and_then(|s| s.fill.as_ref())
+                    && let Some(col) = chart.table.column(*column)
+                {
+                    // A name two columns share would colour the first; the id is exact.
+                    let shared = chart.table.columns.iter().filter(|c| c.name == col.name);
+                    let name = match shared.count() {
+                        1 => col.name.clone(),
+                        _ => column.0.to_string(),
+                    };
+                    put(name, fill);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// One mark's colour as `set_chart`'s `colours` takes it: a plain colour as
+/// `"#rrggbb"`, a colour variable bound whole by its name (by its id when the
+/// name is not its alone), anything else in the model's own shape.
+fn chart_colour_value(doc: &Document, fill: &crate::variable::BrushSource) -> Value {
+    use crate::variable::BrushSource;
+    match fill {
+        BrushSource::Literal(crate::Brush::Solid(c)) => {
+            if let Some(hex) = loose::nearest_hex_of(*c) {
+                return Value::from(hex);
+            }
+        }
+        BrushSource::Bound { var, alpha } if *alpha == 1.0 => {
+            let id = serde_json::to_value(var).unwrap_or_default();
+            return match doc.variables().get(*var) {
+                Some(v) if id_named(doc, "variable", &v.name).ok() == Some(id.clone()) => {
+                    Value::from(v.name.clone())
+                }
+                _ => id,
+            };
+        }
+        _ => {}
+    }
+    serde_json::to_value(fill).unwrap_or_default()
+}
+
+/// `v`, a chart value in the model's own shape, with each plain colour under one
+/// of [`CHART_COLOUR_KEYS`] written `"#rrggbb"`, at any depth: [`chart_hex`]'s
+/// inverse.
+fn chart_short(v: &Value) -> Value {
+    fn brush(v: &mut Value) {
+        if let Ok(crate::variable::BrushSource::Literal(crate::Brush::Solid(c))) =
+            serde_json::from_value(v.clone())
+            && let Some(hex) = loose::nearest_hex_of(c)
+        {
+            *v = Value::from(hex);
+        }
+    }
+    fn walk(v: &mut Value) {
+        match v {
+            Value::Object(m) => {
+                for (k, field) in m.iter_mut() {
+                    if CHART_COLOUR_KEYS.contains(&k.as_str()) {
+                        match &mut *field {
+                            Value::Array(items) => items.iter_mut().for_each(brush),
+                            other => brush(other),
+                        }
+                    }
+                    walk(field);
+                }
+            }
+            Value::Array(items) => items.iter_mut().for_each(walk),
+            _ => {}
+        }
+    }
+    let mut v = v.clone();
+    walk(&mut v);
+    v
+}
+
+/// The parts of `v` that differ from `base`, as a merge patch onto `base`: two
+/// objects with the same keys (one struct, or one enum variant) compared key by
+/// key, anything else whole. `None` when nothing differs.
+fn differs_from(v: &Value, base: &Value) -> Option<Value> {
+    match (v, base) {
+        (Value::Object(own), Value::Object(b))
+            if own.len() == b.len() && own.keys().all(|k| b.contains_key(k)) =>
+        {
+            let changed: Map<String, Value> = own
+                .iter()
+                .filter_map(|(k, x)| differs_from(x, &b[k]).map(|x| (k.clone(), x)))
+                .collect();
+            (!changed.is_empty()).then_some(Value::Object(changed))
+        }
+        _ => (v != base).then(|| v.clone()),
+    }
+}
+
+/// The edit setting chart `id` to `value`, a table in [`chart_value`]'s shape,
+/// whole: an option, colour, highlight, reference or style it leaves out goes
+/// back to a new chart's, while a `kind` or `mapping` left out is kept, so one
+/// chart's look copies onto another that draws its own data. Checked as
+/// `set_chart` checks its arguments; the refusal names the part at fault.
+pub fn chart_whole(doc: &Document, id: NodeId, value: &Value) -> Result<Vec<Operation>, String> {
+    use crate::chart::Options;
+    let Value::Object(given) = value else {
+        return Err("expected a table of the chart's settings".into());
+    };
+    if let Some(k) = given
+        .keys()
+        .find(|k| !CHART_VALUE_KEYS.contains(&k.as_str()))
+    {
+        return Err(format!(
+            "a chart has no `{k}`; it holds `{}`",
+            CHART_VALUE_KEYS.join("`, `")
+        ));
+    }
+    let node = doc.get(id).ok_or("no such layer")?;
+    let current = node.chart().ok_or("not a chart")?;
+    let mut args = Map::new();
+    args.insert("node".into(), Value::from(id.to_wire()));
+    for k in ["kind", "colours", "highlight", "references"] {
+        if let Some(v) = given.get(k).filter(|v| !v.is_null()) {
+            args.insert(k.into(), v.clone());
+        }
+    }
+    // A whole mapping: each role it leaves out cleared.
+    match given.get("mapping") {
+        None | Some(Value::Null | Value::Object(_)) => {}
+        Some(_) => return Err("`mapping`: expected a table of roles".into()),
+    }
+    if let Some(Value::Object(roles)) = given.get("mapping") {
+        let mut mapping = Map::new();
+        for role in ["category", "series", "size", "group", "from", "to", "value"] {
+            mapping.insert(role.into(), roles.get(role).cloned().unwrap_or(Value::Null));
+        }
+        if let Some(k) = roles.keys().find(|k| !mapping.contains_key(*k)) {
+            return Err(format!("`mapping`: a chart maps no role `{k}`"));
+        }
+        args.insert("mapping".into(), Value::Object(mapping));
+    }
+    // Options patched onto a new chart's on the palette it draws, so a palette
+    // the value leaves out is a pick that puts the colours back, as the card's.
+    let mut options = match given.get("options") {
+        Some(Value::Object(o)) => o.clone(),
+        None | Some(Value::Null) => Map::new(),
+        Some(_) => return Err("`options`: expected a table".into()),
+    };
+    for k in ["palette", "palette_group"] {
+        options.entry(k).or_insert(Value::Null);
+    }
+    args.insert("options".into(), Value::Object(options));
+    let args = Value::Object(args);
+    let verb = find("set_chart").ok_or("no `set_chart`")?;
+    let named = |e: VerbError| match e {
+        VerbError::Invalid { param, why, .. } => format!("`{param}`: {why}"),
+        e => e.to_string(),
+    };
+    let args = by_names(doc, verb, &args).map_err(named)?;
+    let a = Args::check(verb, &args).map_err(named)?;
+    refuse_list_copies(doc, verb, &a).map_err(named)?;
+    let mut base = current.clone();
+    base.options = Options {
+        palette: current.options.palette,
+        palette_group: current.options.palette_group.clone(),
+        ..Options::default()
+    };
+    base.highlight = Default::default();
+    base.references.clear();
+    let mut chart = chart_set(doc, &a, base).map_err(named)?;
+    // The marks the chart colours that the value leaves out go back on the
+    // palette; a stale colour under a name nothing draws is kept.
+    let kept = chart_colours_value(doc, &chart);
+    let colours = given.get("colours").and_then(Value::as_object);
+    for name in kept
+        .keys()
+        .filter(|n| colours.is_none_or(|c| !c.contains_key(*n)))
+    {
+        chart = chart_colour(doc, &a, &chart, name, &Value::Null).map_err(named)?;
+    }
+    let mut ops = Vec::new();
+    if chart != *current {
+        ops.push(Operation::SetChart {
+            id,
+            chart: Some(Box::new(chart)),
+        });
+    }
+    let style = match given.get("style") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(name)) => {
+            let found = serde_json::from_value::<StyleId>(Value::from(name.as_str()))
+                .ok()
+                .filter(|s| doc.styles().get(*s).is_some())
+                .or_else(|| {
+                    id_named(doc, "style", name)
+                        .ok()
+                        .and_then(|v| serde_json::from_value(v).ok())
+                })
+                .ok_or_else(|| format!("`style`: no style has the id or name `{name}`"))?;
+            if doc.styles().get(found).map(|s| s.slot()) != Some(StyleSlot::Chart) {
+                return Err(format!("`style`: `{name}` is not a chart style"));
+            }
+            Some(found)
+        }
+        Some(_) => return Err("`style`: expected a chart style's name".into()),
+    };
+    if node.styles().chart != style {
+        ops.push(crate::style::bind_op(id, StyleSlot::Chart, style));
+    }
+    Ok(ops)
+}
+
 /// `chart` with `mark` drawn in `colour`: a series column by its name or id, or
 /// a mark the chart colours by name (a slice, a group, a node), the colour
 /// `"#rrggbb"`, a colour variable by id or name, bound, a brush in the model's

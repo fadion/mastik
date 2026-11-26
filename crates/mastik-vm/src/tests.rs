@@ -2545,6 +2545,197 @@ fn reactions_copied_to_another_page_keep_their_transitions() {
     assert_eq!(action(&h, there), action(&h, one), "the same transition");
 }
 
+/// Two column charts, `A` styled through `set_chart` (options, a hex and a bound
+/// series colour, a highlight, a reference) and bound to a chart style.
+fn styled_charts(h: &mut TestHost) -> (NodeId, NodeId) {
+    let f = h.frame("F", 1200.0, 800.0);
+    let chart = |h: &mut TestHost, name: &str, x: f64| {
+        let id = h.make(
+            "insert_chart",
+            json!({ "parent": f.to_wire(), "kind": "column", "x": x }),
+        )[0];
+        h.make("set_name", json!({ "node": id.to_wire(), "name": name }));
+        id
+    };
+    let a = chart(h, "A", 0.0);
+    let b = chart(h, "B", 600.0);
+    h.make(
+        "add_variable",
+        json!({ "kind": "color", "name": "Brand", "value": { "color": "#0e9f6e" } }),
+    );
+    let c = h.doc.get(a).unwrap().chart().unwrap().clone();
+    let series = |i: usize| c.table.column(c.mapping.series[i]).unwrap().name.clone();
+    h.make(
+        "set_chart",
+        json!({ "node": a.to_wire(),
+            "options": { "theme": "dark", "below_zero": "#c0392b",
+                "value_axis": { "title": "Revenue" }, "bars": { "radius": 4 } },
+            "colours": { series(0): "#ff0000", series(1): "Brand" },
+            "highlight": { "target": { "Series": [series(0)] } },
+            "references": [{ "at": { "Value": 10 } }] }),
+    );
+    h.make(
+        "add_style",
+        json!({ "name": "Report", "value": { "chart": {
+            "theme": "dark", "below_zero": "#c0392b", "bars": { "radius": 4 } } } }),
+    );
+    let style = h
+        .doc
+        .styles()
+        .iter()
+        .find(|s| s.name == "Report")
+        .unwrap()
+        .id;
+    h.commit(Transaction(vec![mastik_core::style::bind_op(
+        a,
+        mastik_core::style::StyleSlot::Chart,
+        Some(style),
+    )]))
+    .unwrap();
+    (a, b)
+}
+
+/// A chart's `chart` reads its settings in the shapes `set_chart` takes, and the
+/// read written back leaves the chart and its style binding as they were.
+/// flip: `chart_whole` keeping the options the chart has in place of a new
+/// chart's → fails at "whole" (`below_zero` stays); `chart_colours_value`
+/// reading a bound colour as its hex → fails at "by its variable's name".
+#[test]
+fn chart_reads_as_set_chart_takes_it_and_round_trips() {
+    let mut h = TestHost::new();
+    let (a, _) = styled_charts(&mut h);
+    let labels = FxHashMap::default();
+    let selected = [a];
+    let e = env(&selected, &labels);
+    let before = h.doc.get(a).unwrap().chart().unwrap().clone();
+    assert!(before.highlight != Default::default() && !before.references.is_empty());
+    let read = |h: &mut TestHost, src: &str| {
+        run_script(h, &e, src)
+            .unwrap_or_else(|e| panic!("{src}: {}", e.message))
+            .copied
+            .unwrap_or_default()
+    };
+    assert_eq!(read(&mut h, "return A.chart.kind"), "column");
+    assert_eq!(read(&mut h, "return A.chart.options.below_zero"), "#c0392b");
+    assert_eq!(
+        read(&mut h, "return A.chart.options.value_axis.title"),
+        "Revenue"
+    );
+    assert_eq!(read(&mut h, "return A.chart.style"), "Report");
+    let series = before
+        .table
+        .column(before.mapping.series[1])
+        .unwrap()
+        .name
+        .clone();
+    assert_eq!(
+        read(&mut h, &format!("return A.chart.colours[\"{series}\"]")),
+        "Brand",
+        "by its variable's name"
+    );
+    assert_eq!(
+        read(&mut h, "return F.chart == nil"),
+        "true",
+        "a frame has none"
+    );
+
+    let commits = h.commits;
+    read(&mut h, "local c = sel.chart\nsel.chart = c");
+    assert_eq!(h.doc.get(a).unwrap().chart().unwrap(), &before, "as it was");
+    assert_eq!(h.commits, commits, "no step for no change");
+    assert!(
+        h.doc.get(a).unwrap().styles().chart.is_some(),
+        "still styled"
+    );
+
+    // Whole: what the value leaves out goes back to a new chart's.
+    read(
+        &mut h,
+        "local c = sel.chart\nc.options = { theme = \"Dark\" }\nc.colours = nil\nc.style = nil\nsel.chart = c",
+    );
+    let after = h.doc.get(a).unwrap().chart().unwrap().clone();
+    assert_eq!(after.options.below_zero, None, "whole");
+    assert_eq!(after.options.theme, mastik_core::chart::Theme::Dark);
+    assert!(
+        after.series.iter().all(|s| s.fill.is_none()),
+        "colours back on the palette"
+    );
+    assert_eq!(
+        after.highlight, before.highlight,
+        "the highlight kept as given"
+    );
+    assert!(h.doc.get(a).unwrap().styles().chart.is_none(), "detached");
+}
+
+/// `B.chart = A.chart` gives B A's look, colours, highlight, references and
+/// style, each with its own table; a part it does not hold and a layer that is
+/// not a chart are refused by name.
+/// flip: `chart_whole` skipping the style's bind op → fails at "the same style".
+#[test]
+fn a_chart_copies_its_look_onto_another() {
+    let mut h = TestHost::new();
+    let (a, b) = styled_charts(&mut h);
+    let labels = FxHashMap::default();
+    let e = env(&[], &labels);
+    run_script(&mut h, &e, "B.chart = A.chart").unwrap_or_else(|e| panic!("{}", e.message));
+    let (ca, cb) = (
+        h.doc.get(a).unwrap().chart().unwrap(),
+        h.doc.get(b).unwrap().chart().unwrap(),
+    );
+    assert_eq!(cb.options, ca.options, "the same options");
+    assert_eq!(cb.series, ca.series, "the same colours");
+    assert_eq!(cb.highlight, ca.highlight);
+    assert_eq!(cb.references, ca.references);
+    assert_eq!(
+        h.doc.get(b).unwrap().styles().chart,
+        h.doc.get(a).unwrap().styles().chart,
+        "the same style"
+    );
+
+    let err = run_script(&mut h, &e, "B.chart = { shape = 1 }").unwrap_err();
+    assert!(err.message.contains("no `shape`"), "{}", err.message);
+    let err = run_script(&mut h, &e, "F.chart = A.chart").unwrap_err();
+    assert!(err.message.contains("not a chart"), "{}", err.message);
+}
+
+/// `chart_data` reads a chart's table as `set_chart_data` takes it; a table
+/// written with numbers in its cells takes them as text, and a table's name
+/// points the chart at that table.
+/// flip: `write_model` passing numbers through to `set_chart_data` → fails at
+/// "numbers written".
+#[test]
+fn chart_data_reads_and_writes_the_table() {
+    let mut h = TestHost::new();
+    let (a, _) = styled_charts(&mut h);
+    let labels = FxHashMap::default();
+    let e = env(&[], &labels);
+    let rows = h.doc.get(a).unwrap().chart().unwrap().table.rows.len();
+    let out = run_script(&mut h, &e, "return #A.chart_data.rows").unwrap();
+    assert_eq!(out.copied, Some(rows.to_string()));
+    run_script(
+        &mut h,
+        &e,
+        "local t = A.chart_data\nlocal r = { t.rows[1][1] }\nfor i = 2, #t.columns do r[i] = i + 0.5 end\nt.rows = { r }\nA.chart_data = t",
+    )
+    .unwrap_or_else(|e| panic!("numbers written: {}", e.message));
+    let table = &h.doc.get(a).unwrap().chart().unwrap().table;
+    assert_eq!(table.rows.len(), 1);
+    assert_eq!(table.rows[0][1..3], ["2.5".to_string(), "3.5".to_string()]);
+
+    h.make(
+        "add_table",
+        json!({ "name": "Sales", "columns": ["Month", "Total"], "rows": [["Jan", "3"]] }),
+    );
+    run_script(&mut h, &e, "A.chart_data = \"Sales\"").unwrap_or_else(|e| panic!("{}", e.message));
+    let c = h.doc.get(a).unwrap().chart().unwrap();
+    assert_eq!(
+        c.data
+            .and_then(|d| h.doc.data_set(d))
+            .map(|s| s.name.as_str()),
+        Some("Sales")
+    );
+}
+
 /// `play` is bound only where the host has play state: elsewhere it raises at
 /// its line, unless a layer has the name. Its members and, after `play.vars.`,
 /// the variables complete.

@@ -299,6 +299,20 @@ pub static PROPERTIES: &[Property] = &[
         "The prototype flows of the page the layers are on, as `set_flows` takes them",
     ),
     prop(
+        "chart",
+        PropType::Table,
+        true,
+        "chart settings",
+        "A chart's kind, mapping, options, colours, highlight, references and style, as `set_chart` takes them; nil on a layer that is not a chart",
+    ),
+    prop(
+        "chart_data",
+        PropType::Table,
+        true,
+        "chart tables",
+        "A chart's table, { columns, rows }, as `set_chart_data` takes it; a table's name points the chart at it",
+    ),
+    prop(
         "id",
         PropType::Text,
         false,
@@ -935,6 +949,10 @@ pub(crate) fn read(doc: &Document, res: &Resolved, id: NodeId, prop: &str) -> Re
             .map_or(Val::Nil, |p| {
                 Val::Json(mastik_core::verbs::play_value(&p.flows))
             }),
+        "chart" => mastik_core::verbs::chart_value(doc, id).map_or(Val::Nil, Val::Json),
+        "chart_data" => node.chart().map_or(Val::Nil, |c| {
+            serde_json::to_value(&c.table).map_or(Val::Nil, Val::Json)
+        }),
         "name" => Val::Str(node.name().to_owned()),
         "visible" => Val::Bool(node.visible()),
         "locked" => Val::Bool(node.locked()),

@@ -1973,6 +1973,8 @@ const MODELLED: &[&str] = &[
     "reactions",
     "play",
     "flows",
+    "chart",
+    "chart_data",
 ];
 
 /// `v` as plain JSON for a verb's argument of `kind`, with no leap labels to read.
@@ -2228,6 +2230,45 @@ fn write_model(
                     &json!({ "page": page.to_wire(), "flows": flows }),
                 )
                 .map_err(fail)?;
+            }
+        }
+        // The whole chart as the value gives it, each layer in turn, so a read
+        // written back changes nothing and a look copies onto another chart.
+        "chart" => {
+            let Value::Table(_) = &v else {
+                return Err(wrong());
+            };
+            let value = plain_json(lua, &v, None).map_err(fail)?;
+            for id in ids {
+                st.host_step()?;
+                let ops = mastik_core::verbs::chart_whole(st.host.doc(), *id, &value)
+                    .map_err(|why| fail(format!("“{}”: {why}", named(&st, *id))))?;
+                st.commit(mastik_core::Transaction(ops)).map_err(fail)?;
+            }
+        }
+        "chart_data" => {
+            let args = match &v {
+                Value::String(s) => json!({ "data": s.to_str()?.to_string() }),
+                Value::Table(_) => {
+                    let mut table = plain_json(lua, &v, None).map_err(fail)?;
+                    // A number written into a cell is its text, as the grid shows it.
+                    if let Some(rows) = table.get_mut("rows").and_then(|r| r.as_array_mut()) {
+                        for cell in rows.iter_mut().filter_map(|r| r.as_array_mut()).flatten() {
+                            if let Some(n) = cell.as_f64() {
+                                *cell = json!(crate::format_number(n));
+                            }
+                        }
+                    }
+                    json!({ "table": table })
+                }
+                _ => return Err(wrong()),
+            };
+            for id in ids {
+                st.host_step()?;
+                let mut args = args.clone();
+                args["node"] = json!(id.to_wire());
+                st.apply("set_chart_data", &args)
+                    .map_err(|why| fail(format!("“{}”: {why}", named(&st, *id))))?;
             }
         }
         "direction" | "gap" | "padding" => {
