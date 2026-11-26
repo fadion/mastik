@@ -690,12 +690,16 @@ fn check_other(model: &str, v: &Value) -> Result<(), String> {
         },
         // MCP's own tools: their handlers read the rest.
         "ChartColours"
-            if v.as_object()
-                .is_some_and(|m| m.values().all(Value::is_string)) =>
+            if v.as_object().is_some_and(|m| {
+                m.values()
+                    .all(|c| c.is_string() || c.is_null() || c.is_object())
+            }) =>
         {
             Ok(())
         }
-        "ChartColours" => Err("expected an object of colours by series or mark name".into()),
+        "ChartColours" => Err(
+            "expected an object of colours by series or mark name, null for the palette's".into(),
+        ),
         "KitModeMap" if v.is_object() => Ok(()),
         "KitModeMap" => Err("expected an object of mode ids".into()),
         "DtcgFile" if v.is_object() || v.is_string() => Ok(()),
@@ -7389,7 +7393,7 @@ pub static VERBS: &[Verb] = &[
             ),
         ],
         run: |ctx, a| {
-            let (id, mut chart) = chart_of(ctx, a)?;
+            let (id, chart) = chart_of(ctx, a)?;
             if [
                 "kind",
                 "mapping",
@@ -7406,46 +7410,7 @@ pub static VERBS: &[Verb] = &[
                     "`set_chart` changes `kind`, `mapping`, `options`, `colours`, `highlight` or `references`",
                 ));
             }
-            if let Some(word) = a.choice("kind") {
-                chart = chart.with_kind(chart_kind(word));
-            }
-            if let Some(patch) = a.get("mapping") {
-                chart.mapping = patched(a, "mapping", &chart.mapping, patch)?;
-            }
-            if let Some(patch) = a.loose("options") {
-                let palette = chart.options.palette;
-                chart.options = patched(a, "options", &chart.options, &patch)?;
-                // A null sets the default back, which adds a final total; an empty
-                // name is how a caller turns it off.
-                let w = &mut chart.options.waterfall;
-                if w.final_total
-                    .as_deref()
-                    .is_some_and(|n| n.trim().is_empty())
-                {
-                    w.final_total = None;
-                }
-                // A palette pick puts every colour back on it, as the card's does.
-                if chart.options.palette != palette {
-                    chart = crate::chart::with_palette(&chart, chart.options.palette);
-                }
-            }
-            if let Some(Value::Object(colours)) = a.get("colours") {
-                for (mark, colour) in colours {
-                    chart = chart_colour(ctx.doc, a, &chart, mark, colour)?;
-                }
-            }
-            // Checked against the chart as the call leaves it, kind included.
-            if a.nulled("highlight") {
-                chart.highlight = Default::default();
-            }
-            if a.get("highlight").is_some() {
-                chart.highlight = a.model("highlight")?;
-                chart_names_known(a, &chart)?;
-            }
-            if a.get("references").is_some() {
-                chart.references = a.model("references")?;
-            }
-            chart_valid(a, &chart)?;
+            let chart = chart_set(ctx.doc, a, chart)?;
             Ok(Done::ops(vec![Operation::SetChart {
                 id,
                 chart: Some(Box::new(chart)),
@@ -7679,11 +7644,68 @@ fn chart_of(ctx: &Ctx<'_>, a: &Args<'_>) -> Result<(NodeId, crate::chart::Chart)
     Ok((id, chart.clone()))
 }
 
+/// `chart` with `set_chart`'s arguments `a` written over it, in the verb's order:
+/// the kind, the mapping and options patched, the colours, the highlight and the
+/// references, checked against the chart as it then stands.
+fn chart_set(
+    doc: &Document,
+    a: &Args<'_>,
+    mut chart: crate::chart::Chart,
+) -> Result<crate::chart::Chart, VerbError> {
+    if let Some(word) = a.choice("kind") {
+        chart = chart.with_kind(chart_kind(word));
+    }
+    if let Some(patch) = a.get("mapping") {
+        chart.mapping = patched(a, "mapping", &chart.mapping, patch)?;
+    }
+    if let Some(patch) = a.loose("options") {
+        let palette = chart.options.palette;
+        chart.options = patched(a, "options", &chart.options, &patch)?;
+        // A null sets the default back, which adds a final total; an empty
+        // name is how a caller turns it off.
+        let w = &mut chart.options.waterfall;
+        if w.final_total
+            .as_deref()
+            .is_some_and(|n| n.trim().is_empty())
+        {
+            w.final_total = None;
+        }
+        // A palette pick puts every colour back on it, as the card's does, but
+        // keeps a *From variables* group the same patch names.
+        if chart.options.palette != palette {
+            let group = std::mem::take(&mut chart.options.palette_group);
+            chart = crate::chart::with_palette(&chart, chart.options.palette);
+            if patch.get("palette_group").is_some() {
+                chart.options.palette_group = group;
+            }
+        }
+    }
+    if let Some(Value::Object(colours)) = a.get("colours") {
+        for (mark, colour) in colours {
+            chart = chart_colour(doc, a, &chart, mark, colour)?;
+        }
+    }
+    // Checked against the chart as the call leaves it, kind included.
+    if a.nulled("highlight") {
+        chart.highlight = Default::default();
+    }
+    if a.get("highlight").is_some() {
+        chart.highlight = a.model("highlight")?;
+        chart_names_known(a, &chart)?;
+    }
+    if a.get("references").is_some() {
+        chart.references = a.model("references")?;
+    }
+    chart_valid(a, &chart)?;
+    Ok(chart)
+}
+
 /// `chart` with `mark` drawn in `colour`: a series column by its name or id, or
 /// a mark the chart colours by name (a slice, a group, a node), the colour
-/// `"#rrggbb"` or a colour variable by id or name, bound. A name the chart
-/// draws nothing under is refused listing the ones it does, so a typo is not
-/// kept as a style nothing reads.
+/// `"#rrggbb"`, a colour variable by id or name, bound, a brush in the model's
+/// shape, or null for the palette's. A name the chart draws nothing under is
+/// refused listing the ones it does, so a typo is not kept as a style nothing
+/// reads.
 fn chart_colour(
     doc: &Document,
     a: &Args<'_>,
@@ -7693,10 +7715,70 @@ fn chart_colour(
 ) -> Result<crate::chart::Chart, VerbError> {
     use crate::variable::BrushSource;
     let bad = |why: String| a.invalid("colours", why);
-    let text = colour
-        .as_str()
-        .ok_or_else(|| bad(format!("`{mark}`: a colour is \"#rrggbb\" or a variable")))?;
-    let fill = match loose::hex_colour(text) {
+    let fill = match colour {
+        Value::Null => None,
+        Value::Object(_) => {
+            let fill: BrushSource = serde_json::from_value(colour.clone())
+                .map_err(|e| bad(format!("`{mark}`: {e}")))?;
+            if let BrushSource::Bound { var, .. } = &fill
+                && doc.variables().get(*var).map(|v| v.kind) != Some(VarKind::Color)
+            {
+                return Err(bad(format!("`{mark}`: it binds no colour variable")));
+            }
+            Some(fill)
+        }
+        _ => Some(chart_colour_named(doc, a, mark, colour)?),
+    };
+    if let Some(marks) = crate::chart::named_marks(chart) {
+        if !marks.iter().any(|(n, _)| n == mark) {
+            let names: Vec<_> = marks.iter().map(|(n, _)| format!("`{n}`")).collect();
+            return Err(bad(format!(
+                "this chart colours by name; `{mark}` is none of {}",
+                names.join(", ")
+            )));
+        }
+        return Ok(crate::chart::with_node_fill(chart, mark, fill));
+    }
+    let column = chart
+        .mapping
+        .series
+        .iter()
+        .copied()
+        .find(|c| {
+            c.0.to_string() == mark || chart.table.column(*c).is_some_and(|col| col.name == mark)
+        })
+        .ok_or_else(|| {
+            let names: Vec<_> = chart
+                .mapping
+                .series
+                .iter()
+                .filter_map(|c| chart.table.column(*c))
+                .map(|c| format!("`{}`", c.name))
+                .collect();
+            bad(format!(
+                "`{mark}` is no series; the series are {}",
+                names.join(", ")
+            ))
+        })?;
+    Ok(crate::chart::with_series_fill(chart, column, fill))
+}
+
+/// One mark's colour written as a string: `"#rrggbb"`, or a colour variable by
+/// id or name, bound whole.
+fn chart_colour_named(
+    doc: &Document,
+    a: &Args<'_>,
+    mark: &str,
+    colour: &Value,
+) -> Result<crate::variable::BrushSource, VerbError> {
+    use crate::variable::BrushSource;
+    let bad = |why: String| a.invalid("colours", why);
+    let text = colour.as_str().ok_or_else(|| {
+        bad(format!(
+            "`{mark}`: a colour is \"#rrggbb\", a variable, or null for the palette's"
+        ))
+    })?;
+    Ok(match loose::hex_colour(text) {
         Some(c) => BrushSource::Literal(crate::Brush::Solid(c)),
         None => {
             let id = serde_json::from_value::<VarId>(Value::from(text))
@@ -7720,39 +7802,7 @@ fn chart_colour(
                 alpha: 1.0,
             }
         }
-    };
-    if let Some(marks) = crate::chart::named_marks(chart) {
-        if !marks.iter().any(|(n, _)| n == mark) {
-            let names: Vec<_> = marks.iter().map(|(n, _)| format!("`{n}`")).collect();
-            return Err(bad(format!(
-                "this chart colours by name; `{mark}` is none of {}",
-                names.join(", ")
-            )));
-        }
-        return Ok(crate::chart::with_node_fill(chart, mark, Some(fill)));
-    }
-    let column = chart
-        .mapping
-        .series
-        .iter()
-        .copied()
-        .find(|c| {
-            c.0.to_string() == mark || chart.table.column(*c).is_some_and(|col| col.name == mark)
-        })
-        .ok_or_else(|| {
-            let names: Vec<_> = chart
-                .mapping
-                .series
-                .iter()
-                .filter_map(|c| chart.table.column(*c))
-                .map(|c| format!("`{}`", c.name))
-                .collect();
-            bad(format!(
-                "`{mark}` is no series; the series are {}",
-                names.join(", ")
-            ))
-        })?;
-    Ok(crate::chart::with_series_fill(chart, column, Some(fill)))
+    })
 }
 
 /// `chart`, refused as `SetChart` would refuse it, the reason said as a fault of
@@ -7921,6 +7971,21 @@ fn patched<T: serde::Serialize + serde::de::DeserializeOwned + Default>(
 ) -> Result<T, VerbError> {
     fn merge(into: &mut Value, patch: &Value, default: Option<&Value>) {
         match (into, patch) {
+            // One enum variant written over another (a colour bound, `{"var": …}`,
+            // over `{"Solid": …}`) replaces it; merged, it would hold both. One
+            // side is a variant, a single capitalised key, which a struct's field
+            // never is, so a struct that skips its empty fields still merges.
+            (Value::Object(into), Value::Object(patch))
+                if [&*into, patch].iter().any(|m| {
+                    m.len() == 1
+                        && m.keys()
+                            .all(|k| k.starts_with(|c: char| c.is_ascii_uppercase()))
+                }) && patch
+                    .iter()
+                    .all(|(k, v)| !v.is_null() && !into.contains_key(k)) =>
+            {
+                *into = patch.clone();
+            }
             (Value::Object(into), Value::Object(patch)) => {
                 for (k, v) in patch {
                     let default = default.and_then(|d| d.get(k));

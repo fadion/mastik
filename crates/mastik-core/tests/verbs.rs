@@ -4991,6 +4991,79 @@ fn set_chart_null_resets_to_the_charts_default() {
     );
 }
 
+/// `set_chart`'s options bind a colour that was plain, a palette picked with its
+/// *From variables* group in one patch keeps the group, and `colours` takes a
+/// null to put a series back on the palette.
+/// flip: `patched` merging one variant over another → the bound write is
+/// refused as no brush; `chart_set` letting `with_palette` clear the group →
+/// fails at "the group kept".
+#[test]
+fn set_chart_rebinds_a_colour_keeps_a_group_and_unsets_a_series() {
+    use mastik_core::BrushSource;
+    let (mut doc, mut ids, page) = blank();
+    let c = run(
+        &mut doc,
+        &mut ids,
+        "insert_chart",
+        json!({ "parent": page.to_wire(), "kind": "column" }),
+    )[0];
+    let made = script(
+        &mut doc,
+        &mut ids,
+        json!([{ "verb": "add_variable", "args": { "kind": "color", "name": "brand",
+            "value": { "color": "#0e9f6e" } } }]),
+    );
+    let brand = made[0][0].clone();
+    let set = |doc: &mut Document, ids: &mut IdSource, args: Value| {
+        let mut args = args;
+        args["node"] = json!(c.to_wire());
+        run(doc, ids, "set_chart", args);
+    };
+    set(
+        &mut doc,
+        &mut ids,
+        json!({ "options": { "below_zero": "#ff0000" } }),
+    );
+    set(
+        &mut doc,
+        &mut ids,
+        json!({ "options": { "below_zero": { "var": brand } } }),
+    );
+    assert!(
+        matches!(
+            chart_of(&doc, c).options.below_zero,
+            Some(BrushSource::Bound { .. })
+        ),
+        "bound over a plain colour"
+    );
+    set(
+        &mut doc,
+        &mut ids,
+        json!({ "options": { "palette": "Cool", "palette_group": [{ "var": brand }] } }),
+    );
+    let o = chart_of(&doc, c).options;
+    assert_eq!(o.palette, mastik_core::chart::Palette::Cool);
+    assert_eq!(o.palette_group.len(), 1, "the group kept");
+
+    let chart = chart_of(&doc, c);
+    let name = chart
+        .table
+        .column(chart.mapping.series[0])
+        .unwrap()
+        .name
+        .clone();
+    set(
+        &mut doc,
+        &mut ids,
+        json!({ "colours": { name.clone(): "#ff0000" } }),
+    );
+    set(&mut doc, &mut ids, json!({ "colours": { name: null } }));
+    assert!(
+        chart_of(&doc, c).series.iter().all(|s| s.fill.is_none()),
+        "back on the palette"
+    );
+}
+
 /// `set_chart_data` replaces the table, keeping the mapping and series styles of
 /// each column whose name survives, and drops the linked file.
 #[test]

@@ -1206,15 +1206,19 @@ series* dim with *Right-click a mark on a chart*.
   column as the category and the number columns as series); `set_chart` changes the kind
   (`Chart::with_kind`, re-reading the mapping across a Sankey) and then merge-patches the
   mapping and options, a null setting a key back to its value in the whole
-  struct's default (`Options::default()`, not a nested struct's own); a changed `palette` goes
-  through `chart::with_palette`, so the colours move with it as on the card, and the old names are
+  struct's default (`Options::default()`, not a nested struct's own), and an enum variant
+  written over another (a bound colour `{"var": …}` over `{"Solid": …}`) replacing it rather
+  than merging into an object holding both, a variant told from a struct's field by being a
+  single capitalised key; a changed `palette` goes through `chart::with_palette`, so the
+  colours move with it as on the card, keeping a `palette_group` the same patch names, and the old names are
   still read: `dark` as `theme` *Dark* or *Light* unless the patch names `theme`, `outline` and a
   pie's `sort` as the migration reads them (`verbs::dark_as_theme`); an
   unknown option is refused listing the options' fields
   (`verbs::settle`, `verbs::model_fields`). `set_chart`'s `colours` colours the series and marks
   by name (`verbs::chart_colour`): each key a series column's name or id, or on a chart coloured
-  by name (`chart::named_marks`) a slice's, group's or node's name, each value `"#rrggbb"` or a
-  colour variable by id or name, which binds, written through `chart::with_series_fill` or
+  by name (`chart::named_marks`) a slice's, group's or node's name, each value `"#rrggbb"`, a
+  colour variable by id or name, which binds, a brush in the model's shape (a bound one binding
+  a colour variable), or null, which puts the mark back on the palette, written through `chart::with_series_fill` or
   `with_node_fill`, so an agent brands a chart without flattening it and losing its live data. A
   name the chart draws nothing under is refused listing the ones it does, so a typo is not kept
   as a style nothing reads, and a variable that is no colour is refused. `set_chart`'s
