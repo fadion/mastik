@@ -295,3 +295,41 @@ fn the_comb_draws_only_while_on() {
         "two red rings"
     );
 }
+
+/// A path of straight lines at awkward angles has no curvature, so Fitted has
+/// nothing to scale and nothing draws. flip: `comb` reading a line's curvature
+/// as computed → fails at "no curvature".
+#[test]
+fn a_path_of_lines_draws_no_comb() {
+    let corners = [
+        (12.37, 81.9),
+        (97.13, 3.71),
+        (143.9, 120.33),
+        (61.03, 177.7),
+        (20.21, 140.09),
+    ];
+    let path = vec![PenSubpath {
+        anchors: corners
+            .iter()
+            .map(|&at| anchor(at, (0.0, 0.0), (0.0, 0.0)))
+            .collect(),
+        closed: true,
+    }];
+    let c = comb(&path, 64);
+    assert_eq!(c.peak, 0.0, "no curvature");
+    assert_eq!(c.fitted(1.0), None);
+    assert!(c.joins.is_empty());
+
+    let ctx = egui::Context::default();
+    let (mut app, _) = app_editing(&ctx, &path);
+    app.prefs.combs.on = true;
+    app.canvas_px = (800, 600);
+    app.session.camera.center = Point::new(80.0, 90.0);
+    let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+    let drawn = ctx
+        .run_ui(Default::default(), |ui| {
+            app.draw_combs(ui.painter(), rect, 1.0)
+        })
+        .shapes;
+    assert!(drawn.is_empty(), "nothing drawn");
+}

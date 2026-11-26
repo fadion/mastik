@@ -13,7 +13,7 @@ use crate::app::MastikApp;
 use crate::input::ViewSwitch;
 use crate::theme::{self, color, icon};
 use crate::ui::{self, FieldButton, Prefix, Scrub};
-use mastik_core::edit::{PenSubpath, PointRef, segment_cubic};
+use mastik_core::edit::{PenSubpath, PointRef, segment_cubic, segment_is_straight};
 use mastik_core::kurbo::{CubicBez, ParamCurve, ParamCurveDeriv, Point, Rect, Vec2};
 
 /// The card's width: the Offset card's, in whose place it hangs.
@@ -52,6 +52,9 @@ const STRAIGHT: f64 = 0.05;
 /// segment, not the path: a tight round corner on a large path is drawn on
 /// purpose, and a quarter circle's highest is about 1.6.
 const KINK: f64 = 25.0;
+/// The same product under which a curvature is rounding noise and counts as
+/// none: handles collinear with their segment to the last few bits.
+const NOISE: f64 = 1e-9;
 
 /// What is wrong at a smooth point.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -217,10 +220,18 @@ pub(crate) fn comb(subpaths: &[PenSubpath], n: usize) -> Comb {
         }
         for (a, c) in cubics.iter().enumerate() {
             let reach = (c.p1 - c.p0).hypot() + (c.p2 - c.p1).hypot() + (c.p3 - c.p2).hypot();
+            // A line comes back from `segment_cubic` as a cubic whose arithmetic
+            // leaves a curvature of rounding noise; on a path of lines that noise
+            // would be the peak Fitted blows up to full length.
+            let straight = segment_is_straight(subpaths, (s, a));
             let teeth = (0..=n)
                 .map(|i| {
                     let t = i as f64 / n as f64;
                     let (k, tangent) = curvature(c, t, tiny)?;
+                    let k = match straight || k.abs() * reach < NOISE {
+                        true => 0.0,
+                        false => k,
+                    };
                     let kink = i > 0 && i < n && k.abs() * reach > KINK;
                     if !kink {
                         peak = peak.max(k.abs());
