@@ -614,9 +614,10 @@ it applies to; switching kind keeps the others' values.
   a *Line* or a *Band* (from `at` to `to`) on the *Value* or *Category* axis. Where it stands
   (`At`) is a typed value, a category (its band's centre), a statistic (*Average*, *Median*,
   *Min*, *Max*) of one series or every series shown, or for a band's end the axis's start or
-  end. A statistic is over the values drawn, a stacked chart's over its stack totals; a
-  scatter's X takes a typed number. New references default to a dashed 1.5 px line in
-  `#C0392B`, labelled *Reference*, its label at the end, taken into the range.
+  end. A statistic is over the values drawn, a stacked chart's over its stack totals, a 100%
+  chart's over each value's share of its category; a scatter's X takes a typed number. New
+  references default to a dashed 1.5 px line in `#C0392B`, labelled *Reference*, its label at
+  the end, taken into the range.
   - An Auto value-axis range takes in each visible typed value with `in_range` (both ends of a
     band).
   - Bands sit under the marks in a *References* frame after *Grid* (`PartRole::References`),

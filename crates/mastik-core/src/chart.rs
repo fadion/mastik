@@ -19,7 +19,9 @@ pub use colours::{
     series_fill, series_fill_set, unset_starting, with_node_fill, with_palette, with_series_fill,
     with_variables,
 };
-pub use generate::{Generated, Part, Refusal, category_order, generate, generate_on, palette};
+pub use generate::{
+    Generated, Part, Refusal, category_order, generate, generate_on, palette, waterfall_steps,
+};
 pub use preset::{OUTLINE_WIDTH, Preset};
 pub(crate) use settle::part_actor;
 pub use settle::{settle, settle_all, settle_round, stale};
@@ -958,8 +960,8 @@ pub struct Waterfall {
     /// The categories drawn as the running total, by name.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub totals: Vec<String>,
-    /// A total the chart adds after the last row, named so.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// A total the chart adds after the last row, named so. Written even when
+    /// `None`, as the default is on: a missing key reads back as `Total`.
     pub final_total: Option<String>,
     /// Lines from each step's end to the next one's start.
     pub connectors: bool,
@@ -2327,6 +2329,14 @@ impl Options {
     /// carried to the others of a multi-selection, each keeping its own.
     pub fn carried(before: &Options, after: &Options, onto: &Options) -> Options {
         use serde_json::Value;
+        // A patch's mark for a key `after` skips, which sets it back to its default;
+        // a JSON null is a value of its own (`Waterfall::final_total` off).
+        fn unset() -> Value {
+            Value::Object(serde_json::Map::from_iter([(
+                "\u{0}unset".to_string(),
+                Value::Bool(true),
+            )]))
+        }
         fn diff(before: &Value, after: &Value) -> Option<Value> {
             match (before, after) {
                 (Value::Object(b), Value::Object(a)) => {
@@ -2342,7 +2352,7 @@ impl Options {
                     }
                     // A key `after` skips is at its default.
                     for k in b.keys().filter(|k| !a.contains_key(*k)) {
-                        patch.insert(k.clone(), Value::Null);
+                        patch.insert(k.clone(), unset());
                     }
                     (!patch.is_empty()).then_some(Value::Object(patch))
                 }
@@ -2353,7 +2363,7 @@ impl Options {
             match (into, patch) {
                 (Value::Object(into), Value::Object(patch)) => {
                     for (k, v) in patch {
-                        if v.is_null() {
+                        if *v == unset() {
                             into.remove(k);
                         } else {
                             merge(into.entry(k.clone()).or_insert(Value::Null), v);

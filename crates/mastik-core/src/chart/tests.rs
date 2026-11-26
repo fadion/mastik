@@ -1479,6 +1479,87 @@ fn a_highlight_mutes_the_others() {
     assert_ne!(jan.fills[0].brush, muted, "a stale name greys out nothing");
 }
 
+/// A waterfall's final total switched off stays off through a save and through
+/// an edit carried to another chart of a selection.
+/// flip: `Waterfall::final_total` skipped when `None` → fails at "read back off".
+#[test]
+fn a_final_total_switched_off_stays_off() {
+    let on = Chart::sample(ChartKind::Waterfall).options;
+    let mut off = on.clone();
+    off.waterfall.final_total = None;
+    let json = serde_json::to_string(&off).unwrap();
+    let back: crate::chart::Options = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.waterfall.final_total, None, "read back off");
+    let carried = crate::chart::Options::carried(&on, &off, &on);
+    assert_eq!(carried.waterfall.final_total, None, "carried off");
+    // A key the edit skips still goes back to its default.
+    let mut ink = on.clone();
+    ink.below_zero = Some(crate::variable::BrushSource::Literal(crate::Brush::Solid(
+        peniko::Color::BLACK,
+    )));
+    let carried = crate::chart::Options::carried(&ink, &on, &ink);
+    assert_eq!(carried.below_zero, None, "an unset colour carried");
+}
+
+/// A highlight on a waterfall lights the step it names though a blank row
+/// before it is skipped, and the final total is a step it can name.
+/// flip: `generate_on` naming a waterfall's marks by `data.categories` → fails
+/// at "Tax lit".
+#[test]
+fn a_waterfall_highlight_counts_its_steps() {
+    use crate::chart::Highlighted;
+    let mut chart = Chart::sample(ChartKind::Waterfall);
+    let other = chart
+        .table
+        .rows
+        .iter()
+        .position(|r| r[0] == "Other")
+        .unwrap();
+    chart.table.rows[other][1] = String::new();
+    chart.highlight.target = Highlighted::Categories(vec!["Tax".into()]);
+    let g = draw(&chart);
+    let muted = chart.muted();
+    let step = |name: &str| {
+        g.parts
+            .iter()
+            .find(|p| p.key.role == PartRole::Bar && p.name == format!("Step {name}"))
+            .unwrap_or_else(|| panic!("a step named {name}"))
+    };
+    assert_ne!(step("Tax").fills[0].brush, muted, "Tax lit");
+    assert_eq!(step("Opex").fills[0].brush, muted, "Opex muted");
+    let total = chart.options.waterfall.final_total.clone().unwrap();
+    chart.highlight.target = Highlighted::Categories(vec![total.clone()]);
+    let g = draw(&chart);
+    let lit = g
+        .parts
+        .iter()
+        .find(|p| p.key.role == PartRole::Bar && p.name == format!("Step {total}"))
+        .unwrap();
+    assert_ne!(lit.fills[0].brush, muted, "the final total lit");
+}
+
+/// A highlight on lollipops mutes the other stems and heads, which carry the
+/// colour; the slot frame has none.
+/// flip: `apply_highlight`'s `lit` leaving out `Head` → fails at "a head muted".
+#[test]
+fn a_lollipop_highlight_mutes_stems_and_heads() {
+    use crate::chart::Highlighted;
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.options.bars.shape = crate::chart::BarShape::Lollipops;
+    chart.highlight.target = Highlighted::Categories(vec!["Apr".into()]);
+    let g = draw(&chart);
+    let muted = chart.muted();
+    let first = chart.mapping.series[0].0;
+    let jan = 0;
+    let head = part(&g, PartRole::Head, first, jan).expect("a head");
+    let stem = part(&g, PartRole::Stem, first, jan).expect("a stem");
+    assert_eq!(head.fills[0].brush, muted, "a head muted");
+    assert_eq!(stem.fills[0].brush, muted, "a stem muted");
+    let apr = 3;
+    let lit = part(&g, PartRole::Head, first, apr).expect("Apr's head");
+    assert_ne!(lit.fills[0].brush, muted, "the highlighted head");
+}
+
 /// A one-series column chart coloured by category gives each bar its
 /// category's colour and lists the categories in its legend.
 /// flip: `by_category` answering false → fails at "a colour per bar".
@@ -1591,5 +1672,29 @@ fn references_draw_and_say_when_outside() {
             .iter()
             .any(|l| l.contains("outside the axis's range")),
         "said"
+    );
+}
+
+/// On a 100% chart a statistic reference reads the shares its axis draws, so an
+/// average lands inside the axis rather than at the raw values.
+/// flip: `stat_of` averaging raw values on `Percent` → fails at "drawn on a 100% chart".
+#[test]
+fn a_statistic_on_a_100_percent_chart_reads_shares() {
+    use crate::chart::{At, Reference, Stat};
+    let mut chart = Chart::sample(ChartKind::Column);
+    chart.options.bars.stacking = Stacking::Percent;
+    chart.references = vec![Reference {
+        id: 1,
+        at: At::Stat {
+            stat: Stat::Average,
+            of: Some(chart.mapping.series[0]),
+        },
+        ..Reference::default()
+    }];
+    let g = draw(&chart);
+    assert!(
+        part(&g, PartRole::Reference, 0, 1).is_some(),
+        "drawn on a 100% chart: {:?}",
+        g.left_out
     );
 }

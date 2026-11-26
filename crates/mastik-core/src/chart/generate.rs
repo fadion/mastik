@@ -259,6 +259,22 @@ pub fn category_order(chart: &Chart) -> Option<Vec<usize>> {
     drawn_order(chart, &read(chart))
 }
 
+/// A waterfall's steps' names in drawn order, the final total last: what a
+/// step's index counts. Empty for any other kind.
+pub fn waterfall_steps(chart: &Chart) -> Vec<String> {
+    if chart.kind != ChartKind::Waterfall {
+        return Vec::new();
+    }
+    steps_named(chart, &read(chart))
+}
+
+fn steps_named(chart: &Chart, data: &Data) -> Vec<String> {
+    walk(chart, data, &mut Vec::new())
+        .into_iter()
+        .map(|s| s.name)
+        .collect()
+}
+
 fn drawn_order(chart: &Chart, data: &Data) -> Option<Vec<usize>> {
     let b = &chart.options.bars;
     if !matches!(chart.kind, ChartKind::Column | ChartKind::Bar) || b.order == super::Order::Table {
@@ -577,8 +593,10 @@ pub fn generate_on(
     });
     let extents = out.extents;
     let notes = std::mem::take(&mut out.left_out);
+    // A waterfall's marks count its steps, which skip blank rows and add the final total.
+    let steps = (chart.kind == ChartKind::Waterfall).then(|| steps_named(chart, &data));
     let names = Names {
-        categories: &data.categories,
+        categories: steps.as_deref().unwrap_or(&data.categories),
         series: data
             .series
             .iter()
@@ -639,7 +657,10 @@ fn apply_highlight(chart: &Chart, names: &Names, parts: &mut Vec<Part>) {
         let by_series =
             |s: u32| series.map(|names| series_of(s).is_some_and(|n| names.iter().any(|x| x == n)));
         match k.role {
-            PartRole::Bar => by_cat(k.index).or_else(|| by_series(k.series)),
+            // A lollipop's slot is a frame with no paint; its stem and head carry it.
+            PartRole::Bar | PartRole::Stem | PartRole::Head => {
+                by_cat(k.index).or_else(|| by_series(k.series))
+            }
             PartRole::Slice => by_cat(k.index),
             PartRole::ValueLabel if chart.kind == ChartKind::Pie => by_cat(k.index),
             PartRole::ValueLabel | PartRole::Point => match chart.kind {
@@ -647,7 +668,7 @@ fn apply_highlight(chart: &Chart, names: &Names, parts: &mut Vec<Part>) {
                 _ => by_cat(k.index).or_else(|| by_series(k.series)),
             },
             PartRole::Line | PartRole::Area => by_series(k.series),
-            PartRole::CategoryLabel => by_cat(k.index),
+            PartRole::CategoryLabel | PartRole::Total => by_cat(k.index),
             PartRole::LegendSwatch if chart.kind == ChartKind::Pie || names.by_category => {
                 by_cat(k.series)
             }
@@ -676,8 +697,8 @@ fn apply_highlight(chart: &Chart, names: &Names, parts: &mut Vec<Part>) {
             continue;
         }
         match p.key.role {
-            PartRole::ValueLabel if h.values_only => drop.push(i),
-            PartRole::ValueLabel => {}
+            PartRole::ValueLabel | PartRole::Total if h.values_only => drop.push(i),
+            PartRole::ValueLabel | PartRole::Total => {}
             PartRole::CategoryLabel => {
                 for f in &mut p.fills {
                     f.brush = dim(&f.brush);
@@ -2334,19 +2355,40 @@ struct Axes {
 }
 
 /// A statistic of the values drawn: of series `of`, else of every series shown;
-/// a stacked chart's of each stack's total. `None` with no value.
+/// a stacked chart's of each stack's total, a 100% chart's of each value's share
+/// of its category, as its axis reads. `None` with no value.
 fn stat_of(chart: &Chart, data: &Data, stat: super::Stat, of: Option<ColumnId>) -> Option<f64> {
-    let stacked = match chart.kind {
-        ChartKind::Column | ChartKind::Bar => chart.options.bars.stacking == Stacking::Stacked,
-        ChartKind::Area => chart.options.lines.area_stacking == Stacking::Stacked,
-        _ => false,
+    let stacking = match chart.kind {
+        ChartKind::Column | ChartKind::Bar => chart.options.bars.stacking,
+        ChartKind::Area => chart.options.lines.area_stacking,
+        _ => Stacking::Apart,
+    };
+    let stacked = stacking == Stacking::Stacked;
+    let shares = stacking == Stacking::Percent;
+    let total = |c: usize| -> f64 {
+        data.series
+            .iter()
+            .filter_map(|s| s.values[c])
+            .map(f64::abs)
+            .sum()
+    };
+    let shown = |c: usize, v: f64| match total(c) {
+        t if shares && t > 0.0 => v / t,
+        _ => v,
+    };
+    let values = |s: &SeriesData| -> Vec<f64> {
+        s.values
+            .iter()
+            .enumerate()
+            .filter_map(|(c, v)| v.map(|v| shown(c, v)))
+            .collect()
     };
     let mut vs: Vec<f64> = match of {
         Some(col) => data
             .series
             .iter()
             .filter(|s| s.column == col)
-            .flat_map(|s| s.values.iter().flatten().copied())
+            .flat_map(values)
             .collect(),
         None if stacked => (0..data.categories.len())
             .filter_map(|c| {
@@ -2354,11 +2396,7 @@ fn stat_of(chart: &Chart, data: &Data, stat: super::Stat, of: Option<ColumnId>) 
                 (!v.is_empty()).then(|| v.iter().sum())
             })
             .collect(),
-        None => data
-            .series
-            .iter()
-            .flat_map(|s| s.values.iter().flatten().copied())
-            .collect(),
+        None => data.series.iter().flat_map(values).collect(),
     };
     if vs.is_empty() {
         return None;

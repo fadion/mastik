@@ -7358,6 +7358,15 @@ pub static VERBS: &[Verb] = &[
                 let palette = chart.options.palette;
                 let patch = dark_as_theme(patch);
                 chart.options = patched(a, "options", &chart.options, &patch)?;
+                // A null sets the default back, which adds a final total; an empty
+                // name is how a caller turns it off.
+                let w = &mut chart.options.waterfall;
+                if w.final_total
+                    .as_deref()
+                    .is_some_and(|n| n.trim().is_empty())
+                {
+                    w.final_total = None;
+                }
                 // A palette pick puts every colour back on it, as the card's does.
                 if chart.options.palette != palette {
                     chart = crate::chart::with_palette(&chart, chart.options.palette);
@@ -7753,6 +7762,7 @@ fn chart_names_known(a: &Args<'_>, chart: &crate::chart::Chart) -> Result<(), Ve
                 .iter()
                 .filter_map(|r| at.map(|c| r[c].trim().to_string()))
                 .filter(|s| !s.is_empty())
+                .chain(crate::chart::waterfall_steps(chart))
                 .collect();
             (n, known, "categories")
         }
