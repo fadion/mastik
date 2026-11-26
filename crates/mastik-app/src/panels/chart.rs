@@ -2670,6 +2670,11 @@ impl MastikApp {
                 resp
             })
             .inner;
+        // Double-clicked on the canvas: this row's popover opens.
+        if self.open_reference == Some((id, rid)) {
+            self.open_reference = None;
+            egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&row));
+        }
         egui::Popup::menu(&row)
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .gap(ui::MENU_GAP)
@@ -5726,6 +5731,45 @@ mod tests {
         );
         let step = app.session.history.done().last().unwrap();
         assert_eq!(step.note.label, "Highlight");
+    }
+
+    /// A double-click on a reference line opens its popover on the card, not
+    /// the data window.
+    /// flip: `chart_reference_row` ignoring `open_reference` → fails at "the
+    /// popover is open".
+    #[test]
+    fn a_double_clicked_reference_opens_its_popover() {
+        let ctx = egui::Context::default();
+        let (mut app, id) = charted(&ctx, ChartKind::Column);
+        let mut chart = chart_at(&app, id);
+        chart.references.push(chart::Reference {
+            id: 1,
+            at: chart::At::Value(50.0),
+            dash: chart::Dash::Solid,
+            ..chart::Reference::default()
+        });
+        app.chart_commit(id, "Add reference", chart);
+        pass(&ctx, &mut app);
+        let line = chart_at(&app, id)
+            .parts
+            .iter()
+            .find(|(k, _)| k.role == chart::PartRole::Reference)
+            .map(|(_, n)| *n)
+            .expect("the line is drawn");
+        let at = app
+            .session
+            .resolved
+            .world_bounds(line)
+            .expect("drawn")
+            .center();
+        app.double_click_pick(Some(id), at);
+        assert_eq!(app.open_reference, Some((id, 1)), "the reference is named");
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            out = shapes(&ctx, &mut app);
+        }
+        assert_eq!(app.open_reference, None, "taken by the card");
+        assert!(drawn(&out, "Take into the range"), "the popover is open");
     }
 
     /// A lollipop's head, a waterfall's step and a radar's line each name what

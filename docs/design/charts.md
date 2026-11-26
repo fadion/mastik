@@ -707,7 +707,8 @@ A chart has no title or caption of its own: a text layer next to it does that, a
   otherwise win over the mark drawn inside it; the context menu's *Highlight* rows find their
   mark the same way. A category mark counts the categories, which leave out the rows with an
   empty category, so its row is found by skipping those; a scatter's point carries its row.
-  Anything else selects the first cell.
+  Anything else selects the first cell. A reference line, band or label opens that reference's
+  popover on the Chart card instead (`MastikApp::open_reference`), unfolding *References*.
 - **Resize** is the frame's: the chart lays itself out again into the new size, its type staying
   the size it is.
 - **The layers tree** shows a chart as one row with the chart glyph and no disclosure; its parts

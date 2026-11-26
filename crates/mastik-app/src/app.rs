@@ -849,6 +849,9 @@ pub struct MastikApp {
     /// The Chart card's Style pictures and left-out values for the chart it last
     /// showed, kept while that description is unchanged.
     pub(crate) chart_card: Option<crate::panels::ChartCardCache>,
+    /// A reference double-clicked on the canvas, by chart and id: the Chart card
+    /// opens its popover at its next draw and clears this.
+    pub(crate) open_reference: Option<(NodeId, u32)>,
     /// The other charts a multi-selection's Chart card writes with the one it
     /// shows; empty on one chart. Set by the card each frame it draws.
     pub(crate) chart_others: Vec<NodeId>,
@@ -1988,6 +1991,7 @@ impl MastikApp {
                 .chain(crate::panels::IMAGE_FOLDED)
                 .collect(),
             chart_card: None,
+            open_reference: None,
             chart_others: Vec::new(),
             // `u64::MAX` is no revision a session has, so the first read fills it.
             drift_cache: (u64::MAX, Default::default()),

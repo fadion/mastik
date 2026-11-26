@@ -3164,8 +3164,17 @@ impl MastikApp {
                 leaf,
                 world,
             );
-            let cell = crate::chart_data::cell_of(chart, key);
             self.session.selection.set_one(leaf);
+            // A reference opens its popover on the card rather than the data.
+            use mastik_core::chart::PartRole as R;
+            if let Some(k) = key
+                && matches!(k.role, R::Reference | R::ReferenceLabel | R::Band)
+            {
+                self.collapsed_panels.remove("Chart references");
+                self.open_reference = Some((leaf, k.index));
+                return;
+            }
+            let cell = crate::chart_data::cell_of(chart, key);
             self.open_chart_data(leaf, cell);
             return;
         }
