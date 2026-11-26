@@ -180,7 +180,11 @@ fn sections(lead: Lead) -> Vec<Section> {
     .into_iter()
     .map(Item::Tool)
     // The marquee's shape sits with the tools it changes, Select and Node.
-    .chain([Item::PlaceImage, Item::ViewSwitch(ViewSwitch::Lasso)])
+    .chain([
+        Item::PlaceImage,
+        Item::ViewSwitch(ViewSwitch::Lasso),
+        Item::ViewSwitch(ViewSwitch::Combs),
+    ])
     .collect();
     let mut layer = items_section(
         "Layer",

@@ -54,10 +54,6 @@ place, saved in the same shape so existing files load. It is matched in about 60
   Nothing exists; the pieces do (kurbo arc length, `mastik-core` `warp.rs` and `distort.rs`). An
   *Apply brush* that bakes the result into paths comes first; a live brush follows, rebuilt when
   its source changes, on top of variable width's ink path. Large.
-- **Curvature combs.** A switch, with a chord, that draws curvature teeth along the normals of the
-  path whose points are being edited, joined at their tips, scaled to the zoom with an adjustable
-  or fitted scale so a tight corner stays on screen. Canvas chrome only, never in the document;
-  shows where curvature jumps at a smooth point. Small to medium.
 - **Mesh gradients.** Mesh lines and colour points, blended across each patch (Coons patches). A
   mesh mode in the canvas's gradient editor (`gradient.rs`): click on a line to add one through the point,
   drag points and handles, pick a point's colour. peniko has linear, radial and sweep only, so the

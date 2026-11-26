@@ -414,7 +414,7 @@ const TEXT_CHORDS: [TextChord; 13] = [
     TextChord::Align(mastik_core::TextAlign::Justify),
 ];
 
-const SWITCHES: [ViewSwitch; 24] = [
+const SWITCHES: [ViewSwitch; 25] = [
     ViewSwitch::Rulers,
     ViewSwitch::Guides,
     ViewSwitch::GuideLock,
@@ -436,6 +436,7 @@ const SWITCHES: [ViewSwitch; 24] = [
     ViewSwitch::Lasso,
     ViewSwitch::Private,
     ViewSwitch::AlignVisual,
+    ViewSwitch::Combs,
     ViewSwitch::SizeBadge,
     ViewSwitch::Annotations,
     ViewSwitch::PrototypeMode,

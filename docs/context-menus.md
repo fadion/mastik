@@ -534,6 +534,8 @@ conditional branch's `+` open the add-action menu: the actions in three groups (
   menu — chrome-wide switches and selection chrome, not artwork, in the top bar's View menu.
 - **Lasso select** on any menu — the marquee's shape is a tool setting, not a view; `Q`, the
   palette and the rail's Select slot carry it.
+- **Curvature combs** on any menu — `Alt+C`, the palette, the cheatsheet and the path bar's button
+  carry them.
 - **Collapse all / Expand all** — the layers panel header has the button.
 - **Guide colour and position** — the inspector, for a selected guide.
 - **Type-ahead** in menus.

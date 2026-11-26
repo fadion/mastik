@@ -6486,7 +6486,7 @@ impl MastikApp {
     /// The same, read **through the preview** — where the points are right now.
     /// For anything that shows a point and for an incremental edit like a scrub
     /// ([`Self::nudge_points_tx`]).
-    fn preview_subpaths(&self, id: NodeId) -> Option<(Affine, Vec<PenSubpath>)> {
+    pub(crate) fn preview_subpaths(&self, id: NodeId) -> Option<(Affine, Vec<PenSubpath>)> {
         let NodeKind::Path {
             path, corner_radii, ..
         } = self.session.display_node(id)?.kind()
@@ -11964,6 +11964,8 @@ impl MastikApp {
         }
         self.draw_knife(painter, rect, ppp);
 
+        // Under the points and handles, which are what a press takes.
+        self.draw_combs(painter, rect, ppp);
         self.draw_points(painter, rect, ppp, resp);
 
         // Image editing's crop window; not inside `draw_points`, which returns

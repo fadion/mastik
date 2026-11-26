@@ -544,6 +544,7 @@ combinations asserts the two **partition** the space.
 | `Ctrl+]` / `[` | bring forward / send backward | ✅ |
 | `Ctrl+Shift+]` / `[` | bring to front / send to back | ✅ curly spellings handled |
 | `Shift+D` | reverse subpath direction | ✅ (§15 D125); no app binds this |
+| `Alt+C` | curvature combs on the path whose points are edited (`ViewSwitch::Combs`; `design/app-pen-and-nodes.md`, *Curvature combs*) | ✅ a preference, so it survives a restart |
 | `Delete`, `Backspace` | delete | ✅ pen point, path points, the action whose popover is open in prototype mode, then layers |
 | arrows | nudge (1) | ✅ *Settings › Nudge › Step*, `input::NudgeStep::small`, in `prefs.json` (§15 D330); a struct because the pair crosses three seams and a swap compiles |
 | `Shift`+arrows | nudge (10) | ✅ `NudgeStep::large`; need not exceed the small step |
@@ -565,7 +566,7 @@ inner rungs first) → the Credits card (`credits_open`) → the Repeat card →
 the pen →
 **a gesture in flight**
 (`cancel_gesture`) → **a chrome field that just lost focus** (`chrome_focus`) → the path bar's
-Offset card (`offset_card`) → the path bar's Clean up card (`cleanup`) → its Distort card (`distort`) → pen bias armed over an edit → the point selection → the pivot handle → the entered group (selects it) → a tool that is
+Offset card (`offset_card`) → the path bar's Clean up card (`cleanup`) → its Distort card (`distort`) → the Combs card (`comb_card_shown`; combs stay on) → pen bias armed over an edit → the point selection → the pivot handle → the entered group (selects it) → a tool that is
 not Select (to Select) → **the layer selection**, the fall-through `else`.
 
 🚨 A prose ordering is the least checkable thing this project writes down: an earlier list omitted
@@ -733,14 +734,15 @@ selects its layer, `Shift` + a label adds it; a label is two letters, the first 
 
 - **View toggles are one action**, `Action::ToggleView(ViewSwitch)`: rulers, guides, guide lock,
   grid, layout grid, layers panel, history, minimap, size preview, toolbar, messages, outline mode, pixel preview, focus, private
-  mode, the marquee's shape (lasso), align by visual centre, prototype mode and the
-  snap switches.
+  mode, the marquee's shape (lasso), align by visual centre, prototype mode, the curvature combs
+  and the snap switches.
   `ViewSwitch` also drives both dropdowns' rows, labelled by one `label()` but for the View menu's
   short *Panels ▸* list, so a row and the state it drives stay in step while the chord is a second
   caller that never sees the row. The lasso has no row: `Q`, the palette and the rail's Select slot carry it. Align by visual
   centre has none either, and no chord: the Align card's head and the palette carry it. Prototype
   mode is the same: no row and no chord, since prototyping adds none; the top bar's button left of
-  *Play* and the palette's *Prototype mode* carry it. A *Key…* trigger's
+  *Play* and the palette's *Prototype mode* carry it. The curvature combs have no row either:
+  `Alt+C`, the palette, the cheatsheet and the path bar's button carry them. A *Key…* trigger's
   capture field takes the next plain or `Shift`-ed key as the trigger, refuses a `Ctrl` or `Alt`
   chord and gives up on `Escape`.
 - **Not `Action`s**: the clipboard trio and `Ctrl+A` in a text session, and `Tab` nesting a list,

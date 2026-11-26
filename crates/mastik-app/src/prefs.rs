@@ -326,6 +326,28 @@ impl Default for CleanUpPrefs {
     }
 }
 
+/// The curvature combs (`crate::combs`): a way of working a person keeps, so the
+/// switch is a preference rather than a View mode.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CombPrefs {
+    pub on: bool,
+    /// Fixed holds a scale; Fitted keeps the longest tooth on screen.
+    pub fixed: bool,
+    /// Teeth per segment, `combs::TEETH_MIN..=TEETH_MAX`.
+    pub teeth: u8,
+}
+
+impl Default for CombPrefs {
+    fn default() -> Self {
+        Self {
+            on: false,
+            fixed: false,
+            teeth: crate::combs::TEETH_DEFAULT,
+        }
+    }
+}
+
 /// The Fill with content box's choices (`crate::fill_box`), kept when a fill runs:
 /// the locale is what a text without a Language of its own opens on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -704,6 +726,8 @@ pub struct Prefs {
     pub batch_rename: BatchRenamePrefs,
     /// The Clean up box's switches.
     pub clean_up: CleanUpPrefs,
+    /// The curvature combs' switch, mode and teeth.
+    pub combs: CombPrefs,
     /// The Fill with content box's locale, records and avatars.
     pub fill_content: FillContentPrefs,
     /// The assets browser's providers, switched on in Settings, and the panel's
@@ -780,6 +804,7 @@ impl Default for Prefs {
             vision: VisionPrefs::default(),
             batch_rename: BatchRenamePrefs::default(),
             clean_up: CleanUpPrefs::default(),
+            combs: CombPrefs::default(),
             fill_content: FillContentPrefs::default(),
             assets: AssetPrefs::default(),
             assistant: Default::default(),

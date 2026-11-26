@@ -656,6 +656,7 @@ impl ViewState {
             | ViewSwitch::AlignVisual
             | ViewSwitch::AskAssistant
             | ViewSwitch::AssistantScope
+            | ViewSwitch::Combs
             | ViewSwitch::SizeBadge
             | ViewSwitch::Annotations
             | ViewSwitch::PrototypeMode => None,
@@ -1158,6 +1159,7 @@ impl Item {
                     ViewSwitch::PixelPreview => icon::PIXEL_PREVIEW,
                     ViewSwitch::Lasso => icon::LASSO,
                     ViewSwitch::AlignVisual => icon::VISUAL_CENTRE,
+                    ViewSwitch::Combs => icon::COMB,
                     ViewSwitch::SizePreview => icon::SIZE_PREVIEW,
                     ViewSwitch::AskAssistant => icon::SPARKLE,
                     ViewSwitch::AssistantScope => icon::SCOPE_FRAME,
@@ -6819,7 +6821,10 @@ mod view_switch_registry_tests {
                 on,
                 usize::from(!matches!(
                     sw,
-                    ViewSwitch::Lasso | ViewSwitch::AlignVisual | ViewSwitch::PrototypeMode
+                    ViewSwitch::Lasso
+                        | ViewSwitch::AlignVisual
+                        | ViewSwitch::Combs
+                        | ViewSwitch::PrototypeMode
                 )),
                 "{} is on {on} of the View menu's groups and the Snap menu",
                 sw.label()
@@ -8046,6 +8051,7 @@ mod accel_spelling_tests {
             ),
             (Item::ViewSwitch(ViewSwitch::SnapGrid), "Ctrl+Shift+'", None),
             (Item::ViewSwitch(ViewSwitch::Lasso), "Q", None),
+            (Item::ViewSwitch(ViewSwitch::Combs), "Alt+C", None),
             (Item::ViewSwitch(ViewSwitch::Private), "Ctrl+Shift+N", None),
             (Item::StepPage(true), "Ctrl+PageDown", None),
             (Item::StepPage(false), "Ctrl+PageUp", None),

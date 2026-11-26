@@ -1098,6 +1098,8 @@ pub struct MastikApp {
     pub(crate) pen_button: egui::Rect,
     /// The path bar's Offset card, while it is open (`crate::path_bar`).
     pub(crate) offset_card: Option<crate::path_bar::OffsetCard>,
+    /// The curvature combs' card and Fixed scale (`crate::combs`).
+    pub(crate) combs: crate::combs::CombState,
     /// The path bar's Clean up card, while it is open (`crate::cleanup`).
     pub(crate) cleanup: Option<crate::cleanup::CleanupCard>,
     /// The Clean up card's numbers, kept while it is closed.
@@ -2033,6 +2035,7 @@ impl MastikApp {
             kit_button: egui::Rect::NOTHING,
             pen_button: egui::Rect::NOTHING,
             offset_card: None,
+            combs: Default::default(),
             cleanup: None,
             cleanup_numbers: Default::default(),
             distort: None,
@@ -3651,6 +3654,9 @@ impl MastikApp {
             self.close_cleanup();
         } else if self.distort.is_some() {
             self.close_distort();
+        } else if self.comb_card_shown() {
+            // Combs stay on; the bar's button turns them off.
+            self.combs.card = false;
         } else if self.pen_bias {
             // The bias, above the points it was armed over.
             self.pen_bias = false;
@@ -9064,6 +9070,7 @@ impl MastikApp {
             ViewSwitch::Lasso => self.lasso,
             ViewSwitch::Private => self.prefs.private,
             ViewSwitch::AlignVisual => self.align_visual,
+            ViewSwitch::Combs => self.combs_on(),
             ViewSwitch::PrototypeMode => self.prototype_mode(),
         }
     }
@@ -9137,6 +9144,15 @@ impl MastikApp {
                 return;
             }
             ViewSwitch::AlignVisual => self.align_visual = on,
+            ViewSwitch::Combs => {
+                self.set_combs(on);
+                self.session.info(if on {
+                    "Curvature combs on · Alt+C"
+                } else {
+                    "Curvature combs off · Alt+C"
+                });
+                return;
+            }
             ViewSwitch::PrototypeMode => {
                 self.set_prototype_mode(on);
                 return;

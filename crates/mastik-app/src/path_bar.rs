@@ -1,6 +1,7 @@
 //! The path bar: a short rail beside the tool rail while a path's points are being
 //! edited, holding the node tool's verbs — select or add points, corner and smooth,
-//! join, reverse, split, clean up, offset, pixel-fit — and the way out. While the pen
+//! join, reverse, split, clean up, offset, pixel-fit, the curvature combs' switch —
+//! and the way out. While the pen
 //! or the pencil draws new paths it holds the mirror switch instead (`crate::mirror`).
 //!
 //! It floats over the canvas, the ruler included, centred on the rail's Pen button,
@@ -187,6 +188,8 @@ enum Verb {
     Offset,
     Distort,
     PixelFit,
+    /// Curvature combs (`crate::combs`), whose card hangs beside it.
+    Combs,
     /// The pen's and the pencil's mirror switch, which opens its flyout.
     Mirror,
     /// The warp bar's envelopes: *Free distort*, or a preset.
@@ -204,6 +207,7 @@ struct Shown {
     offset: egui::Rect,
     cleanup: egui::Rect,
     distort: egui::Rect,
+    combs: egui::Rect,
     mirror: egui::Rect,
     /// The lit envelope button, which the warp card's top lines up with.
     shape: egui::Rect,
@@ -222,7 +226,7 @@ impl MastikApp {
         let mut clicked: Option<Verb> = None;
         let (mut offset, mut mirror) = (egui::Rect::NOTHING, egui::Rect::NOTHING);
         let (mut shape, mut cleanup) = (egui::Rect::NOTHING, egui::Rect::NOTHING);
-        let mut distort = egui::Rect::NOTHING;
+        let (mut distort, mut combs) = (egui::Rect::NOTHING, egui::Rect::NOTHING);
         let shown = egui::Area::new(egui::Id::new("path-bar"))
             .order(egui::Order::Foreground)
             .pivot(egui::Align2::LEFT_CENTER)
@@ -255,6 +259,7 @@ impl MastikApp {
                                         Verb::Offset => offset = resp.rect,
                                         Verb::CleanUp => cleanup = resp.rect,
                                         Verb::Distort => distort = resp.rect,
+                                        Verb::Combs => combs = resp.rect,
                                         Verb::Mirror => mirror = resp.rect,
                                         Verb::WarpShape(_) if *active => shape = resp.rect,
                                         _ => {}
@@ -274,6 +279,7 @@ impl MastikApp {
             offset,
             cleanup,
             distort,
+            combs,
             mirror,
             shape,
         }
@@ -593,6 +599,15 @@ impl MastikApp {
             },
             E::Sep,
             E::Btn {
+                glyph: icon::COMB,
+                tip: "Curvature combs (Alt+C)",
+                dimmed: "",
+                active: self.combs_on(),
+                enabled: true,
+                verb: Verb::Combs,
+            },
+            E::Sep,
+            E::Btn {
                 glyph: icon::CHECK,
                 tip: "Done (Enter)",
                 dimmed: "",
@@ -616,6 +631,7 @@ impl MastikApp {
             Some(Verb::Offset) => self.toggle_offset_card(id),
             Some(Verb::Distort) => self.toggle_distort(id),
             Some(Verb::PixelFit) => self.pixel_fit_points(),
+            Some(Verb::Combs) => self.toggle_combs(),
             Some(Verb::Done) => {
                 self.choose_tool(Tool::Select);
                 return;
@@ -638,6 +654,14 @@ impl MastikApp {
         }
         if self.distort.is_some() {
             self.distort_ui(ctx, bar_rect, shown.distort);
+        }
+        // The other cards hang in its place; it comes back with the button.
+        if self.offset_card.is_some() || self.cleanup.is_some() || self.distort.is_some() {
+            self.combs.card = false;
+        }
+        self.settle_comb_base(ctx.pixels_per_point());
+        if self.comb_card_shown() {
+            self.comb_card_ui(ctx, bar_rect, shown.combs);
         }
     }
 

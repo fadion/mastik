@@ -368,7 +368,9 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   flyout toggles its pane and leaves both open: `MastikApp::dropdown`'s click-outside close skips
   the area `MastikApp::flyout_id` names. The marquee's *Lasso select* is on no menu: `Q`, the palette,
   the cheatsheet and the rail's Select slot carry it (`app-selection.md`). Nor is *Align by
-  visual centre*: the Align card's head and the palette carry it (`tools.md`).
+  visual centre*: the Align card's head and the palette carry it (`tools.md`). Nor are the
+  *Curvature combs*: `Alt+C`, the palette, the cheatsheet and the path bar's button carry them
+  (`app-pen-and-nodes.md`).
 - **Snap**: *Snap to shapes*, *Snap to guides* (ruler guides, and layout grids while shown), *Snap to
   grid*, *Snap to baselines* (last: no accelerator, not Illustrator's).
 - **Tools** (`MastikApp::tools_menu`, rows from `ToolsRow::ALL`) holds what works across the
@@ -450,7 +452,7 @@ figure so the bar never shifts, 14pt between readouts; a tooltip gives the exact
   ruler turning guides on), and a launch opens on them. All default on except *Lock guides*,
   *Show history*, *Show minimap*, *Show size preview*, *Lasso select*, outline view, pixel preview, align by visual centre and focus mode; a launch never opens in focus mode,
   outline view, pixel preview or align by visual centre. `prefs.view` also keeps what the rail's Frame and Pen slots last showed
-  (`rail_slice`, `rail_pencil`; `tools.md`, *The tool rail*). Private mode is a preference of its own (`Prefs::private`), below.
+  (`rail_slice`, `rail_pencil`; `tools.md`, *The tool rail*). Private mode is a preference of its own (`Prefs::private`), below, and so are the curvature combs (`Prefs::combs`, `app-pen-and-nodes.md`).
 
 ### Settings
 
@@ -1404,7 +1406,7 @@ the fix, or selects the layers. Its numbers are `review::health`'s, which MCP's 
 - **Sections** (`sections`): Tools, Zoom, Pages, Edit, Structure, Arrange, Layer, View, Components and
   kits, File, Tabs, Text editing, Pick layers, Mouse, Library, dealt in order into three columns, each filled to about
   its share; a section is never split. *Lasso select* sits in Tools, beside the tools whose marquee
-  it shapes. A narrow window deals into two or one, so no column is under
+  it shapes, and *Curvature combs* after it. A narrow window deals into two or one, so no column is under
   220 wide (`column_count`). Opened from the library, its section leads, followed by an *In a
   file* divider; opened in a text session, the text keys lead, and from the bar's Pick focus,
   *Pick layers* (`input::navigate_rows`, spelled from `BINDINGS`).

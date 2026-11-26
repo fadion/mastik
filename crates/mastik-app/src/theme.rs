@@ -1363,6 +1363,9 @@ pub mod icon {
     /// The **texture** effect's row glyph: a square whose right and bottom edges
     /// are torn, the outline the effect roughens.
     pub const TEXTURE: &str = "\u{f09a}";
+    /// *Curvature combs*: an arch with three teeth on its normals, their tips
+    /// joined.
+    pub const COMB: &str = "\u{f09b}";
     /// The **glass** effect's row glyph: a rounded pane with a highlight arc in
     /// its top-left corner. Not [`SQUARE_DOTS`], the background blur it extends.
     pub const GLASS: &str = "\u{f099}";
@@ -1691,6 +1694,7 @@ pub mod icon {
         ("chart-radar", CHART_RADAR),
         ("texture", TEXTURE),
         ("glass", GLASS),
+        ("comb", COMB),
         ("table", TABLE),
         ("visual-centre", VISUAL_CENTRE),
         ("size-preview", SIZE_PREVIEW),

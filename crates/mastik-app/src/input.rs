@@ -555,6 +555,10 @@ pub enum ViewSwitch {
     /// (`crate::assistant::canvas`), on by default and unbound. The scoped
     /// frame's lit button shows either way.
     AssistantScope,
+    /// `Alt+C` — curvature combs on the path whose points are edited
+    /// (`crate::combs`), also the path bar's button. A preference, so it survives
+    /// a restart; on no menu, as the lasso is not.
+    Combs,
     /// The width × height pill under the selection (`canvas::draw_size_badge`), on by
     /// default and unbound. A shape being drawn keeps its pill either way.
     SizeBadge,
@@ -597,6 +601,7 @@ impl ViewSwitch {
             Self::AlignVisual => "Align by visual centre",
             Self::AskAssistant => "Show ask assistant",
             Self::AssistantScope => "Show assistant scope",
+            Self::Combs => "Curvature combs",
             Self::SizeBadge => "Show dimension badge",
             Self::Annotations => "Show annotations",
             Self::PrototypeMode => "Prototype mode",
@@ -648,7 +653,7 @@ impl ViewSwitch {
     /// `#[cfg(test)]` because the tests are its only readers; an `#[allow]` would
     /// keep every item it names alive.
     #[cfg(test)]
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::Rulers,
         Self::Guides,
         Self::GuideLock,
@@ -672,6 +677,7 @@ impl ViewSwitch {
         Self::AlignVisual,
         Self::AskAssistant,
         Self::AssistantScope,
+        Self::Combs,
         Self::SizeBadge,
         Self::Annotations,
         Self::PrototypeMode,
@@ -910,6 +916,7 @@ const BINDINGS: &[Binding] = {
         bind(NONE, K::Q, A::ToggleView(ViewSwitch::Lasso)),
         // Paths, layer state and the selection's verbs.
         bind(SHIFT, K::D, A::ReverseSubpaths),
+        bind(ALT, K::C, A::ToggleView(ViewSwitch::Combs)),
         bind(CTRL_SHIFT, K::H, A::ToggleHidden),
         bind(CTRL_SHIFT, K::L, A::ToggleLocked),
         bind(CTRL, K::R, A::Rename),

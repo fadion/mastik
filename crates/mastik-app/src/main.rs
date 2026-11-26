@@ -103,6 +103,7 @@ mod clean_up_box;
 mod cleanup;
 mod colour_review;
 mod colour_text;
+mod combs;
 mod command;
 mod compare;
 mod contrast;
