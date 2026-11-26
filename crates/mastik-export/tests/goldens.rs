@@ -74,6 +74,7 @@ fn effect_name(k: &mastik_core::EffectKind) -> &'static str {
         E::LayerBlur { .. } => "layer-blur",
         E::Sharpen { .. } => "sharpen",
         E::Noise(_) => "noise",
+        E::Texture(_) => "texture",
         E::BackgroundBlur { .. } => "background-blur",
         E::Filters(_) => "filters",
     }
@@ -471,6 +472,10 @@ fn golden_document() -> (Document, Resolved) {
                     density: 0.5,
                     seed: 7,
                     ..mastik_core::Noise::default()
+                })),
+                mastik_core::Effect::new(mastik_core::EffectKind::Texture(mastik_core::Texture {
+                    amount: 1.5,
+                    ..mastik_core::Texture::default()
                 })),
                 mastik_core::Effect::new(mastik_core::EffectKind::BackgroundBlur { radius: 5.0 }),
                 mastik_core::Effect::new(mastik_core::EffectKind::Filters(mastik_core::Filters {

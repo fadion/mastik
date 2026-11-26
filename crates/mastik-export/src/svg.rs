@@ -565,8 +565,18 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect, space: Affine
         fmt(region.width()),
         fmt(region.height()),
     );
-    // Stage one: what the layer itself looks like.
+    // Stage one: what the layer itself looks like, every texture first.
     let mut graphic = "SourceGraphic".to_string();
+    for (n, e) in effects.iter().enumerate() {
+        if let EffectKind::Texture(t) = &e.kind
+            && e.visible
+            && t.has_ink()
+        {
+            let r = format!("fx{n}");
+            texture_graph(&mut out, &graphic, t, &r);
+            graphic = r;
+        }
+    }
     for (n, e) in effects.iter().enumerate() {
         if !e.visible {
             continue;
@@ -753,13 +763,44 @@ fn noise_graph(out: &mut String, graphic: &str, n: &mastik_core::Noise, r: &str)
     );
 }
 
-/// Whether `effects` holds a visible noise, which lives in the layer's own
-/// space: its filter is then written inside the layer's transform rather than in
-/// the parent's space every other stack is written in.
+/// `effects::texture` as primitives over `graphic`, its result named `r`:
+/// `feTurbulence` read by `feDisplacementMap`, red across and green down. The
+/// filter's `sRGB` interpolation keeps the map's levels as the backends read them.
+fn texture_graph(out: &mut String, graphic: &str, t: &mastik_core::Texture, r: &str) {
+    let t = t.clamped();
+    out.push_str(&turbulence(
+        t.base_frequency(),
+        u32::from(t.detail),
+        t.seed,
+        &format!("{r}t"),
+    ));
+    let _ = writeln!(
+        out,
+        "      <feDisplacementMap in=\"{graphic}\" in2=\"{r}t\" scale=\"{}\" \
+         xChannelSelector=\"R\" yChannelSelector=\"G\" result=\"{r}\"/>",
+        fmt(t.scale()),
+    );
+}
+
+/// Whether `effects` holds a visible noise or texture, whose grain lives in the
+/// layer's own space: its filter is then written inside the layer's transform
+/// rather than in the parent's space every other stack is written in.
+fn grained(effects: &[Keyed<Effect>]) -> bool {
+    noised(effects) || textured(effects)
+}
+
+/// Whether `effects` holds a visible noise.
 fn noised(effects: &[Keyed<Effect>]) -> bool {
     effects
         .iter()
         .any(|e| e.visible && matches!(&e.kind, EffectKind::Noise(n) if n.has_ink()))
+}
+
+/// Whether `effects` holds a visible texture.
+fn textured(effects: &[Keyed<Effect>]) -> bool {
+    effects
+        .iter()
+        .any(|e| e.visible && matches!(&e.kind, EffectKind::Texture(t) if t.has_ink()))
 }
 
 /// One fractal `<feTurbulence>` primitive named `result`, its base frequencies at
@@ -896,9 +937,9 @@ fn collect_defs(doc: &Document, res: &Resolved, id: NodeId, outer: Affine, defs:
     let transform = outer * res.used_local_of(node);
     // As drawn: a bound effect number takes its variable's value.
     let effects = doc.resolved_effects(id, node.effects());
-    // A noise's filter is written in the layer's own space (`emit_node`), and
-    // `ink_in` under the identity is that space.
-    let space = match noised(&effects) {
+    // A noise's or texture's filter is written in the layer's own space
+    // (`emit_node`), and `ink_in` under the identity is that space.
+    let space = match grained(&effects) {
         true => Affine::IDENTITY,
         false => transform,
     };
@@ -1700,6 +1741,11 @@ fn report_node(
             "a noise, which this app does not read back, nor the rest of its effects with it",
         );
     }
+    if filter_written && textured(effects) {
+        report.round_trip(
+            "a texture, which this app does not read back, nor the rest of its effects with it",
+        );
+    }
     // SVG has no backdrop: `BackgroundImage` was never implemented by any viewer.
     if mastik_core::effect::backdrop_radius(effects).is_some() {
         report.approximate("a background blur, left out");
@@ -1793,11 +1839,11 @@ fn emit_node(
     }
     let wrap_pad = "  ".repeat(depth);
     let depth = depth + usize::from(fx);
-    // A stack with noise is filtered in the layer's own space, where the noise
-    // lives: the wrapper takes the layer's transform and undoes it inside, so the
-    // artwork lands where it always does.
+    // A stack with noise or texture is filtered in the layer's own space, where
+    // the grain lives: the wrapper takes the layer's transform and undoes it
+    // inside, so the artwork lands where it always does.
     let own = outer * res.used_local_of(node);
-    let local = fx && noised(&drawn_fx) && mastik_core::build::affine_is_invertible(own);
+    let local = fx && grained(&drawn_fx) && mastik_core::build::affine_is_invertible(own);
     if local {
         let _ = writeln!(
             out,

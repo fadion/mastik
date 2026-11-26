@@ -524,6 +524,54 @@ fn a_multicolour_noise_matches_the_reference_in_every_mode() {
     }
 }
 
+/// A texture moving the two-hue disc's edge, run after a drop shadow in the list
+/// so the shadow is cast from the moved edge, against the CPU passes.
+///
+/// flip: `fx.wgsl`'s `texture_fx` reading `cy` for both axes → fails at the
+/// comparison along the disc's edge.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn a_texture_matches_the_reference() {
+    let Some(g) = gpu() else {
+        eprintln!("no GPU adapter; skipping texture");
+        return;
+    };
+    let px = two_hue_fixture();
+    let list = keyed_by_position([
+        Effect::new(EffectKind::DropShadow(shadow(
+            2.0,
+            3.0,
+            4.0,
+            0.0,
+            [0, 0, 0, 160],
+        ))),
+        Effect::new(EffectKind::Texture(mastik_core::Texture {
+            size: [2.5, 1.5],
+            amount: 3.0,
+            seed: 5,
+            detail: 4,
+        })),
+    ]);
+    let src = upload(&g, &px);
+    let out = fx_gpu::run(
+        &g.device,
+        &g.queue,
+        &g.fx,
+        &src,
+        whole(),
+        &list,
+        SCALE,
+        local(),
+    )
+    .expect("the texture has ink");
+    compare_noise(
+        "texture",
+        &readback(&g, &out),
+        &reference(&px, &list),
+        NOISE_TOLERANCE,
+    );
+}
+
 #[test]
 #[ignore = "requires a GPU adapter"]
 fn a_drop_shadow_matches_the_reference() {

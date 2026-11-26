@@ -1080,6 +1080,7 @@ impl Writer<'_> {
                 }
                 EffectKind::Sharpen { .. } => self.approximate("Sharpen, left out"),
                 EffectKind::Noise(_) => self.approximate("Noise, left out"),
+                EffectKind::Texture(_) => self.approximate("Texture, left out"),
                 EffectKind::Filters(_) => self.approximate("Colour filters, left out"),
             }
         }

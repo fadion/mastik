@@ -44,6 +44,7 @@ enum Pass {
     Upsample,
     Sharpen,
     Noise,
+    Texture,
 }
 
 impl Pass {
@@ -64,10 +65,11 @@ impl Pass {
             Self::Upsample => "upsample",
             Self::Sharpen => "sharpen",
             Self::Noise => "noise_fx",
+            Self::Texture => "texture_fx",
         }
     }
 
-    const ALL: [Pass; 14] = [
+    const ALL: [Pass; 15] = [
         Self::Premul,
         Self::Unpremul,
         Self::Copy,
@@ -82,6 +84,7 @@ impl Pass {
         Self::Upsample,
         Self::Sharpen,
         Self::Noise,
+        Self::Texture,
     ];
 }
 
@@ -115,7 +118,8 @@ struct Params {
     amount: f32,
     /// The noise pass's numbers, `nz` in `fx.wgsl`: the lattice map's origin,
     /// x step and y step, a multicolour noise's opacity, the density floor (−1
-    /// for none), then the two straight colours.
+    /// for none), then the two straight colours. A texture pass puts
+    /// `effects::texture_step` where the first colour goes.
     noise: [f32; 16],
     /// `nzi` in `fx.wgsl`: octaves, the fractal sum, the noise's blend code and
     /// its multicolour switch.
@@ -920,6 +924,23 @@ impl Runner<'_> {
         );
         let mut cur = A;
         let mut alt = B;
+        // Every texture first, as `effects::run` runs them.
+        for e in effects.iter().filter(|e| e.visible) {
+            if let EffectKind::Texture(t) = &e.kind
+                && t.has_ink()
+            {
+                let t = t.clamped();
+                let mut p = run.lattice(
+                    t.seed,
+                    to_local,
+                    t.base_frequency(),
+                    [u32::from(t.detail), 1, 0, 0],
+                );
+                p.noise[8..12].copy_from_slice(&effects::texture_step(to_local, t.scale()));
+                run.slot(Pass::Texture, cur, cur, alt, p);
+                std::mem::swap(&mut cur, &mut alt);
+            }
+        }
         for e in effects.iter().filter(|e| e.visible) {
             match &e.kind {
                 EffectKind::Filters(f) if !f.is_neutral() => {

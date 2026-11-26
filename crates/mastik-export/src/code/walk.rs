@@ -1572,10 +1572,14 @@ impl Walk<'_> {
                     return Some("a sharpen".into());
                 }
                 EffectKind::Noise(n) if n.has_ink() => return Some("noise".into()),
+                EffectKind::Texture(t) if t.has_ink() => return Some("a texture".into()),
                 EffectKind::Filters(f) if !f.is_neutral() => {
                     return Some("colour filters".into());
                 }
-                EffectKind::Sharpen { .. } | EffectKind::Noise(_) | EffectKind::Filters(_) => {}
+                EffectKind::Sharpen { .. }
+                | EffectKind::Noise(_)
+                | EffectKind::Texture(_)
+                | EffectKind::Filters(_) => {}
             }
         }
         // CSS chains `drop-shadow()`s, each casting the last one's shadow too.

@@ -631,6 +631,83 @@ pub fn noise(s: &mut Surface<'_>, n: &mastik_core::Noise, to_local: kurbo::Affin
     });
 }
 
+/// How far one unit of a texture's level moves a buffer pixel: `scale` layer
+/// units along each layer axis, carried into the buffer by the inverse of
+/// `to_local`'s linear part, as `[x per red, y per red, x per green, y per
+/// green]`. A buffer with no inverse map (a layer scaled flat) moves nothing.
+/// `fx.wgsl`'s `texture_fx` reads these four.
+pub fn texture_step(to_local: kurbo::Affine, scale: f64) -> [f32; 4] {
+    let [a, b, c, d, _, _] = to_local.as_coeffs();
+    let det = a * d - b * c;
+    if !det.is_finite() || det == 0.0 {
+        return [0.0; 4];
+    }
+    // The columns of the inverse of `[a c; b d]`, times the scale.
+    let s = scale / det;
+    [d * s, -b * s, -c * s, a * s].map(|v| if v.is_finite() { v as f32 } else { 0.0 })
+}
+
+/// Texture over `s`, in place: `feDisplacementMap` over `feTurbulence`. Each
+/// pixel takes the layer's colour from where the noise's red and green levels
+/// move it, `scale × (level/255 − ½)` layer units along each axis, read
+/// bilinearly between pixel centres with nothing outside the buffer.
+///
+/// The noise is the fractal sum of [`mastik_core::Texture::detail`] octaves, at
+/// the pixel's corner as [`noise`] reads it; `fx.wgsl`'s `texture_fx` repeats
+/// this.
+pub fn texture(s: &mut Surface<'_>, t: &mastik_core::Texture, to_local: kurbo::Affine) {
+    let t = t.clamped();
+    let lattice = mastik_core::noise::Lattice::new(t.seed);
+    let map = mastik_core::noise::LatticeMap::new(to_local, t.base_frequency());
+    let step = texture_step(to_local, t.scale());
+    let octaves = u32::from(t.detail);
+    let src = s.px.to_vec();
+    let (w, h) = (s.w, s.h);
+    let row_bytes = w * 4;
+    let cost = w * h * 80 * octaves as usize;
+    for_row_bands(s.px, row_bytes, cost, |first, rows| {
+        for (i, px) in rows.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let (x, y) = ((i % w) as u32, (first + i / w) as u32);
+            let (u, v) = map.at(x, y);
+            let l = lattice.rgba(u, v, octaves, true);
+            let (cx, cy) = (f32::from(l[0]) / 255.0 - 0.5, f32::from(l[1]) / 255.0 - 0.5);
+            let at = (
+                x as f32 + step[0] * cx + step[2] * cy,
+                y as f32 + step[1] * cx + step[3] * cy,
+            );
+            *px = bilinear(&src, w, h, at);
+        }
+    });
+}
+
+/// Premultiplied `src` read at `at`, a position in pixels from the buffer's
+/// top-left pixel centre, mixing the four pixels around it; outside the buffer is
+/// transparent. Rounded half-up per channel, as every pass here rounds.
+fn bilinear(src: &[u8], w: usize, h: usize, at: (f32, f32)) -> [u8; 4] {
+    let (fx, fy) = (at.0.floor(), at.1.floor());
+    let (wx, wy) = (at.0 - fx, at.1 - fy);
+    let (x0, y0) = (fx as i64, fy as i64);
+    let tap = |x: i64, y: i64| -> [f32; 4] {
+        if x < 0 || y < 0 || x >= w as i64 || y >= h as i64 {
+            return [0.0; 4];
+        }
+        let p = (y as usize * w + x as usize) * 4;
+        std::array::from_fn(|c| f32::from(src[p + c]))
+    };
+    let (a, b, c, d) = (
+        tap(x0, y0),
+        tap(x0 + 1, y0),
+        tap(x0, y0 + 1),
+        tap(x0 + 1, y0 + 1),
+    );
+    std::array::from_fn(|i| {
+        let top = a[i] + (b[i] - a[i]) * wx;
+        let bottom = c[i] + (d[i] - c[i]) * wx;
+        let v = top + (bottom - top) * wy;
+        (v.clamp(0.0, 255.0) + 0.5) as u8
+    })
+}
+
 /// One pixel of [`noise`]: premultiplied `px`, the straight colour `n` shown at
 /// `amount`.
 pub fn noise_pixel(px: [u8; 4], n: [f32; 3], mode: mastik_core::BlendMode, amount: f32) -> [u8; 4] {
@@ -802,7 +879,8 @@ pub fn shadow_shift(offset: kurbo::Vec2, scale: (f64, f64), to_local: kurbo::Aff
 /// maps a buffer pixel's corner into the layer's own space, where noise lives.
 ///
 /// **The statement of §6.4's two stages**, which the SVG writer (`svg::effect_def`)
-/// and the bounds (`effect::stack_escape`) follow: `Filters`, `LayerBlur`,
+/// and the bounds (`effect::stack_escape`) follow: every `Texture` first, in list
+/// order, wherever its row sits; then `Filters`, `LayerBlur`,
 /// `Sharpen` and `Noise` transform the layer's own appearance in list order, then
 /// every shadow is cast from *that* and merged behind or in front. Not one fold: an
 /// inner shadow after a drop shadow would take its silhouette from the layer plus
@@ -836,6 +914,13 @@ fn run_keeping(
     to_local: kurbo::Affine,
     layer: bool,
 ) {
+    for e in effects.iter().filter(|e| e.visible) {
+        if let EffectKind::Texture(t) = &e.kind
+            && t.has_ink()
+        {
+            texture(s, t, to_local);
+        }
+    }
     for e in effects.iter().filter(|e| e.visible) {
         match &e.kind {
             EffectKind::Filters(f) if !f.is_neutral() => apply_matrix(s, &filter_matrix(f)),
@@ -1084,6 +1169,7 @@ pub fn any_ink(effects: &[Keyed<Effect>]) -> bool {
                 EffectKind::LayerBlur { radius } => *radius > 0.0,
                 EffectKind::Sharpen { amount, radius } => *amount > 0.0 && *radius > 0.0,
                 EffectKind::Noise(n) => n.has_ink(),
+                EffectKind::Texture(t) => t.has_ink(),
                 EffectKind::BackgroundBlur { .. } => false,
                 EffectKind::Filters(f) => !f.is_neutral(),
             }
@@ -1099,6 +1185,93 @@ mod tests {
 
     fn solid(w: usize, h: usize, rgba: [u8; 4]) -> Vec<u8> {
         rgba.iter().copied().cycle().take(w * h * 4).collect()
+    }
+
+    /// An opaque square inset `pad` pixels in a transparent `w`×`w` buffer.
+    fn square(w: usize, pad: usize) -> Vec<u8> {
+        (0..w * w)
+            .flat_map(|i| {
+                let (x, y) = (i % w, i / w);
+                let inside = (pad..w - pad).contains(&x) && (pad..w - pad).contains(&y);
+                if inside { [200, 40, 40, 255] } else { [0; 4] }
+            })
+            .collect()
+    }
+
+    fn rough(amount: f64) -> mastik_core::Texture {
+        mastik_core::Texture {
+            amount,
+            ..mastik_core::Texture::default()
+        }
+    }
+
+    /// A texture moves the square's edge both ways, never farther than its
+    /// amount, and leaves the flat inside as it was.
+    ///
+    /// flip: `texture_step` answering zeros → fails at "the edge moved".
+    #[test]
+    fn a_texture_moves_the_edge_within_its_amount() {
+        let (w, pad, amount) = (48, 12, 4.0);
+        let before = square(w, pad);
+        let mut px = before.clone();
+        let local = kurbo::Affine::translate((3.5, -7.25));
+        texture(&mut Surface::new(&mut px, w, w), &rough(amount), local);
+        let alpha = |p: &[u8], x: usize, y: usize| p[(y * w + x) * 4 + 3];
+        let (mut grew, mut shrank) = (0, 0);
+        for y in 0..w {
+            for x in 0..w {
+                let (a, b) = (alpha(&before, x, y), alpha(&px, x, y));
+                grew += usize::from(a == 0 && b > 0);
+                shrank += usize::from(a == 255 && b < 255);
+                // How far outside (or inside) the square the pixel is.
+                let out = |v: usize| (pad as f64 - v as f64).max(v as f64 - (w - pad - 1) as f64);
+                let d = out(x).max(out(y));
+                if d > amount + 1.0 {
+                    assert_eq!(b, 0, "({x}, {y}) is past the amount and stays clear");
+                }
+                if d < -(amount + 1.0) {
+                    assert_eq!(&px[(y * w + x) * 4..][..4], &[200, 40, 40, 255]);
+                }
+            }
+        }
+        assert!(
+            grew > 0 && shrank > 0,
+            "the edge moved: grew {grew}, shrank {shrank}"
+        );
+    }
+
+    /// A texture runs before the rest of the stack wherever its row sits, so a
+    /// drop shadow listed before it is cast from the moved edge.
+    ///
+    /// flip: `run_keeping` running textures in the list's loop (or not at all) →
+    /// fails at the comparison.
+    #[test]
+    fn a_texture_runs_first_wherever_its_row_sits() {
+        let (w, pad) = (48, 14);
+        let local = kurbo::Affine::IDENTITY;
+        let shadow = Effect::new(EffectKind::DropShadow(Shadow {
+            offset: kurbo::Vec2::new(3.0, 3.0),
+            blur: 2.0,
+            ..Shadow::default()
+        }));
+        let tex = Effect::new(EffectKind::Texture(rough(3.0)));
+        let mut listed = square(w, pad);
+        run(
+            &mut Surface::new(&mut listed, w, w),
+            &keyed_by_position([shadow.clone(), tex]),
+            (1.0, 1.0),
+            local,
+        );
+        let mut by_hand = square(w, pad);
+        texture(&mut Surface::new(&mut by_hand, w, w), &rough(3.0), local);
+        run(
+            &mut Surface::new(&mut by_hand, w, w),
+            &keyed_by_position([shadow]),
+            (1.0, 1.0),
+            local,
+        );
+        let off = listed.iter().zip(&by_hand).filter(|(a, b)| a != b).count();
+        assert_eq!(off, 0, "channels differing from texture-then-shadow");
     }
 
     /// Noise keeps every pixel's alpha and every transparent pixel, and moves an

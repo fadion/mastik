@@ -830,6 +830,10 @@ const NOISE_KIND_FIELDS: &[&str] = &[
     "type", "size", "density", "seed", "blend", "colors", "multi", "opacity",
 ];
 
+/// A texture effect's kind's fields, its tag first, for [`NOISE_KIND_FIELDS`]'
+/// reason.
+const TEXTURE_KIND_FIELDS: &[&str] = &["type", "size", "amount", "seed", "detail"];
+
 /// The path of a field `serde_ignored` cannot see: one inside a gradient brush,
 /// whose `#[serde(flatten)]` drops what it does not read; inside an untagged
 /// grid track (`minmax` or `repeat`); inside an effect's internally tagged
@@ -849,6 +853,7 @@ fn unseen_field(v: &Value) -> Option<Vec<Option<Step>>> {
             "layer_blur" | "background_blur" => vec!["radius"],
             "sharpen" => vec!["amount", "radius"],
             "noise" => NOISE_KIND_FIELDS[1..].to_vec(),
+            "texture" => TEXTURE_KIND_FIELDS[1..].to_vec(),
             "filters" => struct_fields::<crate::effect::Filters>()?.to_vec(),
             _ => return None,
         };
@@ -1190,7 +1195,11 @@ fn model_fields(
         ("[Effect]", [Some(Step::Index(_))]) => struct_fields::<Effect>(),
         ("[Effect]", [Some(Step::Index(i)), Some(Step::Key(k))]) if k == "kind" => {
             let kind = at?.get(*i)?.get("kind")?;
-            (kind.get("type")?.as_str()? == "noise").then_some(NOISE_KIND_FIELDS)
+            match kind.get("type")?.as_str()? {
+                "noise" => Some(NOISE_KIND_FIELDS),
+                "texture" => Some(TEXTURE_KIND_FIELDS),
+                _ => None,
+            }
         }
         ("ParagraphStyle", []) => struct_fields::<ParagraphStyle>(),
         ("TextStyle", []) => struct_fields::<TextStyle>(),
@@ -1841,7 +1850,12 @@ pub fn example(model: &str) -> Option<Value> {
 /// form: a style's value is paints, a text or layout style, or a chart's look.
 pub fn more_examples(model: &str) -> Vec<Value> {
     match model {
-        "StyleValue" => vec![serde_json::json!({ "chart": chart_look_example() })],
+        "StyleValue" => vec![
+            serde_json::json!({ "chart": chart_look_example() }),
+            serde_json::json!({ "effects": [
+                { "kind": { "type": "texture", "size": 2, "amount": 4, "seed": 1, "detail": 3 } },
+            ] }),
+        ],
         _ => Vec::new(),
     }
 }

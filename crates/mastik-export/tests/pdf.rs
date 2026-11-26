@@ -198,6 +198,26 @@ fn an_effect_is_reported_as_pixels() {
     );
 }
 
+/// A texture's raster in the PDF is not the canvas's, and the report says so; a
+/// shadow alone does not carry the note.
+/// flip: `approximations` without the texture note → fails at "texture".
+#[test]
+fn a_texture_is_reported_as_torn_differently() {
+    const NOTE: &str = "a texture, its edge torn differently from the canvas";
+    let mut f = common::fixture();
+    f.doc
+        .apply(&Transaction(vec![Operation::SetEffects {
+            id: f.rect,
+            effects: keyed_by_position([Effect::new(EffectKind::Texture(
+                mastik_core::Texture::default(),
+            ))]),
+        }]))
+        .expect("a texture");
+    f.res = Resolved::rebuild(&f.doc);
+    let notes = approximated(&f.doc, &f.res, &[f.rect], ExportText::Live);
+    assert!(notes.iter().any(|s| s == NOTE), "texture: {notes:?}");
+}
+
 /// An inverted alpha mask goes to pixels and says so; an inverted shape mask is
 /// a clip and does not.
 /// flip: `approximations` without the inverted-mask note → fails at "alpha".

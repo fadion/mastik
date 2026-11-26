@@ -305,6 +305,11 @@ pub fn design_context(doc: &Document, res: &Resolved, asked: NodeId) -> Result<V
                     "multi": n.multi,
                     "blend": n.blend.label(),
                 }),
+                E::Texture(t) => json!({
+                    "kind": "texture",
+                    "size": [r2(t.size[0]), r2(t.size[1])],
+                    "amount": r2(t.amount),
+                }),
                 E::Filters(_) => continue,
             };
             shadows.add(spec.to_string());

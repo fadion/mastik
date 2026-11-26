@@ -56,7 +56,8 @@ struct Params {
     amount: f32,
     // The noise pass's numbers (`fx_gpu::Params::noise`): [0] the lattice map's
     // origin and x step, [1] its y step, a multicolour noise's opacity and the
-    // density floor (−1 for none), [2] and [3] the two straight colours.
+    // density floor (−1 for none), [2] and [3] the two straight colours. The
+    // texture pass reads [0] and [1]'s map, and `effects::texture_step` in [2].
     // Appended, for the reason on `src_size`.
     nz: array<vec4<f32>, 4>,
     // Octaves, 1 for the fractal sum, the noise's blend mode
@@ -603,4 +604,31 @@ fn noise_fx(@builtin(global_invocation_id) gid: vec3<u32>) {
     let over = a * ((1.0 - a) * n + a * b);
     let v = m * over + (1.0 - m) * s.rgb;
     textureStore(dst, c, q(vec4<f32>(clamp(v, vec3<f32>(0.0), vec3<f32>(a)), a)));
+}
+
+// `effects::texture`: the layer read where the noise's red and green levels move
+// each pixel, bilinearly between pixel centres, transparent outside the buffer.
+@compute @workgroup_size(8, 8)
+fn texture_fx(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let c = vec2<i32>(gid.xy);
+    if (!inside(c)) { return; }
+    let uv = nz_at(c);
+    let na = nz_level(3u, uv);
+    let cx = nz_round_trip(nz_level(0u, uv), na) / 255.0 - 0.5;
+    let cy = nz_round_trip(nz_level(1u, uv), na) / 255.0 - 0.5;
+    let st = p.nz[2];
+    let at = vec2<f32>(
+        f32(c.x) + st.x * cx + st.z * cy,
+        f32(c.y) + st.y * cx + st.w * cy,
+    );
+    let f = floor(at);
+    let w = at - f;
+    let i = vec2<i32>(f);
+    let a = load_a_edge(i);
+    let b = load_a_edge(i + vec2<i32>(1, 0));
+    let d0 = load_a_edge(i + vec2<i32>(0, 1));
+    let d1 = load_a_edge(i + vec2<i32>(1, 1));
+    let top = a + (b - a) * w.x;
+    let bottom = d0 + (d1 - d0) * w.x;
+    textureStore(dst, c, q(top + (bottom - top) * w.y));
 }

@@ -516,7 +516,7 @@ pub struct EffectSummary {
     /// The effect's item id, which `bind_variable` names an effect's number by.
     pub id: mastik_core::ItemId,
     /// `"DropShadow"`, `"InnerShadow"`, `"LayerBlur"`, `"Sharpen"`, `"Noise"`,
-    /// `"BackgroundBlur"` or `"Filters"`.
+    /// `"Texture"`, `"BackgroundBlur"` or `"Filters"`.
     pub kind: String,
     /// Shadows only: offset, blur radius, spread, and the colour whose alpha is
     /// the shadow's opacity.
@@ -544,12 +544,14 @@ pub struct EffectSummary {
     pub saturation: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hue: Option<f64>,
-    /// `Sharpen` only: 1.0 is 100%. Its radius is `blur`.
+    /// `Sharpen`: 1.0 is 100%, its radius is `blur`. `Texture`: how far the edge
+    /// moves, in document units.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub amount: Option<f64>,
-    /// `Noise` only: one grain's width and height in document units, the share
-    /// of the layer it covers, its seed, its two colours as `#rrggbbaa` (left
-    /// out when `multi`), and whether it is multicolour.
+    /// `Noise` and `Texture`: one grain's width and height in document units
+    /// and the seed. `Noise` only: the share of the layer it covers, its two
+    /// colours as `#rrggbbaa` (left out when `multi`), and whether it is
+    /// multicolour.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<[f64; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -560,6 +562,9 @@ pub struct EffectSummary {
     pub colors: Option<[String; 2]>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multi: Option<bool>,
+    /// `Texture` only: octaves of finer grain, 1–5.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<u8>,
 }
 
 /// A node's kind-specific geometry, as drawn. Lengths and coordinates are at
@@ -1436,6 +1441,7 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
         seed: None,
         colors: None,
         multi: None,
+        detail: None,
     };
     match &e.kind {
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
@@ -1476,6 +1482,13 @@ fn effect_summary(id: mastik_core::ItemId, e: &mastik_core::Effect) -> EffectSum
             multi: Some(n.multi),
             blend: (n.blend != mastik_core::BlendMode::Normal).then(|| n.blend.label().to_string()),
             ..base("Noise")
+        },
+        EffectKind::Texture(t) => EffectSummary {
+            size: Some(t.size.map(round4)),
+            amount: Some(round4(t.amount)),
+            seed: Some(t.seed),
+            detail: Some(t.detail),
+            ..base("Texture")
         },
         EffectKind::BackgroundBlur { radius } => EffectSummary {
             blur: Some(round4(*radius)),

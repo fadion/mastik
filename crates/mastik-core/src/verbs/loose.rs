@@ -392,11 +392,14 @@ fn blur_radius(kind: &mut Map<String, Value>) {
     }
 }
 
-/// A noise effect's short forms: `size` as one number for both axes, `colors` as
-/// hex, and a one-colour noise as `color` alone, which fades to that colour
-/// clear. Anything else is the model's own shape.
+/// A noise or texture effect's short forms: `size` as one number for both axes,
+/// and a noise's `colors` as hex and a one-colour noise as `color` alone, which
+/// fades to that colour clear. Anything else is the model's own shape.
 fn loosen_noise(kind: &mut Map<String, Value>) {
-    if kind.get("type").and_then(Value::as_str) != Some("noise") {
+    if !matches!(
+        kind.get("type").and_then(Value::as_str),
+        Some("noise" | "texture")
+    ) {
         return;
     }
     if let Some(Value::Number(n)) = kind.get("size") {
@@ -423,13 +426,16 @@ fn loosen_noise(kind: &mut Map<String, Value>) {
     }
 }
 
-/// A noise effect written in [`loosen_noise`]'s short forms where they read back
-/// the same.
+/// A noise or texture effect written in [`loosen_noise`]'s short forms where
+/// they read back the same.
 fn tighten_noise(item: &mut Value) {
     let Some(Value::Object(kind)) = item.get_mut("kind") else {
         return;
     };
-    if kind.get("type").and_then(Value::as_str) != Some("noise") {
+    if !matches!(
+        kind.get("type").and_then(Value::as_str),
+        Some("noise" | "texture")
+    ) {
         return;
     }
     if let Some(Value::Array(size)) = kind.get("size")
@@ -1041,5 +1047,24 @@ mod tests {
             let back: Vec<crate::Effect> = serde_json::from_value(alone).expect("reads back");
             assert_eq!(back[0].kind, effect.kind, "the kind written alone");
         }
+    }
+
+    /// A texture's square grain is written as one `size` and reads back, and a
+    /// bare `{"type": "texture"}` reads as the default.
+    ///
+    /// flip: `loosen_noise` checking for `"noise"` alone → fails at "reads back".
+    #[test]
+    fn a_texture_is_written_short_and_reads_back() {
+        let effect = crate::Effect::new(crate::EffectKind::Texture(crate::Texture::default()));
+        let mut v = serde_json::json!([serde_json::to_value(&effect).unwrap()]);
+        tighten("effects", &mut v);
+        assert_eq!(v[0]["kind"]["size"], serde_json::json!(2.0), "{v}");
+        loosen("effects", &mut v);
+        let back: Vec<crate::Effect> = serde_json::from_value(v).expect("reads back");
+        assert_eq!(back[0].kind, effect.kind);
+        let mut bare = serde_json::json!([{ "type": "texture" }]);
+        loosen("effects", &mut bare);
+        let back: Vec<crate::Effect> = serde_json::from_value(bare).expect("a bare kind reads");
+        assert_eq!(back[0].kind, effect.kind);
     }
 }

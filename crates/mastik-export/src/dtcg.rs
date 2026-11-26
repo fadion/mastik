@@ -672,10 +672,11 @@ impl Writer<'_> {
                         | EffectKind::BackgroundBlur { .. }
                         | EffectKind::Sharpen { .. }
                         | EffectKind::Noise(_)
+                        | EffectKind::Texture(_)
                         | EffectKind::Filters(_) => {
                             return left_out(
                                 &mut self.notes,
-                                "a blur, a sharpen, noise or a colour filter has no DTCG type",
+                                "a blur, a sharpen, noise, a texture or a colour filter has no DTCG type",
                             );
                         }
                     };

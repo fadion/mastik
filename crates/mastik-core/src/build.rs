@@ -152,6 +152,9 @@ pub fn effect_is_finite(effect: &crate::Effect) -> bool {
                     .all(|c| c.components.iter().all(|v| v.is_finite()))
                 && n.blend != crate::BlendMode::PassThrough
         }
+        crate::EffectKind::Texture(t) => {
+            t.size.iter().all(|v| v.is_finite()) && t.amount.is_finite()
+        }
         crate::EffectKind::Filters(f) => {
             f.brightness.is_finite()
                 && f.contrast.is_finite()

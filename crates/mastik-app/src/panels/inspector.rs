@@ -523,7 +523,7 @@ struct EffectRowOut {
     /// Its grip began a drag: the row is being carried to a new place in the stack.
     grabbed: bool,
 }
-/// The glyph an effect row wears; the seven read as one set.
+/// The glyph an effect row wears; the kinds read as one set.
 fn effect_glyph(kind: &EffectKind) -> &'static str {
     match kind {
         EffectKind::DropShadow(_) => icon::DROP_HALF_BOTTOM,
@@ -531,6 +531,7 @@ fn effect_glyph(kind: &EffectKind) -> &'static str {
         EffectKind::LayerBlur { .. } => icon::LAYER_BLUR,
         EffectKind::Sharpen { .. } => icon::SHARPEN,
         EffectKind::Noise(_) => icon::GRAIN,
+        EffectKind::Texture(_) => icon::TEXTURE,
         EffectKind::BackgroundBlur { .. } => icon::SQUARE_DOTS,
         EffectKind::Filters(_) => icon::SUN,
     }
@@ -555,8 +556,8 @@ fn effects_step_glyph(before: &[Keyed<Effect>], after: &[Keyed<Effect>]) -> &'st
 /// The number at the right-hand end of an effect row.
 ///
 /// A shadow's alpha, a blur's radius, a sharpen's amount and radius
-/// (`60% · 1.5`), a noise's density, or how many filter channels are off
-/// neutral ([`mastik_core::Filters::changed`]).
+/// (`60% · 1.5`), a noise's density, a texture's amount, or how many filter
+/// channels are off neutral ([`mastik_core::Filters::changed`]).
 fn effect_summary(kind: &EffectKind) -> String {
     match kind {
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
@@ -569,6 +570,7 @@ fn effect_summary(kind: &EffectKind) -> String {
             format!("{:.0}% · {}", amount * 100.0, ui::number(2)(*radius, 0..=2))
         }
         EffectKind::Noise(n) => format!("{:.0}%", n.density * 100.0),
+        EffectKind::Texture(t) => ui::number(2)(t.amount, 0..=2),
         EffectKind::Filters(f) => f.changed().to_string(),
     }
 }
@@ -591,6 +593,10 @@ fn effect_hint(kind: &EffectKind) -> &'static str {
         EffectKind::Noise(_) => {
             "Noise in one or two colours, or many, over the layer and inside its edges. The \
              number is its density"
+        }
+        EffectKind::Texture(_) => {
+            "Roughens the layer's outline with grain. Runs before the layer's other effects. \
+             The number is how far the edge moves"
         }
         EffectKind::BackgroundBlur { .. } => {
             "Blurs what lies behind the layer, inside its outline. The number is the radius"
@@ -11063,6 +11069,89 @@ impl MastikApp {
                             if toggled.clicked() {
                                 noise_multi = Some(!n.multi);
                             }
+                        }
+                        EffectKind::Texture(t) => {
+                            let t = *t;
+                            let cell = egui::vec2(half, CELL);
+                            // Noise's own grain row, so the two read as a pair.
+                            let range = mastik_core::noise::NOISE_SIZE_RANGE;
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = COL;
+                                for (axis, prefix, hint) in [
+                                    (0, "W", "How wide one grain is, in the layer's units"),
+                                    (1, "H", "How tall one grain is, in the layer's units"),
+                                ] {
+                                    let range = range.clone();
+                                    let mut size = t.size[axis];
+                                    let resp = ui::value_field(
+                                        ui,
+                                        cell,
+                                        Prefix::Text(prefix),
+                                        &mut size,
+                                        Scrub::fine(0.05, 1).range(range.clone()),
+                                        |d| d.max_decimals(1),
+                                    )
+                                    .on_hover_text(hint);
+                                    self.effect_valve(&resp, subjects, index, move |k| {
+                                        if let EffectKind::Texture(t) = k {
+                                            t.size[axis] =
+                                                size.clamp(*range.start(), *range.end());
+                                        }
+                                    });
+                                }
+                            });
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = COL;
+                                let range = mastik_core::noise::TEXTURE_AMOUNT_RANGE;
+                                let mut amount = t.amount;
+                                let resp = ui::value_field(
+                                    ui,
+                                    cell,
+                                    Prefix::Text("Amount"),
+                                    &mut amount,
+                                    Scrub::fine(0.1, 1).range(range.clone()),
+                                    |d| d.max_decimals(1),
+                                )
+                                .on_hover_text("How far the edge moves, in the layer's units");
+                                self.effect_valve(&resp, subjects, index, move |k| {
+                                    if let EffectKind::Texture(t) = k {
+                                        t.amount = amount.clamp(*range.start(), *range.end());
+                                    }
+                                });
+                                let mut seed = f64::from(t.seed);
+                                let resp = ui::value_field(
+                                    ui,
+                                    cell,
+                                    Prefix::Text("Seed"),
+                                    &mut seed,
+                                    Scrub::whole(0.25)
+                                        .range(f64::from(i32::MIN)..=f64::from(i32::MAX)),
+                                    |d| d.max_decimals(0),
+                                )
+                                .on_hover_text("Which grain: another number scatters it anew");
+                                self.effect_valve(&resp, subjects, index, move |k| {
+                                    if let EffectKind::Texture(t) = k {
+                                        t.seed = seed.round() as i32;
+                                    }
+                                });
+                            });
+                            let range = mastik_core::noise::TEXTURE_DETAIL_RANGE;
+                            let (lo, hi) = (f64::from(*range.start()), f64::from(*range.end()));
+                            let mut detail = f64::from(t.detail);
+                            let resp = ui::value_field(
+                                ui,
+                                egui::vec2(inner, CELL),
+                                Prefix::Text("Detail"),
+                                &mut detail,
+                                Scrub::whole(0.1).range(lo..=hi),
+                                |d| d.max_decimals(0),
+                            )
+                            .on_hover_text("Layers of finer grain, from 1 to 5");
+                            self.effect_valve(&resp, subjects, index, move |k| {
+                                if let EffectKind::Texture(t) = k {
+                                    t.detail = detail.round().clamp(lo, hi) as u8;
+                                }
+                            });
                         }
                         EffectKind::BackgroundBlur { radius } => {
                             if let Some(r) = self.effect_number_field(

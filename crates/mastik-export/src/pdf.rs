@@ -386,8 +386,16 @@ fn approximations(
     };
     for &id in shown {
         let Some(node) = doc.get(id) else { continue };
-        if mastik_render::effects::any_ink(&doc.resolved_effects(id, node.effects())) {
+        let effects = doc.resolved_effects(id, node.effects());
+        if mastik_render::effects::any_ink(&effects) {
             note("an effect, drawn as pixels");
+            // The conversion's `feDisplacementMap` moves by `scale` twice and reads
+            // its map premultiplied, so its edge lands elsewhere than the canvas's.
+            if effects.iter().any(|e| {
+                e.visible && matches!(&e.kind, mastik_core::EffectKind::Texture(t) if t.has_ink())
+            }) {
+                note("a texture, its edge torn differently from the canvas");
+            }
             // The whole `<g filter>` is one raster, text and vectors under it too.
             if !node.children().is_empty() {
                 note(

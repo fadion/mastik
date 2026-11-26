@@ -899,11 +899,22 @@
         },
         {
           "id": "0:5",
+          "kind": "Texture",
+          "amount": 1.5,
+          "size": [
+            2.0,
+            2.0
+          ],
+          "seed": 1,
+          "detail": 3
+        },
+        {
+          "id": "0:6",
           "kind": "BackgroundBlur",
           "blur": 5.0
         },
         {
-          "id": "0:6",
+          "id": "0:7",
           "kind": "Filters",
           "brightness": 1.1,
           "contrast": 0.9,

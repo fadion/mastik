@@ -998,6 +998,20 @@ impl Builder<'_> {
                 "BACKGROUND_BLUR" => EffectKind::BackgroundBlur {
                     radius: num(e, "radius"),
                 },
+                // Figma's grain size and how far it moves the edge; its own
+                // noise has no seed or octaves to carry.
+                "TEXTURE" => {
+                    let size = num(e, "noiseSize");
+                    let d = crate::noise::Texture::default();
+                    EffectKind::Texture(
+                        crate::noise::Texture {
+                            size: if size > 0.0 { [size; 2] } else { d.size },
+                            amount: num(e, "radius"),
+                            ..d
+                        }
+                        .clamped(),
+                    )
+                }
                 _ => {
                     self.count("Effects Mastik does not have", 1, "", "Left out");
                     continue;

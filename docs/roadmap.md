@@ -26,10 +26,6 @@ place, saved in the same shape so existing files load. It is matched in about 60
   a displacement pass over the backdrop driven by distance to the outline, on both backends. The rim
   reuses inner shadow and stroke. SVG, PDF and the Penpot and Sketch writers leave it out and report
   it, as the background blur; CSS gets the blur and the rim only. Large.
-- **Texture.** Grain that breaks a layer's edges, not only its fill (the *Noise* effect,
-  `mastik-core` `noise.rs`, stays inside the alpha). A displacement of the layer's own drawing by
-  a noise field, a stage-1 pass beside *Noise*. SVG expresses it (`feTurbulence` into
-  `feDisplacementMap`, the graph `svg.rs` `noise_graph` already starts). Medium.
 - **Pattern fill.** A fill tiling any layer, frame or component, kept live as the source changes,
   with spacing, offset rows (a hexagonal layout) and scale. A tiled picture exists (`ImageFit::Tile`,
   drawn with `Extend::Repeat`). vello cannot take a scene as a brush, so the tile renders offscreen

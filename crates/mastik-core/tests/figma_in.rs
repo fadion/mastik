@@ -991,6 +991,31 @@ fn a_background_blur_lands_as_one() {
     );
 }
 
+/// Figma's texture lands as a texture, its grain size on both axes and its
+/// radius as the amount, and is not reported.
+#[test]
+fn a_texture_lands_as_one() {
+    let rough = node(
+        "11:1",
+        "RECTANGLE",
+        (0.0, 0.0, 20.0, 10.0),
+        json!({
+            "effects": [{ "type": "TEXTURE", "noiseSize": 3, "radius": 5, "clipToShape": false }],
+        }),
+    );
+    let r = import(fetched(vec![rough], json!({}), &[]));
+    assert!(r.report.is_empty(), "{:?}", r.report);
+    let fx = r.doc.get(one(&r.doc, "11:1")).unwrap().effects().to_vec();
+    assert!(
+        matches!(
+            fx[..],
+            [ref e] if matches!(e.kind, mastik_core::EffectKind::Texture(t)
+                if t.size == [3.0, 3.0] && t.amount == 5.0)
+        ),
+        "{fx:?}"
+    );
+}
+
 /// What the reader builds is a document the loader accepts.
 #[test]
 fn an_imported_file_saves_and_loads() {

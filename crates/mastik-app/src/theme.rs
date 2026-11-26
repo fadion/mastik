@@ -1360,6 +1360,9 @@ pub mod icon {
     /// dots of two sizes, loose where [`SQUARE_DOTS`]' grid (background blur) and
     /// [`LAYER_BLUR`]'s are ordered.
     pub const GRAIN: &str = "\u{f088}";
+    /// The **texture** effect's row glyph: a square whose right and bottom edges
+    /// are torn, the outline the effect roughens.
+    pub const TEXTURE: &str = "\u{f09a}";
     /// *System health*: a pulse line. Not [`GAUGE`], whose dial is JPEG quality.
     pub const PULSE: &str = "\u{f089}";
     /// A prototype's interactions: a pointer clicking, with the click's rays.
@@ -1683,6 +1686,7 @@ pub mod icon {
         ("chart-sankey", CHART_SANKEY),
         ("chart-waterfall", CHART_WATERFALL),
         ("chart-radar", CHART_RADAR),
+        ("texture", TEXTURE),
         ("table", TABLE),
         ("visual-centre", VISUAL_CENTRE),
         ("size-preview", SIZE_PREVIEW),

@@ -258,6 +258,118 @@ fn alpha_share() -> &'static [f64; 256] {
     })
 }
 
+/// The farthest a texture moves a layer's edge, in document units.
+pub const TEXTURE_AMOUNT_RANGE: std::ops::RangeInclusive<f64> = 0.0..=100.0;
+
+/// How many octaves of grain a texture sums, from one to five.
+pub const TEXTURE_DETAIL_RANGE: std::ops::RangeInclusive<u8> = 1..=5;
+
+/// Texture: the layer's own drawing moved by a field of noise, so its outline
+/// roughens, not only its fill. `feTurbulence` into `feDisplacementMap`: the
+/// noise's red level moves each pixel across and its green level down, by up to
+/// [`Self::amount`] either way.
+///
+/// Read through [`TextureWire`] for [`NoiseWire`]'s reason.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(from = "TextureWire")]
+pub struct Texture {
+    /// One grain's width and height in document units, as [`Noise::size`].
+    pub size: [f64; 2],
+    /// How far the edge moves, in document units, within
+    /// [`TEXTURE_AMOUNT_RANGE`].
+    pub amount: f64,
+    /// `feTurbulence`'s seed, as [`Noise::seed`].
+    pub seed: i32,
+    /// Octaves of finer grain, within [`TEXTURE_DETAIL_RANGE`].
+    pub detail: u8,
+}
+
+/// A [`Texture`] as read: any field may be left out.
+#[derive(Deserialize)]
+#[serde(default)]
+struct TextureWire {
+    size: [f64; 2],
+    amount: f64,
+    seed: i32,
+    detail: u8,
+}
+
+impl Default for TextureWire {
+    fn default() -> Self {
+        let d = Texture::default();
+        Self {
+            size: d.size,
+            amount: d.amount,
+            seed: d.seed,
+            detail: d.detail,
+        }
+    }
+}
+
+impl From<TextureWire> for Texture {
+    fn from(w: TextureWire) -> Self {
+        Texture {
+            size: w.size,
+            amount: w.amount,
+            seed: w.seed,
+            detail: w.detail,
+        }
+        .clamped()
+    }
+}
+
+impl Default for Texture {
+    /// A fresh texture: two-unit grain moving the edge up to four units, three
+    /// octaves deep, rough at a glance without tearing a small layer apart.
+    fn default() -> Self {
+        Self {
+            size: [2.0, 2.0],
+            amount: 4.0,
+            seed: 1,
+            detail: 3,
+        }
+    }
+}
+
+impl Texture {
+    /// This texture with its numbers held to range; `NaN` takes the default.
+    pub fn clamped(self) -> Self {
+        let d = Self::default();
+        let held = |v: f64, r: std::ops::RangeInclusive<f64>, or: f64| match v.is_nan() {
+            true => or,
+            false => v.clamp(*r.start(), *r.end()),
+        };
+        Self {
+            size: [
+                held(self.size[0], NOISE_SIZE_RANGE, d.size[0]),
+                held(self.size[1], NOISE_SIZE_RANGE, d.size[1]),
+            ],
+            amount: held(self.amount, TEXTURE_AMOUNT_RANGE, d.amount),
+            seed: self.seed,
+            detail: self
+                .detail
+                .clamp(*TEXTURE_DETAIL_RANGE.start(), *TEXTURE_DETAIL_RANGE.end()),
+        }
+    }
+
+    /// Whether this texture moves any pixel.
+    pub fn has_ink(&self) -> bool {
+        self.amount > 0.0
+    }
+
+    /// `feTurbulence`'s base frequencies, as [`Noise::base_frequency`].
+    pub fn base_frequency(&self) -> (f64, f64) {
+        let [w, h] = self.clamped().size;
+        (NOISE_FREQUENCY / w, NOISE_FREQUENCY / h)
+    }
+
+    /// `feDisplacementMap`'s `scale`: a level of 0 or 255 moves a pixel by half
+    /// of it, so twice the amount.
+    pub fn scale(&self) -> f64 {
+        2.0 * self.clamped().amount
+    }
+}
+
 /// The lattice size of the reference code, `BSize`.
 const B_SIZE: usize = 0x100;
 /// `BSize + BSize + 2`: the tables are doubled so `i + j` never wraps.

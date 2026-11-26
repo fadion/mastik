@@ -2549,7 +2549,8 @@ fn stretch(device: Affine) -> f64 {
 }
 
 /// `effects` without each shadow and layer blur whose reach is under one device
-/// pixel through `device` (the node's local-to-device transform): drawn, it would
+/// pixel through `device` (the node's local-to-device transform), and each texture
+/// moving the edge less than that: drawn, it would
 /// move the edge by less than a pixel, and it costs an offscreen buffer. `Filters`
 /// and noise recolour every pixel and always stay. A shadow tucked under a translucent layer
 /// is what the cut can lose.
@@ -2568,6 +2569,7 @@ fn detail_effects(
             EffectKind::LayerBlur { radius }
             | EffectKind::BackgroundBlur { radius }
             | EffectKind::Sharpen { radius, .. } => reach(*radius),
+            EffectKind::Texture(t) => t.clamped().amount,
             EffectKind::Filters(_) | EffectKind::Noise(_) => return false,
         };
         local * stretch < 1.0

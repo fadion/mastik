@@ -63,6 +63,7 @@ pub fn blur_within_cap(effect: &Effect) -> bool {
             ok(*radius) && (0.0..=MAX_SHARPEN).contains(amount)
         }
         EffectKind::Noise(n) => *n == n.clamped(),
+        EffectKind::Texture(t) => *t == t.clamped(),
         EffectKind::Filters(_) => true,
     }
 }
@@ -92,6 +93,7 @@ pub(crate) fn clamp_blur(effect: &mut Effect) {
             *amount = amount.max(0.0).clamp(0.0, MAX_SHARPEN);
         }
         EffectKind::Noise(n) => *n = n.clamped(),
+        EffectKind::Texture(t) => *t = t.clamped(),
         EffectKind::Filters(_) => {}
     }
 }
@@ -314,7 +316,7 @@ impl Effect {
             EffectKind::LayerBlur { radius }
             | EffectKind::BackgroundBlur { radius }
             | EffectKind::Sharpen { radius, .. } => [None, None, Some(*radius), None],
-            EffectKind::Noise(_) | EffectKind::Filters(_) => [None; 4],
+            EffectKind::Noise(_) | EffectKind::Texture(_) | EffectKind::Filters(_) => [None; 4],
         }
     }
 
@@ -398,6 +400,10 @@ pub enum EffectKind {
     /// alpha: a pass of the layer's appearance in list order, like
     /// [`Self::Sharpen`].
     Noise(crate::noise::Noise),
+    /// The layer's own drawing, children included, moved by a field of noise so
+    /// its outline roughens. Runs before every other effect wherever its row
+    /// sits, so a shadow or a noise takes the rough shape.
+    Texture(crate::noise::Texture),
     /// Blurs what lies behind the layer, inside the layer's own outline: what was
     /// drawn before it within the nearest enclosing layer that isolates (CSS's
     /// backdrop root), never the layer itself.
@@ -433,6 +439,8 @@ impl EffectKind {
             Self::Sharpen { .. } => Insets::ZERO,
             // Per-pixel and inside the layer's alpha.
             Self::Noise(_) => Insets::ZERO,
+            // A pixel moves at most `amount` along either axis.
+            Self::Texture(t) => Insets::uniform(t.clamped().amount),
             // Drawn inside the layer's outline: the blur reads outside it but
             // lands nowhere else.
             Self::BackgroundBlur { .. } => Insets::ZERO,
@@ -449,6 +457,7 @@ impl EffectKind {
             Self::LayerBlur { .. } => "Layer blur",
             Self::Sharpen { .. } => "Sharpen",
             Self::Noise(_) => "Noise",
+            Self::Texture(_) => "Texture",
             Self::BackgroundBlur { .. } => "Background blur",
             Self::Filters(_) => "Filters",
         }
@@ -461,8 +470,8 @@ impl EffectKind {
     /// name one differently from the snapshot. A function rather than a `const`
     /// because every variant carries a payload. Sharpen sits beside the layer
     /// blur whose passes it reuses, and Noise after it, the other kind that works
-    /// on the layer's own pixels.
-    pub fn all_defaults() -> [Self; 7] {
+    /// on the layer's own pixels; Texture follows Noise, whose grain it shares.
+    pub fn all_defaults() -> [Self; 8] {
         [
             Self::DropShadow(Shadow::default()),
             Self::InnerShadow(Shadow::default()),
@@ -474,6 +483,7 @@ impl EffectKind {
                 radius: DEFAULT_SHARPEN_RADIUS,
             },
             Self::Noise(crate::noise::Noise::default()),
+            Self::Texture(crate::noise::Texture::default()),
             Self::BackgroundBlur {
                 radius: DEFAULT_BLUR_RADIUS,
             },
@@ -534,6 +544,16 @@ impl EffectKind {
                 Self::Noise(n) => Self::Noise(*n),
                 _ => Self::Noise(crate::noise::Noise::default()),
             },
+            // A texture takes a noise's grain size and seed, the two share them.
+            Self::Texture(_) => match self {
+                Self::Texture(t) => Self::Texture(*t),
+                Self::Noise(n) => Self::Texture(crate::noise::Texture {
+                    size: n.size,
+                    seed: n.seed,
+                    ..crate::noise::Texture::default()
+                }),
+                _ => Self::Texture(crate::noise::Texture::default()),
+            },
             Self::Filters(_) => match self {
                 Self::Filters(f) => Self::Filters(*f),
                 _ => Self::Filters(Filters::default()),
@@ -550,7 +570,9 @@ impl EffectKind {
         match self {
             Self::DropShadow(s) | Self::InnerShadow(s) => s.blur,
             Self::LayerBlur { radius } | Self::BackgroundBlur { radius } => *radius,
-            Self::Sharpen { .. } | Self::Noise(_) | Self::Filters(_) => DEFAULT_BLUR_RADIUS,
+            Self::Sharpen { .. } | Self::Noise(_) | Self::Texture(_) | Self::Filters(_) => {
+                DEFAULT_BLUR_RADIUS
+            }
         }
     }
 }
@@ -915,9 +937,10 @@ pub fn buffer_box_within(
 /// How far a whole stack reaches outside the geometry it is applied to.
 ///
 /// Per stage of `mastik_render::effects::run`, and a union within each. Stage 1 is
-/// one isotropic reach from the convolved deviation of every visible `LayerBlur`
-/// (`σ = √(σ₁² + σ₂²)`, since the blurs apply in sequence; `Filters` add
-/// nothing). Stage 2 is each shadow's own escape grown by stage 1 on every side,
+/// one isotropic reach: every visible `Texture`'s amount (they run first, each
+/// moving the edge again), plus the convolved deviation of every visible
+/// `LayerBlur` (`σ = √(σ₁² + σ₂²)`, since the blurs apply in sequence; `Filters`
+/// add nothing). Stage 2 is each shadow's own escape grown by stage 1 on every side,
 /// since stage 1's output is its silhouette. Two shadows reaching 10px each reach
 /// 10, not 20.
 ///
@@ -943,18 +966,20 @@ pub fn stack_escape(effects: &[Keyed<Effect>]) -> Insets {
         })
         .collect();
     let largest = sigmas.iter().copied().fold(0.0_f64, f64::max);
-    let stage1 = if largest > 0.0 {
+    let blurred = if largest > 0.0 {
         let normalized: f64 = sigmas.iter().map(|s| (s / largest).powi(2)).sum();
         largest * normalized.sqrt() * BLUR_CUTOFF
     } else {
         0.0
     };
+    let stage1 = blurred + texture_reach(effects);
 
     effects.iter().fold(Insets::uniform(stage1), |acc, e| {
         let i = e.escape();
         // A shadow is cast from stage 1's output, so its reach starts from a
         // silhouette already `stage1` wider. Nothing else composes: a layer
-        // blur's escape is the seed, and `Filters` and `InnerShadow` escape nothing.
+        // blur's and a texture's escapes are in the seed, and `Filters` and
+        // `InnerShadow` escape nothing.
         let grown = if matches!(e.kind, EffectKind::DropShadow(_)) && e.visible {
             Insets {
                 x0: i.x0 + stage1,
@@ -974,20 +999,35 @@ pub fn stack_escape(effects: &[Keyed<Effect>]) -> Insets {
     })
 }
 
+/// How far every visible [`EffectKind::Texture`] together can move a pixel: the
+/// sum of their amounts, since each moves the previous one's result.
+pub fn texture_reach(effects: &[Keyed<Effect>]) -> f64 {
+    effects
+        .iter()
+        .filter(|e| e.visible)
+        .filter_map(|e| match &e.kind {
+            EffectKind::Texture(t) => Some(t.clamped().amount),
+            _ => None,
+        })
+        .sum()
+}
+
 /// [`stack_escape`] grown by how far a visible [`EffectKind::Sharpen`]'s blur
-/// reads past the pixel it draws: the escape an effect layer's **buffer** is
-/// clipped with ([`buffer_box_within`]), never the ink bounds.
+/// or [`EffectKind::Texture`]'s displacement reads past the pixel it draws: the
+/// escape an effect layer's **buffer** is clipped with ([`buffer_box_within`]),
+/// never the ink bounds.
 ///
 /// A sharpen lands no ink outside the layer, but at a buffer cut by the target
 /// its blur would read transparency where the layer goes on, and draw a bright
-/// rim along the window's edge.
+/// rim along the window's edge; a texture would pull that transparency inward.
 pub fn buffer_escape(effects: &[Keyed<Effect>]) -> Insets {
     let e = stack_escape(effects);
     let read: f64 = effects
         .iter()
         .filter(|e| e.visible)
-        .filter_map(|e| match e.kind {
-            EffectKind::Sharpen { radius, .. } => Some(reach(radius)),
+        .filter_map(|e| match &e.kind {
+            EffectKind::Sharpen { radius, .. } => Some(reach(*radius)),
+            EffectKind::Texture(t) => Some(t.clamped().amount),
             _ => None,
         })
         .sum();
@@ -1229,7 +1269,16 @@ mod tests {
             color: Color::from_rgba8(10, 20, 30, 40),
             blend: crate::BlendMode::Normal,
         };
-        let [drop, inner, blur, sharpen, noise, backdrop, filters] = EffectKind::all_defaults();
+        let [
+            drop,
+            inner,
+            blur,
+            sharpen,
+            noise,
+            texture,
+            backdrop,
+            filters,
+        ] = EffectKind::all_defaults();
 
         // Two shadows share everything they have, so nothing is lost either way.
         let EffectKind::InnerShadow(s) = EffectKind::DropShadow(tuned.clone()).retyped(&inner)
@@ -1310,6 +1359,57 @@ mod tests {
             EffectKind::LayerBlur { radius: 3.0 }.retyped(&noise),
             noise,
             "a blur's radius is no noise's size"
+        );
+
+        // A texture takes a noise's grain and seed, and nothing from a blur.
+        let grainy = crate::noise::Noise {
+            size: [3.0, 5.0],
+            seed: 9,
+            ..crate::noise::Noise::default()
+        };
+        let EffectKind::Texture(t) = EffectKind::Noise(grainy).retyped(&texture) else {
+            panic!("retyping a noise to a texture gave something else");
+        };
+        assert_eq!((t.size, t.seed), ([3.0, 5.0], 9), "the grain crosses");
+        assert_eq!(t.amount, crate::noise::Texture::default().amount);
+        assert_eq!(
+            EffectKind::LayerBlur { radius: 3.0 }.retyped(&texture),
+            texture
+        );
+    }
+
+    /// A texture runs first, so a layer blur after it and a drop shadow cast
+    /// from it both start from an edge already `amount` wider.
+    ///
+    /// flip: `stack_escape` leaving `texture_reach` out of stage 1 → fails at
+    /// the stack assertion.
+    #[test]
+    fn a_texture_widens_what_every_later_stage_starts_from() {
+        let texture = Effect::new(EffectKind::Texture(crate::noise::Texture {
+            amount: 5.0,
+            ..crate::noise::Texture::default()
+        }));
+        assert_eq!(texture.escape(), Insets::uniform(5.0));
+        let shadow = Shadow {
+            offset: Vec2::ZERO,
+            blur: 0.0,
+            spread: 2.0,
+            ..Shadow::default()
+        };
+        let stack = crate::keyed_by_position([
+            Effect::new(EffectKind::DropShadow(shadow)),
+            Effect::new(EffectKind::LayerBlur { radius: 2.0 }),
+            texture,
+        ]);
+        assert_eq!(
+            stack_escape(&stack),
+            Insets::uniform(5.0 + reach(2.0) + 2.0),
+            "texture, then blur, then the shadow's spread"
+        );
+        assert_eq!(
+            buffer_escape(&stack),
+            Insets::uniform(5.0 + reach(2.0) + 2.0 + 5.0),
+            "the buffer also reads as far as the texture pulls from"
         );
     }
 
@@ -1424,6 +1524,7 @@ mod tests {
                     assert!(*amount > 0.0 && *radius > 0.0, "{kind:?}");
                 }
                 EffectKind::Noise(n) => assert!(n.has_ink(), "{kind:?}"),
+                EffectKind::Texture(t) => assert!(t.has_ink(), "{kind:?}"),
                 // Neutral on purpose: off-neutral channels would change the
                 // artwork the instant the row was added.
                 EffectKind::Filters(f) => assert!(f.is_neutral(), "{kind:?}"),

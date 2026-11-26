@@ -622,3 +622,53 @@ fn a_sharpen_draws_what_the_svg_writer_writes() {
         share * 100.0
     );
 }
+
+/// The row where column `x`'s alpha first reaches half, from the top of `px`.
+fn top_edge(px: &[u8], x: u32) -> Option<u32> {
+    (0..H).find(|y| px[((y * W + x) * 4 + 3) as usize] >= 128)
+}
+
+/// A texture is written as the backends draw it: a fractal `feTurbulence` at
+/// the texture's frequency, octaves and seed, read red across and green down by
+/// an `feDisplacementMap` of twice the amount, in the layer's own space. The
+/// raster tears the edge, within the amount.
+///
+/// `resvg` is no reference for this primitive: it multiplies by `scale` twice
+/// and reads the map premultiplied, where the specification reads it
+/// unpremultiplied, so its edge lands rows off. The backends are held to each
+/// other in `mastik-render/tests/fx_gpu.rs`.
+///
+/// flip: `svg::grained` leaving textures out → fails at "in the layer's space".
+#[test]
+fn a_texture_is_written_as_the_backends_draw_it() {
+    let texture = Effect::new(EffectKind::Texture(mastik_core::Texture {
+        size: [3.0, 3.0],
+        amount: 3.0,
+        seed: 4,
+        detail: 3,
+    }));
+    let (a, svg) = raster(Affine::translate((40.0, 18.0)), vec![texture]);
+    let freq = format!("baseFrequency=\"{:.9}\"", 0.85 / 3.0);
+    for part in [
+        "<feTurbulence type=\"fractalNoise\"",
+        freq.as_str(),
+        "numOctaves=\"3\" seed=\"4\"",
+        "<feDisplacementMap in=\"SourceGraphic\"",
+        "scale=\"6\" xChannelSelector=\"R\" yChannelSelector=\"G\"",
+    ] {
+        assert!(svg.contains(part), "{part} in:\n{svg}");
+    }
+    assert!(
+        svg.contains("transform=\"matrix(1 0 0 1 40 18)\"><g filter="),
+        "in the layer's space:\n{svg}"
+    );
+    let rows: Vec<u32> = (44..76).filter_map(|x| top_edge(&a, x)).collect();
+    assert!(
+        rows.iter().max().unwrap() - rows.iter().min().unwrap() >= 2,
+        "the raster tears the edge: {rows:?}"
+    );
+    assert!(
+        rows.iter().all(|r| (15..=21).contains(r)),
+        "within the amount of the top at 18: {rows:?}"
+    );
+}
