@@ -2812,7 +2812,7 @@ impl MastikApp {
 
     /// Reference `rid`'s popover, in the inspector's popover lane level with
     /// its `row`, as the effect popover sits; a colour it opens takes the lane
-    /// left of it. A click away or Escape closes it.
+    /// left of it. Its ×, a click away or Escape closes it.
     fn chart_reference_card(
         &mut self,
         ui: &egui::Ui,
@@ -2836,13 +2836,16 @@ impl MastikApp {
             .constrain_to(ctx.input(|i| i.content_rect()).shrink(ui::SCREEN_MARGIN))
             .show(&ctx, |ui| {
                 ui::hold_tab(ui);
-                ui::menu_frame(ui::POPOVER_PAD).show(ui, |ui| {
-                    ui.set_width(ui::menu_inner_w(MENU_W, ui::POPOVER_PAD));
-                    ui.spacing_mut().item_spacing.y = ui::POPOVER_SECTION_GAP;
-                    self.chart_reference_popover(ui, id, chart, rid);
-                });
-            })
-            .response;
+                ui::menu_frame(ui::POPOVER_PAD)
+                    .show(ui, |ui| {
+                        ui.set_width(ui::menu_inner_w(MENU_W, ui::POPOVER_PAD));
+                        ui.spacing_mut().item_spacing.y = ui::POPOVER_SECTION_GAP;
+                        self.chart_reference_popover(ui, id, chart, rid)
+                    })
+                    .inner
+            });
+        let closed = menu.inner;
+        let menu = menu.response;
         let on_picker = ctx
             .pointer_interact_pos()
             .and_then(|p| ctx.layer_id_at(p))
@@ -2855,16 +2858,17 @@ impl MastikApp {
         let seen = menu.layer_id.id.with("drawn-at");
         let fresh = ctx.data(|d| d.get_temp::<u64>(seen)) != Some(pass.wrapping_sub(1));
         ctx.data_mut(|d| d.insert_temp(seen, pass));
-        if !fresh
-            && super::dismissed_by_click(super::ClickAway {
-                clicked: ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)),
-                over_overlay,
-                on_menu: menu.contains_pointer(),
-                on_head: row.contains_pointer(),
-                on_picker,
-                in_gesture: ctx.dragged_id().is_some() || self.gesture_cancelled,
-                press_away,
-            })
+        if closed
+            || !fresh
+                && super::dismissed_by_click(super::ClickAway {
+                    clicked: ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Primary)),
+                    over_overlay,
+                    on_menu: menu.contains_pointer(),
+                    on_head: row.contains_pointer(),
+                    on_picker,
+                    in_gesture: ctx.dragged_id().is_some() || self.gesture_cancelled,
+                    press_away,
+                })
             || ui::popover_escaped(&ctx)
         {
             self.open_reference = None;
@@ -2875,10 +2879,17 @@ impl MastikApp {
 
     /// A reference's popover: its kind, axis, where it stands (and a band's
     /// far end), its label, colour, width, dash, label place and *Take into
-    /// the range*. Every field one step named for it.
-    fn chart_reference_popover(&mut self, ui: &mut egui::Ui, id: NodeId, chart: &Chart, rid: u32) {
+    /// the range*. Every field one step named for it. Answers whether its ×
+    /// was pressed.
+    fn chart_reference_popover(
+        &mut self,
+        ui: &mut egui::Ui,
+        id: NodeId,
+        chart: &Chart,
+        rid: u32,
+    ) -> bool {
         let Some(r) = chart.references.iter().find(|r| r.id == rid).cloned() else {
-            return;
+            return false;
         };
         let with = move |c: &mut Chart, f: &dyn Fn(&mut chart::Reference)| {
             if let Some(r) = c.references.iter_mut().find(|r| r.id == rid) {
@@ -2919,23 +2930,35 @@ impl MastikApp {
             }
         };
         let line_at_kind = line_at.clone();
-        self.chart_segments_of(
-            ui,
-            id,
-            chart,
-            "Reference kind",
-            &[
-                (chart::RefKind::Line, "Line"),
-                (chart::RefKind::Band, "Band"),
-            ],
-            r.kind,
-            move |c, v| {
-                with(c, &|r| {
-                    r.kind = v;
-                    line_at_kind(r);
-                })
-            },
-        );
+        // The kind strip heads the popover, with the × beside it, as the colour
+        // picker's tabs have.
+        let mut closed = false;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = ui::TABS_CLOSE_GAP;
+            let w = ui.available_width() - ui::CLOSE_BUTTON_W - ui::TABS_CLOSE_GAP;
+            ui.allocate_ui(egui::vec2(w, ui::SEGMENT_CELL_H), |ui| {
+                self.chart_segments_of(
+                    ui,
+                    id,
+                    chart,
+                    "Reference kind",
+                    &[
+                        (chart::RefKind::Line, "Line"),
+                        (chart::RefKind::Band, "Band"),
+                    ],
+                    r.kind,
+                    move |c, v| {
+                        with(c, &|r| {
+                            r.kind = v;
+                            line_at_kind(r);
+                        })
+                    },
+                );
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                closed = ui::close_button(ui).clicked();
+            });
+        });
         let axes: &[(chart::RefAxis, &str)] = &[
             (chart::RefAxis::Value, "Value"),
             (chart::RefAxis::Category, "Category"),
@@ -3068,6 +3091,7 @@ impl MastikApp {
             r.in_range,
             move |c, on| with(c, &|r| r.in_range = on),
         );
+        closed
     }
 
     /// Where a reference stands (`to`: a band's far end): on the value axis a
@@ -6004,6 +6028,47 @@ mod tests {
             "still open after drawing"
         );
         assert!(drawn(&out, "Take into the range"), "the popover is open");
+    }
+
+    /// The reference popover's ×, on the Line / Band strip's row, closes it.
+    /// flip: `chart_reference_card` ignoring the popover's answer → fails at "the × closes it".
+    #[test]
+    fn a_reference_popover_closes_by_its_x() {
+        fn glyphs_at(shapes: &[egui::epaint::ClippedShape], s: &str) -> Vec<egui::Pos2> {
+            fn find(shape: &egui::Shape, s: &str, out: &mut Vec<egui::Pos2>) {
+                match shape {
+                    egui::Shape::Text(t) if t.galley.text() == s => {
+                        out.push(t.pos + t.galley.rect.center().to_vec2());
+                    }
+                    egui::Shape::Vec(v) => v.iter().for_each(|x| find(x, s, out)),
+                    _ => {}
+                }
+            }
+            let mut out = Vec::new();
+            shapes.iter().for_each(|c| find(&c.shape, s, &mut out));
+            out
+        }
+        let ctx = egui::Context::default();
+        let (mut app, id) = charted(&ctx, ChartKind::Column);
+        let mut chart = chart_at(&app, id);
+        chart.references.push(chart::Reference {
+            id: 1,
+            at: chart::At::Value(50.0),
+            ..chart::Reference::default()
+        });
+        app.chart_commit(id, "Add reference", chart);
+        app.open_reference = Some((id, 1));
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            out = shapes(&ctx, &mut app);
+        }
+        let band = text_at(&out, "Band").expect("the kind strip is drawn");
+        let x = glyphs_at(&out, crate::theme::icon::X)
+            .into_iter()
+            .find(|p| p.x > band.x && (p.y - band.y).abs() < 4.0)
+            .expect("a × beside the strip");
+        click(&ctx, &mut app, x);
+        assert_eq!(app.open_reference, None, "the × closes it");
     }
 
     /// A lollipop's head, a waterfall's step and a radar's line each name what

@@ -938,7 +938,8 @@ References starts open):
   place of its rows and the button. The row opens the reference's popover
   (`chart_reference_card`): an `Area` in the inspector's popover lane, `POPOVER_W` wide at
   `popover_anchor` level with the row, as the effect popover sits, so a colour picker it opens
-  takes the lane to its left. A click away or `Escape` closes it. Its state is
+  takes the lane to its left. Its *Line* / *Band* strip heads it with the `ui::close_button`
+  beside it, as the colour picker's tabs have; the ×, a click away or `Escape` closes it. Its state is
   `MastikApp::open_reference`, one of the lane's popovers (`inspector_popover_open`,
   `close_inspector_popovers`), and opening a context menu or the palette closes it (R4,
   `context-menus.md`). In it: *Line* / *Band*, *Value* / *Category* axis, the *At* dropdown (a band's
