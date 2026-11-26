@@ -541,6 +541,104 @@ fn offset_in(space: Affine, offset: Vec2) -> Vec2 {
     Vec2::new(a * offset.x + c * offset.y, b * offset.x + d * offset.y)
 }
 
+/// How many blurred copies [`ramp_graph`] draws a progressive blur from.
+const RAMP_COPIES: usize = 3;
+
+/// A progressive layer blur as SVG can draw it, writing `result`: the layer
+/// blurred at [`RAMP_COPIES`] radii from the start to the end, each kept where a
+/// gradient mask says it is the nearest step, and the copies added up. SVG has
+/// no variable blur, so between the steps this is a mix of two blurs where the
+/// canvas draws one of the radius between: an approximation, reported.
+///
+/// The masks are `feImage`s of a gradient laid on the ramp's ends, which are in
+/// the layer's own space ([`mastik_core::effect::ramps_on_box`]) and reach the
+/// filter's through `space`, as the gradient's transform.
+fn ramp_graph(
+    out: &mut String,
+    graphic: &str,
+    start: f64,
+    ramp: &mastik_core::BlurRamp,
+    region: Rect,
+    space: Affine,
+    result: &str,
+) {
+    let last = (RAMP_COPIES - 1) as f64;
+    // Enough stops that the ease's curve survives a gradient's straight pieces.
+    const STOPS: usize = 9;
+    for k in 0..RAMP_COPIES {
+        let radius = start + (ramp.end - start) * k as f64 / last;
+        let stops: String = (0..STOPS)
+            .map(|i| {
+                let t = i as f64 / (STOPS - 1) as f64;
+                let at = ramp.ease.at(t) * last;
+                let weight = (1.0 - (at - k as f64).abs()).max(0.0);
+                format!(
+                    "<stop offset='{}' stop-color='white' stop-opacity='{}'/>",
+                    fmt_unit(t),
+                    fmt_unit(weight)
+                )
+            })
+            .collect();
+        let [a, b, c, d, e, f] = space.as_coeffs().map(fmt_unit);
+        let image = format!(
+            "<svg xmlns='http://www.w3.org/2000/svg' viewBox='{} {} {} {}' \
+             width='{}' height='{}' preserveAspectRatio='none'><linearGradient id='g' \
+             gradientUnits='userSpaceOnUse' x1='{}' y1='{}' x2='{}' y2='{}' \
+             gradientTransform='matrix({a} {b} {c} {d} {e} {f})'>{stops}</linearGradient>\
+             <rect x='{}' y='{}' width='{}' height='{}' fill='url(#g)'/></svg>",
+            fmt(region.x0),
+            fmt(region.y0),
+            fmt(region.width()),
+            fmt(region.height()),
+            fmt(region.width()),
+            fmt(region.height()),
+            fmt(ramp.from.x),
+            fmt(ramp.from.y),
+            fmt(ramp.to.x),
+            fmt(ramp.to.y),
+            fmt(region.x0),
+            fmt(region.y0),
+            fmt(region.width()),
+            fmt(region.height()),
+        );
+        let href = image
+            .replace('%', "%25")
+            .replace('#', "%23")
+            .replace('<', "%3C")
+            .replace('>', "%3E");
+        let _ = writeln!(
+            out,
+            "      <feGaussianBlur in=\"{graphic}\" stdDeviation=\"{}\" result=\"{result}b{k}\"/>",
+            fmt(mastik_core::effect::deviation(radius)),
+        );
+        let _ = writeln!(
+            out,
+            "      <feImage href=\"data:image/svg+xml,{href}\" x=\"{}\" y=\"{}\" width=\"{}\" \
+             height=\"{}\" preserveAspectRatio=\"none\" result=\"{result}m{k}\"/>",
+            fmt(region.x0),
+            fmt(region.y0),
+            fmt(region.width()),
+            fmt(region.height()),
+        );
+        let kept = match k {
+            0 => result.to_string(),
+            _ => format!("{result}k{k}"),
+        };
+        let _ = writeln!(
+            out,
+            "      <feComposite in=\"{result}b{k}\" in2=\"{result}m{k}\" operator=\"in\" \
+             result=\"{kept}\"/>"
+        );
+        if k > 0 {
+            let _ = writeln!(
+                out,
+                "      <feComposite in=\"{result}\" in2=\"{kept}\" operator=\"arithmetic\" \
+                 k1=\"0\" k2=\"1\" k3=\"1\" k4=\"0\" result=\"{result}\"/>"
+            );
+        }
+    }
+}
+
 /// A sharpen's amount as [`effect_def`] writes it, rounded to the export's finest
 /// precision.
 fn sharpen_written(amount: f64) -> f64 {
@@ -595,7 +693,14 @@ fn effect_def(name: &str, effects: &[Keyed<Effect>], region: Rect, space: Affine
                 );
                 graphic = r;
             }
-            EffectKind::LayerBlur { radius } if *radius > 0.0 => {
+            EffectKind::LayerBlur {
+                radius,
+                ramp: Some(ramp),
+            } if e.kind.is_progressive() => {
+                ramp_graph(&mut out, &graphic, *radius, ramp, region, space, &r);
+                graphic = r;
+            }
+            EffectKind::LayerBlur { radius, .. } if *radius > 0.0 => {
                 let _ = writeln!(
                     out,
                     "      <feGaussianBlur in=\"{graphic}\" stdDeviation=\"{}\" result=\"{r}\"/>",
@@ -935,8 +1040,17 @@ fn collect_defs(doc: &Document, res: &Resolved, id: NodeId, outer: Affine, defs:
     let Some(node) = doc.get(id) else { return };
     // The same composition `emit_node` makes, so region and element share a space.
     let transform = outer * res.used_local_of(node);
-    // As drawn: a bound effect number takes its variable's value.
+    // As drawn: a bound effect number takes its variable's value, and a ramp's
+    // ends are on the layer's box in its own space.
     let effects = doc.resolved_effects(id, node.effects());
+    let ramped = effects.iter().any(|e| e.kind.ramp().is_some());
+    let effects = match ramped
+        .then(|| mastik_core::local_box(doc, res, id))
+        .flatten()
+    {
+        Some(b) => mastik_core::effect::ramps_on_box(effects, b),
+        None => effects,
+    };
     // A noise's or texture's filter is written in the layer's own space
     // (`emit_node`), and `ink_in` under the identity is that space.
     let space = match grained(&effects) {
@@ -1746,9 +1860,31 @@ fn report_node(
             "a texture, which this app does not read back, nor the rest of its effects with it",
         );
     }
+    // SVG has no variable blur: [`ramp_graph`] draws steps of it, through
+    // `feImage`, which `svg_in` reads no more than `feTurbulence`.
+    let progressive = |e: &&Keyed<Effect>| e.visible && e.kind.is_progressive();
+    if filter_written
+        && effects
+            .iter()
+            .filter(progressive)
+            .any(|e| matches!(e.kind, EffectKind::LayerBlur { .. }))
+    {
+        report.approximate("a progressive blur, drawn in three steps");
+        report.round_trip(
+            "a progressive blur, which this app does not read back, nor the rest of its \
+             effects with it",
+        );
+    }
     // SVG has no backdrop: `BackgroundImage` was never implemented by any viewer.
     if mastik_core::effect::backdrop_radius(effects).is_some() {
-        report.approximate("a background blur, left out");
+        let ramped = effects
+            .iter()
+            .filter(progressive)
+            .any(|e| matches!(e.kind, EffectKind::BackgroundBlur { .. }));
+        report.approximate(match ramped {
+            true => "a progressive background blur, left out",
+            false => "a background blur, left out",
+        });
     }
     if mastik_core::effect::glasses(effects).next().is_some() {
         report.approximate("a glass, left out");

@@ -135,7 +135,10 @@ fn inside() -> impl Iterator<Item = (usize, usize)> {
 }
 
 const GLASS: (f64, f64, f64, f64) = (30.0, 30.0, 40.0, 40.0);
-const BLUR: EffectKind = EffectKind::BackgroundBlur { radius: 8.0 };
+const BLUR: EffectKind = EffectKind::BackgroundBlur {
+    radius: 8.0,
+    ramp: None,
+};
 
 /// Inside an unfilled glass the stripes are what a layer blur of the same radius
 /// draws, byte for byte; outside it they stay sharp.
@@ -154,7 +157,7 @@ fn a_glass_shows_what_lies_behind_it_blurred_as_a_layer_blur_would() {
     let mut oracle = Page::new();
     let root = oracle.root;
     let stripes = oracle.stripes(root);
-    oracle.effects(stripes, vec![EffectKind::LayerBlur { radius: 8.0 }]);
+    oracle.effects(stripes, vec![EffectKind::layer_blur(8.0)]);
     let want = oracle.render();
 
     let mut sharp = Page::new();
@@ -183,6 +186,31 @@ fn a_glass_shows_what_lies_behind_it_blurred_as_a_layer_blur_would() {
     }
 }
 
+/// A progressive background blur from 16 at the glass's top to 0 at its bottom
+/// shows the stripes blurred at the top and sharp at the bottom.
+///
+/// flip: `paint_backdrop` blurring with its radius alone (the ramp dropped) →
+/// fails at the bottom assertion.
+#[test]
+fn a_progressive_glass_blurs_more_at_its_start_than_its_end() {
+    let mut glass = Page::new();
+    let root = glass.root;
+    glass.stripes(root);
+    let n = glass.rect(root, GLASS, None);
+    glass.effects(
+        n,
+        vec![EffectKind::BackgroundBlur {
+            radius: 16.0,
+            ramp: Some(mastik_core::BlurRamp::down(0.0)),
+        }],
+    );
+    let got = glass.render();
+    // x = 32 is in a black stripe and x = 37 in a white one.
+    let contrast = |y: usize| at(&got, 37, y)[0].abs_diff(at(&got, 32, y)[0]);
+    assert!(contrast(33) < 60, "blurred at the top: {}", contrast(33));
+    assert!(contrast(67) > 200, "sharp at the bottom: {}", contrast(67));
+}
+
 /// The glass's own fill is drawn over the blurred backdrop and is no part of it,
 /// and a layer drawn after the glass is not blurred by it.
 ///
@@ -203,7 +231,7 @@ fn the_backdrop_holds_what_comes_before_the_layer_and_nothing_after() {
     let mut oracle = Page::new();
     let root = oracle.root;
     let stripes = oracle.stripes(root);
-    oracle.effects(stripes, vec![EffectKind::LayerBlur { radius: 8.0 }]);
+    oracle.effects(stripes, vec![EffectKind::layer_blur(8.0)]);
     oracle.rect(root, GLASS, Some(tint));
     oracle.rect(root, (60.0, 60.0, 30.0, 30.0), Some(red));
     let want = oracle.render();
@@ -241,7 +269,7 @@ fn a_faded_glass_shows_its_blur_at_its_opacity() {
     let mut oracle = Page::new();
     let root = oracle.root;
     let stripes = oracle.stripes(root);
-    oracle.effects(stripes, vec![EffectKind::LayerBlur { radius: 8.0 }]);
+    oracle.effects(stripes, vec![EffectKind::layer_blur(8.0)]);
     let blurred = oracle.render();
     let mut sharp = Page::new();
     let root = sharp.root;
@@ -422,7 +450,7 @@ fn the_spread_finds_nested_and_previewed_glass_and_stops_at_half_the_canvas() {
         for j in 0..12 {
             let at = (f64::from(i) * 8.0, f64::from(j) * 8.0, 6.5, 6.5);
             let card = p.rect(root, at, None);
-            p.effects(card, vec![EffectKind::BackgroundBlur { radius: 3.0 }]);
+            p.effects(card, vec![EffectKind::background_blur(3.0)]);
         }
     }
     let res = Resolved::rebuild(&p.doc);
@@ -660,7 +688,7 @@ fn a_glass_along_a_frames_edge_reads_only_the_frame() {
         (0.0, 0.0, 80.0, 20.0),
         Some(Color::from_rgba8(255, 255, 255, 40)),
     );
-    p.effects(bar, vec![EffectKind::BackgroundBlur { radius: 16.0 }]);
+    p.effects(bar, vec![EffectKind::background_blur(16.0)]);
     let px = p.render_of(&[frame]);
     for (x, y) in [(50, 10), (50, 13), (11, 20), (50, 20)] {
         assert_eq!(

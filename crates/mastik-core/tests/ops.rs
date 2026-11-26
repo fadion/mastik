@@ -1963,7 +1963,7 @@ fn effects_go_on_a_container_but_never_on_the_root() {
     let g = ids.mint();
     create(&mut hist, &mut doc, g, ab, NodeKind::Group);
 
-    let stack = keyed_by_position([Effect::new(EffectKind::LayerBlur { radius: 8.0 })]);
+    let stack = keyed_by_position([Effect::new(EffectKind::layer_blur(8.0))]);
     doc.apply(&Transaction(vec![Operation::SetEffects {
         id: g,
         effects: stack.clone(),

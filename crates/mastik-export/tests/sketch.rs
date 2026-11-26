@@ -363,6 +363,42 @@ fn an_inverted_mask_is_reported() {
     );
 }
 
+/// A progressive blur goes out as an even blur at its larger radius, reported.
+/// flip: the blur written at `radius` (the start) → fails at the radius.
+#[test]
+fn a_progressive_blur_goes_out_even_at_its_larger_radius() {
+    let mut f = fixture();
+    let avatar = named(&f.doc, "Avatar");
+    f.doc
+        .apply(&mastik_core::Transaction(vec![
+            mastik_core::Operation::SetEffects {
+                id: avatar,
+                effects: mastik_core::keyed_by_position([mastik_core::Effect::new(
+                    mastik_core::EffectKind::LayerBlur {
+                        radius: 4.0,
+                        ramp: Some(mastik_core::BlurRamp::down(24.0)),
+                    },
+                )]),
+            },
+        ]))
+        .unwrap();
+    f.res = mastik_core::Resolved::rebuild(&f.doc);
+    let out = mastik_export::sketch::export(&f.doc, &f.res, "Fixture").unwrap();
+    assert!(
+        out.approximated
+            .iter()
+            .any(|s| s == "Progressive blurs, written even at the larger radius"),
+        "{:?}",
+        out.approximated
+    );
+    let z = unzip(&out.bytes);
+    let (_, layer) = layers(&z)
+        .into_iter()
+        .find(|(_, l)| s(l, "name") == "Avatar")
+        .expect("the avatar");
+    assert_eq!(layer["style"]["blur"]["radius"], 24.0, "{}", layer["style"]);
+}
+
 /// A text override inside a nested copy that its master writes as plain layers
 /// names the text by its own id there; every path resolves segment by segment,
 /// through symbol instances only, to a text layer.

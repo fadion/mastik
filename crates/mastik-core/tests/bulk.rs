@@ -1252,7 +1252,7 @@ fn pasting_properties_paints_through_a_group_and_fades_only_the_group() {
 fn pasting_properties_puts_effects_on_the_group_alone() {
     let mut f = Fixture::new();
     let source = f.add(f.artboard, rect());
-    let blur = mastik_core::Effect::new(mastik_core::EffectKind::LayerBlur { radius: 3.0 });
+    let blur = mastik_core::Effect::new(mastik_core::EffectKind::layer_blur(3.0));
     let item = f.ids.mint_item();
     f.commit(Transaction(vec![Operation::SetEffects {
         id: source,

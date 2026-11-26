@@ -1246,7 +1246,14 @@ fn scale_effect(kind: &mut crate::effect::EffectKind, sx: f64, sy: f64, s: f64) 
             sh.blur *= s;
             sh.spread *= s;
         }
-        K::LayerBlur { radius } | K::BackgroundBlur { radius } | K::Sharpen { radius, .. } => {
+        // A ramp's ends are on the normalised box, which scales with the layer.
+        K::LayerBlur { radius, ramp } | K::BackgroundBlur { radius, ramp } => {
+            *radius *= s;
+            if let Some(r) = ramp {
+                r.end *= s;
+            }
+        }
+        K::Sharpen { radius, .. } => {
             *radius *= s;
         }
         K::Noise(n) => {

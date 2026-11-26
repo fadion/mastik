@@ -581,6 +581,146 @@ pub fn sharpen(s: &mut Surface<'_>, amount: f32, sigma_x: f32, sigma_y: f32) {
     }
 }
 
+/// The device deviation one step of a progressive blur's ladder spans at most.
+///
+/// Neighbouring steps are mixed rather than blurred in between, and a mix of two
+/// gaussians this close reads as one of the radius between them.
+pub const RAMP_STEP_SIGMA: f64 = 3.0;
+
+/// The most steps a progressive blur's ladder takes past its sharpest copy, which
+/// bounds its cost at that many blurs of the layer.
+pub const MAX_RAMP_STEPS: usize = 8;
+
+/// A progressive blur as both backends draw it: the layer blurred at each rung of
+/// a ladder of deviations, and every pixel mixed from the two rungs either side
+/// of its own radius.
+///
+/// Planned on the host once, so the CPU's loop and the shader's `ramp` pass read
+/// the same numbers ([`ramp_position`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct RampPlan {
+    /// A buffer pixel's place along the ramp before it is held to `0..=1`:
+    /// `along[0]·(x + ½) + along[1]·(y + ½) + along[2]`.
+    pub along: [f32; 3],
+    /// Whether the ramp eases (`RampEase::Smooth`).
+    pub smooth: bool,
+    /// The start's and the end's place on the ladder, in rungs.
+    pub rungs: (f32, f32),
+    /// Each rung's device deviations, the sharpest first.
+    pub sigmas: Vec<(f32, f32)>,
+}
+
+/// The plan for a layer blur from `radius` along `ramp`, whose ends are in the
+/// layer's own space (`effect::ramps_on_box`), drawn at `scale` into a buffer
+/// whose pixel corners `to_local` maps into that space.
+pub fn ramp_plan(
+    radius: f64,
+    ramp: &mastik_core::BlurRamp,
+    scale: (f64, f64),
+    to_local: kurbo::Affine,
+) -> RampPlan {
+    let (start, end) = (radius.max(0.0), ramp.end.max(0.0));
+    let (lo, hi) = (start.min(end), start.max(end));
+    let top = device_sigma(hi, scale.0, scale.1);
+    let span = mastik_core::effect::deviation(hi - lo) * scale.0.abs().max(scale.1.abs());
+    let steps = match span.is_finite() {
+        true => ((span / RAMP_STEP_SIGMA).ceil() as usize).clamp(1, MAX_RAMP_STEPS),
+        false => MAX_RAMP_STEPS,
+    };
+    let sigmas = (0..=steps)
+        .map(|i| {
+            let r = lo + (hi - lo) * i as f64 / steps as f64;
+            let s = device_sigma(r, scale.0, scale.1);
+            // The top rung is the stronger end's own blur exactly.
+            if i == steps { top } else { s }
+        })
+        .collect();
+    let rung = |r: f64| match hi > lo {
+        true => ((r - lo) / (hi - lo) * steps as f64) as f32,
+        false => 0.0,
+    };
+    // `t = (local − from)·d / |d|²`, with `local = to_local · (x, y)`, is affine
+    // in the pixel, so its three coefficients are worked out once here.
+    let d = ramp.to - ramp.from;
+    let len2 = d.hypot2();
+    let along = match len2 > 1e-24 && len2.is_finite() {
+        true => {
+            let [a, b, c, dd, e, f] = to_local.as_coeffs();
+            [
+                ((a * d.x + b * d.y) / len2) as f32,
+                ((c * d.x + dd * d.y) / len2) as f32,
+                (((e - ramp.from.x) * d.x + (f - ramp.from.y) * d.y) / len2) as f32,
+            ]
+        }
+        false => [0.0; 3],
+    };
+    RampPlan {
+        along,
+        smooth: ramp.ease == mastik_core::RampEase::Smooth,
+        rungs: (rung(start), rung(end)),
+        sigmas,
+    }
+}
+
+/// Where buffer pixel `(x, y)` sits on `plan`'s ladder, in rungs: its place
+/// along the ramp held to the ends, eased, between the two ends' rungs. Written
+/// as `fx.wgsl`'s `ramp_position` is, operation for operation.
+pub fn ramp_position(plan: &RampPlan, x: u32, y: u32) -> f32 {
+    let [a, b, c] = plan.along;
+    let t = (a * (x as f32 + 0.5) + b * (y as f32 + 0.5) + c).clamp(0.0, 1.0);
+    let e = match plan.smooth {
+        true => t * t * (3.0 - 2.0 * t),
+        false => t,
+    };
+    plan.rungs.0 + (plan.rungs.1 - plan.rungs.0) * e
+}
+
+/// A progressive blur over `s`, in place: rung 0 first, then each rung mixed in
+/// over the pixels whose place on the ladder ([`ramp_position`]) reaches past the
+/// rung below it, by how far. A pixel between rungs `i − 1` and `i` ends as their
+/// mix, and every rung above it leaves it alone.
+pub fn progressive_blur(s: &mut Surface<'_>, plan: &RampPlan) {
+    let original = s.px.to_vec();
+    blur_rung(s, plan.sigmas[0]);
+    for (i, sigma) in plan.sigmas.iter().enumerate().skip(1) {
+        let mut rung = original.clone();
+        blur_rung(&mut Surface::new(&mut rung, s.w, s.h), *sigma);
+        let w = s.w;
+        for (p, (o, l)) in
+            s.px.as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .zip(rung.as_chunks::<4>().0)
+                .enumerate()
+        {
+            let at = ramp_position(plan, (p % w) as u32, (p / w) as u32);
+            let k = (at - (i as f32 - 1.0)).clamp(0.0, 1.0);
+            if k <= 0.0 {
+                continue;
+            }
+            for c in 0..4 {
+                let (a, b) = (f32::from(o[c]) / 255.0, f32::from(l[c]) / 255.0);
+                o[c] = ((a + (b - a) * k).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+            }
+        }
+    }
+}
+
+/// One rung of a progressive blur: a blur at `sigma`, on a coarse grid past the
+/// budget as a sharpen's copy is (`effect::shadow_downscale`), which bounds each
+/// rung's cost at any zoom.
+fn blur_rung(s: &mut Surface<'_>, (sx, sy): (f32, f32)) {
+    if sx <= 0.0 && sy <= 0.0 {
+        return;
+    }
+    let k = mastik_core::effect::shadow_downscale(f64::from(sx.max(sy))) as usize;
+    if k > 1 {
+        blur_coarse(s, sx / k as f32, sy / k as f32, k);
+    } else {
+        blur(s, sx, sy);
+    }
+}
+
 /// The map from an effect buffer's pixel corner into the layer's own space: the
 /// buffer's top-left at device `origin`, one buffer pixel `k` device pixels, the
 /// layer drawn into the device by `layer_to_device`. Both backends build it here,
@@ -924,7 +1064,13 @@ fn run_keeping(
     for e in effects.iter().filter(|e| e.visible) {
         match &e.kind {
             EffectKind::Filters(f) if !f.is_neutral() => apply_matrix(s, &filter_matrix(f)),
-            EffectKind::LayerBlur { radius } if *radius > 0.0 => {
+            EffectKind::LayerBlur {
+                radius,
+                ramp: Some(ramp),
+            } if ramp.end != *radius && radius.max(ramp.end) > 0.0 => {
+                progressive_blur(s, &ramp_plan(*radius, ramp, scale, to_local));
+            }
+            EffectKind::LayerBlur { radius, .. } if *radius > 0.0 => {
                 let (sx, sy) = device_sigma(*radius, scale.0, scale.1);
                 blur(s, sx, sy);
             }
@@ -1167,7 +1313,7 @@ pub fn any_ink(effects: &[Keyed<Effect>]) -> bool {
                 EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
                     s.color.components[3] > 0.0
                 }
-                EffectKind::LayerBlur { radius } => *radius > 0.0,
+                EffectKind::LayerBlur { .. } => e.kind.larger_blur().is_some_and(|r| r > 0.0),
                 EffectKind::Sharpen { amount, radius } => *amount > 0.0 && *radius > 0.0,
                 EffectKind::Noise(n) => n.has_ink(),
                 EffectKind::Texture(t) => t.has_ink(),
@@ -1240,7 +1386,8 @@ pub fn run_glass(
         GlassPart::Backdrop => {
             for e in visible {
                 match &e.kind {
-                    EffectKind::LayerBlur { radius } if *radius > 0.0 => {
+                    // Even: `scene::backdrop_chain` evens a ramp beside a glass.
+                    EffectKind::LayerBlur { radius, .. } if *radius > 0.0 => {
                         let (sx, sy) = device_sigma(*radius, scale.0, scale.1);
                         blur(&mut s, sx, sy);
                     }
@@ -2040,14 +2187,14 @@ mod tests {
             (
                 "hidden",
                 vec![Effect {
-                    kind: EffectKind::LayerBlur { radius: 20.0 },
+                    kind: EffectKind::layer_blur(20.0),
                     visible: false,
                     vars: Default::default(),
                 }],
             ),
             (
                 "zero radius",
-                vec![Effect::new(EffectKind::LayerBlur { radius: 0.0 })],
+                vec![Effect::new(EffectKind::layer_blur(0.0))],
             ),
             (
                 "neutral filters",
@@ -2064,9 +2211,9 @@ mod tests {
             );
         }
         assert!(
-            any_ink(&keyed_by_position([Effect::new(EffectKind::LayerBlur {
-                radius: 1.0
-            })])),
+            any_ink(&keyed_by_position([Effect::new(EffectKind::layer_blur(
+                1.0
+            ))])),
             "and a real one must"
         );
     }

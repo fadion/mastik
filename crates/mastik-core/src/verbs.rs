@@ -862,7 +862,7 @@ fn unseen_field(v: &Value) -> Option<Vec<Option<Step>>> {
     fn effect_fields(map: &serde_json::Map<String, Value>) -> Option<Vec<&'static str>> {
         let fields = match map.get("type")?.as_str()? {
             "drop_shadow" | "inner_shadow" => struct_fields::<crate::effect::Shadow>()?.to_vec(),
-            "layer_blur" | "background_blur" => vec!["radius"],
+            "layer_blur" | "background_blur" => vec!["radius", "ramp"],
             "sharpen" => vec!["amount", "radius"],
             "noise" => NOISE_KIND_FIELDS[1..].to_vec(),
             "texture" => TEXTURE_KIND_FIELDS[1..].to_vec(),
@@ -1773,9 +1773,13 @@ pub fn example(model: &str) -> Option<Value> {
                 },
             ],
         }),
-        "[Effect]" => json(&vec![Effect::new(
-            EffectKind::DropShadow(Shadow::default()),
-        )]),
+        "[Effect]" => json(&vec![
+            Effect::new(EffectKind::DropShadow(Shadow::default())),
+            Effect::new(EffectKind::BackgroundBlur {
+                radius: 24.0,
+                ramp: Some(crate::effect::BlurRamp::down(0.0)),
+            }),
+        ]),
         "[ExportSpec]" => json(&vec![ExportSpec::new(
             ExportFormat::Png,
             ExportScale::default(),
@@ -1868,9 +1872,11 @@ pub fn more_examples(model: &str) -> Vec<Value> {
         "StyleValue" => vec![
             serde_json::json!({ "chart": chart_look_example() }),
             serde_json::json!({ "effects": [
-                { "kind": { "type": "texture", "size": 2, "amount": 4, "seed": 1, "detail": 3 } },
-                { "kind": { "type": "glass", "blur": 16, "frost": 0.1, "bend": 0.3, "depth": 12,
-                            "rim": { "angle": 135, "width": 1, "color": "#ffffff99" } } },
+                { "type": "background_blur", "radius": 24,
+                  "ramp": { "end": 0, "angle": 90, "ease": "smooth" } },
+                { "type": "texture", "size": 2, "amount": 4, "seed": 1, "detail": 3 },
+                { "type": "glass", "blur": 16, "frost": 0.1, "bend": 0.3, "depth": 12,
+                  "rim": { "angle": 135, "width": 1, "color": "#ffffff99" } },
             ] }),
         ],
         _ => Vec::new(),

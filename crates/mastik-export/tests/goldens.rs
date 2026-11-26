@@ -464,7 +464,7 @@ fn golden_document() -> (Document, Resolved) {
                         blend: mastik_core::BlendMode::Normal,
                     },
                 )),
-                mastik_core::Effect::new(mastik_core::EffectKind::LayerBlur { radius: 2.0 }),
+                mastik_core::Effect::new(mastik_core::EffectKind::layer_blur(2.0)),
                 mastik_core::Effect::new(mastik_core::EffectKind::Sharpen {
                     amount: 0.6,
                     radius: 1.5,
@@ -478,7 +478,7 @@ fn golden_document() -> (Document, Resolved) {
                     amount: 1.5,
                     ..mastik_core::Texture::default()
                 })),
-                mastik_core::Effect::new(mastik_core::EffectKind::BackgroundBlur { radius: 5.0 }),
+                mastik_core::Effect::new(mastik_core::EffectKind::background_blur(5.0)),
                 mastik_core::Effect::new(mastik_core::EffectKind::Glass(mastik_core::Glass {
                     blur: 6.0,
                     dispersion: 0.2,

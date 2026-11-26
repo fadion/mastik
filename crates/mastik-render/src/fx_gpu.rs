@@ -23,9 +23,9 @@ const TILE: u32 = 8;
 ///
 /// Written out by hand (this crate has no `bytemuck`): the layout is a contract
 /// with a shader in another language, and the offsets spelled in `Params::bytes`
-/// are where the two are read against each other. 160 is the struct's size
-/// rounded to WGSL's 16-byte boundary.
-const PARAMS_BYTES: usize = 240;
+/// are where the two are read against each other: the struct's size, a whole
+/// number of WGSL's 16-byte rows.
+const PARAMS_BYTES: usize = 272;
 
 /// Which pass a dispatch runs. One per entry point in `fx.wgsl`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -47,6 +47,7 @@ enum Pass {
     Texture,
     GlassBend,
     GlassRim,
+    Ramp,
 }
 
 impl Pass {
@@ -70,10 +71,11 @@ impl Pass {
             Self::Texture => "texture_fx",
             Self::GlassBend => "glass_bend",
             Self::GlassRim => "glass_rim",
+            Self::Ramp => "ramp",
         }
     }
 
-    const ALL: [Pass; 17] = [
+    const ALL: [Pass; 18] = [
         Self::Premul,
         Self::Unpremul,
         Self::Copy,
@@ -91,6 +93,7 @@ impl Pass {
         Self::Texture,
         Self::GlassBend,
         Self::GlassRim,
+        Self::Ramp,
     ];
 }
 
@@ -132,6 +135,9 @@ struct Params {
     /// `nzi` in `fx.wgsl`: octaves, the fractal sum, the noise's blend code and
     /// its multicolour switch.
     noise_i: [u32; 4],
+    /// `rp` in `fx.wgsl`, read by `Pass::Ramp` alone: `RampPlan::along`, 1 for
+    /// an eased ramp, the two ends' rungs, and the rung this dispatch mixes in.
+    ramp: [f32; 8],
 }
 
 impl Params {
@@ -195,9 +201,13 @@ impl Params {
         for (i, v) in self.noise.iter().enumerate() {
             put(160 + i * 4, v.to_le_bytes());
         }
-        // offset 224: nzi: vec4<u32>, which ends the struct at 240.
+        // offset 224: nzi: vec4<u32>
         for (i, v) in self.noise_i.iter().enumerate() {
             put(224 + i * 4, v.to_le_bytes());
+        }
+        // offset 240: rp: array<vec4<f32>, 2>, which ends the struct at 272.
+        for (i, v) in self.ramp.iter().enumerate() {
+            put(240 + i * 4, v.to_le_bytes());
         }
         b
     }
@@ -969,7 +979,39 @@ impl Runner<'_> {
                     run.slot(Pass::Matrix, cur, cur, alt, p);
                     std::mem::swap(&mut cur, &mut alt);
                 }
-                EffectKind::LayerBlur { radius } if *radius > 0.0 => {
+                EffectKind::LayerBlur {
+                    radius,
+                    ramp: Some(ramp),
+                } if ramp.end != *radius && radius.max(ramp.end) > 0.0 => {
+                    // `effects::progressive_blur`: the layer kept aside in
+                    // `GRAPHIC`, free until the shadows' stage, each rung blurred
+                    // from it in `O0`/`O1` and mixed into `cur`.
+                    let plan = effects::ramp_plan(*radius, ramp, scale, to_local);
+                    run.slot(Pass::Copy, cur, cur, GRAPHIC, Params::default());
+                    run.blur_rung(&mut cur, &mut alt, plan.sigmas[0]);
+                    for (i, sigma) in plan.sigmas.iter().enumerate().skip(1) {
+                        let (mut rung, mut rung_alt) = (O0, O1);
+                        run.slot(Pass::Copy, GRAPHIC, GRAPHIC, rung, Params::default());
+                        run.blur_rung(&mut rung, &mut rung_alt, *sigma);
+                        let [a, b, c] = plan.along;
+                        let p = Params {
+                            ramp: [
+                                a,
+                                b,
+                                c,
+                                f32::from(u8::from(plan.smooth)),
+                                plan.rungs.0,
+                                plan.rungs.1,
+                                i as f32,
+                                0.0,
+                            ],
+                            ..Default::default()
+                        };
+                        run.slot(Pass::Ramp, cur, rung, alt, p);
+                        std::mem::swap(&mut cur, &mut alt);
+                    }
+                }
+                EffectKind::LayerBlur { radius, .. } if *radius > 0.0 => {
                     let (sx, sy) = effects::device_sigma(*radius, scale.0, scale.1);
                     run.blur(&mut cur, &mut alt, sx, sy);
                 }
@@ -1329,6 +1371,20 @@ impl Runner<'_> {
             k_off,
             ints,
         )
+    }
+
+    /// One rung of a progressive blur, `effects::blur_rung`: on the coarse grid
+    /// past the budget, as a sharpen's copy is.
+    fn blur_rung(&mut self, cur: &mut usize, alt: &mut usize, (sx, sy): (f32, f32)) {
+        if sx <= 0.0 && sy <= 0.0 {
+            return;
+        }
+        let k = mastik_core::effect::shadow_downscale(f64::from(sx.max(sy)));
+        if k > 1 {
+            self.blur_coarse(cur, alt, sx / k as f32, sy / k as f32, k);
+        } else {
+            self.blur(cur, alt, sx, sy);
+        }
     }
 
     /// Both axes of a separable gaussian over the whole buffer.

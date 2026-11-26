@@ -516,7 +516,7 @@ fn the_snapshot_carries_a_layers_effects_in_the_units_the_panel_shows() {
                 })),
                 // Hidden, so the filter that keeps it out is exercised alongside.
                 Effect {
-                    kind: EffectKind::LayerBlur { radius: 9.0 },
+                    kind: EffectKind::layer_blur(9.0),
                     visible: false,
                     vars: Default::default(),
                 },
@@ -542,6 +542,37 @@ fn the_snapshot_carries_a_layers_effects_in_the_units_the_panel_shows() {
     assert!(
         !out.contains("LayerBlur"),
         "and the hidden entry is filtered out, as a hidden fill is: {out}"
+    );
+}
+
+/// A progressive blur reads its ramp as the MCP writes it: the end radius, the
+/// angle and the ease, with the ends left out where the angle places them.
+/// flip: `ramp_summary` writing the ends always → fails at the framed shape.
+#[test]
+fn the_snapshot_reads_a_ramp_as_its_angle() {
+    use mastik_core::{Effect, EffectKind, Operation, Resolved, Transaction};
+    let mut f = common::fixture();
+    f.doc
+        .apply(&Transaction(vec![Operation::SetEffects {
+            id: f.rect,
+            effects: keyed_by_position([Effect::new(EffectKind::BackgroundBlur {
+                radius: 24.0,
+                ramp: Some(mastik_core::BlurRamp::down(0.0)),
+            })]),
+        }]))
+        .unwrap();
+    f.res = Resolved::rebuild(&f.doc);
+    let v = serde_json::to_value(snapshot(&f.doc, &f.res)).unwrap();
+    let rect = v["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["id"] == f.rect.to_wire())
+        .unwrap();
+    assert_eq!(rect["effects"][0]["blur"], 24.0);
+    assert_eq!(
+        rect["effects"][0]["ramp"],
+        serde_json::json!({ "end": 0.0, "angle": 90.0, "ease": "smooth" })
     );
 }
 

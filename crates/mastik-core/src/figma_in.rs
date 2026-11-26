@@ -989,15 +989,33 @@ impl Builder<'_> {
                 color: e.get("color").map_or(Color::BLACK, colour),
                 blend: BlendMode::Normal,
             };
+            // A progressive blur runs from `startRadius` at `startOffset` to
+            // `radius` at `endOffset`, both offsets on the normalised box, as the
+            // ramp's own ends are; Figma's runs linearly.
+            let blur_of = |e: &Value| match str_of(e, "blurType") {
+                "PROGRESSIVE" => {
+                    let at = |k: &str| e.get(k).map(|o| Point::new(num(o, "x"), num(o, "y")));
+                    let ramp = crate::effect::BlurRamp {
+                        end: num(e, "radius"),
+                        from: at("startOffset").unwrap_or(Point::new(0.5, 0.0)),
+                        to: at("endOffset").unwrap_or(Point::new(0.5, 1.0)),
+                        ease: crate::effect::RampEase::Linear,
+                    };
+                    (num(e, "startRadius"), Some(ramp))
+                }
+                _ => (num(e, "radius"), None),
+            };
             let kind = match str_of(e, "type") {
                 "DROP_SHADOW" => EffectKind::DropShadow(shadow()),
                 "INNER_SHADOW" => EffectKind::InnerShadow(shadow()),
-                "LAYER_BLUR" => EffectKind::LayerBlur {
-                    radius: num(e, "radius"),
-                },
-                "BACKGROUND_BLUR" => EffectKind::BackgroundBlur {
-                    radius: num(e, "radius"),
-                },
+                "LAYER_BLUR" => {
+                    let (radius, ramp) = blur_of(e);
+                    EffectKind::LayerBlur { radius, ramp }
+                }
+                "BACKGROUND_BLUR" => {
+                    let (radius, ramp) = blur_of(e);
+                    EffectKind::BackgroundBlur { radius, ramp }
+                }
                 // Figma's grain size and how far it moves the edge; its own
                 // noise has no seed or octaves to carry.
                 "TEXTURE" => {

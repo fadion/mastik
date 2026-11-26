@@ -124,6 +124,15 @@ pub enum Drag {
         grab: crate::gradient::Grab,
         from: Box<mastik_core::Brush>,
     },
+    /// Dragging an end of the ramp of effect `index` of `id`, a progressive blur
+    /// whose popover is open (`crate::gradient`). Each frame re-derives from
+    /// `from`, the effect as stored at the press.
+    BlurRamp {
+        id: NodeId,
+        index: usize,
+        grab: crate::gradient::Grab,
+        from: Box<mastik_core::Effect>,
+    },
     /// Dragging a laid container's gap or padding band: `band` is what was
     /// grabbed, `anchor` the press in the container's local space, and `base` the
     /// value the band drew there — the delta along the band's axis is added to it.

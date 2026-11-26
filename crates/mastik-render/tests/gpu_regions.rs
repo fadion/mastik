@@ -257,9 +257,7 @@ fn cards() -> (Document, Resolved) {
         });
         fx.push((
             g,
-            vec![Effect::new(EffectKind::LayerBlur {
-                radius: 3.0 + (i % 3) as f64,
-            })],
+            vec![Effect::new(EffectKind::layer_blur(3.0 + (i % 3) as f64))],
         ));
     }
     doc.apply(&Transaction(ops)).expect("the fixture applies");

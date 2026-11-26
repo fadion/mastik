@@ -291,12 +291,22 @@ pub fn design_context(doc: &Document, res: &Resolved, asked: NodeId) -> Result<V
                     "spread": r2(sh.spread),
                     "colour": hex(sh.color),
                 }),
-                E::LayerBlur { radius } => json!({ "kind": "layer_blur", "blur": r2(*radius) }),
+                // A progressive blur's `blur` is its start, and `end` and
+                // `angle` say where it runs.
+                E::LayerBlur { radius, ramp } | E::BackgroundBlur { radius, ramp } => {
+                    let kind = match e.kind {
+                        E::LayerBlur { .. } => "layer_blur",
+                        _ => "background_blur",
+                    };
+                    let mut spec = json!({ "kind": kind, "blur": r2(*radius) });
+                    if let Some(r) = ramp.filter(|_| e.kind.is_progressive()) {
+                        spec["end"] = json!(r2(r.end));
+                        spec["angle"] = json!(r2(r.angle()));
+                    }
+                    spec
+                }
                 E::Sharpen { amount, radius } => {
                     json!({ "kind": "sharpen", "amount": r2(*amount), "blur": r2(*radius) })
-                }
-                E::BackgroundBlur { radius } => {
-                    json!({ "kind": "background_blur", "blur": r2(*radius) })
                 }
                 E::Glass(g) => json!({
                     "kind": "glass",

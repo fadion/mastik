@@ -972,7 +972,7 @@ fn effects_match_the_canvas() {
     let f = d.frame(None, 0.0, 0.0, 260.0, 120.0, "Board");
     let a = d.rect(f, 20.0, 30.0, 60.0, 60.0, 8.0);
     d.fill(a, solid(40, 120, 220, 255));
-    d.effects(a, vec![EffectKind::LayerBlur { radius: 8.0 }]);
+    d.effects(a, vec![EffectKind::layer_blur(8.0)]);
     let b = d.rect(f, 100.0, 30.0, 60.0, 60.0, 8.0);
     d.fill(b, solid(250, 250, 250, 255));
     let shadow = |a| {
@@ -5068,7 +5068,7 @@ fn a_background_blur_is_a_backdrop_filter_on_a_box() {
         let f = d.frame(None, 0.0, 0.0, 100.0, 100.0, "Board");
         let r = d.rect(f, 20.0, 20.0, 60.0, 60.0, 0.0);
         d.fill(r, solid(255, 255, 255, 64));
-        let mut effects = vec![EffectKind::BackgroundBlur { radius: 16.0 }];
+        let mut effects = vec![EffectKind::background_blur(16.0)];
         if shadowed {
             effects.push(EffectKind::DropShadow(Shadow::default()));
         }
@@ -5114,6 +5114,39 @@ fn a_glass_makes_its_layer_a_picture() {
     );
     let css = String::from_utf8(out.file("styles.css").unwrap().to_vec()).unwrap();
     assert!(!css.contains("backdrop-filter"), "{css}");
+}
+
+/// A progressive blur, either kind, has no CSS form: the layer is a picture,
+/// and the report says why.
+/// flip: dropping `picture_reason`'s progressive check → fails at the
+/// background form's report (a lone background blur writes `backdrop-filter`).
+#[test]
+fn a_progressive_blur_is_drawn_as_a_picture() {
+    for kind in [
+        EffectKind::BackgroundBlur {
+            radius: 16.0,
+            ramp: Some(mastik_core::BlurRamp::down(0.0)),
+        },
+        EffectKind::LayerBlur {
+            radius: 0.0,
+            ramp: Some(mastik_core::BlurRamp::down(8.0)),
+        },
+    ] {
+        let mut d = Doc::new();
+        let f = d.frame(None, 0.0, 0.0, 100.0, 100.0, "Board");
+        let r = d.rect(f, 20.0, 20.0, 60.0, 60.0, 0.0);
+        d.fill(r, solid(255, 255, 255, 64));
+        d.effects(r, vec![kind.clone()]);
+        let (doc, res) = d.done();
+        let out = html_of(&doc, &res, &[f]);
+        assert!(
+            out.approximated.iter().any(|s| s.contains("progressive")),
+            "{kind:?}: {:?}",
+            out.approximated
+        );
+        let css = String::from_utf8(out.file("styles.css").unwrap().to_vec()).unwrap();
+        assert!(!css.contains("backdrop-filter"), "{css}");
+    }
 }
 
 /// A feature the SVG writer approximates goes to a PNG and is reported, not

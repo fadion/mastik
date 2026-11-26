@@ -139,8 +139,14 @@ pub fn effect_is_finite(effect: &crate::Effect) -> bool {
     }
     match &effect.kind {
         crate::EffectKind::DropShadow(s) | crate::EffectKind::InnerShadow(s) => shadow_ok(s),
-        crate::EffectKind::LayerBlur { radius } | crate::EffectKind::BackgroundBlur { radius } => {
+        crate::EffectKind::LayerBlur { radius, ramp }
+        | crate::EffectKind::BackgroundBlur { radius, ramp } => {
             radius.is_finite()
+                && ramp.is_none_or(|r| {
+                    [r.end, r.from.x, r.from.y, r.to.x, r.to.y]
+                        .iter()
+                        .all(|v| v.is_finite())
+                })
         }
         crate::EffectKind::Sharpen { amount, radius } => amount.is_finite() && radius.is_finite(),
         crate::EffectKind::Noise(n) => {

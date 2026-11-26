@@ -3518,6 +3518,11 @@ impl MastikApp {
             ui.ctx().request_repaint();
             return;
         }
+        if matches!(self.drag, Drag::BlurRamp { .. }) {
+            self.update_ramp_drag(world, shift);
+            ui.ctx().request_repaint();
+            return;
+        }
         // The ghost follows the pointer in whole points, snapping as a moved
         // layer does; the chrome ghost is rebuilt from it next frame.
         if let Drag::OverlayAt { grab, from, .. } = self.drag {
@@ -3658,8 +3663,9 @@ impl MastikApp {
             }
             // Guide and crop drags are owned by `guide_input`/`image_edit_input`;
             // a pivot drag has nothing to preview through the renderer; a gradient's
-            // returned above.
+            // returned above, and so did a ramp's.
             Drag::Gradient { .. }
+            | Drag::BlurRamp { .. }
             | Drag::CropPan { .. }
             | Drag::CropResize { .. }
             | Drag::Pivot { .. }
@@ -3747,6 +3753,12 @@ impl MastikApp {
                 grab,
                 from,
             } => self.finish_gradient_drag(id, slot, grab, &from, world, shift),
+            Drag::BlurRamp {
+                id,
+                index,
+                grab,
+                from,
+            } => self.finish_ramp_drag((id, index, grab), &from, world, shift),
             // A release where every slot already draws the value commits nothing,
             // compared against the drawn value so a bound slot is right.
             drag @ Drag::Spacing { id, band, .. } => {
@@ -8831,7 +8843,7 @@ impl MastikApp {
         self.pen.is_some()
             || self.edited_path().is_some()
             || self.edited_image().is_some()
-            || self.edited_gradient().is_some()
+            || self.gradient_handles_up()
             || self.warp.is_some()
     }
 
@@ -10809,7 +10821,7 @@ impl MastikApp {
     /// targets that replace a box for this one kind ([`lone_line`] says which).
     fn line_ends(&self, rect: egui::Rect, ppp: f32) -> Option<(NodeId, egui::Pos2, egui::Pos2)> {
         // The gradient's handles stand in for the line's, as for the box's.
-        if self.edited_gradient().is_some() {
+        if self.gradient_handles_up() {
             return None;
         }
         let (id, end) = lone_line(&self.session)?;
@@ -10836,7 +10848,7 @@ impl MastikApp {
     fn grab_rail_handle(&self, screen: egui::Pos2, rect: egui::Rect, ppp: f32) -> Option<NodeId> {
         // Refused on a locked selection, as the box handles are, and under the
         // gradient's handles.
-        if self.selection_locked() || self.edited_gradient().is_some() {
+        if self.selection_locked() || self.gradient_handles_up() {
             return None;
         }
         let (id, at) = self.rail_handle(rect, ppp)?;
@@ -11015,7 +11027,7 @@ impl MastikApp {
     fn selection_handles(&self, rect: egui::Rect, ppp: f32) -> Option<Handles> {
         // The box steps aside for the gradient's handles: hidden handles that still
         // armed would resize from under them.
-        if lone_line(&self.session).is_some() || self.edited_gradient().is_some() {
+        if lone_line(&self.session).is_some() || self.gradient_handles_up() {
             return None;
         }
         let (target, box_, world, local_pivot) = match self.session.selection.ids() {
@@ -11109,7 +11121,7 @@ impl MastikApp {
         if !self.show_pivot
             || self.mode != Mode::Normal
             || self.selection_locked()
-            || self.edited_gradient().is_some()
+            || self.gradient_handles_up()
         {
             return None;
         }
@@ -28405,7 +28417,7 @@ mod redraw_tests {
             Operation::SetEffects {
                 id: glass,
                 effects: mastik_core::keyed_by_position([mastik_core::Effect::new(
-                    mastik_core::EffectKind::BackgroundBlur { radius: 10.0 },
+                    mastik_core::EffectKind::background_blur(10.0),
                 )]),
             },
             Operation::CreateNode {

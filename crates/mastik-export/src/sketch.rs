@@ -1061,16 +1061,17 @@ impl Writer<'_> {
                         _ => inner.push(v),
                     }
                 }
-                EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius }
-                    if !blur =>
-                {
+                EffectKind::LayerBlur { .. } | EffectKind::BackgroundBlur { .. } if !blur => {
                     blur = true;
+                    if e.kind.is_progressive() {
+                        self.approximate("Progressive blurs, written even at the larger radius");
+                    }
                     st["blur"] = json!({
                         "_class": "blur",
                         "isEnabled": e.visible,
                         "center": "{0.5, 0.5}",
                         "motionAngle": 0,
-                        "radius": radius,
+                        "radius": e.kind.larger_blur().unwrap_or(0.0),
                         "saturation": 1,
                         "type": if matches!(e.kind, EffectKind::BackgroundBlur { .. }) { 3 } else { 0 },
                     });

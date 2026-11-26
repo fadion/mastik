@@ -1105,7 +1105,7 @@ fn an_effect_layer_inside_an_effect_layer_reaches_the_page() {
     let Some(mut g) = gpu() else {
         return;
     };
-    let blur = || vec![Effect::new(EffectKind::LayerBlur { radius: 3.0 })];
+    let blur = || vec![Effect::new(EffectKind::layer_blur(3.0))];
     let shadow = || vec![red_shadow(6.0, 4.0)];
     let none = Vec::new();
     for (label, stacks, tolerance) in [
@@ -1260,7 +1260,7 @@ fn siblings(n: usize, size: f64) -> (Document, Resolved) {
         .into_iter()
         .map(|id| Operation::SetEffects {
             id,
-            effects: keyed_by_position([Effect::new(EffectKind::LayerBlur { radius: 3.0 })]),
+            effects: keyed_by_position([Effect::new(EffectKind::layer_blur(3.0))]),
         })
         .collect();
     doc.apply(&Transaction(ops)).expect("the effects apply");
@@ -1331,7 +1331,7 @@ fn build_picture_doc(others: usize, on_the_picture: bool) -> (Document, Resolved
     if on_the_picture {
         ops.push(Operation::SetEffects {
             id: pic,
-            effects: keyed_by_position([Effect::new(EffectKind::LayerBlur { radius: 3.0 })]),
+            effects: keyed_by_position([Effect::new(EffectKind::layer_blur(3.0))]),
         });
     }
     for i in 0..others {
@@ -1357,7 +1357,7 @@ fn build_picture_doc(others: usize, on_the_picture: bool) -> (Document, Resolved
         });
         ops.push(Operation::SetEffects {
             id: other,
-            effects: keyed_by_position([Effect::new(EffectKind::LayerBlur { radius: 4.0 })]),
+            effects: keyed_by_position([Effect::new(EffectKind::layer_blur(4.0))]),
         });
     }
     doc.apply(&Transaction(ops)).expect("the fixture applies");
@@ -1402,7 +1402,7 @@ fn how_many_effect_passes_a_nested_document_demands() {
     let Some(mut g) = gpu() else {
         return;
     };
-    let blur = || vec![Effect::new(EffectKind::LayerBlur { radius: 3.0 })];
+    let blur = || vec![Effect::new(EffectKind::layer_blur(3.0))];
     let shadow = || vec![red_shadow(6.0, 4.0)];
 
     for (label, stacks) in [
@@ -2086,7 +2086,7 @@ fn both_backends_blend_alike() {
 /// them a 40×40 glass at (30, 30) at `opacity`, tinted blue at a quarter, with
 /// a background blur of 8.
 fn glass(stripes: bool, opacity: f32) -> (Document, Resolved) {
-    glass_of(stripes, opacity, EffectKind::BackgroundBlur { radius: 8.0 })
+    glass_of(stripes, opacity, EffectKind::background_blur(8.0))
 }
 
 /// `glass` with `effect` in place of its background blur.
@@ -2244,6 +2244,47 @@ fn both_backends_draw_the_same_glass() {
     }
 }
 
+/// A progressive background blur draws alike on both backends: the ramp reaches
+/// the backdrop's effect layer in the glass's own space on each.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn both_backends_draw_the_same_progressive_background_blur() {
+    let Some(mut g) = gpu() else {
+        return;
+    };
+    let (mut doc, _) = glass(true, 1.0);
+    let glass_id = doc
+        .get(doc.first_page())
+        .and_then(|p| p.children().last().copied())
+        .expect("the glass is the page's last layer");
+    doc.apply(&Transaction(vec![Operation::SetEffects {
+        id: glass_id,
+        effects: keyed_by_position([Effect::new(EffectKind::BackgroundBlur {
+            radius: 16.0,
+            ramp: Some(mastik_core::BlurRamp::down(0.0)),
+        })]),
+    }]))
+    .unwrap();
+    let res = Resolved::rebuild(&doc);
+    let gpu_px = render_gpu(&mut g, &doc, &res);
+    let cpu_px = render_cpu(&doc, &res);
+    for y in (0..SIDE as usize).step_by(3) {
+        for x in 0..SIDE as usize {
+            let (a, b) = (at(&gpu_px, x, y), at(&cpu_px, x, y));
+            let d = [
+                a.0.abs_diff(b.0),
+                a.1.abs_diff(b.1),
+                a.2.abs_diff(b.2),
+                a.3.abs_diff(b.3),
+            ];
+            assert!(
+                d.iter().all(|d| *d <= 2),
+                "at ({x}, {y}): gpu {a:?} vs cpu {b:?}"
+            );
+        }
+    }
+}
+
 /// Over nothing but the canvas's ground, a glass shows the ground: the backdrop
 /// read from the top of the walk holds it (`ScenePainter::ground`), so erasing
 /// under the glass does not punch a hole through to transparency.
@@ -2336,7 +2377,7 @@ fn a_glass_along_a_frames_edge_reads_no_ground() {
         fill(bar, Color::from_rgba8(255, 255, 255, 40)),
         Operation::SetEffects {
             id: bar,
-            effects: keyed_by_position([Effect::new(EffectKind::BackgroundBlur { radius: 16.0 })]),
+            effects: keyed_by_position([Effect::new(EffectKind::background_blur(16.0))]),
         },
     ]))
     .unwrap();

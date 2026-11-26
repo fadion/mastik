@@ -504,9 +504,7 @@ fn styles_become_composite_tokens_or_a_note() {
         style(
             &mut ids,
             "Frosted",
-            StyleValue::Effects(keyed_by_position([shadow(EffectKind::LayerBlur {
-                radius: 8.0,
-            })])),
+            StyleValue::Effects(keyed_by_position([shadow(EffectKind::layer_blur(8.0))])),
         ),
         style(
             &mut ids,

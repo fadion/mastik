@@ -1537,6 +1537,10 @@ impl Walk<'_> {
         }
         let effects = doc.resolved_effects(id, node.effects());
         let visible: Vec<_> = effects.iter().filter(|e| e.visible).collect();
+        // CSS's `blur()` and `backdrop-filter` take one radius.
+        if visible.iter().any(|e| e.kind.is_progressive()) {
+            return Some("a progressive blur".into());
+        }
         if visible
             .iter()
             .any(|e| matches!(e.kind, EffectKind::BackgroundBlur { .. }))
@@ -2401,7 +2405,7 @@ impl Walk<'_> {
             .collect();
         let mut parts = Vec::new();
         for (kind, vars) in &both {
-            if let EffectKind::LayerBlur { radius } = kind {
+            if let EffectKind::LayerBlur { radius, .. } = kind {
                 let blur = match vars[EFFECT_BLUR] {
                     Some(v) => format!("calc({} * 0.5)", self.tokens.px_floored(v)),
                     None => px(mastik_core::effect::deviation(*radius)),
@@ -2435,7 +2439,7 @@ impl Walk<'_> {
         let backdrop: Vec<String> = both
             .iter()
             .filter_map(|(kind, vars)| match kind {
-                EffectKind::BackgroundBlur { radius } => Some(match vars[EFFECT_BLUR] {
+                EffectKind::BackgroundBlur { radius, .. } => Some(match vars[EFFECT_BLUR] {
                     Some(v) => format!("blur(calc({} * 0.5))", self.tokens.px_floored(v)),
                     None => format!("blur({})", px(mastik_core::effect::deviation(*radius))),
                 }),

@@ -128,9 +128,9 @@ pub use document::{
     DEFAULT_CANVAS_BACKGROUND, Document, minted_ids, remap_subtree, reserve_existing_ids,
 };
 pub use effect::{
-    BLUR_CUTOFF, BLUR_DEVIATION, DEFAULT_BLUR_RADIUS, EFFECT_BLUR, EFFECT_SPREAD, EFFECT_X,
-    EFFECT_Y, Effect, EffectKind, EffectVars, FilterChannel, Filters, Glass, Rim, Shadow,
-    deviation, reach, stack_escape,
+    BLUR_CUTOFF, BLUR_DEVIATION, BlurRamp, DEFAULT_BLUR_RADIUS, EFFECT_BLUR, EFFECT_SPREAD,
+    EFFECT_X, EFFECT_Y, Effect, EffectKind, EffectVars, FilterChannel, Filters, Glass, RampEase,
+    Rim, Shadow, deviation, reach, stack_escape,
 };
 pub use export::{
     ExportBackground, ExportFormat, ExportScale, ExportSpec, ExportText, IconSet, PerRow, RowsAs,

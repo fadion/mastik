@@ -60,7 +60,9 @@ pub fn blur_within_cap(effect: &Effect) -> bool {
     let ok = |r: f64| r <= MAX_BLUR;
     match &effect.kind {
         EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => ok(s.blur),
-        EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius } => ok(*radius),
+        EffectKind::LayerBlur { radius, ramp } | EffectKind::BackgroundBlur { radius, ramp } => {
+            ok(*radius) && ramp.is_none_or(|r| ok(r.end))
+        }
         EffectKind::Sharpen { amount, radius } => {
             ok(*radius) && (0.0..=MAX_SHARPEN).contains(amount)
         }
@@ -89,7 +91,12 @@ pub(crate) fn clamp_blur(effect: &mut Effect) {
                 s.blend = crate::BlendMode::Normal;
             }
         }
-        EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius } => clamp(radius),
+        EffectKind::LayerBlur { radius, ramp } | EffectKind::BackgroundBlur { radius, ramp } => {
+            clamp(radius);
+            if let Some(r) = ramp {
+                clamp(&mut r.end);
+            }
+        }
         EffectKind::Sharpen { amount, radius } => {
             clamp(radius);
             // `max` first: it answers 0 for `NaN`, where `clamp` would keep it.
@@ -162,41 +169,99 @@ pub const MAX_SHADOW_BLOCK: u32 = 4096;
 /// A shadow's blur does not count: a layer blur softens everything the layer
 /// produces, but a drop shadow blurs a *silhouette* composited behind artwork
 /// that stays sharp, so counting it would license a downscale that visibly
-/// softens the drawing.
+/// softens the drawing. A progressive blur counts its smaller end, which is how
+/// blurred its sharpest part is.
 pub fn layer_blur_deviation(effects: &[Keyed<Effect>]) -> f64 {
     effects
         .iter()
         .filter(|e| e.visible)
-        .filter_map(|e| match e.kind {
-            EffectKind::LayerBlur { radius } if radius > 0.0 => Some(deviation(radius)),
+        .filter_map(|e| match &e.kind {
+            EffectKind::LayerBlur { radius, ramp } => {
+                let least = ramp.map_or(*radius, |r| radius.min(r.end));
+                (least > 0.0).then(|| deviation(least))
+            }
             _ => None,
         })
         .fold(0.0, f64::max)
 }
 
-/// The one radius every visible [`EffectKind::BackgroundBlur`] of `effects` comes
-/// to, or `None` when none blurs: blurs applied in turn convolve, so their
-/// deviations compose as `σ = √(σ₁² + σ₂²)`, as a stack's layer blurs do in
-/// [`stack_escape`]. A radius, not a deviation, so it reads like the rows.
-pub fn backdrop_radius(effects: &[Keyed<Effect>]) -> Option<f64> {
-    let radii: Vec<f64> = effects
+/// The blur every visible [`EffectKind::BackgroundBlur`] of `effects` comes to:
+/// its start radius and the ramp, or `None` when none blurs. Blurs applied in turn
+/// convolve, so their deviations compose as `σ = √(σ₁² + σ₂²)`, as a stack's layer
+/// blurs do in [`stack_escape`]. A radius, not a deviation, so it reads like the
+/// rows.
+///
+/// The first progressive blur gives the ramp its ends, direction and ease; every
+/// other blur joins both ends at its larger radius. Two ramps in different
+/// directions do not compose into one, and the stronger end of each is kept.
+pub fn backdrop_blur(effects: &[Keyed<Effect>]) -> Option<(f64, Option<BlurRamp>)> {
+    let blurs: Vec<(f64, Option<BlurRamp>)> = effects
         .iter()
         .filter(|e| e.visible)
-        .filter_map(|e| match e.kind {
-            EffectKind::BackgroundBlur { radius } if radius > 0.0 => Some(radius),
+        .filter_map(|e| match &e.kind {
+            EffectKind::BackgroundBlur { radius, ramp } => {
+                let ramp = ramp.filter(|r| r.end != *radius);
+                (radius.max(ramp.map_or(0.0, |r| r.end)) > 0.0).then_some((*radius, ramp))
+            }
             _ => None,
         })
         .collect();
-    let largest = radii.iter().copied().fold(0.0_f64, f64::max);
+    let lead = blurs.iter().position(|(_, r)| r.is_some());
+    let others: Vec<f64> = blurs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| Some(*i) != lead)
+        .map(|(_, (r, ramp))| ramp.map_or(*r, |p| r.max(p.end)))
+        .collect();
     // Divided through by the largest before squaring, for `stack_escape`'s reason.
-    (largest > 0.0).then(|| {
-        largest
-            * radii
-                .iter()
-                .map(|r| (r / largest).powi(2))
-                .sum::<f64>()
-                .sqrt()
-    })
+    let compose = |own: f64| {
+        let largest = others.iter().copied().fold(own.max(0.0), f64::max);
+        (largest > 0.0).then(|| {
+            largest
+                * others
+                    .iter()
+                    .chain([&own.max(0.0)])
+                    .map(|r| (r / largest).powi(2))
+                    .sum::<f64>()
+                    .sqrt()
+        })
+    };
+    match lead.map(|i| blurs[i]) {
+        Some((start, Some(ramp))) => {
+            let end = compose(ramp.end).unwrap_or(0.0);
+            Some((
+                compose(start).unwrap_or(0.0),
+                Some(BlurRamp { end, ..ramp }),
+            ))
+        }
+        _ => compose(0.0).map(|r| (r, None)),
+    }
+}
+
+/// The larger radius [`backdrop_blur`] comes to: how far the backdrop it reads
+/// reaches, which bounds what a change behind it touches.
+pub fn backdrop_radius(effects: &[Keyed<Effect>]) -> Option<f64> {
+    backdrop_blur(effects).map(|(r, ramp)| ramp.map_or(r, |p| r.max(p.end)))
+}
+
+/// `effects` with every ramp's ends carried from the normalised box onto
+/// `bounds`, the layer's box in its own space ([`BlurRamp::on_box`]): the stack
+/// as the renderers read it, whose ramps are in the layer's space. Borrowed when
+/// nothing ramps.
+pub fn ramps_on_box(
+    effects: std::borrow::Cow<'_, [Keyed<Effect>]>,
+    bounds: kurbo::Rect,
+) -> std::borrow::Cow<'_, [Keyed<Effect>]> {
+    if !effects.iter().any(|e| e.kind.ramp().is_some()) {
+        return effects;
+    }
+    let mut out = effects.into_owned();
+    for e in &mut out {
+        if let Some((_, Some(r))) = e.value.kind.blur_mut() {
+            (r.from, r.to) = r.on_box(bounds);
+        }
+    }
+    std::borrow::Cow::Owned(out)
 }
 
 /// The visible [`EffectKind::Glass`]es of `effects`, in list order.
@@ -244,9 +309,9 @@ pub fn backdrop_reach(effects: &[Keyed<Effect>]) -> Option<f64> {
 /// wide enough to hide it and saves little, so an ordinary zoom is left exactly
 /// alone.
 pub fn buffer_downscale(effects: &[Keyed<Effect>], scale: (f64, f64)) -> f64 {
-    let last_blur = effects.iter().rposition(|e| {
-        e.visible && matches!(e.kind, EffectKind::LayerBlur { radius } if radius > 0.0)
-    });
+    let last_blur = effects
+        .iter()
+        .rposition(|e| e.visible && e.kind.larger_layer_blur().is_some_and(|r| r > 0.0));
     let grain_after = last_blur.is_some_and(|i| {
         effects[i + 1..]
             .iter()
@@ -308,9 +373,10 @@ pub struct Effect {
 }
 
 /// An effect's number bindings: a shadow's X, Y, blur and spread, in that order
-/// (§15 D1074). Either blur's radius and a sharpen's take the blur slot and the
-/// other three are always `None`; a sharpen's amount and a filter's numbers bind
-/// nothing.
+/// (§15 D1074). Either blur's radius and a sharpen's take the blur slot; a
+/// progressive blur's end radius takes the spread slot, the fourth number either
+/// kind binds. The rest are always `None`: a sharpen's amount and a filter's
+/// numbers bind nothing.
 pub type EffectVars = [Option<crate::variable::VarId>; 4];
 
 /// [`EffectVars`]' places.
@@ -344,9 +410,11 @@ impl Effect {
                 Some(s.blur),
                 Some(s.spread),
             ],
-            EffectKind::LayerBlur { radius }
-            | EffectKind::BackgroundBlur { radius }
-            | EffectKind::Sharpen { radius, .. } => [None, None, Some(*radius), None],
+            EffectKind::LayerBlur { radius, ramp }
+            | EffectKind::BackgroundBlur { radius, ramp } => {
+                [None, None, Some(*radius), ramp.map(|r| r.end)]
+            }
+            EffectKind::Sharpen { radius, .. } => [None, None, Some(*radius), None],
             EffectKind::Glass(g) => [None, None, Some(g.blur), None],
             EffectKind::Noise(_) | EffectKind::Texture(_) | EffectKind::Filters(_) => [None; 4],
         }
@@ -367,14 +435,23 @@ impl Effect {
                 EFFECT_SPREAD => s.spread = x,
                 _ => {}
             },
-            EffectKind::LayerBlur { radius }
-            | EffectKind::BackgroundBlur { radius }
+            EffectKind::LayerBlur { radius, .. }
+            | EffectKind::BackgroundBlur { radius, .. }
             | EffectKind::Sharpen { radius, .. }
                 if slot == EFFECT_BLUR =>
             {
                 *radius = x
             }
             EffectKind::Glass(g) if slot == EFFECT_BLUR => g.blur = x,
+            // Held to a blur's range here rather than in `number_read`, which
+            // cannot tell this slot from a shadow's spread.
+            EffectKind::LayerBlur { ramp: Some(r), .. }
+            | EffectKind::BackgroundBlur { ramp: Some(r), .. }
+                if slot == EFFECT_SPREAD =>
+            {
+                // `max` first: it answers 0 for `NaN`, where `clamp` would keep it.
+                r.end = x.max(0.0).clamp(0.0, MAX_BLUR)
+            }
             _ => {}
         }
     }
@@ -390,6 +467,25 @@ impl Effect {
         } else {
             x
         }
+    }
+
+    /// This effect with its blur made even or progressive
+    /// ([`EffectKind::with_progressive`]). Turning even drops the end radius's
+    /// binding, or moves it to the radius when the end's literal was the larger.
+    pub fn with_progressive(&self, on: bool) -> Self {
+        let mut out = Self {
+            kind: self.kind.with_progressive(on),
+            ..self.clone()
+        };
+        if !on && let Some(r) = self.kind.ramp() {
+            if let Some(start) = self.numbers()[EFFECT_BLUR]
+                && r.end > start
+            {
+                out.vars[EFFECT_BLUR] = self.vars[EFFECT_SPREAD];
+            }
+            out.vars[EFFECT_SPREAD] = None;
+        }
+        out
     }
 
     /// How far this effect's ink can land outside the geometry it applies to,
@@ -417,8 +513,13 @@ pub enum EffectKind {
     InnerShadow(Shadow),
     /// Blurs the layer's own drawing, children included.
     LayerBlur {
-        /// In the same units as a shadow's blur — see [`BLUR_DEVIATION`].
+        /// In the same units as a shadow's blur — see [`BLUR_DEVIATION`]. A
+        /// progressive blur's radius at its ramp's start.
         radius: f64,
+        /// Set, the blur is progressive: it runs from `radius` to the ramp's end.
+        /// Left out of the file when even, so an even blur saves as it always did.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ramp: Option<BlurRamp>,
     },
     /// An unsharp mask over the layer's own drawing, children included:
     /// `original + amount × (original − blur)`, clamped to the premultiplied
@@ -443,12 +544,140 @@ pub enum EffectKind {
     BackgroundBlur {
         /// As [`Self::LayerBlur`]'s.
         radius: f64,
+        /// As [`Self::LayerBlur`]'s.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ramp: Option<BlurRamp>,
     },
     /// Frosted glass: what lies behind the layer, read as a background blur's
     /// is, blurred, bent at the outline and veiled, drawn under the layer's own
     /// fill; then a lit rim inside the outline, over it.
     Glass(Glass),
     Filters(Filters),
+}
+
+/// How a progressive blur's radius runs across its layer: from the effect's
+/// `radius` at `from` to `end` at `to`, eased by `ease` between them and held at
+/// each end's radius past it, as a gradient's Pad holds its end colours.
+///
+/// The ends are on the layer's box with its sides normalised, `(0, 0)` its
+/// top-left and `(1, 1)` its bottom-right, so a resize carries the ramp with the
+/// box. The one exception is a stack handed to a renderer, whose ends
+/// [`ramps_on_box`] has carried into the layer's own space. Two ends and an ease
+/// only: a sharp middle with soft ends is two effects.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BlurRamp {
+    /// The radius at `to`, in the units of the effect's own radius.
+    pub end: f64,
+    pub from: kurbo::Point,
+    pub to: kurbo::Point,
+    #[serde(default)]
+    pub ease: RampEase,
+}
+
+/// How a [`BlurRamp`]'s radius moves between its ends.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RampEase {
+    Linear,
+    /// Slow at both ends, which hides where the ramp starts and stops.
+    #[default]
+    Smooth,
+}
+
+impl RampEase {
+    /// Both, in the order the popover lists them.
+    pub const ALL: [RampEase; 2] = [Self::Linear, Self::Smooth];
+
+    /// The word the popover shows: the prototype timing's.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Linear => "Linear",
+            Self::Smooth => "Ease in and out",
+        }
+    }
+
+    /// How far between the two radii the blur is at `t` along the ramp, `t`
+    /// held to `0..=1` first. Smooth is the smoothstep `3t² − 2t³`, the curve
+    /// both renderers evaluate.
+    pub fn at(self, t: f64) -> f64 {
+        let t = if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) };
+        match self {
+            Self::Linear => t,
+            Self::Smooth => t * t * (3.0 - 2.0 * t),
+        }
+    }
+}
+
+impl BlurRamp {
+    /// The ramp a blur takes when it turns progressive: from its radius at the top
+    /// of the box to `end` at the bottom, eased.
+    pub fn down(end: f64) -> Self {
+        Self::framed(90.0, end, RampEase::Smooth)
+    }
+
+    /// A ramp at `degrees` across the box, through its centre and reaching its
+    /// corners as CSS frames `linear-gradient(<angle>)`: 0 runs left to right and
+    /// 90 top to bottom. The angle is measured on the normalised box, so 45 runs
+    /// corner to corner on any box.
+    pub fn framed(degrees: f64, end: f64, ease: RampEase) -> Self {
+        let d = kurbo::Vec2::from_angle(degrees.to_radians());
+        let half = (d.x.abs() + d.y.abs()) * 0.5;
+        let c = kurbo::Point::new(0.5, 0.5);
+        Self {
+            end,
+            from: c - d * half,
+            to: c + d * half,
+            ease,
+        }
+    }
+
+    /// The ramp's direction on the normalised box, in degrees `0..360`, 90 for one
+    /// running down. 0 for ends that coincide.
+    pub fn angle(&self) -> f64 {
+        let d = self.to - self.from;
+        if d.hypot() < 1e-12 {
+            return 0.0;
+        }
+        d.y.atan2(d.x).to_degrees().rem_euclid(360.0)
+    }
+
+    /// This ramp turned to `degrees` about the box's centre ([`Self::framed`]),
+    /// its radii and ease kept.
+    pub fn turned(&self, degrees: f64) -> Self {
+        Self::framed(degrees, self.end, self.ease)
+    }
+
+    /// Whether the ends are where [`Self::framed`] puts them for [`Self::angle`],
+    /// so the angle alone says where the ramp is.
+    pub fn is_framed(&self) -> bool {
+        let f = self.turned(self.angle());
+        (f.from - self.from).hypot() < 1e-6 && (f.to - self.to).hypot() < 1e-6
+    }
+
+    /// The radius at `p` on the normalised box for a blur that starts at `start`:
+    /// `p` projected onto the ramp, eased, and held at the ends past them.
+    pub fn radius_at(&self, start: f64, p: kurbo::Point) -> f64 {
+        let d = self.to - self.from;
+        let len2 = d.hypot2();
+        let t = if len2 > 1e-24 {
+            (p - self.from).dot(d) / len2
+        } else {
+            0.0
+        };
+        start + (self.end - start) * self.ease.at(t)
+    }
+
+    /// The ends carried from the normalised box onto `bounds`, in the layer's own
+    /// space: what the renderers read.
+    pub fn on_box(&self, bounds: kurbo::Rect) -> (kurbo::Point, kurbo::Point) {
+        let at = |p: kurbo::Point| {
+            kurbo::Point::new(
+                bounds.x0 + p.x * bounds.width(),
+                bounds.y0 + p.y * bounds.height(),
+            )
+        };
+        (at(self.from), at(self.to))
+    }
 }
 
 impl EffectKind {
@@ -470,7 +699,10 @@ impl EffectKind {
             }
             // Drawn inside the shape's own alpha, so none of it lands outside.
             Self::InnerShadow(_) => Insets::ZERO,
-            Self::LayerBlur { radius } => Insets::uniform(reach(*radius)),
+            // A progressive blur reaches as far as its stronger end does.
+            Self::LayerBlur { .. } => {
+                Insets::uniform(reach(self.larger_layer_blur().unwrap_or(0.0)))
+            }
             // Where the layer is transparent the mask is negative and clamps to
             // nothing, so no ink lands outside; where it reads is `buffer_escape`.
             Self::Sharpen { .. } => Insets::ZERO,
@@ -518,6 +750,7 @@ impl EffectKind {
             Self::InnerShadow(Shadow::default()),
             Self::LayerBlur {
                 radius: DEFAULT_BLUR_RADIUS,
+                ramp: None,
             },
             Self::Sharpen {
                 amount: DEFAULT_SHARPEN_AMOUNT,
@@ -527,10 +760,90 @@ impl EffectKind {
             Self::Texture(crate::noise::Texture::default()),
             Self::BackgroundBlur {
                 radius: DEFAULT_BLUR_RADIUS,
+                ramp: None,
             },
             Self::Glass(Glass::default()),
             Self::Filters(Filters::default()),
         ]
+    }
+
+    /// An even layer blur of `radius`.
+    pub fn layer_blur(radius: f64) -> Self {
+        Self::LayerBlur { radius, ramp: None }
+    }
+
+    /// An even background blur of `radius`.
+    pub fn background_blur(radius: f64) -> Self {
+        Self::BackgroundBlur { radius, ramp: None }
+    }
+
+    /// A blur's ramp, `None` for an even blur and for every other kind.
+    pub fn ramp(&self) -> Option<&BlurRamp> {
+        match self {
+            Self::LayerBlur { ramp, .. } | Self::BackgroundBlur { ramp, .. } => ramp.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Whether this is a blur whose radius changes across the layer: a ramp
+    /// whose end differs from its start. One with equal ends draws as an even
+    /// blur everywhere.
+    pub fn is_progressive(&self) -> bool {
+        match self {
+            Self::LayerBlur { radius, ramp } | Self::BackgroundBlur { radius, ramp } => {
+                ramp.is_some_and(|r| r.end != *radius)
+            }
+            _ => false,
+        }
+    }
+
+    /// A blur's radius and ramp to write, `None` for every other kind.
+    pub fn blur_mut(&mut self) -> Option<(&mut f64, &mut Option<BlurRamp>)> {
+        match self {
+            Self::LayerBlur { radius, ramp } | Self::BackgroundBlur { radius, ramp } => {
+                Some((radius, ramp))
+            }
+            _ => None,
+        }
+    }
+
+    /// Either blur's larger radius: its own when even, the stronger end when
+    /// progressive. `None` for every other kind.
+    pub fn larger_blur(&self) -> Option<f64> {
+        match self {
+            Self::LayerBlur { radius, ramp } | Self::BackgroundBlur { radius, ramp } => {
+                Some(ramp.map_or(*radius, |r| radius.max(r.end)))
+            }
+            _ => None,
+        }
+    }
+
+    /// [`Self::larger_blur`] of a layer blur alone.
+    pub fn larger_layer_blur(&self) -> Option<f64> {
+        match self {
+            Self::LayerBlur { .. } => self.larger_blur(),
+            _ => None,
+        }
+    }
+
+    /// A blur made even or progressive: turning even keeps the larger of the two
+    /// radii, turning progressive starts at the radius and runs down to nothing
+    /// ([`BlurRamp::down`]). Any other kind, or a blur already in that mode, comes
+    /// back as it is.
+    pub fn with_progressive(&self, on: bool) -> Self {
+        let mut out = self.clone();
+        let larger = self.larger_blur();
+        if let (Some((radius, ramp)), Some(larger)) = (out.blur_mut(), larger) {
+            match (on, ramp.is_some()) {
+                (true, false) => *ramp = Some(BlurRamp::down(0.0)),
+                (false, true) => {
+                    *radius = larger;
+                    *ramp = None;
+                }
+                _ => {}
+            }
+        }
+        out
     }
 
     /// Whether these are the same *kind*, whatever the two are holding.
@@ -546,8 +859,9 @@ impl EffectKind {
     ///
     /// Carries across what the two kinds share and defaults the rest, so a retype
     /// does not throw tuned numbers away: the two shadows share every field, the
-    /// shadows, the two blurs and a glass's blur share the radius, and [`Filters`]
-    /// shares nothing.
+    /// two blurs share their radius and ramp, a shadow, a blur and a glass's blur
+    /// share the radius (a progressive blur's larger), and [`Filters`] shares
+    /// nothing.
     /// Nor does a sharpen: its radius is a pixel or two where a blur's is a dozen,
     /// so carrying either across would draw a halo or nothing.
     ///
@@ -570,7 +884,18 @@ impl EffectKind {
                     _ => Self::InnerShadow(shadow),
                 }
             }
-            Self::LayerBlur { .. } => Self::LayerBlur { radius: blur },
+            Self::LayerBlur { .. } | Self::BackgroundBlur { .. } => {
+                let (radius, ramp) = match self {
+                    Self::LayerBlur { radius, ramp } | Self::BackgroundBlur { radius, ramp } => {
+                        (*radius, *ramp)
+                    }
+                    _ => (blur, None),
+                };
+                match to {
+                    Self::LayerBlur { .. } => Self::LayerBlur { radius, ramp },
+                    _ => Self::BackgroundBlur { radius, ramp },
+                }
+            }
             Self::Sharpen { .. } => match self {
                 Self::Sharpen { amount, radius } => Self::Sharpen {
                     amount: *amount,
@@ -581,11 +906,10 @@ impl EffectKind {
                     radius: DEFAULT_SHARPEN_RADIUS,
                 },
             },
-            Self::BackgroundBlur { .. } => Self::BackgroundBlur { radius: blur },
             Self::Glass(_) => match self {
                 Self::Glass(g) => Self::Glass(g.clone()),
                 // No blur to hand over: the glass's own default, not twelve.
-                Self::Sharpen { .. } | Self::Noise(_) | Self::Filters(_) => {
+                Self::Sharpen { .. } | Self::Noise(_) | Self::Texture(_) | Self::Filters(_) => {
                     Self::Glass(Glass::default())
                 }
                 _ => Self::Glass(Glass {
@@ -623,7 +947,9 @@ impl EffectKind {
     fn blur_radius(&self) -> f64 {
         match self {
             Self::DropShadow(s) | Self::InnerShadow(s) => s.blur,
-            Self::LayerBlur { radius } | Self::BackgroundBlur { radius } => *radius,
+            Self::LayerBlur { .. } | Self::BackgroundBlur { .. } => {
+                self.larger_blur().unwrap_or(DEFAULT_BLUR_RADIUS)
+            }
             Self::Glass(g) => g.blur,
             Self::Sharpen { .. } | Self::Noise(_) | Self::Texture(_) | Self::Filters(_) => {
                 DEFAULT_BLUR_RADIUS
@@ -1170,10 +1496,7 @@ pub fn stack_escape(effects: &[Keyed<Effect>]) -> Insets {
     let sigmas: Vec<f64> = effects
         .iter()
         .filter(|e| e.visible)
-        .filter_map(|e| match e.kind {
-            EffectKind::LayerBlur { radius } => Some(deviation(radius)),
-            _ => None,
-        })
+        .filter_map(|e| e.kind.larger_layer_blur().map(deviation))
         .collect();
     let largest = sigmas.iter().copied().fold(0.0_f64, f64::max);
     let blurred = if largest > 0.0 {
@@ -1291,7 +1614,7 @@ mod tests {
     fn a_blurs_reach_is_three_deviations_and_a_deviation_is_half_the_radius() {
         assert_eq!(deviation(12.0), 6.0);
         assert_eq!(reach(12.0), 18.0);
-        let i = Effect::new(EffectKind::LayerBlur { radius: 12.0 }).escape();
+        let i = Effect::new(EffectKind::layer_blur(12.0)).escape();
         assert_eq!(i, Insets::uniform(18.0));
     }
 
@@ -1301,8 +1624,8 @@ mod tests {
     #[test]
     fn two_layer_blurs_convolve_rather_than_summing_or_taking_the_larger() {
         let stack = crate::keyed_by_position([
-            Effect::new(EffectKind::LayerBlur { radius: 12.0 }),
-            Effect::new(EffectKind::LayerBlur { radius: 20.0 / 3.0 }),
+            Effect::new(EffectKind::layer_blur(12.0)),
+            Effect::new(EffectKind::layer_blur(20.0 / 3.0)),
         ]);
         assert_eq!(reach(20.0 / 3.0), 10.0, "the fixture is the size it says");
         let want = (6.0f64.powi(2) + (10.0f64 / 3.0).powi(2)).sqrt() * BLUR_CUTOFF;
@@ -1325,12 +1648,12 @@ mod tests {
     fn background_blurs_compose_into_one_radius_and_escape_nothing() {
         let hidden = Effect {
             visible: false,
-            ..Effect::new(EffectKind::BackgroundBlur { radius: 50.0 })
+            ..Effect::new(EffectKind::background_blur(50.0))
         };
         let stack = crate::keyed_by_position([
-            Effect::new(EffectKind::BackgroundBlur { radius: 6.0 }),
-            Effect::new(EffectKind::BackgroundBlur { radius: 8.0 }),
-            Effect::new(EffectKind::BackgroundBlur { radius: 0.0 }),
+            Effect::new(EffectKind::background_blur(6.0)),
+            Effect::new(EffectKind::background_blur(8.0)),
+            Effect::new(EffectKind::background_blur(0.0)),
             hidden,
         ]);
         let r = backdrop_radius(&stack).expect("two of them blur");
@@ -1338,7 +1661,7 @@ mod tests {
         assert_eq!(stack_escape(&stack), Insets::ZERO);
         assert_eq!(
             backdrop_radius(&crate::keyed_by_position([Effect::new(
-                EffectKind::LayerBlur { radius: 6.0 }
+                EffectKind::layer_blur(6.0)
             )])),
             None,
             "a layer blur is not a background blur"
@@ -1355,7 +1678,7 @@ mod tests {
     #[test]
     fn a_drop_shadow_over_a_layer_blur_reaches_past_both() {
         let stack = crate::keyed_by_position([
-            Effect::new(EffectKind::LayerBlur { radius: 12.0 }),
+            Effect::new(EffectKind::layer_blur(12.0)),
             Effect::new(EffectKind::DropShadow(Shadow {
                 offset: Vec2::new(0.0, 40.0),
                 blur: 4.0,
@@ -1380,7 +1703,7 @@ mod tests {
         // Control: an inner shadow escapes nothing, so stage 1 is the whole answer;
         // a fold that grew every effect by stage 1 would fail here.
         let inner = crate::keyed_by_position([
-            Effect::new(EffectKind::LayerBlur { radius: 12.0 }),
+            Effect::new(EffectKind::layer_blur(12.0)),
             Effect::new(EffectKind::InnerShadow(Shadow {
                 offset: Vec2::new(0.0, 40.0),
                 blur: 4.0,
@@ -1399,7 +1722,7 @@ mod tests {
     /// A hidden effect stops widening the bounds.
     #[test]
     fn a_hidden_effect_reaches_nowhere() {
-        let mut e = Effect::new(EffectKind::LayerBlur { radius: 40.0 });
+        let mut e = Effect::new(EffectKind::layer_blur(40.0));
         assert_ne!(
             e.escape(),
             Insets::ZERO,
@@ -1428,7 +1751,7 @@ mod tests {
     /// four-corner version of `escaped` answers 14.142….
     #[test]
     fn a_rotated_blur_reaches_its_radius_and_not_its_diagonal() {
-        let e = Effect::new(EffectKind::LayerBlur { radius: 20.0 / 3.0 });
+        let e = Effect::new(EffectKind::layer_blur(20.0 / 3.0));
         assert_eq!(reach(20.0 / 3.0), 10.0, "the fixture reaches what it says");
         let turned = kurbo::Affine::rotate(std::f64::consts::FRAC_PI_4);
         let out = escaped(kurbo::Rect::new(0.0, 0.0, 100.0, 100.0), e.escape(), turned);
@@ -1501,13 +1824,13 @@ mod tests {
         assert_eq!(s, tuned, "the whole shadow crosses between the two kinds");
 
         // A shadow and a blur share the radius and nothing else.
-        let EffectKind::LayerBlur { radius } = EffectKind::DropShadow(tuned.clone()).retyped(&blur)
+        let EffectKind::LayerBlur { radius, .. } =
+            EffectKind::DropShadow(tuned.clone()).retyped(&blur)
         else {
             panic!("retyping to a layer blur gave something else");
         };
         assert_eq!(radius, 21.0, "the blur radius crosses, not the default 12");
-        let EffectKind::DropShadow(back) = EffectKind::LayerBlur { radius: 21.0 }.retyped(&drop)
-        else {
+        let EffectKind::DropShadow(back) = EffectKind::layer_blur(21.0).retyped(&drop) else {
             panic!("retyping back to a drop shadow gave something else");
         };
         assert_eq!(back.blur, 21.0, "and it crosses back");
@@ -1517,8 +1840,8 @@ mod tests {
             "what a blur does not carry comes back at its default"
         );
         // The two blurs share their radius.
-        let EffectKind::BackgroundBlur { radius } =
-            EffectKind::LayerBlur { radius: 21.0 }.retyped(&backdrop)
+        let EffectKind::BackgroundBlur { radius, .. } =
+            EffectKind::layer_blur(21.0).retyped(&backdrop)
         else {
             panic!("retyping to a background blur gave something else");
         };
@@ -1527,8 +1850,7 @@ mod tests {
             "a layer blur's radius crosses to a background blur"
         );
         // A glass takes a blur's radius as its blur, and gives it back.
-        let EffectKind::Glass(g) = EffectKind::BackgroundBlur { radius: 21.0 }.retyped(&glass)
-        else {
+        let EffectKind::Glass(g) = EffectKind::background_blur(21.0).retyped(&glass) else {
             panic!("retyping to a glass gave something else");
         };
         assert_eq!(g.blur, 21.0, "the radius crosses, not the glass's 16");
@@ -1537,7 +1859,7 @@ mod tests {
             Glass::default().rim,
             "the rest is the glass's default"
         );
-        let EffectKind::BackgroundBlur { radius } =
+        let EffectKind::BackgroundBlur { radius, .. } =
             EffectKind::Glass(Glass { blur: 9.0, ..g }).retyped(&backdrop)
         else {
             panic!("retyping a glass to a background blur gave something else");
@@ -1550,8 +1872,7 @@ mod tests {
         );
 
         // A sharpen shares nothing with a blur, either way, and keeps its own.
-        let EffectKind::Sharpen { amount, radius } =
-            EffectKind::LayerBlur { radius: 21.0 }.retyped(&sharpen)
+        let EffectKind::Sharpen { amount, radius } = EffectKind::layer_blur(21.0).retyped(&sharpen)
         else {
             panic!("retyping to a sharpen gave something else");
         };
@@ -1565,7 +1886,7 @@ mod tests {
             radius: 3.0,
         };
         assert_eq!(tuned_sharpen.retyped(&sharpen), tuned_sharpen);
-        let EffectKind::LayerBlur { radius } = tuned_sharpen.retyped(&blur) else {
+        let EffectKind::LayerBlur { radius, .. } = tuned_sharpen.retyped(&blur) else {
             panic!("retyping a sharpen to a layer blur gave something else");
         };
         assert_eq!(radius, DEFAULT_BLUR_RADIUS, "nor does a sharpen's cross");
@@ -1591,7 +1912,7 @@ mod tests {
         });
         assert_eq!(tuned_noise.retyped(&noise), tuned_noise);
         assert_eq!(
-            EffectKind::LayerBlur { radius: 3.0 }.retyped(&noise),
+            EffectKind::layer_blur(3.0).retyped(&noise),
             noise,
             "a blur's radius is no noise's size"
         );
@@ -1607,10 +1928,7 @@ mod tests {
         };
         assert_eq!((t.size, t.seed), ([3.0, 5.0], 9), "the grain crosses");
         assert_eq!(t.amount, crate::noise::Texture::default().amount);
-        assert_eq!(
-            EffectKind::LayerBlur { radius: 3.0 }.retyped(&texture),
-            texture
-        );
+        assert_eq!(EffectKind::layer_blur(3.0).retyped(&texture), texture);
     }
 
     /// A texture runs first, so a layer blur after it and a drop shadow cast
@@ -1633,7 +1951,7 @@ mod tests {
         };
         let stack = crate::keyed_by_position([
             Effect::new(EffectKind::DropShadow(shadow)),
-            Effect::new(EffectKind::LayerBlur { radius: 2.0 }),
+            Effect::new(EffectKind::layer_blur(2.0)),
             texture,
         ]);
         assert_eq!(
@@ -1660,8 +1978,7 @@ mod tests {
             radius: 4.0,
         });
         assert_eq!(sharpen.escape(), Insets::ZERO);
-        let stack =
-            crate::keyed_by_position([Effect::new(EffectKind::LayerBlur { radius: 2.0 }), sharpen]);
+        let stack = crate::keyed_by_position([Effect::new(EffectKind::layer_blur(2.0)), sharpen]);
         assert_eq!(stack_escape(&stack), Insets::uniform(reach(2.0)));
         assert_eq!(
             buffer_escape(&stack),
@@ -1799,7 +2116,7 @@ mod tests {
         assert_eq!(backdrop_reach(&stack), Some(reach(16.0) + 12.0));
         assert_eq!(stack_escape(&stack), Insets::ZERO);
         let both = crate::keyed_by_position([
-            Effect::new(EffectKind::BackgroundBlur { radius: 10.0 }),
+            Effect::new(EffectKind::background_blur(10.0)),
             glass.clone(),
         ]);
         assert_eq!(
@@ -1836,7 +2153,8 @@ mod tests {
                 EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
                     assert!(s.blur > 0.0 && s.color.components[3] > 0.0, "{kind:?}");
                 }
-                EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius } => {
+                EffectKind::LayerBlur { radius, .. }
+                | EffectKind::BackgroundBlur { radius, .. } => {
                     assert_eq!(*radius, Shadow::default().blur, "{kind:?}");
                 }
                 EffectKind::Sharpen { amount, radius } => {
@@ -1897,7 +2215,7 @@ mod tests {
     /// outlasts Windows' two-second GPU reset (§15 D395).
     #[test]
     fn a_blurs_kernel_stops_growing_once_the_buffer_starts_shrinking() {
-        let fx = crate::keyed_by_position([Effect::new(EffectKind::LayerBlur { radius: 55.5 })]);
+        let fx = crate::keyed_by_position([Effect::new(EffectKind::layer_blur(55.5))]);
         // 1x: deviation 27.75, under the budget's deadband, so nothing changes.
         assert_eq!(buffer_downscale(&fx, (1.0, 1.0)), 1.0);
         for zoom in [4.0, 8.0, 16.0, 64.0, 1000.0] {
@@ -1914,7 +2232,7 @@ mod tests {
     /// not wide enough to hide the resampling.
     #[test]
     fn a_shallow_downscale_is_declined_rather_than_taken() {
-        let fx = crate::keyed_by_position([Effect::new(EffectKind::LayerBlur { radius: 55.5 })]);
+        let fx = crate::keyed_by_position([Effect::new(EffectKind::layer_blur(55.5))]);
         // Just under 2x, and just over.
         assert_eq!(buffer_downscale(&fx, (1.7, 1.7)), 1.0);
         assert!(buffer_downscale(&fx, (1.8, 1.8)) > 2.0);
@@ -1943,7 +2261,7 @@ mod tests {
         }
         // And a stack holding both is bounded by the *layer* blur, not the shadow's.
         let fx = crate::keyed_by_position([
-            Effect::new(EffectKind::LayerBlur { radius: 55.5 }),
+            Effect::new(EffectKind::layer_blur(55.5)),
             Effect::new(EffectKind::DropShadow(huge)),
         ]);
         assert_eq!(layer_blur_deviation(&fx), deviation(55.5));
@@ -1954,7 +2272,7 @@ mod tests {
     #[test]
     fn a_hidden_blur_does_not_buy_a_downscale() {
         let fx = crate::keyed_by_position([Effect {
-            kind: EffectKind::LayerBlur { radius: 55.5 },
+            kind: EffectKind::layer_blur(55.5),
             visible: false,
             vars: Default::default(),
         }]);
@@ -1965,7 +2283,7 @@ mod tests {
     /// downscale; one before it is blurred with the layer and keeps it.
     #[test]
     fn a_noise_after_the_blur_takes_back_its_downscale() {
-        let blur = || Effect::new(EffectKind::LayerBlur { radius: 55.5 });
+        let blur = || Effect::new(EffectKind::layer_blur(55.5));
         let noise = || Effect::new(EffectKind::Noise(crate::Noise::default()));
         let after = crate::keyed_by_position([blur(), noise()]);
         let before = crate::keyed_by_position([noise(), blur()]);
@@ -2030,5 +2348,133 @@ mod tests {
             "only {} of a {budget} budget was spent",
             got.area()
         );
+    }
+
+    fn progressive(radius: f64, end: f64) -> EffectKind {
+        EffectKind::LayerBlur {
+            radius,
+            ramp: Some(BlurRamp::down(end)),
+        }
+    }
+
+    /// An even blur saves exactly as before the ramp existed, and loads from that
+    /// file; a progressive one saves its ramp and loads back equal.
+    ///
+    /// flip: dropping the ramp's `skip_serializing_if` → fails at the even form.
+    #[test]
+    fn an_even_blur_saves_as_it_always_did_and_a_ramp_round_trips() {
+        let even = Effect::new(EffectKind::background_blur(24.0));
+        let json = serde_json::to_value(&even).expect("serializes");
+        assert_eq!(
+            json["kind"],
+            serde_json::json!({ "type": "background_blur", "radius": 24.0 }),
+            "no ramp key"
+        );
+        let old: Effect = serde_json::from_value(
+            serde_json::json!({ "kind": { "type": "layer_blur", "radius": 3.0 }, "visible": true }),
+        )
+        .expect("an old file loads");
+        assert_eq!(old.kind, EffectKind::layer_blur(3.0));
+        let ramped = Effect::new(progressive(24.0, 0.0));
+        let json = serde_json::to_value(&ramped).expect("serializes");
+        assert_eq!(json["kind"]["ramp"]["ease"], "smooth");
+        let back: Effect = serde_json::from_value(json).expect("deserializes");
+        assert_eq!(back, ramped);
+    }
+
+    /// A progressive blur reaches as far as its stronger end and licenses a
+    /// downscale only as far as its sharper one.
+    ///
+    /// flip: `EffectKind::escape` reading the start radius alone → fails at the
+    /// escape assertion.
+    #[test]
+    fn a_ramp_reaches_by_its_stronger_end_and_downscales_by_its_weaker() {
+        let e = Effect::new(progressive(0.0, 40.0));
+        assert_eq!(e.escape(), Insets::uniform(reach(40.0)), "the escape");
+        let stack = crate::keyed_by_position([e]);
+        assert_eq!(stack_escape(&stack), Insets::uniform(reach(40.0)));
+        assert_eq!(
+            layer_blur_deviation(&stack),
+            0.0,
+            "the sharp end stays sharp"
+        );
+        assert_eq!(buffer_downscale(&stack, (64.0, 64.0)), 1.0);
+    }
+
+    /// Turning even keeps the larger radius, and the end's binding with it;
+    /// turning progressive starts a ramp running down to nothing.
+    ///
+    /// flip: `with_progressive` keeping the start radius → fails at the radius.
+    #[test]
+    fn turning_even_keeps_the_larger_radius() {
+        let var = crate::IdSource::new(7).mint_var();
+        let mut e = Effect::new(progressive(4.0, 30.0));
+        e.vars[EFFECT_SPREAD] = Some(var);
+        let even = e.with_progressive(false);
+        assert_eq!(even.kind, EffectKind::layer_blur(30.0), "the radius");
+        assert_eq!(
+            even.vars[EFFECT_BLUR],
+            Some(var),
+            "the end's binding moves over"
+        );
+        assert_eq!(even.vars[EFFECT_SPREAD], None);
+        let back = even.with_progressive(true);
+        assert_eq!(back.kind, progressive(30.0, 0.0));
+    }
+
+    /// The end radius is the spread slot's number, written within a blur's range.
+    ///
+    /// flip: `set_number`'s end arm writing `x` unheld → fails at the cap.
+    #[test]
+    fn the_end_radius_binds_in_the_spread_slot() {
+        let mut e = Effect::new(progressive(4.0, 8.0));
+        assert_eq!(e.numbers(), [None, None, Some(4.0), Some(8.0)]);
+        e.set_number(EFFECT_SPREAD, 1e9);
+        assert_eq!(e.numbers()[EFFECT_SPREAD], Some(MAX_BLUR), "the cap");
+        e.set_number(EFFECT_SPREAD, -3.0);
+        assert_eq!(e.numbers()[EFFECT_SPREAD], Some(0.0));
+        let mut even = Effect::new(EffectKind::layer_blur(4.0));
+        even.set_number(EFFECT_SPREAD, 9.0);
+        assert_eq!(
+            even.numbers()[EFFECT_SPREAD],
+            None,
+            "an even blur has no end"
+        );
+    }
+
+    /// A background ramp composes the other background blurs into both of its
+    /// ends, and the damage reach is the larger end's.
+    #[test]
+    fn background_blurs_compose_onto_one_ramp() {
+        let stack = crate::keyed_by_position([
+            Effect::new(EffectKind::background_blur(6.0)),
+            Effect::new(EffectKind::BackgroundBlur {
+                radius: 8.0,
+                ramp: Some(BlurRamp::down(0.0)),
+            }),
+        ]);
+        let (start, ramp) = backdrop_blur(&stack).expect("blurs");
+        let ramp = ramp.expect("progressive");
+        assert!((start - 10.0).abs() < 1e-9, "√(36 + 64): {start}");
+        assert!((ramp.end - 6.0).abs() < 1e-9, "√(36 + 0): {}", ramp.end);
+        assert!((backdrop_radius(&stack).unwrap() - 10.0).abs() < 1e-9);
+    }
+
+    /// A framed ramp's angle reads back, 90 runs top to bottom, and past either
+    /// end the radius holds that end's.
+    #[test]
+    fn a_ramp_is_framed_by_its_angle_and_pads_past_its_ends() {
+        let down = BlurRamp::down(0.0);
+        assert!((down.from - kurbo::Point::new(0.5, 0.0)).hypot() < 1e-9);
+        assert!((down.to - kurbo::Point::new(0.5, 1.0)).hypot() < 1e-9);
+        for deg in [0.0, 45.0, 90.0, 200.0] {
+            let r = BlurRamp::framed(deg, 0.0, RampEase::Linear);
+            assert!((r.angle() - deg).abs() < 1e-9 && r.is_framed(), "{deg}");
+        }
+        let at = |y: f64| down.radius_at(24.0, kurbo::Point::new(0.3, y));
+        assert_eq!(at(-1.0), 24.0, "before the start");
+        assert_eq!(at(2.0), 0.0, "past the end");
+        assert_eq!(at(0.5), 12.0, "the eased middle");
+        assert!(at(0.25) > 18.0, "eased, slow off the start: {}", at(0.25));
     }
 }

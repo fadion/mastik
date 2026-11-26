@@ -3097,7 +3097,7 @@ fn an_undo_putting_back_a_refused_value_reaches_the_player() {
         .apply_restoring(&Transaction(vec![Operation::SetEffects {
             id: blurred,
             effects: mastik_core::keyed_by_position([mastik_core::Effect::new(
-                mastik_core::EffectKind::LayerBlur { radius: past },
+                mastik_core::EffectKind::layer_blur(past),
             )]),
         }]))
         .expect("a file's value, as the loader keeps it");

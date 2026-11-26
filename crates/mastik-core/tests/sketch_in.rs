@@ -967,7 +967,7 @@ fn a_background_blur_lands_as_one() {
     assert!(
         matches!(
             node.effects()[..],
-            [ref e] if matches!(e.kind, mastik_core::EffectKind::BackgroundBlur { radius } if radius == 10.0)
+            [ref e] if matches!(e.kind, mastik_core::EffectKind::BackgroundBlur { radius, .. } if radius == 10.0)
         ),
         "{:?}",
         node.effects()

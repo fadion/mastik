@@ -479,10 +479,8 @@ fn run_random_session_with(seed: u64, layout: bool, grid: bool) {
                     0 => vec![],
                     // With a glass beside it, which `glass_within` reads.
                     1 => vec![
-                        Effect::new(EffectKind::LayerBlur {
-                            radius: rng.next_range(40) as f64,
-                        }),
-                        Effect::new(EffectKind::BackgroundBlur { radius: 6.0 }),
+                        Effect::new(EffectKind::layer_blur(rng.next_range(40) as f64)),
+                        Effect::new(EffectKind::background_blur(6.0)),
                     ],
                     2 => vec![Effect::new(EffectKind::DropShadow(Shadow {
                         offset: Vec2::new(
