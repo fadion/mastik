@@ -1360,6 +1360,9 @@ pub mod icon {
     /// dots of two sizes, loose where [`SQUARE_DOTS`]' grid (background blur) and
     /// [`LAYER_BLUR`]'s are ordered.
     pub const GRAIN: &str = "\u{f088}";
+    /// The **glass** effect's row glyph: a rounded pane with a highlight arc in
+    /// its top-left corner. Not [`SQUARE_DOTS`], the background blur it extends.
+    pub const GLASS: &str = "\u{f099}";
     /// *System health*: a pulse line. Not [`GAUGE`], whose dial is JPEG quality.
     pub const PULSE: &str = "\u{f089}";
     /// A prototype's interactions: a pointer clicking, with the click's rays.
@@ -1683,6 +1686,7 @@ pub mod icon {
         ("chart-sankey", CHART_SANKEY),
         ("chart-waterfall", CHART_WATERFALL),
         ("chart-radar", CHART_RADAR),
+        ("glass", GLASS),
         ("table", TABLE),
         ("visual-centre", VISUAL_CENTRE),
         ("size-preview", SIZE_PREVIEW),

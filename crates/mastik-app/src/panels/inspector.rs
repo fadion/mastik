@@ -523,7 +523,7 @@ struct EffectRowOut {
     /// Its grip began a drag: the row is being carried to a new place in the stack.
     grabbed: bool,
 }
-/// The glyph an effect row wears; the seven read as one set.
+/// The glyph an effect row wears; the eight read as one set.
 fn effect_glyph(kind: &EffectKind) -> &'static str {
     match kind {
         EffectKind::DropShadow(_) => icon::DROP_HALF_BOTTOM,
@@ -532,6 +532,7 @@ fn effect_glyph(kind: &EffectKind) -> &'static str {
         EffectKind::Sharpen { .. } => icon::SHARPEN,
         EffectKind::Noise(_) => icon::GRAIN,
         EffectKind::BackgroundBlur { .. } => icon::SQUARE_DOTS,
+        EffectKind::Glass(_) => icon::GLASS,
         EffectKind::Filters(_) => icon::SUN,
     }
 }
@@ -554,8 +555,8 @@ fn effects_step_glyph(before: &[Keyed<Effect>], after: &[Keyed<Effect>]) -> &'st
 }
 /// The number at the right-hand end of an effect row.
 ///
-/// A shadow's alpha, a blur's radius, a sharpen's amount and radius
-/// (`60% · 1.5`), a noise's density, or how many filter channels are off
+/// A shadow's alpha, a blur's or a glass's radius, a sharpen's amount and
+/// radius (`60% · 1.5`), a noise's density, or how many filter channels are off
 /// neutral ([`mastik_core::Filters::changed`]).
 fn effect_summary(kind: &EffectKind) -> String {
     match kind {
@@ -565,6 +566,7 @@ fn effect_summary(kind: &EffectKind) -> String {
         EffectKind::LayerBlur { radius } | EffectKind::BackgroundBlur { radius } => {
             ui::number(2)(*radius, 0..=2)
         }
+        EffectKind::Glass(g) => ui::number(2)(g.blur, 0..=2),
         EffectKind::Sharpen { amount, radius } => {
             format!("{:.0}% · {}", amount * 100.0, ui::number(2)(*radius, 0..=2))
         }
@@ -594,6 +596,10 @@ fn effect_hint(kind: &EffectKind) -> &'static str {
         }
         EffectKind::BackgroundBlur { .. } => {
             "Blurs what lies behind the layer, inside its outline. The number is the radius"
+        }
+        EffectKind::Glass(_) => {
+            "Frosted glass: blurs and bends what lies behind the layer, with a lit rim. A \
+             translucent fill lets it show. The number is the blur's radius"
         }
         EffectKind::Filters(_) => {
             "Brightness, contrast, saturation and hue. The number is how many are off their \
@@ -11081,6 +11087,172 @@ impl MastikApp {
                                 );
                             }
                         }
+                        EffectKind::Glass(g) => {
+                            let g = g.clone();
+                            let cell = egui::vec2(half, CELL);
+                            // A fraction as a plain percent field, as a sharpen's
+                            // amount: meters are the photo adjustments'.
+                            let percent = |ui: &mut egui::Ui,
+                                           size: egui::Vec2,
+                                           word: &'static str,
+                                           value: f64,
+                                           hint: &'static str| {
+                                let mut shown = value * 100.0;
+                                let resp = ui::value_field(
+                                    ui,
+                                    size,
+                                    Prefix::Text(word),
+                                    &mut shown,
+                                    Scrub::whole(0.25).range(0.0..=100.0),
+                                    |d| d.suffix("%").max_decimals(0),
+                                )
+                                .on_hover_text(hint);
+                                (resp, (shown / 100.0).clamp(0.0, 1.0))
+                            };
+                            // A length in the layer's units, as a shadow's offset.
+                            let length = |ui: &mut egui::Ui,
+                                          word: &'static str,
+                                          value: f64,
+                                          hint: &'static str| {
+                                let mut shown = value;
+                                let resp = ui::value_field(
+                                    ui,
+                                    cell,
+                                    Prefix::Text(word),
+                                    &mut shown,
+                                    Scrub::whole(0.5).range(0.0..=MAX_BLUR),
+                                    |d| d.custom_formatter(ui::number(2)),
+                                )
+                                .on_hover_text(hint);
+                                (resp, shown.clamp(0.0, MAX_BLUR))
+                            };
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = COL;
+                                if let Some(r) = self.effect_number_field(
+                                    ui,
+                                    subjects,
+                                    index,
+                                    mastik_core::EFFECT_BLUR,
+                                    "Blur",
+                                    cell,
+                                    g.blur,
+                                    0.0..=MAX_BLUR,
+                                ) {
+                                    let _ = r.on_hover_text(
+                                        "How far what lies behind the layer is blurred",
+                                    );
+                                }
+                                let (resp, v) = percent(
+                                    ui,
+                                    cell,
+                                    "Frost",
+                                    g.frost,
+                                    "A white veil over the blur, so a clear fill still reads \
+                                     as glass",
+                                );
+                                self.effect_valve(&resp, subjects, index, move |k| {
+                                    if let EffectKind::Glass(g) = k {
+                                        g.frost = v;
+                                    }
+                                });
+                            });
+                            // Eyebrows rather than folds: every control shows at once.
+                            ui.scope(|ui| {
+                                ui.spacing_mut().item_spacing.y = ui::SECTION_LABEL_GAP;
+                                ui.label(ui::eyebrow("Edge"));
+                                ui.scope(|ui| {
+                                    ui.spacing_mut().item_spacing.y = ui::CARD_ROW_GAP;
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = COL;
+                                        let (resp, v) = percent(
+                                            ui,
+                                            cell,
+                                            "Bend",
+                                            g.bend,
+                                            "How far what lies behind bends at the outline",
+                                        );
+                                        self.effect_valve(&resp, subjects, index, move |k| {
+                                            if let EffectKind::Glass(g) = k {
+                                                g.bend = v;
+                                            }
+                                        });
+                                        let (resp, v) = length(
+                                            ui,
+                                            "Depth",
+                                            g.depth,
+                                            "How far in from the outline the bend reaches, in \
+                                             the layer's units",
+                                        );
+                                        self.effect_valve(&resp, subjects, index, move |k| {
+                                            if let EffectKind::Glass(g) = k {
+                                                g.depth = v;
+                                            }
+                                        });
+                                    });
+                                    let (resp, v) = percent(
+                                        ui,
+                                        egui::vec2(inner, CELL),
+                                        "Dispersion",
+                                        g.dispersion,
+                                        "Splits the bent edge into a warm and a cool fringe",
+                                    );
+                                    self.effect_valve(&resp, subjects, index, move |k| {
+                                        if let EffectKind::Glass(g) = k {
+                                            g.dispersion = v;
+                                        }
+                                    });
+                                });
+                            });
+                            ui.scope(|ui| {
+                                ui.spacing_mut().item_spacing.y = ui::SECTION_LABEL_GAP;
+                                ui.label(ui::eyebrow("Rim"));
+                                ui.scope(|ui| {
+                                    ui.spacing_mut().item_spacing.y = ui::CARD_ROW_GAP;
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = COL;
+                                        // The gradient's angle field, glyph and range.
+                                        let mut deg = g.rim.angle.rem_euclid(360.0);
+                                        let resp = ui::value_field(
+                                            ui,
+                                            cell,
+                                            Prefix::Icon(icon::ROTATION),
+                                            &mut deg,
+                                            Scrub::whole(0.5).range(0.0..=360.0),
+                                            |d| d.suffix("°").max_decimals(0),
+                                        )
+                                        .on_hover_text(
+                                            "Where the light comes from: 90° is above, 180° \
+                                             the left",
+                                        );
+                                        self.effect_valve(&resp, subjects, index, move |k| {
+                                            if let EffectKind::Glass(g) = k {
+                                                g.rim.angle = deg % 360.0;
+                                            }
+                                        });
+                                        let (resp, v) = length(
+                                            ui,
+                                            "Width",
+                                            g.rim.width,
+                                            "How far in from the outline the rim reaches",
+                                        );
+                                        self.effect_valve(&resp, subjects, index, move |k| {
+                                            if let EffectKind::Glass(g) = k {
+                                                g.rim.width = v;
+                                            }
+                                        });
+                                    });
+                                    self.slot_color_row(
+                                        ui,
+                                        id,
+                                        PaintSlot::Effect(index, 0),
+                                        egui::vec2(inner, CELL),
+                                        g.rim.color,
+                                        true,
+                                        "Edit the rim's colour",
+                                    );
+                                });
+                            });
+                        }
                         EffectKind::Filters(f) => {
                             let f = *f;
                             for channel in mastik_core::FilterChannel::ALL {
@@ -19165,7 +19337,7 @@ mod effects_panel_tests {
     /// is absent rather than dimmed. Field prefixes are checked, not the title.
     #[test]
     fn each_kinds_popover_holds_that_kinds_numbers() {
-        let want: [(EffectKind, &[&str]); 6] = [
+        let want: [(EffectKind, &[&str]); 7] = [
             (
                 EffectKind::DropShadow(Default::default()),
                 &["X", "Y", "Blur", "Spread"],
@@ -19185,6 +19357,20 @@ mod effects_panel_tests {
             (
                 EffectKind::Noise(Default::default()),
                 &["W", "H", "Density", "Seed", "Multicolour"],
+            ),
+            (
+                EffectKind::Glass(Default::default()),
+                &[
+                    "Blur",
+                    "Frost",
+                    "EDGE",
+                    "Bend",
+                    "Depth",
+                    "Dispersion",
+                    "RIM",
+                    "Width",
+                    "FFFFFF",
+                ],
             ),
             (
                 EffectKind::Filters(Default::default()),

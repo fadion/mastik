@@ -561,12 +561,14 @@ impl PaintSlot {
 }
 
 /// Colour `end` of an effect, as [`PaintSlot::Effect`] names it: a shadow's one
-/// at 0, a two-colour noise's first or second. `None` for a kind or an end with
-/// no colour, a multicolour noise's included, which closes a picker left open on it.
+/// at 0, a glass's rim at 0, a two-colour noise's first or second. `None` for a
+/// kind or an end with no colour, a multicolour noise's included, which closes a
+/// picker left open on it.
 pub fn effect_colour(kind: &mastik_core::EffectKind, end: usize) -> Option<Color> {
     use mastik_core::EffectKind as E;
     match kind {
         E::DropShadow(s) | E::InnerShadow(s) if end == 0 => Some(s.color),
+        E::Glass(g) if end == 0 => Some(g.rim.color),
         E::Noise(n) if !n.multi => n.colors.get(end).copied(),
         _ => None,
     }
@@ -578,6 +580,7 @@ pub fn set_effect_colour(kind: &mut mastik_core::EffectKind, end: usize, colour:
     use mastik_core::EffectKind as E;
     match kind {
         E::DropShadow(s) | E::InnerShadow(s) if end == 0 => s.color = colour,
+        E::Glass(g) if end == 0 => g.rim.color = colour,
         E::Noise(n) if !n.multi && end < 2 => n.colors[end] = colour,
         _ => return false,
     }
