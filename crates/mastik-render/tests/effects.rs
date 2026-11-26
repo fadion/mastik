@@ -199,7 +199,7 @@ fn a_noise_after_a_heavy_blur_keeps_its_grain() {
             ..Default::default()
         }))
     };
-    let blur = Effect::new(EffectKind::LayerBlur { radius: 100.0 });
+    let blur = Effect::new(EffectKind::layer_blur(100.0));
     assert!(
         mastik_core::effect::buffer_downscale(&keyed_by_position([blur.clone()]), (1.0, 1.0)) > 1.0,
         "the blur alone earns a downscale"
@@ -349,7 +349,7 @@ fn a_shadows_alpha_falls_off_across_the_blur_rather_than_stopping_at_an_edge() {
 /// buffer sized to the geometry rather than to `ink_bounds` would clip it square.
 #[test]
 fn a_layer_blur_spreads_the_layer_past_its_own_edge() {
-    let (px, w) = render(vec![Effect::new(EffectKind::LayerBlur { radius: 8.0 })]);
+    let (px, w) = render(vec![Effect::new(EffectKind::layer_blur(8.0))]);
     let outside = at(&px, w, 50, 74).3;
     assert!(
         outside > 0,
@@ -357,6 +357,44 @@ fn a_layer_blur_spreads_the_layer_past_its_own_edge() {
     );
     let centre = at(&px, w, 50, 50).3;
     assert_eq!(centre, 255, "and the middle is still solid: {centre}");
+}
+
+/// **A progressive layer blur is sharp at its start and soft at its end**: run
+/// down the square from 0 to 16, the top edge stays crisp and the bottom one
+/// spreads past the square, and the left edge softens on the way down.
+///
+/// flip: dropping `effects::run`'s progressive arm → fails at the bottom
+/// assertion (an even blur of the start's 0); `paint_node_pass` without
+/// `ramps_on_box` → fails at the left edge assertion (the ramp read in layer
+/// units is past its end almost everywhere).
+#[test]
+fn a_progressive_blur_is_sharp_at_its_start_and_soft_at_its_end() {
+    let (px, w) = render(vec![Effect::new(EffectKind::LayerBlur {
+        radius: 0.0,
+        ramp: Some(mastik_core::BlurRamp::framed(
+            90.0,
+            16.0,
+            mastik_core::RampEase::Linear,
+        )),
+    })]);
+    let above = at(&px, w, 50, 28).3;
+    let below = at(&px, w, 50, 72).3;
+    assert!(above < 8, "the top edge stays sharp: {above}");
+    assert!(
+        below > 40,
+        "the bottom edge spreads past the square: {below}"
+    );
+    let left_top = at(&px, w, 28, 33).3;
+    let left_bottom = at(&px, w, 28, 67).3;
+    assert!(
+        left_bottom > left_top + 30,
+        "the left edge softens on the way down: {left_top} then {left_bottom}"
+    );
+    let inside = at(&px, w, 50, 35).3;
+    assert!(
+        inside >= 250,
+        "inside near the top is all but solid: {inside}"
+    );
 }
 
 /// The square greyed by a `Filters` row and then sharpened: what the PNG export
@@ -499,10 +537,7 @@ fn a_stack_with_no_ink_composites_identically_to_no_stack_at_all() {
             "neutral filters",
             vec![Effect::new(EffectKind::Filters(Filters::default()))],
         ),
-        (
-            "zero blur",
-            vec![Effect::new(EffectKind::LayerBlur { radius: 0.0 })],
-        ),
+        ("zero blur", vec![Effect::new(EffectKind::layer_blur(0.0))]),
     ] {
         let (out, _) = render(stack);
         assert!(out == plain, "{label}: the page must be byte-identical");

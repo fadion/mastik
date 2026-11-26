@@ -887,8 +887,44 @@ fn mix(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
 }
 
+/// Two blurs of one kind at `t` between them: the radius and, when either is
+/// progressive, the ramp's end radius and ends. An even blur moves as a ramp of
+/// the other's ends holding its radius at both, so it eases in and out of
+/// progressive; the ease is the end's.
+fn lerp_blur(
+    a: &EffectKind,
+    b: &EffectKind,
+    t: f64,
+) -> Option<(f64, Option<mastik_core::BlurRamp>)> {
+    let start = |k: &EffectKind| match k {
+        EffectKind::LayerBlur { radius, .. } | EffectKind::BackgroundBlur { radius, .. } => {
+            Some(*radius)
+        }
+        _ => None,
+    };
+    let (ra, rb) = (start(a)?, start(b)?);
+    let radius = mix(ra, rb, t).max(0.0);
+    let ramp = match (a.ramp(), b.ramp()) {
+        (None, None) => None,
+        (pa, pb) => {
+            let even =
+                |r: f64, other: &mastik_core::BlurRamp| mastik_core::BlurRamp { end: r, ..*other };
+            let shape = pb.or(pa)?;
+            let pa = pa.copied().unwrap_or_else(|| even(ra, shape));
+            let pb = pb.copied().unwrap_or_else(|| even(rb, shape));
+            Some(mastik_core::BlurRamp {
+                end: mix(pa.end, pb.end, t).max(0.0),
+                from: pa.from.lerp(pb.from, t),
+                to: pa.to.lerp(pb.to, t),
+                ease: pb.ease,
+            })
+        }
+    };
+    Some((radius, ramp))
+}
+
 /// Two effect stacks at `t` between them: shadows' offsets, blurs, spreads and
-/// colours and the blurs' radii move. `None` when the stacks are not the same
+/// colours and the blurs' radii and ramps move. `None` when the stacks are not the same
 /// kinds in the same order, which then show the end's at once.
 fn lerp_effects(a: &[Keyed<Effect>], b: &[Keyed<Effect>], t: f64) -> Option<Vec<Keyed<Effect>>> {
     if a.len() != b.len() {
@@ -911,17 +947,15 @@ fn lerp_effects(a: &[Keyed<Effect>], b: &[Keyed<Effect>], t: f64) -> Option<Vec<
                 (EffectKind::InnerShadow(p), EffectKind::InnerShadow(q)) => {
                     EffectKind::InnerShadow(shadow(p, q))
                 }
-                (EffectKind::LayerBlur { radius: p }, EffectKind::LayerBlur { radius: q }) => {
-                    EffectKind::LayerBlur {
-                        radius: mix(*p, *q, t).max(0.0),
+                (p @ EffectKind::LayerBlur { .. }, q @ EffectKind::LayerBlur { .. })
+                | (p @ EffectKind::BackgroundBlur { .. }, q @ EffectKind::BackgroundBlur { .. }) => {
+                    let mut out = q.clone();
+                    if let (Some(from), Some((radius, ramp))) = (lerp_blur(p, q, t), out.blur_mut())
+                    {
+                        (*radius, *ramp) = from;
                     }
+                    out
                 }
-                (
-                    EffectKind::BackgroundBlur { radius: p },
-                    EffectKind::BackgroundBlur { radius: q },
-                ) => EffectKind::BackgroundBlur {
-                    radius: mix(*p, *q, t).max(0.0),
-                },
                 (p, q) if std::mem::discriminant(p) == std::mem::discriminant(q) => q.clone(),
                 _ => return None,
             };
@@ -1112,6 +1146,26 @@ pub(crate) fn lerp_affine(a: Affine, b: Affine, t: f64) -> Affine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An even blur eases into a progressive one: half way, the start radius is
+    /// the two starts' mix and the end the even radius mixed with the ramp's end.
+    ///
+    /// flip: `lerp_effects`' blur arm keeping the end's kind whole → fails at the
+    /// start radius.
+    #[test]
+    fn an_even_blur_eases_into_a_ramp() {
+        let a = mastik_core::keyed_by_position([Effect::new(EffectKind::layer_blur(10.0))]);
+        let b = mastik_core::keyed_by_position([Effect::new(EffectKind::LayerBlur {
+            radius: 20.0,
+            ramp: Some(mastik_core::BlurRamp::down(0.0)),
+        })]);
+        let mid = lerp_effects(&a, &b, 0.5).expect("the same kinds");
+        let EffectKind::LayerBlur { radius, ramp } = &mid[0].kind else {
+            panic!("a layer blur");
+        };
+        assert_eq!(*radius, 15.0, "the start radius");
+        assert_eq!(ramp.expect("progressive").end, 5.0, "10 eased towards 0");
+    }
 
     /// A turn interpolates the angle, not the matrix, so the half-way shape keeps
     /// its size.

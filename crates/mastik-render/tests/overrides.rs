@@ -2494,7 +2494,7 @@ fn previewing_a_bigger_effect_asks_for_the_bigger_buffer() {
     for (what, effects) in [
         (
             "a softer blur",
-            vec![Effect::new(EffectKind::LayerBlur { radius: 60.0 })],
+            vec![Effect::new(EffectKind::layer_blur(60.0))],
         ),
         (
             "a farther shadow",

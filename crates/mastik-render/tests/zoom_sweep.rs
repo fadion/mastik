@@ -105,8 +105,8 @@ fn synthetic(paths: usize) -> (Document, Rect) {
             name: Some(format!("Group {i}")),
         });
         let fx = match i {
-            1 => vec![Effect::new(EffectKind::LayerBlur { radius: 55.5 })],
-            4 => vec![Effect::new(EffectKind::LayerBlur { radius: 24.0 })],
+            1 => vec![Effect::new(EffectKind::layer_blur(55.5))],
+            4 => vec![Effect::new(EffectKind::layer_blur(24.0))],
             2 => vec![Effect::new(EffectKind::DropShadow(mastik_core::Shadow {
                 // A shadow's kernel is the one term §15 D395 left growing with the
                 // zoom on purpose (only a `LayerBlur` may buy a downscale), so it

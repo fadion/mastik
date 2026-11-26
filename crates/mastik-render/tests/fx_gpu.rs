@@ -360,10 +360,68 @@ fn colour_filters_match_the_reference() {
 #[test]
 #[ignore = "requires a GPU adapter"]
 fn a_layer_blur_matches_the_reference() {
-    check(
-        "layer blur",
-        vec![Effect::new(EffectKind::LayerBlur { radius: 9.0 })],
-    );
+    check("layer blur", vec![Effect::new(EffectKind::layer_blur(9.0))]);
+}
+
+/// A progressive layer blur, its ramp across the fixture's layer space (see
+/// `local`): eased and diagonal, then linear and wide enough that its top rungs
+/// are blurred on the coarse grid.
+///
+/// Compared premultiplied, as the passes work: a rung's mix weight is a float
+/// the two backends may round a hair apart, which moves a faint pixel's
+/// premultiplied colour by one level and its straight colour by up to 255/alpha.
+///
+/// flip: `fx.wgsl`'s `ramp_position` skipping the ease → fails at the first
+/// comparison. `Runner::blur_rung` never resampling does not bite: over this
+/// fixture a rung at σ 60 blurs within a level of its coarse twin, so the
+/// second case pins only that the coarse path runs and agrees.
+#[test]
+#[ignore = "requires a GPU adapter"]
+fn a_progressive_blur_matches_the_reference() {
+    use mastik_core::kurbo::Point;
+    let Some(g) = gpu() else {
+        eprintln!("no GPU adapter; skipping the progressive blur");
+        return;
+    };
+    let ramp = |end: f64, ease| mastik_core::BlurRamp {
+        end,
+        from: Point::new(40.0, -10.0),
+        to: Point::new(120.0, 20.0),
+        ease,
+    };
+    for (name, radius, ramp) in [
+        (
+            "progressive blur, eased",
+            2.0,
+            ramp(18.0, mastik_core::RampEase::Smooth),
+        ),
+        (
+            "progressive blur, coarse",
+            0.0,
+            ramp(120.0, mastik_core::RampEase::Linear),
+        ),
+    ] {
+        let list = keyed_by_position([Effect::new(EffectKind::LayerBlur {
+            radius,
+            ramp: Some(ramp),
+        })]);
+        let px = fixture();
+        let src = upload(&g, &px);
+        let out = fx_gpu::run(
+            &g.device,
+            &g.queue,
+            &g.fx,
+            &src,
+            whole(),
+            &list,
+            SCALE,
+            local(),
+        )
+        .expect("the stack has ink");
+        let got = premultiply(&readback(&g, &out));
+        let want = premultiply(&reference(&px, &list));
+        compare(name, &got, &want, TOLERANCE);
+    }
 }
 
 /// The unsharp mask, at an amount whose overshoot clamps both ways, after a
@@ -389,7 +447,7 @@ fn a_sharpen_matches_the_reference() {
             }),
             // Mixes the premultiplied result, where a colour left past its
             // alpha shows; unpremultiplying alone would clamp it away.
-            Effect::new(EffectKind::LayerBlur { radius: 2.0 }),
+            Effect::new(EffectKind::layer_blur(2.0)),
         ],
         &two_hue_fixture(),
     );
@@ -739,7 +797,7 @@ fn a_whole_stack_matches_the_reference() {
                 saturation: 0.4,
                 hue: -30.0,
             })),
-            Effect::new(EffectKind::LayerBlur { radius: 3.0 }),
+            Effect::new(EffectKind::layer_blur(3.0)),
             Effect::new(EffectKind::DropShadow(shadow(
                 7.0,
                 7.0,

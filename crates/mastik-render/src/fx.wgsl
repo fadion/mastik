@@ -62,6 +62,10 @@ struct Params {
     // Octaves, 1 for the fractal sum, the noise's blend mode
     // (`effects::blend_code`), 1 for a multicolour noise.
     nzi: vec4<u32>,
+    // A progressive blur's rung (`fx_gpu::Params::ramp`): [0] `RampPlan::along`
+    // and 1 for an eased ramp, [1] the two ends' rungs and the rung being mixed
+    // in. Appended, for the reason on `src_size`.
+    rp: array<vec4<f32>, 2>,
 };
 
 @group(0) @binding(0) var src_a: texture_2d<f32>;
@@ -349,6 +353,35 @@ fn over(@builtin(global_invocation_id) gid: vec3<u32>) {
     let s = load_a(c);
     let d = textureLoad(src_b, c, 0);
     textureStore(dst, c, q(s + d * (1.0 - s.a)));
+}
+
+// `effects::ramp_position`: where a pixel sits on a progressive blur's ladder,
+// in rungs.
+fn ramp_position(c: vec2<i32>) -> f32 {
+    let a = p.rp[0];
+    let t = clamp(a.x * (f32(c.x) + 0.5) + a.y * (f32(c.y) + 0.5) + a.z, 0.0, 1.0);
+    var e = t;
+    if (a.w == 1.0) {
+        e = t * t * (3.0 - 2.0 * t);
+    }
+    return p.rp[1].x + (p.rp[1].y - p.rp[1].x) * e;
+}
+
+// One rung of `effects::progressive_blur`: `src_b`, the layer blurred at rung
+// `rp[1].z`, mixed over `src_a` by how far past the rung below it the pixel's
+// own place on the ladder reaches.
+@compute @workgroup_size(8, 8)
+fn ramp(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let c = vec2<i32>(gid.xy);
+    if (!inside(c)) { return; }
+    let o = load_a(c);
+    let k = clamp(ramp_position(c) - (p.rp[1].z - 1.0), 0.0, 1.0);
+    if (k <= 0.0) {
+        textureStore(dst, c, o);
+        return;
+    }
+    let l = textureLoad(src_b, c, 0);
+    textureStore(dst, c, q(o + (l - o) * k));
 }
 
 // ---- noise: `mastik_core::noise::Lattice`, line for line ----------------------

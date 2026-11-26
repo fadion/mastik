@@ -1984,6 +1984,14 @@ fn paint_node_pass<P: ScenePainter>(
     } else {
         stack
     };
+    // A ramp's ends onto the layer's box, measured only for a stack that ramps.
+    let stack = match stack.iter().any(|e| e.kind.ramp().is_some()) {
+        true => match ramp_box(doc, res, id, &painted) {
+            Some(b) => mastik_core::effect::ramps_on_box(stack, b),
+            None => stack,
+        },
+        false => stack,
+    };
     // Filters that recolour the inks exactly leave the stack, so a layer with
     // nothing else needs no buffer.
     let stack = match folded_filters(&stack, &painted) {
@@ -2055,7 +2063,7 @@ fn paint_node_pass<P: ScenePainter>(
         && walk.in_mask.get() == 0
         && walk.backdrop.is_none()
         && opacity > 0.0
-        && let Some(radius) = mastik_core::effect::backdrop_radius(stack)
+        && let Some(blur) = mastik_core::effect::backdrop_blur(stack)
         && let Some(shape) = backdrop_shape(doc, res, ov, id, &painted)
     {
         if !painter.paints_backdrops() {
@@ -2070,7 +2078,7 @@ fn paint_node_pass<P: ScenePainter>(
                 (doc, res, ov),
                 id,
                 at,
-                radius,
+                blur,
                 opacity,
                 base,
                 edges,
@@ -2461,7 +2469,7 @@ fn folded_filters(
     let blurs = stack.iter().any(|e| {
         e.visible
             && match e.kind {
-                EffectKind::LayerBlur { radius } => radius > 0.0,
+                EffectKind::LayerBlur { .. } => e.kind.larger_blur().is_some_and(|r| r > 0.0),
                 EffectKind::Sharpen { amount, radius } => amount > 0.0 && radius > 0.0,
                 EffectKind::Noise(n) => n.has_ink(),
                 _ => false,
@@ -2565,9 +2573,10 @@ fn detail_effects(
             EffectKind::DropShadow(s) | EffectKind::InnerShadow(s) => {
                 s.offset.hypot() + reach(s.blur) + s.spread.abs()
             }
-            EffectKind::LayerBlur { radius }
-            | EffectKind::BackgroundBlur { radius }
-            | EffectKind::Sharpen { radius, .. } => reach(*radius),
+            EffectKind::LayerBlur { .. } | EffectKind::BackgroundBlur { .. } => {
+                reach(e.kind.larger_blur().unwrap_or(0.0))
+            }
+            EffectKind::Sharpen { radius, .. } => reach(*radius),
             EffectKind::Filters(_) | EffectKind::Noise(_) => return false,
         };
         local * stretch < 1.0
@@ -2723,6 +2732,13 @@ fn backdrop_shape(
     (!path.elements().is_empty()).then_some(path)
 }
 
+/// The box a progressive blur's ramp of node `id` is laid on, in its own space:
+/// its geometry's box as drawn, or for a container the box its children make.
+fn ramp_box(doc: &Document, res: &Resolved, id: NodeId, painted: &Painted<'_>) -> Option<Rect> {
+    geometry::local_bounds(painted.kind, painted.text)
+        .or_else(|| mastik_core::local_box(doc, res, id))
+}
+
 /// A closed outline and the transform it is drawn under.
 #[derive(Clone, Copy)]
 struct Outline<'a> {
@@ -2731,7 +2747,8 @@ struct Outline<'a> {
     rule: ClipRule,
 }
 
-/// Draw what lies behind node `id`, blurred by `radius`, inside its outline,
+/// Draw what lies behind node `id`, blurred by `blur` (a radius and, for a
+/// progressive blur, its ramp in the node's own space), inside its outline,
 /// replacing what is already there at the node's `opacity`: its background
 /// blur.
 ///
@@ -2753,14 +2770,14 @@ fn paint_backdrop<P: ScenePainter>(
     (doc, res, ov): (&Document, &Resolved, &RenderOverrides),
     id: NodeId,
     shape: Outline<'_>,
-    radius: f64,
+    (radius, ramp): (f64, Option<mastik_core::BlurRamp>),
     opacity: f32,
     base: Affine,
     edges: &Edges<'_>,
     painter: &mut P,
     walk: &Walk<'_>,
 ) {
-    let reach = mastik_core::effect::reach(radius);
+    let reach = mastik_core::effect::reach(ramp.map_or(radius, |r| radius.max(r.end)));
     // What the blur reads: the outline's box grown by the blur's reach.
     let local = shape.path.bounding_box().inflate(reach, reach);
     // The repaint culls to that box in the world, a little wider so an edge's
@@ -2784,6 +2801,7 @@ fn paint_backdrop<P: ScenePainter>(
     painter.push_layer(shape.at, Some(shape.path), shape.rule, opacity);
     let blur = mastik_core::keyed_by_position([Effect::new(mastik_core::EffectKind::LayerBlur {
         radius,
+        ramp,
     })]);
     painter.push_effect_layer(shape.at, local, &blur);
     let root = walk
@@ -3040,17 +3058,23 @@ fn paint_ghost<P: ScenePainter>(
         && ghost.paint.strokes.iter().any(|s| s.visible);
     // Measured via [`ghost_ink`], not `local_path`, which answers `None` for
     // groups, text and booleans and omits the stroke expansion.
-    // A pass's own stack, in a box sized from the whole one, as in `paint_node_pass`.
-    let effects = pass.map_or(&ghost.effects[..], |p| &p.effects[..]);
+    // A pass's own stack, in a box sized from the whole one, as in `paint_node_pass`;
+    // its ramps on the ghost's box, as there.
+    let own: std::borrow::Cow<'_, [mastik_core::Keyed<Effect>]> =
+        match ghost.effects.iter().any(|e| e.kind.ramp().is_some()) {
+            true => match geometry::local_bounds(&ghost.kind, ghost.text.as_ref()) {
+                Some(b) => mastik_core::effect::ramps_on_box((&ghost.effects[..]).into(), b),
+                None => (&ghost.effects[..]).into(),
+            },
+            false => (&ghost.effects[..]).into(),
+        };
+    let effects = pass.map_or(&own[..], |p| &p.effects[..]);
     let ghost_effects = crate::effects::any_ink(effects)
         .then(|| ghost_ink(ghost, world))
         .flatten()
         .map(|base| {
-            let ink = mastik_core::effect::escaped(
-                base,
-                mastik_core::effect::stack_escape(&ghost.effects),
-                world,
-            );
+            let ink =
+                mastik_core::effect::escaped(base, mastik_core::effect::stack_escape(&own), world);
             world.inverse().transform_rect_bbox(ink)
         });
     let blend_layer = if pass.is_some() {
@@ -3063,7 +3087,7 @@ fn paint_ghost<P: ScenePainter>(
     };
     if pass.is_none()
         && ghost_effects.is_some()
-        && let Some(passes) = shadow_passes(&ghost.effects)
+        && let Some(passes) = shadow_passes(&own)
     {
         draw_passes(painter, blend_layer, &passes, |painter, p| {
             paint_ghost(
