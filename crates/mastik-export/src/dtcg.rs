@@ -471,6 +471,11 @@ impl Writer<'_> {
             },
             Cell::Boolean(b) => Json::Bool(*b),
             Cell::String(s) => Json::String(s.clone()),
+            // DTCG has no opposite of a token: the value it comes to in `mode`.
+            Cell::Not(_) => match self.t.resolve(v.id, mode) {
+                Some(variable::Value::Boolean(b)) => Json::Bool(b),
+                _ => Json::Null,
+            },
         }
     }
 
@@ -501,6 +506,11 @@ impl Writer<'_> {
                     },
                     Cell::Boolean(b) => Json::Bool(*b),
                     Cell::String(s) => Json::String(s.clone()),
+                    // Written as the value it comes to, as its `$value` is.
+                    Cell::Not(_) => match self.t.resolve(v.id, m) {
+                        Some(variable::Value::Boolean(b)) => Json::Bool(b),
+                        _ => Json::Null,
+                    },
                     _ => Json::Null,
                 };
                 modes.insert(self.mode_keys[&m].clone(), value);

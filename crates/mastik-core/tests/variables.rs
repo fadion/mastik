@@ -417,6 +417,80 @@ fn an_alias_follows_its_target_and_a_loop_is_refused() {
     assert!(matches!(wrong, Err(OpError::Variables(_))));
 }
 
+/// An opposite reads its target negated in the same mode, a play value
+/// included, so a layer bound to it shows while the target is false; a loop
+/// through it and one on a colour are refused.
+/// flip: `resolve_at` ignoring `Cell::Not`'s flip → fails at "Light's on is
+/// true"; `check` letting a colour take an opposite → fails at "only a boolean".
+#[test]
+fn an_opposite_reads_its_target_negated() {
+    let mut f = fixture();
+    let (on, off) = (f.ids.mint_var(), f.ids.mint_var());
+    let boolean = |id, name, light, dark| {
+        var(
+            id,
+            name,
+            VarKind::Boolean,
+            [(f.light, light), (f.dark, dark)],
+        )
+    };
+    f.doc
+        .apply(&Transaction(vec![
+            Operation::AddVariable {
+                var: boolean(on, "on", Cell::Boolean(true), Cell::Boolean(false)),
+            },
+            Operation::AddVariable {
+                var: boolean(off, "off", Cell::Not(on), Cell::Not(on)),
+            },
+        ]))
+        .unwrap();
+    let t = f.doc.variables();
+    assert_eq!(
+        t.resolve(off, f.light),
+        Some(Value::Boolean(false)),
+        "Light's on is true"
+    );
+    assert_eq!(t.resolve(off, f.dark), Some(Value::Boolean(true)));
+    let mut played = t.clone();
+    played.set_played([(on, Value::Boolean(false))].into());
+    assert_eq!(
+        played.resolve(off, f.light),
+        Some(Value::Boolean(true)),
+        "a play value flips it"
+    );
+
+    let ops = mastik_core::build::bind_visible_ops(&f.doc, f.rect, off);
+    f.doc.apply(&Transaction(ops)).unwrap();
+    assert!(!f.doc.shown(f.rect), "hidden while on is true");
+
+    let looped = f.doc.apply(&Transaction(vec![Operation::SetVariableCell {
+        id: on,
+        mode: f.light,
+        cell: Cell::Not(off),
+    }]));
+    assert!(matches!(looped, Err(OpError::Variables(_))));
+    let tint = f.ids.mint_var();
+    let colour = f.doc.apply(&Transaction(vec![
+        Operation::AddVariable {
+            var: var(
+                tint,
+                "tint",
+                VarKind::Color,
+                [(f.light, Cell::Color(RED)), (f.dark, Cell::Color(RED))],
+            ),
+        },
+        Operation::SetVariableCell {
+            id: f.brand,
+            mode: f.light,
+            cell: Cell::Not(tint),
+        },
+    ]));
+    assert!(
+        matches!(colour, Err(OpError::Variables(_))),
+        "only a boolean has an opposite"
+    );
+}
+
 /// **A bound corner is drawn from `Resolved`'s used kind**, and a cell edit —
 /// which names no node — reaches it through `update`, equal to a rebuild.
 #[test]

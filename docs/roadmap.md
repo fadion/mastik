@@ -94,12 +94,6 @@ place, saved in the same shape so existing files load. It is matched in about 60
     through crop and orientation, and re-encodes in the picture's own format (a JPEG as JPEG).
     Spot heal is a Poisson blend of a small area, tens of milliseconds on the CPU. Medium.
 
-## Next · MCP
-
-- **A visibility bound to a boolean's negation.** A boolean binds visibility only as it is, so
-  an off/on pair (a switch's two looks) needs a second variable kept in step by every toggle. A
-  negated binding, or a boolean choosing between two values, would drop it.
-
 ## Later · Player
 
 - **Draw only the room a tall screen shows.** The player renders a screen whole, and one past the

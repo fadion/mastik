@@ -4734,7 +4734,7 @@ pub static VERBS: &[Verb] = &[
             req(
                 "value",
                 ParamKind::Model("Cell"),
-                "the value, or `{ \"alias\": <variable id> }`",
+                "the value, `{ \"alias\": <variable id> }`, or a boolean's opposite `{ \"not\": <variable id> }`",
             ),
         ],
         run: |ctx, a| {

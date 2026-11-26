@@ -1650,12 +1650,16 @@ fn free_flow_name(flows: &[Keyed<Flow>]) -> String {
 /// A flow's starting value for `var` read from `typed` as the variable's kind
 /// reads: a finite number, the text as typed, exactly `true` or `false`, a
 /// colour (its typed alpha kept), or `{name}` for another variable of the same
-/// kind. `None` when it does not read.
+/// kind (`not {name}` a boolean's opposite). `None` when it does not read.
 fn flow_value_read(doc: &Document, var: VarId, typed: &str) -> Option<Cell> {
     let vars = doc.variables();
     let kind = vars.get(var)?.kind;
     let t = typed.trim();
-    let alias = t
+    let (not, named) = match t.strip_prefix("not ") {
+        Some(rest) if kind == VarKind::Boolean => (true, rest.trim()),
+        _ => (false, t),
+    };
+    let alias = named
         .strip_prefix('{')
         .and_then(|r| r.strip_suffix('}'))
         .and_then(|n| match vars.ids_named(n)[..] {
@@ -1663,7 +1667,10 @@ fn flow_value_read(doc: &Document, var: VarId, typed: &str) -> Option<Cell> {
             _ => None,
         })
         .filter(|v| v.kind == kind && v.id != var)
-        .map(|v| Cell::Alias(v.id));
+        .map(|v| match not {
+            true => Cell::Not(v.id),
+            false => Cell::Alias(v.id),
+        });
     alias.or(match kind {
         VarKind::Number => t
             .parse::<f64>()
@@ -7733,6 +7740,10 @@ impl MastikApp {
             }
             Cell::Alias(v) => format!(
                 "{{{}}}",
+                doc.variables().get(*v).map_or("?", |x| x.name.as_str())
+            ),
+            Cell::Not(v) => format!(
+                "not {{{}}}",
                 doc.variables().get(*v).map_or("?", |x| x.name.as_str())
             ),
         };

@@ -460,6 +460,7 @@ fn cell_json(doc: &Document, cell: &mastik_core::variable::Cell) -> Value {
         Cell::Boolean(b) => json!(b),
         Cell::String(s) => json!(s),
         Cell::Alias(v) => json!({ "Alias": var_name(doc, *v) }),
+        Cell::Not(v) => json!({ "Not": var_name(doc, *v) }),
     }
 }
 

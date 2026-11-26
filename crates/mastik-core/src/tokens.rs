@@ -129,11 +129,7 @@ pub(crate) fn reached<'a>(
         }
         let Some(var) = vars.get(v) else { continue };
         vs.push(v);
-        for c in var.cells.values() {
-            if let Cell::Alias(t) = c {
-                pending.push(*t);
-            }
-        }
+        pending.extend(var.cells.values().filter_map(Cell::target));
     }
     vs.sort();
     ss.sort();
@@ -157,11 +153,7 @@ pub fn unused_variables(doc: &Document) -> Vec<VarId> {
         }
     }
     for v in t.iter() {
-        for c in v.cells.values() {
-            if let Cell::Alias(to) = c {
-                used.insert(*to);
-            }
-        }
+        used.extend(v.cells.values().filter_map(Cell::target));
     }
     t.local()
         .filter(|v| !used.contains(&v.id))
@@ -499,12 +491,9 @@ pub(crate) fn plan<'a>(
         let mut i = 0;
         while i < want_vars.len() {
             if let Some(var) = src.vars.get(want_vars[i]) {
-                for c in var.cells.values() {
-                    if let Cell::Alias(t) = c
-                        && !want_vars.contains(t)
-                        && src.vars.get(*t).is_some()
-                    {
-                        want_vars.push(*t);
+                for t in var.cells.values().filter_map(Cell::target) {
+                    if !want_vars.contains(&t) && src.vars.get(t).is_some() {
+                        want_vars.push(t);
                     }
                 }
             }
@@ -723,9 +712,9 @@ pub(crate) fn plan<'a>(
         if !rewrite || own == Some(o.kit.as_str()) {
             continue;
         }
-        let remap = |c: &Cell| match c {
-            Cell::Alias(a) => Cell::Alias(*plan.vars.get(a).unwrap_or(a)),
-            c => c.clone(),
+        let remap = |c: &Cell| match c.target() {
+            Some(a) => c.retarget(*plan.vars.get(&a).unwrap_or(&a)),
+            None => c.clone(),
         };
         let mut cells: BTreeMap<ModeId, Cell> = var
             .cells
@@ -1293,11 +1282,7 @@ pub(crate) fn fork(doc: &Document, ids: &mut IdSource, nodes: &[Node]) -> Fork {
             continue;
         };
         want.push(v);
-        for c in var.cells.values() {
-            if let Cell::Alias(a) = c {
-                pending.push(*a);
-            }
-        }
+        pending.extend(var.cells.values().filter_map(Cell::target));
     }
     want.sort();
     want_styles.sort();
@@ -1401,9 +1386,10 @@ pub(crate) fn fork(doc: &Document, ids: &mut IdSource, nodes: &[Node]) -> Fork {
             .iter()
             .filter_map(|m| {
                 let col = modes.kit_mode_at(kit, &kc, &[*m])?;
-                let cell = match var.cells.get(&col)? {
-                    Cell::Alias(a) => Cell::Alias(*out.vars.get(a).unwrap_or(a)),
-                    c => c.clone(),
+                let cell = var.cells.get(&col)?;
+                let cell = match cell.target() {
+                    Some(a) => cell.retarget(*out.vars.get(&a).unwrap_or(&a)),
+                    None => cell.clone(),
                 };
                 Some((*m, cell))
             })

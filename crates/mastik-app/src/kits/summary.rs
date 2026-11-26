@@ -170,13 +170,18 @@ fn read<'a>(
         None => t.default_mode(),
     };
     let mut at = var;
+    let mut not = false;
     for _ in 0..=t.iter().count() + 8 {
         match at.cells.get(&col(at)?)? {
             Cell::Color(c) => return Some(Value::Color(*c)),
             Cell::Number(n) => return Some(Value::Number(*n)),
-            Cell::Boolean(b) => return Some(Value::Boolean(*b)),
+            Cell::Boolean(b) => return Some(Value::Boolean(*b != not)),
             Cell::String(s) => return Some(Value::String(s.clone())),
             Cell::Alias(next) => at = lookup(*next)?,
+            Cell::Not(next) => {
+                not = !not;
+                at = lookup(*next)?;
+            }
         }
     }
     None

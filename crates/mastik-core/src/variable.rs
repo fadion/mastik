@@ -390,18 +390,38 @@ pub enum Cell {
     String(String),
     /// Another variable of the same kind, read in the same mode (§5.3f).
     Alias(VarId),
+    /// The opposite of another boolean variable, read as an alias is: an
+    /// off/on pair needs one variable, not two kept in step.
+    Not(VarId),
 }
 
 impl Cell {
-    /// The kind of value this cell holds, `None` for an alias — whose kind is its
-    /// target's.
+    /// The kind of value this cell holds, `None` for an alias or an opposite —
+    /// whose kind is its target's.
     pub fn kind(&self) -> Option<VarKind> {
         match self {
             Cell::Color(_) => Some(VarKind::Color),
             Cell::Number(_) => Some(VarKind::Number),
             Cell::Boolean(_) => Some(VarKind::Boolean),
             Cell::String(_) => Some(VarKind::String),
-            Cell::Alias(_) => None,
+            Cell::Alias(_) | Cell::Not(_) => None,
+        }
+    }
+
+    /// The variable an alias or an opposite reads.
+    pub fn target(&self) -> Option<VarId> {
+        match self {
+            Cell::Alias(t) | Cell::Not(t) => Some(*t),
+            _ => None,
+        }
+    }
+
+    /// This cell reading `to` in place of its target; a value is kept.
+    pub fn retarget(&self, to: VarId) -> Cell {
+        match self {
+            Cell::Alias(_) => Cell::Alias(to),
+            Cell::Not(_) => Cell::Not(to),
+            c => c.clone(),
         }
     }
 
@@ -409,7 +429,7 @@ impl Cell {
         match self {
             Cell::Color(c) => c.components.iter().all(|x| x.is_finite()),
             Cell::Number(n) => n.is_finite(),
-            Cell::Boolean(_) | Cell::String(_) | Cell::Alias(_) => true,
+            Cell::Boolean(_) | Cell::String(_) | Cell::Alias(_) | Cell::Not(_) => true,
         }
     }
 }
@@ -881,11 +901,17 @@ impl Variables {
         let from_local = self.vars.get(&var)?.kit().is_none();
         let mut kit_set: Option<Vec<ModeId>> = None;
         let mut at = var;
+        // Whether an odd number of opposites has been passed on the way.
+        let mut not = false;
+        let out = |v: Value, not: bool| match v {
+            Value::Boolean(b) if not => Some(Value::Boolean(!b)),
+            v => Some(v),
+        };
         for _ in 0..=self.vars.len() {
             let v = self.vars.get(&at)?;
             // A play value beats every mode, at each step of an alias too.
             if let Some(played) = self.played.get(&at) {
-                return Some(played.clone());
+                return out(played.clone(), not);
             }
             let col = match v.kit() {
                 None => self.column_at(v, set)?,
@@ -917,9 +943,13 @@ impl Variables {
             match v.cells.get(&col)? {
                 Cell::Color(c) => return Some(Value::Color(*c)),
                 Cell::Number(n) => return Some(Value::Number(*n)),
-                Cell::Boolean(b) => return Some(Value::Boolean(*b)),
+                Cell::Boolean(b) => return out(Value::Boolean(*b), not),
                 Cell::String(s) => return Some(Value::String(s.clone())),
                 Cell::Alias(next) => at = *next,
+                Cell::Not(next) => {
+                    not = !not;
+                    at = *next;
+                }
             }
         }
         None
@@ -950,6 +980,15 @@ impl Variables {
                         if !seen.contains(next) {
                             seen.push(*next);
                             stack.push(*next);
+                        }
+                        continue;
+                    }
+                    // An opposite can take either value; which, its target says.
+                    Cell::Not(_) => {
+                        for b in [true, false] {
+                            if !out.contains(&Value::Boolean(b)) {
+                                out.push(Value::Boolean(b));
+                            }
                         }
                         continue;
                     }
@@ -1036,10 +1075,7 @@ impl Variables {
             return false;
         };
         let columns = self.columns(v);
-        let next = |m: &ModeId| match v.cells.get(m) {
-            Some(Cell::Alias(next)) => Some(*next),
-            _ => None,
-        };
+        let next = |m: &ModeId| v.cells.get(m).and_then(Cell::target);
         // A kit's variable is a collection of its own here: whichever document
         // mode is in force maps it onto one of its columns.
         if let Some(m) = columns.iter().find(|m| set.contains(m)) {
@@ -2275,8 +2311,8 @@ pub fn remove_and_scope_ops(
     let vars = removed;
     for v in t.iter().filter(|v| !vars.contains(&v.id)) {
         for (mode, cell) in &v.cells {
-            if let Cell::Alias(target) = cell
-                && vars.contains(target)
+            if let Some(target) = cell.target()
+                && vars.contains(&target)
             {
                 let Some(cell) = t.resolve(v.id, *mode).map(Cell::from) else {
                     continue;
@@ -3421,9 +3457,9 @@ pub fn duplicate_collection_ops(
             .cells
             .iter()
             .map(|(m, cell)| {
-                let cell = match cell {
-                    Cell::Alias(to) => Cell::Alias(copies.get(to).copied().unwrap_or(*to)),
-                    other => other.clone(),
+                let cell = match cell.target() {
+                    Some(to) => cell.retarget(copies.get(&to).copied().unwrap_or(to)),
+                    None => cell.clone(),
                 };
                 (modes[m], cell)
             })
@@ -3720,14 +3756,15 @@ pub(crate) fn check_table(t: &Variables) -> Result<(), VarRule> {
                 return Err(VarRule::NonFinite(v.id));
             }
             match cell {
-                Cell::Alias(target) => {
+                Cell::Alias(target) | Cell::Not(target) => {
                     // A kit's variable aliases a kit's — its own, or one its
                     // kit held when it published (each step reads its own
                     // kit's column, `kit_mode`) — never the document's own,
                     // which its kit never had.
                     let kits_only =
                         v.kit().is_none() || t.get(*target).and_then(Variable::kit).is_some();
-                    if t.kind_of(*target) != Some(v.kind) || !kits_only {
+                    let boolean = !matches!(cell, Cell::Not(_)) || v.kind == VarKind::Boolean;
+                    if t.kind_of(*target) != Some(v.kind) || !kits_only || !boolean {
                         return Err(VarRule::BadAlias(v.id));
                     }
                     if t.would_loop(v.id, *mode, *target) {
@@ -4108,7 +4145,7 @@ pub fn add_variable_ops(
     if let Some(k) = cell.kind().filter(|k| *k != kind) {
         return Err(format!("A {kind:?} variable cannot hold a {k:?} value.").to_lowercase());
     }
-    if matches!(cell, Cell::Alias(_)) {
+    if cell.target().is_some() {
         return Err("A new variable takes a value, not an alias; set one after.".into());
     }
     let (mut ops, modes) = columns_for_new(table, c, ids.mint_mode());
@@ -4364,12 +4401,15 @@ pub fn set_cell_ops(
         return Err("That mode is not one of the variable's collection.".into());
     }
     match &cell {
-        Cell::Alias(target) => {
+        Cell::Alias(target) | Cell::Not(target) => {
             let t = table
                 .get(*target)
                 .ok_or("No variable has the alias's id.")?;
             if t.kind != v.kind {
                 return Err(format!("{} is another kind of variable.", t.name));
+            }
+            if matches!(cell, Cell::Not(_)) && v.kind != VarKind::Boolean {
+                return Err("Only a boolean can be another's opposite.".into());
             }
             if table.would_loop(id, mode, *target) {
                 return Err(format!(

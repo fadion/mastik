@@ -281,7 +281,11 @@ impl Tokens {
             if v.kit().is_none() {
                 continue;
             }
-            if let Some(value) = v.cells.get(&mode).and_then(|c| self.value(t, v, c)) {
+            if let Some(value) = v
+                .cells
+                .get(&mode)
+                .and_then(|c| self.value(t, v, c, Some(mode)))
+            {
                 body.push_str(&format!("  --{}: {value};\n", self.name(*id)));
             }
         }
@@ -516,7 +520,7 @@ impl Tokens {
             };
             if let Some(value) = col
                 .and_then(|c| v.cells.get(&c))
-                .and_then(|c| self.value(t, v, c))
+                .and_then(|cell| self.value(t, v, cell, col))
             {
                 out.push_str(&format!("  --{}: {value};\n", self.name(*id)));
             }
@@ -559,7 +563,7 @@ impl Tokens {
             variable::Value::Boolean(x) => Cell::Boolean(x),
             variable::Value::String(x) => Cell::String(x),
         };
-        self.value(t, v, &cell)
+        self.value(t, v, &cell, None)
     }
 
     /// The variables read that alias into another collection of several modes
@@ -601,11 +605,7 @@ impl Tokens {
                 continue;
             }
             if let Some(v) = t.get(id) {
-                for c in v.cells.values() {
-                    if let Cell::Alias(next) = c {
-                        stack.push(*next);
-                    }
-                }
+                stack.extend(v.cells.values().filter_map(Cell::target));
             }
         }
         out
@@ -616,9 +616,20 @@ impl Tokens {
     /// makes [`Self::shown`]'s fallback, the layer's own `display`, win. A
     /// string of flex words is their CSS keyword, bare, and so is one a keyword
     /// string aliases, which `flex-direction` reads through it; any other is
-    /// quoted.
-    fn value(&self, t: &Variables, v: &variable::Variable, cell: &Cell) -> Option<String> {
+    /// quoted. An opposite has no CSS form, so it is written as the value it
+    /// resolves to in `mode`, the cell's.
+    fn value(
+        &self,
+        t: &Variables,
+        v: &variable::Variable,
+        cell: &Cell,
+        mode: Option<ModeId>,
+    ) -> Option<String> {
         match cell {
+            Cell::Not(_) => match t.resolve(v.id, mode?)? {
+                variable::Value::Boolean(b) => self.value(t, v, &Cell::Boolean(b), None),
+                _ => None,
+            },
             Cell::Color(c) => Some(super::css::color(*c, 1.0)),
             Cell::Number(n) => Some(fmt(*n)),
             Cell::String(s) if keywords(v) || self.aliased_by_keywords(t, v.id) => Some(keyword(s)),
@@ -751,4 +762,53 @@ pub(crate) fn strings_by_mode(doc: &Document, var: VarId) -> Option<Vec<(String,
         }
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mastik_core::{IdSource, Operation, Transaction, VarKind, Variable};
+
+    /// An opposite, which CSS cannot write, lands in `tokens.css` as the value
+    /// it resolves to: hidden while its target is true.
+    /// flip: `value` answering `None` for `Cell::Not` → fails at "--off: none".
+    #[test]
+    fn an_opposite_is_written_as_its_value() {
+        let mut ids = IdSource::new(0x70C5);
+        let mut doc = Document::new(ids.mint());
+        let mode = ids.mint_mode();
+        let (on, off) = (ids.mint_var(), ids.mint_var());
+        let boolean = |id, name: &str, cell| Variable {
+            id,
+            name: name.into(),
+            kind: VarKind::Boolean,
+            cells: [(mode, cell)].into(),
+            scope: None,
+            origin: None,
+            forked: None,
+            description: String::new(),
+        };
+        doc.apply(&Transaction(vec![
+            Operation::AddMode {
+                collection: variable::CollectionId::FIRST,
+                mode: variable::Mode {
+                    id: mode,
+                    name: "Mode 1".into(),
+                },
+                index: 0,
+                cells: vec![],
+            },
+            Operation::AddVariable {
+                var: boolean(on, "on", Cell::Boolean(true)),
+            },
+            Operation::AddVariable {
+                var: boolean(off, "off", Cell::Not(on)),
+            },
+        ]))
+        .unwrap();
+        let mut tokens = Tokens::new(&doc);
+        tokens.shown(off, "block");
+        let css = tokens.css(&doc).expect("a tokens file");
+        assert!(css.contains("--off: none;"), "--off: none\n{css}");
+    }
 }

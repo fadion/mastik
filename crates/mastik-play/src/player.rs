@@ -348,6 +348,10 @@ impl Player {
         for (var, cell) in cells {
             let value = match cell {
                 Cell::Alias(to) => p.doc.resolve_var(frame, to),
+                Cell::Not(to) => match p.doc.resolve_var(frame, to) {
+                    Some(Value::Boolean(b)) => Some(Value::Boolean(!b)),
+                    _ => None,
+                },
                 Cell::Color(c) => Some(Value::Color(c)),
                 Cell::Number(n) => Some(Value::Number(n)),
                 Cell::Boolean(b) => Some(Value::Boolean(b)),

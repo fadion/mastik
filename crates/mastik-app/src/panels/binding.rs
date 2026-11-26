@@ -2264,10 +2264,11 @@ impl MastikApp {
                                 if v.id == var {
                                     "this variable".to_owned()
                                 } else {
-                                    let via = match v.cells.get(&mode) {
-                                        Some(mastik_core::variable::Cell::Alias(t)) => *t,
-                                        _ => var,
-                                    };
+                                    let via = v
+                                        .cells
+                                        .get(&mode)
+                                        .and_then(mastik_core::variable::Cell::target)
+                                        .unwrap_or(var);
                                     let name = table.get(via).map_or("", |x| x.name.as_str());
                                     format!("uses {name}")
                                 }

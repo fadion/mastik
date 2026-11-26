@@ -3378,8 +3378,9 @@ fn style_group_keys(doc: &Document) -> HashSet<String> {
         .collect()
 }
 
-/// A typed cell: `--name` aliases another variable of the kind, a colour takes
-/// any colour text (`crate::colour_text`, its alpha too), a number takes an expression, and a
+/// A typed cell: `--name` aliases another variable of the kind, `not --name`
+/// makes a boolean the other's opposite, a colour takes any colour text
+/// (`crate::colour_text`, its alpha too), a number takes an expression, and a
 /// string takes the text as typed, spaces and all (§15 D1069).
 fn parse_cell(
     table: &mastik_core::Variables,
@@ -3389,14 +3390,22 @@ fn parse_cell(
 ) -> Result<Cell, String> {
     let typed = text;
     let text = text.trim();
+    let (not, text) = match text.strip_prefix("not ") {
+        Some(rest) if v.kind == VarKind::Boolean && rest.trim_start().starts_with("--") => {
+            (true, rest.trim_start())
+        }
+        _ => (false, text),
+    };
     if let Some(name) = text.strip_prefix("--") {
         let name = name.trim();
         // The cell's own target first: an alias of a kit's variable reads
         // `--name` unqualified, and the document may have its own of that name.
-        let current = match v.cells.get(&mode) {
-            Some(Cell::Alias(t)) => table.get(*t).filter(|t| t.name == name),
-            _ => None,
-        };
+        let current = v
+            .cells
+            .get(&mode)
+            .and_then(Cell::target)
+            .and_then(|t| table.get(t))
+            .filter(|t| t.name == name);
         // Then its own collection's, then the first other one's by that name.
         let own = table
             .collection_of(v.id)
@@ -3417,7 +3426,10 @@ fn parse_cell(
                 v.name
             ));
         }
-        return Ok(Cell::Alias(target.id));
+        return Ok(match not {
+            true => Cell::Not(target.id),
+            false => Cell::Alias(target.id),
+        });
     }
     match v.kind {
         VarKind::Color => parse_colour(text)
@@ -3430,7 +3442,7 @@ fn parse_cell(
             .ok_or_else(|| "A number, or --name.".to_string()),
         VarKind::Boolean => parse_bool(text)
             .map(Cell::Boolean)
-            .ok_or_else(|| "True or false, or --name.".to_string()),
+            .ok_or_else(|| "True or false, --name, or not --name.".to_string()),
         VarKind::String => Ok(Cell::String(typed.to_string())),
     }
 }
@@ -3469,6 +3481,10 @@ fn cell_text(table: &mastik_core::Variables, cell: &Cell) -> String {
         Cell::String(s) => s.clone(),
         Cell::Alias(t) => format!(
             "--{}",
+            table.get(*t).map(|v| v.name.as_str()).unwrap_or_default()
+        ),
+        Cell::Not(t) => format!(
+            "not --{}",
             table.get(*t).map(|v| v.name.as_str()).unwrap_or_default()
         ),
     }
@@ -4741,10 +4757,14 @@ fn var_row(
         {
             acts.push(Act::OpenMenu(Menu::Var(v.id), at + egui::vec2(6.0, 8.0)));
         }
-        if let Cell::Alias(t) = c
-            && let Some(t) = table.get(*t)
+        if let Some(target) = c.target()
+            && let Some(t) = table.get(target)
         {
-            cell_resp.on_hover_text(format!("uses {}", t.name));
+            let what = match c {
+                Cell::Not(_) => "the opposite of",
+                _ => "uses",
+            };
+            cell_resp.on_hover_text(format!("{what} {}", t.name));
         }
     }
 }
@@ -5045,8 +5065,13 @@ fn draw_cell(p: &egui::Painter, table: &mastik_core::Variables, cell: egui::Rect
                 theme::text::strong(),
             );
         }
-        Cell::Alias(t) => {
+        Cell::Alias(t) | Cell::Not(t) => {
             let name = table.get(*t).map(|t| t.name.clone()).unwrap_or_default();
+            // An opposite wears the alias's capsule, its target named after `not`.
+            let name = match c {
+                Cell::Not(_) => format!("not {name}"),
+                _ => name,
+            };
             let mut job = egui::text::LayoutJob::simple_singleline(name, font, color::text());
             job.wrap = egui::text::TextWrapping::truncate_at_width(MODE_W - 12.0 - 14.0);
             let galley = p.layout_job(job);
@@ -6254,8 +6279,10 @@ mod tests {
 
     /// **A boolean variable** (§15 D1059): the `+` menu's *Boolean variable* files
     /// one true in every mode; its box's click writes the word for the other
-    /// value, which lands as `false`; a typed `no` is false too, and a typed `7`
-    /// is refused with the kind's own sentence.
+    /// value, which lands as `false`; a typed `no` is false too, a typed `7`
+    /// is refused with the kind's own sentence, and `not --boolean 1` typed into
+    /// a second makes it the first's opposite, written back the same way.
+    /// flip: `parse_cell` without its `not ` prefix → fails at "an opposite".
     #[test]
     fn a_boolean_variable_is_made_toggled_and_typed() {
         let (_ctx, mut app) = app();
@@ -6283,8 +6310,21 @@ mod tests {
         assert_eq!(cell(&app), Cell::Boolean(true));
         assert_eq!(
             parse_cell(app.session.doc.variables(), &v, mode, "7"),
-            Err("True or false, or --name.".to_string())
+            Err("True or false, --name, or not --name.".to_string())
         );
+        app.var_act(Act::NewVar(VarKind::Boolean));
+        let table = app.session.doc.variables();
+        let other = table
+            .iter()
+            .find(|o| o.kind == VarKind::Boolean && o.id != v.id)
+            .expect("a second boolean")
+            .id;
+        app.var_act(Act::Cell(other, mode, "not --boolean 1".into(), None));
+        let table = app.session.doc.variables();
+        let typed = table.get(other).unwrap().cells[&mode].clone();
+        assert_eq!(typed, Cell::Not(v.id), "an opposite");
+        assert_eq!(cell_text(table, &typed), "not --boolean 1");
+        assert_eq!(table.resolve(other, mode), Some(Value::Boolean(false)));
     }
 
     /// A number cell stops at the fields' limit, as the fields it binds do.

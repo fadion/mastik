@@ -2629,6 +2629,14 @@ impl Shower<'_> {
                 text: b.to_string(),
                 swatch: None,
             },
+            Cell::Not(to) => Shown {
+                text: format!(
+                    "not \u{2192} {}",
+                    self.var(*to)
+                        .map_or("?".to_string(), |v| token_path(&v.name).join("."))
+                ),
+                swatch: None,
+            },
         }
     }
 
