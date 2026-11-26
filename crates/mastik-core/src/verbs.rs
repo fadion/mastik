@@ -1810,6 +1810,19 @@ pub fn example(model: &str) -> Option<Value> {
     })
 }
 
+/// Values of `model` shown after `example`'s, where one value cannot show every
+/// form: a style's value is paints, a text or layout style, or a chart's look.
+pub fn more_examples(model: &str) -> Vec<Value> {
+    match model {
+        // A chart style holds the look alone, so no stacking, unlike `ChartOptions`'s.
+        "StyleValue" => vec![serde_json::json!({ "chart": {
+            "bars": { "radius": 4.0 },
+            "legend": { "position": "Bottom" },
+        } })],
+        _ => Vec::new(),
+    }
+}
+
 /// The field name the short forms read a model's value under: its own kind's for
 /// a colour or paint list, whatever its parameter is called, else the parameter's.
 fn model_key<'a>(model: &str, param: &'a str) -> &'a str {

@@ -1030,7 +1030,9 @@ fn property(p: &Param) -> Value {
     if let ParamKind::Model(model) = p.kind
         && let Some(example) = verbs::example(model)
     {
-        schema["examples"] = json!([example]);
+        let mut examples = vec![example];
+        examples.extend(verbs::more_examples(model));
+        schema["examples"] = json!(examples);
     }
     schema
 }
@@ -1267,7 +1269,7 @@ mod tests {
     #[test]
     fn the_tool_list_stays_within_its_budget() {
         const CORE_BUDGET: usize = 28_700;
-        const ALL_BUDGET: usize = 128_400;
+        const ALL_BUDGET: usize = 128_600;
         let core = listed_bytes(crate::tools::CORE.iter());
         assert!(
             core <= CORE_BUDGET,

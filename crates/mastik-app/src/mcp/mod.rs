@@ -3748,6 +3748,19 @@ mod tests {
             !s["value"].to_string().contains("components"),
             "a style's value in the short forms: {s}"
         );
+        for value in mastik_core::verbs::more_examples("StyleValue") {
+            let args = json!({ "value": value, "name": "Look" });
+            ok(&call(&mut engine, &mut docs, 1, "add_style", args));
+        }
+        let styles = call(&mut engine, &mut docs, 1, "list_styles", json!({}));
+        let look = ok(&styles)["styles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["name"] == "Look")
+            .cloned()
+            .expect("the chart example makes a style");
+        assert_eq!(look["slot"], "chart", "{look}");
 
         // A rectangle becomes a main inside a frame of its own.
         let made = call(
