@@ -998,6 +998,32 @@ impl Builder<'_> {
                 "BACKGROUND_BLUR" => EffectKind::BackgroundBlur {
                     radius: num(e, "radius"),
                 },
+                // Figma's glass: its frost is a blur radius and its light a
+                // highlight's strength, so the veil stays clear and the rim is
+                // white at that strength; a field left out keeps the default.
+                "GLASS" => {
+                    let or = |k: &str, d: f64| e.get(k).and_then(Value::as_f64).unwrap_or(d);
+                    let d = crate::effect::Glass::default();
+                    EffectKind::Glass(
+                        crate::effect::Glass {
+                            blur: or("radius", d.blur),
+                            frost: 0.0,
+                            bend: or("refraction", d.bend),
+                            depth: or("depth", d.depth),
+                            dispersion: or("dispersion", d.dispersion),
+                            rim: crate::effect::Rim {
+                                angle: or("lightAngle", d.rim.angle),
+                                width: d.rim.width,
+                                color: Color::WHITE.with_alpha(or(
+                                    "lightIntensity",
+                                    f64::from(d.rim.color.components[3]),
+                                )
+                                    as f32),
+                            },
+                        }
+                        .clamped(),
+                    )
+                }
                 _ => {
                     self.count("Effects Mastik does not have", 1, "", "Left out");
                     continue;
