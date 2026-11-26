@@ -1078,9 +1078,9 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
     if miss.unknown_field {
         let above = &miss.steps[..miss.steps.len().saturating_sub(1)];
         // The nearest field holding a model of its own answers for the place.
-        let from = above.iter().enumerate().rev().find_map(|(i, s)| match s {
-            Some(Step::Key(k)) => field_model(k).map(|m| (m, i + 1)),
-            _ => None,
+        let from = (0..above.len()).rev().find_map(|i| {
+            let key = step_key(v, &miss.steps, i)?;
+            field_model(model, key).map(|m| (m, i + 1))
         });
         let (model, from) = from.unwrap_or((model, 0));
         let below = &above[from..];
@@ -1144,16 +1144,16 @@ fn explain(model: &str, v: &Value, miss: &Miss) -> String {
     }
     // The example of the nearest field holding a model of its own: a fill written
     // wrong inside a tree is shown fills, not the whole tree.
-    let nearest = miss
-        .steps
-        .iter()
+    let nearest = (0..miss.steps.len())
         .rev()
-        .find_map(|s| match s {
-            Some(Step::Key(k)) => field_model(k),
-            _ => None,
-        })
+        .find_map(|i| field_model(model, step_key(v, &miss.steps, i)?))
         .unwrap_or(model);
-    match example(nearest) {
+    // A style's chart holds the look alone, which `ChartOptions`'s example is not.
+    let example = match (model, nearest) {
+        ("StyleValue", "ChartOptions") => Some(chart_look_example()),
+        _ => example(nearest),
+    };
+    match example {
         Some(e) if miss.why.contains("single key") => {
             format!("{said}: one key naming the variant, as `{}`", compact(&e))
         }
@@ -1455,9 +1455,11 @@ pub fn model_shape(name: &str) -> Option<Value> {
     Some(shape)
 }
 
-/// The model a field of that name holds, wherever it sits.
-fn field_model(key: &str) -> Option<&'static str> {
+/// The model a field of that name holds, wherever it sits inside `model`.
+fn field_model(model: &str, key: &str) -> Option<&'static str> {
     Some(match key {
+        // Elsewhere a layer's `chart` is the whole chart, not its options.
+        "chart" if model == "StyleValue" => "ChartOptions",
         "fills" => "[Fill]",
         "strokes" => "[Stroke]",
         "effects" => "[Effect]",
@@ -1469,6 +1471,19 @@ fn field_model(key: &str) -> Option<&'static str> {
         "insets" => "Insets",
         _ => return None,
     })
+}
+
+/// The key `steps[i]` goes through in `v`: a field's name, or for an enum's
+/// variant, which serde leaves unnamed, the one key of the object there.
+fn step_key<'v>(v: &'v Value, steps: &'v [Option<Step>], i: usize) -> Option<&'v str> {
+    match steps.get(i)? {
+        Some(Step::Key(k)) => Some(k),
+        Some(Step::Index(_)) => None,
+        None => match walk_ref(v, &steps[..i])? {
+            Value::Object(map) if map.len() == 1 => map.keys().next().map(String::as_str),
+            _ => None,
+        },
+    }
 }
 
 /// `v`'s value at `steps`, as [`walk_mut`] finds it.
@@ -1814,13 +1829,18 @@ pub fn example(model: &str) -> Option<Value> {
 /// form: a style's value is paints, a text or layout style, or a chart's look.
 pub fn more_examples(model: &str) -> Vec<Value> {
     match model {
-        // A chart style holds the look alone, so no stacking, unlike `ChartOptions`'s.
-        "StyleValue" => vec![serde_json::json!({ "chart": {
-            "bars": { "radius": 4.0 },
-            "legend": { "position": "Bottom" },
-        } })],
+        "StyleValue" => vec![serde_json::json!({ "chart": chart_look_example() })],
         _ => Vec::new(),
     }
+}
+
+/// A chart style's value under its `chart` key: the look alone, so no stacking,
+/// unlike `ChartOptions`'s example.
+fn chart_look_example() -> Value {
+    serde_json::json!({
+        "bars": { "radius": 4.0 },
+        "legend": { "position": "Bottom" },
+    })
 }
 
 /// The field name the short forms read a model's value under: its own kind's for

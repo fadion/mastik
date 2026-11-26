@@ -4880,6 +4880,36 @@ fn a_chart_style_value_takes_chart_short_forms() {
     );
 }
 
+/// A chart style written wrong is refused with a chart's form: the fields a
+/// chart's options have, and a chart look as the example, never a fills style.
+/// flip: `step_key` leaving a variant unnamed → fails at "lists the chart's
+/// fields"; the `chart_look_example` arm in `explain` → fails at "a style holds no
+/// stacking".
+#[test]
+fn a_chart_style_written_wrong_is_shown_a_charts_form() {
+    let (doc, mut ids, _) = blank();
+    let why = |ids: &mut IdSource, value: Value| {
+        refused_why(&doc, ids, "add_style", json!({ "value": value }))
+    };
+    let field = why(&mut ids, json!({ "chart": { "colour": "#ff0000" } }));
+    assert!(
+        field.contains("`legend`, `palette`"),
+        "lists the chart's fields: {field}"
+    );
+    let word = why(
+        &mut ids,
+        json!({ "chart": { "legend": { "position": "Under" } } }),
+    );
+    assert!(
+        word.contains("for example `{\"bars\""),
+        "a chart look: {word}"
+    );
+    assert!(
+        !word.contains("stacking"),
+        "a style holds no stacking: {word}"
+    );
+}
+
 /// `set_chart` switching to or from a Sankey re-reads the mapping off the
 /// table's columns, as the Chart card does (`Chart::with_kind`).
 /// flip: the verb assigning `chart.kind` alone → fails at "a column chart maps
