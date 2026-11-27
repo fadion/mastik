@@ -1,8 +1,8 @@
 //! The path bar: a short rail beside the tool rail while a path's points are being
 //! edited, holding the node tool's verbs — select or add points, corner and smooth,
 //! join, reverse, split, clean up, offset, pixel-fit, the curvature combs' switch —
-//! and the way out. While the pen
-//! or the pencil draws new paths it holds the mirror switch instead (`crate::mirror`).
+//! and the way out. While the pen or the pencil draws new paths it holds the mirror
+//! switch instead (`crate::mirror`), and for the pen the combs' switch too.
 //!
 //! It floats over the canvas, the ruler included, centred on the rail's Pen button,
 //! so it reads as that button's drawer. *Clean up* opens its card (`crate::cleanup`)
@@ -412,19 +412,39 @@ impl MastikApp {
         }
     }
 
+    /// Open or close the mirror's flyout. It hangs where the Combs card does, so
+    /// opening it hides the card; combs stay on.
+    fn toggle_mirror_flyout(&mut self) {
+        self.mirror_open = !self.mirror_open;
+        if self.mirror_open {
+            self.combs.card = false;
+        }
+    }
+
     /// The bar while the pen or the pencil is drawing new paths: the mirror switch
-    /// with its flyout, and the way out.
+    /// with its flyout, the pen's comb switch with its card, and the way out.
     fn drawing_bar(&mut self, ctx: &egui::Context) {
         let on = self.mirror().axes != crate::mirror::Axes::Off;
-        let bar = [
-            E::Btn {
-                glyph: self.symmetry_glyph(),
-                tip: "Symmetry while drawing",
+        let mut bar = vec![E::Btn {
+            glyph: self.symmetry_glyph(),
+            tip: "Symmetry while drawing",
+            dimmed: "",
+            active: on || self.mirror_open,
+            enabled: true,
+            verb: Verb::Mirror,
+        }];
+        // The pencil's strokes are fitted on release, so there is no curve to comb.
+        if self.tool == Tool::Pen {
+            bar.push(E::Btn {
+                glyph: icon::COMB,
+                tip: "Curvature combs (Alt+C)",
                 dimmed: "",
-                active: on || self.mirror_open,
+                active: self.combs_on(),
                 enabled: true,
-                verb: Verb::Mirror,
-            },
+                verb: Verb::Combs,
+            });
+        }
+        bar.extend([
             E::Sep,
             E::Btn {
                 glyph: icon::CHECK,
@@ -434,10 +454,11 @@ impl MastikApp {
                 enabled: true,
                 verb: Verb::Done,
             },
-        ];
+        ]);
         let shown = self.show_bar(ctx, &bar);
         match shown.clicked {
-            Some(Verb::Mirror) => self.mirror_open = !self.mirror_open,
+            Some(Verb::Mirror) => self.toggle_mirror_flyout(),
+            Some(Verb::Combs) => self.toggle_combs(),
             Some(Verb::Done) => {
                 self.finish_pen(false);
                 self.choose_tool(Tool::Select);
@@ -447,6 +468,10 @@ impl MastikApp {
         }
         if self.mirror_open {
             self.mirror_flyout(ctx, shown.mirror);
+        }
+        self.settle_comb_base(ctx.pixels_per_point());
+        if self.comb_card_shown() {
+            self.comb_card_ui(ctx, shown.bar, shown.combs);
         }
     }
 
@@ -636,7 +661,7 @@ impl MastikApp {
                 self.choose_tool(Tool::Select);
                 return;
             }
-            Some(Verb::Mirror) => self.mirror_open = !self.mirror_open,
+            Some(Verb::Mirror) => self.toggle_mirror_flyout(),
             // The warp bar's own; it stands in for this one.
             Some(Verb::WarpShape(_) | Verb::WarpReset) | None => {}
         }

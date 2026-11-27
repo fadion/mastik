@@ -166,8 +166,54 @@ fn a_fold_is_a_kink_and_does_not_set_the_fit() {
     assert!(c.peak < shortest_kink, "the peak ignores the kinks");
     assert!(
         c.fitted(1.0)
-            .is_some_and(|s| (s * c.peak - FIT_PT).abs() < 1e-9)
+            .is_some_and(|s| (s * c.peak - FIT_SHARE * c.size).abs() < 1e-9)
     );
+}
+
+/// Fitted's longest tooth is a share of the path, so it zooms with the path,
+/// until it reaches its screen cap. flip: `Comb::fitted` sizing to `FIT_PT` on
+/// screen at every zoom → fails at "a tenth of the path when zoomed out".
+#[test]
+fn fitted_teeth_zoom_with_the_path_up_to_a_cap() {
+    let c = comb(&circle(50.0), 8);
+    // The longest tooth's length on screen at `ppw` screen pt per world unit.
+    let longest = |ppw: f64| c.fitted(ppw).expect("curved") * c.peak * ppw;
+    for ppw in [0.05, 0.1, 0.5] {
+        let path_on_screen = c.size * ppw;
+        assert!(
+            (longest(ppw) - FIT_SHARE * path_on_screen).abs() < 1e-9,
+            "a tenth of the path when zoomed out, at {ppw}"
+        );
+    }
+    assert!(
+        (longest(20.0) - FIT_PT).abs() < 1e-9,
+        "capped when zoomed in"
+    );
+}
+
+/// While the pen draws, the card shows and the run in hand is combed, its
+/// unclosed end included. flip: `comb_subpaths` leaving out the pen's run → fails
+/// at "the run is combed".
+#[test]
+fn the_pen_run_is_combed_while_drawing() {
+    let ctx = egui::Context::default();
+    let mut app = MastikApp::headless(&ctx);
+    app.tool = Tool::Pen;
+    app.prefs.combs.on = true;
+    assert!(app.comb_card_shown(), "the card shows under the pen");
+    assert!(app.edited_comb().is_none(), "no run, nothing to comb");
+    let root = app.session.doc.first_page();
+    let arcs = two_arcs(40.0, 120.0, true, 0.0);
+    app.pen = Some(crate::preview::PenState {
+        parent: root,
+        parent_world: mastik_core::kurbo::Affine::IDENTITY,
+        anchors: arcs[0].anchors.clone(),
+        shaping: false,
+        editing: None,
+    });
+    let c = app.edited_comb().expect("the run is combed");
+    assert_eq!(c.segments.len(), 2, "both segments of the run");
+    assert_eq!(c.joins.len(), 1, "its rough join is flagged");
 }
 
 /// An app editing `subpaths` under the node tool.

@@ -1,6 +1,7 @@
-//! Curvature combs: while a path's points are edited and the switch is on
-//! (`Alt+C`, the path bar's comb button), teeth stand on the path's normals, each as
-//! long as the curvature there, their tips joined by a line. Canvas chrome only:
+//! Curvature combs: while a path's points are edited or the pen draws one and the
+//! switch is on (`Alt+C`, the path bar's comb button), teeth stand on the path's
+//! normals, each as long as the curvature there, their tips joined by a line.
+//! Fitted sizes the longest tooth to a share of the path, so the comb zooms with it. Canvas chrome only:
 //! nothing here reaches the document, so nothing here is an undo step.
 //!
 //! Teeth point away from the centre of curvature, so they swap sides where the
@@ -12,16 +13,22 @@
 use crate::app::MastikApp;
 use crate::input::ViewSwitch;
 use crate::theme::{self, color, icon};
+use crate::tools::Tool;
 use crate::ui::{self, FieldButton, Prefix, Scrub};
 use mastik_core::edit::{PenSubpath, PointRef, segment_cubic, segment_is_straight};
 use mastik_core::kurbo::{CubicBez, ParamCurve, ParamCurveDeriv, Point, Rect, Vec2};
 
 /// The card's width: the Offset card's, in whose place it hangs.
 const CARD_W: f32 = 176.0;
-/// Fitted mode's length for the longest tooth that is not a kink, in screen pt.
+/// Fitted mode's longest tooth that is not a kink, as a share of the path's size:
+/// the comb belongs to the path, so it shrinks with it as the view zooms out.
+const FIT_SHARE: f64 = 0.1;
+/// The most Fitted's longest tooth reaches, in screen pt, so a path zoomed to fill
+/// the window does not wear teeth as long as itself.
 const FIT_PT: f64 = 60.0;
-/// The longest a tooth is drawn, in screen pt, so a kink's tooth stays on screen.
-const CLIP_PT: f64 = 2.0 * FIT_PT;
+/// A kink's tooth is drawn at most this many times the longest tooth that is not
+/// one, so it stays in proportion.
+const CLIP: f64 = 2.0;
 /// The ring round a flagged point: clear of the point's marker (`POINT_PX` 9)
 /// and of a snap target's ring, so it reads as a third thing.
 const RING_PT: f32 = 9.0;
@@ -129,8 +136,10 @@ pub(crate) struct Comb {
     /// The flagged joins, in path order.
     pub(crate) joins: Vec<Join>,
     /// The largest |κ| among the teeth that are not kinks, which Fitted scales
-    /// to [`FIT_PT`]; zero on a path of straight lines.
+    /// to its length; zero on a path of straight lines.
     pub(crate) peak: f64,
+    /// The diagonal of the box round the path's anchors and handles, in world units.
+    pub(crate) size: f64,
 }
 
 impl Comb {
@@ -140,9 +149,11 @@ impl Comb {
     }
 
     /// The scale Fitted draws at, in world units squared (a tooth's world length
-    /// is |κ| times it), for `ppw` screen pt per world unit.
+    /// is |κ| times it), for `ppw` screen pt per world unit: the longest tooth is
+    /// [`FIT_SHARE`] of the path, and no more than [`FIT_PT`] on screen.
     pub(crate) fn fitted(&self, ppw: f64) -> Option<f64> {
-        (self.peak > 0.0 && ppw > 0.0).then(|| FIT_PT / (ppw * self.peak))
+        (self.peak > 0.0 && ppw > 0.0)
+            .then(|| (FIT_SHARE * self.size).min(FIT_PT / ppw) / self.peak)
     }
 }
 
@@ -279,6 +290,7 @@ pub(crate) fn comb(subpaths: &[PenSubpath], n: usize) -> Comb {
         segments,
         joins,
         peak,
+        size,
     }
 }
 
@@ -316,34 +328,68 @@ impl MastikApp {
     }
 
     /// Turn combs on or off, saved at once. Turning them on shows the card, which
-    /// hangs where the Offset, Clean up and Distort cards do, so those close.
+    /// hangs where the Offset, Clean up and Distort cards and the mirror's flyout
+    /// do, so those close.
     pub(crate) fn set_combs(&mut self, on: bool) {
         self.prefs.combs.on = on;
         self.prefs.save();
         if on {
             self.combs.card = true;
+            self.mirror_open = false;
             self.close_offset_card();
             self.close_cleanup();
             self.close_distort();
         }
     }
 
-    /// Whether the Combs card is up: combs on, the card not closed, a path's
-    /// points being edited, and neither an envelope open nor a pen run in hand,
-    /// where the teeth are not drawn either.
+    /// Whether the Combs card is up: combs on, the card not closed, no envelope
+    /// open, and a path's points being edited or the pen drawing a new one.
     pub(crate) fn comb_card_shown(&self) -> bool {
         self.combs_on()
             && self.combs.card
             && self.warp.is_none()
-            && self.pen.is_none()
-            && self.edited_path().is_some()
+            && (self.edited_path().is_some() || self.tool == Tool::Pen)
     }
 
-    /// The edited path's comb, in world space through the preview, at the card's
-    /// teeth.
+    /// What the combs comb, in world space: the path a pen run in hand will
+    /// make, the mirror's half and the path it extends included, or else the
+    /// edited path through the preview.
+    fn comb_subpaths(&self) -> Option<Vec<PenSubpath>> {
+        if self.warp.is_some() {
+            return None;
+        }
+        let Some(pen) = &self.pen else {
+            let id = self.edited_path()?;
+            return self.preview_subpaths(id).map(|(_, s)| s);
+        };
+        let first = pen.anchors.first()?.at;
+        let mut run = PenSubpath {
+            anchors: pen.anchors.clone(),
+            closed: false,
+        };
+        // As `finish_pen` splices it back.
+        Some(match &pen.editing {
+            None => self.mirror_run_in(self.mirror_frame(Some(first)), run),
+            Some(edit) => {
+                let mut all = edit.subpaths.clone();
+                if edit.from_start {
+                    run.reverse();
+                }
+                let runs = match edit.minted {
+                    true => self.mirror_run_in(self.mirror_frame(Some(first)), run),
+                    false => vec![run],
+                };
+                if edit.active < all.len() {
+                    all.splice(edit.active..=edit.active, runs);
+                }
+                all
+            }
+        })
+    }
+
+    /// The comb of what [`Self::comb_subpaths`] names, at the card's teeth.
     pub(crate) fn edited_comb(&self) -> Option<Comb> {
-        let id = self.edited_path()?;
-        let (_, subpaths) = self.preview_subpaths(id)?;
+        let subpaths = self.comb_subpaths()?;
         let n = self.prefs.combs.teeth.clamp(TEETH_MIN, TEETH_MAX);
         Some(comb(&subpaths, usize::from(n)))
     }
@@ -363,12 +409,12 @@ impl MastikApp {
         }
     }
 
-    /// Draw the edited path's comb, under its points and handles.
+    /// Draw the comb of the edited path or the pen's run, under its points and
+    /// handles.
     pub(crate) fn draw_combs(&self, painter: &egui::Painter, rect: egui::Rect, ppp: f32) {
-        if !self.combs_on() || self.warp.is_some() || self.pen.is_some() {
+        if !self.combs_on() {
             return;
         }
-        let Some(id) = self.edited_path() else { return };
         let Some(comb) = self.edited_comb() else {
             return;
         };
@@ -376,7 +422,8 @@ impl MastikApp {
         let Some(scale) = self.comb_scale(&comb, ppw) else {
             return;
         };
-        let reach = rect.expand(CLIP_PT as f32);
+        let clip = CLIP * comb.peak * scale * ppw;
+        let reach = rect.expand(clip as f32);
         let dim = egui::Stroke::new(1.0, color::SELECT_DIM);
         let tip_line = egui::Stroke::new(1.0, color::SELECT);
         for seg in &comb.segments {
@@ -413,8 +460,8 @@ impl MastikApp {
                 let base = self.to_screen(tooth.at, rect, ppp);
                 let mut v = tooth.k * scale * ppw;
                 let len = v.hypot();
-                if len > CLIP_PT {
-                    v *= CLIP_PT / len;
+                if len > clip {
+                    v *= clip / len;
                 }
                 let tip = base + egui::vec2(v.x as f32, v.y as f32);
                 let ink = ink(i, tooth);
@@ -426,7 +473,11 @@ impl MastikApp {
                 prev = Some((tip, ink));
             }
         }
-        let picked = self.subject_points(id);
+        // A pen run has no picked points, so its joins wear no pill.
+        let picked = match (&self.pen, self.edited_path()) {
+            (None, Some(id)) => self.subject_points(id),
+            _ => Vec::new(),
+        };
         for j in &comb.joins {
             let at = self.to_screen(j.point, rect, ppp);
             painter.circle_stroke(
@@ -449,6 +500,9 @@ impl MastikApp {
     /// Pick the next flagged join after the last picked point, in path order,
     /// and bring it into view.
     pub(crate) fn next_rough_join(&mut self) {
+        if self.pen.is_some() {
+            return;
+        }
         let Some(id) = self.edited_path() else { return };
         let Some(comb) = self.edited_comb() else {
             return;
@@ -477,6 +531,7 @@ impl MastikApp {
         let ppw = self.comb_ppw(ctx.pixels_per_point());
         let fitted = comb.as_ref().and_then(|c| c.fitted(ppw));
         let fixed = self.prefs.combs.fixed;
+        let drawing = self.pen.is_some();
         let mut pct = if fixed { self.combs.pct } else { 100.0 };
         let mut teeth = f64::from(self.prefs.combs.teeth.clamp(TEETH_MIN, TEETH_MAX));
         let (mut close, mut mode, mut next, mut teeth_held) = (false, None, false, false);
@@ -501,7 +556,7 @@ impl MastikApp {
                     );
                     let size = egui::vec2(w, ui::CONTROL_H);
                     ui::labelled(ui, "Scale", |ui| {
-                        ui.add_enabled_ui(fixed, |ui| {
+                        ui::disable_unless(ui, fixed, |ui| {
                             ui::value_field(
                                 ui,
                                 size,
@@ -515,7 +570,7 @@ impl MastikApp {
                         .on_hover_text(
                             "How long the teeth are, against the scale they were fixed at",
                         )
-                        .on_disabled_hover_text("Fitted keeps the longest tooth on screen");
+                        .on_disabled_hover_text("Fitted sizes the teeth to the path");
                     });
                     teeth_held = ui::labelled(ui, "Teeth", |ui| {
                         let resp = ui::value_field(
@@ -544,14 +599,15 @@ impl MastikApp {
                         ),
                     };
                     ui::note_line(ui, glyph, ink, &words, None);
-                    let state = match rough {
-                        0 => FieldButton::Disabled,
-                        _ => FieldButton::Off,
+                    let state = match drawing || rough == 0 {
+                        true => FieldButton::Disabled,
+                        false => FieldButton::Off,
                     };
                     let b = ui::label_button(ui, "Next", size, state);
-                    next = rough > 0 && b.clicked();
+                    next = rough > 0 && !drawing && b.clicked();
                     match rough {
                         0 => b.on_hover_text("Every join is smooth"),
+                        _ if drawing => b.on_hover_text("Finish the path to pick its rough joins"),
                         _ => b.on_hover_text("Pick the next rough join"),
                     };
                 });

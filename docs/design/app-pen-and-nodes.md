@@ -333,8 +333,10 @@ of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; ev
   `edit::split_refusal`). Its
   glyph is `icon::SPLIT_POINT`; `SCISSORS` means *Cut*. One undo step. *Delete segment* already opens
   a path at a segment, and *Delete points* heals.
-- **While the pen or the pencil is armed** (`path_bar::drawing_bar`) it holds the symmetry button,
-  a rule, and *Done*, which finishes a pen run and drops to Select. The symmetry button (tooltip
+- **While the pen or the pencil is armed** (`path_bar::drawing_bar`) it holds the symmetry button;
+  for the pen only, the *Curvature combs* switch (`icon::COMB`, *Curvature combs (Alt+C)*), since
+  the pencil's strokes are fitted on release and have no curve to comb until then; a rule; and
+  *Done*, which finishes a pen run and drops to Select. The symmetry button (tooltip
   *Symmetry while drawing*, `MastikApp::symmetry_glyph`: `icon::FLIP_HORIZONTAL` for the mirrors,
   `RADIAL_SYMMETRY` under a centre; lit while drawing with symmetry or while its flyout is open)
   opens a `ui::flyout` in the `Foreground` order (`MastikApp::mirror_open`): one symmetry at a time,
@@ -462,25 +464,29 @@ of Pen and Pencil it shows) and free to overlap the ruler (`crate::path_bar`; ev
 
 ### Curvature combs
 
-Teeth on the edited path's normals, each as long as the curvature there, so a smooth point whose
-curvature jumps shows (`crate::combs`). Canvas chrome only: nothing reaches the document and
-nothing is an undo step.
+Teeth on the normals of the path whose points are edited or that the pen draws, each as long as
+the curvature there, so a smooth point whose curvature jumps shows (`crate::combs`). Canvas chrome
+only: nothing reaches the document and nothing is an undo step.
 
-- **The switch** is `ViewSwitch::Combs` (*Curvature combs*, `Alt+C`), the path bar's button
-  (tooltip *Curvature combs (Alt+C)*), the palette and the cheatsheet, beside *Lasso select*; on
+- **The switch** is `ViewSwitch::Combs` (*Curvature combs*, `Alt+C`), the path bar's button and the
+  pen's drawing bar's (tooltip *Curvature combs (Alt+C)*), the palette and the cheatsheet, beside *Lasso select*; on
   no menu. It is a preference (`prefs::CombPrefs`, with the mode and the teeth), not a View mode:
   it is a way of working a person keeps. The status line says *Curvature combs on · Alt+C* or
   *… off*.
-- **Drawn** only on the path whose points are edited, never while a warp envelope is open or a pen
-  run is in hand, under the points and handles. Each segment has teeth at `t = i/n`, `n` the card's
-  *Teeth* (`TEETH_MIN`–`TEETH_MAX`, 8–64, `TEETH_DEFAULT` 24). A tooth points away from the centre
-  of curvature, so the teeth swap sides at an inflection, and is |κ| × the scale long, clipped at
-  `CLIP_PT` (120 pt) on screen. Teeth are `color::SELECT_DIM`; their tips are joined per segment by
-  a 1 pt `SELECT` line. Where the curvature is undefined (an end whose handle is retracted, an
+- **Drawn** on the path whose points are edited, or, while a pen run is in hand, on the whole path
+  the run will make (`comb_subpaths`): the mirror's half too and, when the pen adds to an existing
+  path, that path with the run spliced in as `finish_pen` splices it. Never while a warp envelope
+  is open; always under the points and handles. Each segment has teeth at `t = i/n`, `n` the
+  card's *Teeth* (`TEETH_MIN`–`TEETH_MAX`, 8–64, `TEETH_DEFAULT` 24). A tooth points away from the
+  centre of curvature, so the teeth swap sides at an inflection, and is |κ| × the scale long; a
+  kink's is clipped at `CLIP` (2) times the longest tooth that is not a kink, as drawn. Teeth are
+  `color::SELECT_DIM`; their tips are joined per segment by a 1 pt `SELECT` line. Where the curvature is undefined (an end whose handle is retracted, an
   exact cusp) the tooth is left out and the tip line breaks.
-- **Scale.** *Fitted* makes the longest tooth that is not a kink `FIT_PT` (60 pt) at any zoom.
-  *Fixed* holds a world-space scale times the card's *Scale* percentage, so teeth grow with the
-  zoom and two curves are drawn against one scale. The base is the fitted scale when Fixed is
+- **Scale.** *Fitted* makes the longest tooth that is not a kink `FIT_SHARE` (10 %) of the path's
+  size (the diagonal of the box round its anchors and handles), so the comb belongs to the path and
+  zooms with it, but never longer than `FIT_PT` (60 pt) on screen, so a path zoomed to fill the
+  window does not wear teeth as long as itself. *Fixed* holds a world-space scale times the card's
+  *Scale* percentage, so teeth grow with the zoom and two curves are drawn against one scale. The base is the fitted scale when Fixed is
   chosen, or on the first frame a session that starts in Fixed edits a path with combs on
   (`settle_comb_base`); base and percentage are per session, the mode a preference.
 - **Joins** are judged at every anchor that is not a corner and has a segment on both sides
@@ -497,21 +503,23 @@ nothing is an undo step.
   - A flagged join colours the teeth and tip line within a quarter of each adjacent segment and
     rings the point (`RING_PT` 9, 1.5 pt), clear of the point's marker and a snap ring. Its pill
     shows under the ring only while that point is selected: a traced path can have dozens of joins.
+    A pen run has no selected points, so its joins wear the ring and no pill.
 - **A kink** is an interior tooth whose |κ| × its segment's control-polygon length exceeds `KINK`
   (25), where the curve all but folds. It is drawn red and kept out of Fitted's fit. It is
   measured against the segment, not the path: a tight
   round corner on a big path is drawn on purpose.
 - **The Combs card** (`comb_card_ui`, 176 wide, the Offset card's width) is a `ui::menu_frame`
   with `popover_head` *Combs* and its ×, beside the bar with its top on the comb button: *Fitted* ·
-  *Fixed* (`ui::segmented`), *Scale* % (disabled in Fitted, *Fitted keeps the longest tooth on
-  screen*), *Teeth*, a readout and *Next*. The readout is a `ui::note_line`: `icon::WARNING` in
+  *Fixed* (`ui::segmented`), *Scale* % (disabled in Fitted, *Fitted sizes the teeth to the path*),
+  *Teeth*, a readout and *Next*. The readout is a `ui::note_line`: `icon::WARNING` in
   warn ink and *N rough joins*, or `icon::CHECK_CIRCLE` in faint ink and *Every join is smooth*,
-  one line either way so the card keeps its height. The card hides while a pen run is in hand, as
-  the teeth do. *Next* (disabled with none) selects the next flagged join after
+  one line either way so the card keeps its height. It shows beside the pen's drawing bar too;
+  there *Next* is disabled while a run is in hand (*Finish the path to pick its rough joins*), since
+  a run has no points to pick. *Next* (disabled with none) selects the next flagged join after
   the last selected point in path order, wrapping, and pans it into view (`reveal`). *Teeth* is
   saved once the field lets go, since a save rewrites the whole preferences file.
 - **The card and the other cards.** Turning combs on shows the card and closes the Offset, Clean up
-  and Distort cards, which hang in the same place; opening one of those hides the Combs card and
+  and Distort cards and the mirror's flyout, which hang in the same place; opening one of those hides the Combs card and
   the combs stay drawn. Its × or `Escape` (a rung under the Distort card's) hides the card and
   leaves combs on; the bar's button turns them off, and turning them on again brings the card
   back.

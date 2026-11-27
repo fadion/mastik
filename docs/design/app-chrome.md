@@ -227,7 +227,7 @@ mastik-app/src/
 ├─ path_bar.rs      the path bar beside the rail while points are edited or the pen or pencil is armed (app-pen-and-nodes.md); the warp bar and card in its place (tools.md)
 ├─ cleanup.rs       the path bar's Clean up card: simplify, remove or add points, smooth (app-pen-and-nodes.md)
 ├─ distort.rs       the path bar's Distort card: roughen, zig-zag, pucker or bloat (app-pen-and-nodes.md)
-├─ combs.rs         curvature combs on the edited path: teeth, join diagnostics, the Combs card (app-pen-and-nodes.md)
+├─ combs.rs         curvature combs on the edited path or the pen's run: teeth, join diagnostics, the Combs card (app-pen-and-nodes.md)
 ├─ mirror.rs        mirror while drawing: the axes, the joining rule, the canvas axes and the flyout; a mirrored path kept symmetric under point editing (app-pen-and-nodes.md)
 ├─ rail.rs          the tool rail's grouped slots and their members' row (tools.md)
 ├─ pencil.rs        the pencil: the freehand trail, its fit on release, extending and closing (app-pen-and-nodes.md)
