@@ -39,6 +39,10 @@ pub struct Payload {
     /// One per copied layer, ids still the originals'; `build::insert_subtrees`
     /// mints fresh ones through `document::remap_subtree`, so they are a template.
     pub subtrees: Vec<Vec<Node>>,
+    /// Beside each subtree, the same layers with every live brush whose brush
+    /// was not copied baked (`crate::live_brush::baked_copies`): what a paste
+    /// takes where that brush is not. Empty when no subtree has one.
+    pub baked: Vec<Option<Vec<Node>>>,
     /// The vault mains the copy reaches, captured whole with their origins
     /// (`crate::kit::carried`, §15 D1012); empty unless the copy holds a kit
     /// instance. The paste vendors them (`crate::kit::adopt`) so it lands linked.
@@ -91,6 +95,10 @@ struct ClipDto {
     /// it: the first entry is the root, and its `parent` still names the node it
     /// was copied from, so a same-document paste lands back in its own group.
     subtrees: Vec<Vec<NodeDto>>,
+    /// Beside each subtree, its baked twin when it holds a live brush whose
+    /// brush was not copied, in `subtrees`' form. Absent when none does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    baked: Vec<Option<Vec<NodeDto>>>,
     /// The carried kit mains, each a subtree in `subtrees`' form. Absent for a
     /// copy holding no kit instance.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -129,6 +137,21 @@ pub fn write_carrying(
     from: Option<Rect>,
     heading: &str,
 ) -> Result<String, IoError> {
+    write_baking(subtrees, &[], kits, images, vars, from, heading)
+}
+
+/// [`write_carrying`] with each subtree's baked twin beside it
+/// ([`Payload::baked`]), for a copy holding a live brush whose brush stays
+/// behind.
+pub fn write_baking(
+    subtrees: &[Vec<Node>],
+    baked: &[Option<Vec<Node>>],
+    kits: &[Vec<Node>],
+    images: &[(ImageId, ImageEntry)],
+    vars: &crate::variable::Carried,
+    from: Option<Rect>,
+    heading: &str,
+) -> Result<String, IoError> {
     // A chart's linked file stays behind (`Chart::copied`), the variables'
     // detached twins' too.
     let copied = |n: &Node| {
@@ -140,6 +163,10 @@ pub fn write_carrying(
     let dto = ClipDto {
         schema_version: CURRENT_SCHEMA_VERSION,
         subtrees: subtrees.iter().map(dto_of).collect(),
+        baked: match baked.iter().any(Option::is_some) {
+            true => baked.iter().map(|t| t.as_ref().map(dto_of)).collect(),
+            false => Vec::new(),
+        },
         kits: kits.iter().map(dto_of).collect(),
         images: images
             .iter()
@@ -184,10 +211,24 @@ fn parse(json: &str) -> Result<Payload, IoError> {
     }
     let mut subtrees = Vec::with_capacity(dto.subtrees.len());
     let mut kits = Vec::with_capacity(dto.kits.len());
-    // The carried kit mains are subtrees in the same form and held to the same
-    // two rules (§15 D1012); only where they land differs.
-    let tagged = dto.subtrees.into_iter().map(|t| (false, t));
-    for (carried, dto_nodes) in tagged.chain(dto.kits.into_iter().map(|t| (true, t))) {
+    let mut baked: Vec<Option<Vec<Node>>> = vec![None; dto.subtrees.len()];
+    // The carried kit mains and the baked twins are subtrees in the same form
+    // and held to the same two rules (§15 D1012); only where they land differs.
+    enum Tag {
+        Copied,
+        Kit,
+        Baked(usize),
+    }
+    let tagged = dto.subtrees.into_iter().map(|t| (Tag::Copied, t));
+    let twins = dto
+        .baked
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, t)| t.map(|t| (Tag::Baked(i), t)));
+    for (tag, dto_nodes) in tagged
+        .chain(dto.kits.into_iter().map(|t| (Tag::Kit, t)))
+        .chain(twins)
+    {
         if dto_nodes.is_empty() {
             return Err(IoError::Integrity("empty subtree on the clipboard".into()));
         }
@@ -231,10 +272,17 @@ fn parse(json: &str) -> Result<Payload, IoError> {
                  begins with its root"
             )));
         }
-        if carried {
-            kits.push(nodes);
-        } else {
-            subtrees.push(nodes);
+        match tag {
+            Tag::Copied => subtrees.push(nodes),
+            Tag::Kit => kits.push(nodes),
+            Tag::Baked(i) => match baked.get_mut(i) {
+                Some(slot) => *slot = Some(nodes),
+                None => {
+                    return Err(IoError::Integrity(format!(
+                        "a baked copy stands for subtree {i}, which the clipboard lacks"
+                    )));
+                }
+            },
         }
     }
     let mut images = Vec::with_capacity(dto.images.len());
@@ -266,6 +314,7 @@ fn parse(json: &str) -> Result<Payload, IoError> {
     let referenced: Vec<ImageId> = subtrees
         .iter()
         .chain(&kits)
+        .chain(baked.iter().flatten())
         .flat_map(|nodes| crate::build::image_ids_in(nodes))
         .collect();
     images.retain(|(id, _)| referenced.contains(id));
@@ -286,8 +335,13 @@ fn parse(json: &str) -> Result<Payload, IoError> {
         styles: dto.vars.styles,
         tokens: dto.vars.tokens,
     };
+    // Empty, not a list of `None`s, when the copy holds no baked twin.
+    if baked.iter().all(Option::is_none) {
+        baked.clear();
+    }
     Ok(Payload {
         subtrees,
+        baked,
         kits,
         images,
         vars,

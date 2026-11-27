@@ -2672,6 +2672,59 @@ fn collection_name(
     }
 }
 
+/// The *Apply brush* card's options from `apply_brush`'s and `set_brush`'s
+/// parameters, each held to the card's range.
+fn brush_mode(a: &Args<'_>) -> Result<crate::apply_brush::Mode, VerbError> {
+    use crate::apply_brush::{Art, Mode, Scatter, Stretch, Turn};
+    let ranged = |name: &'static str, default: f64, lo: f64, hi: f64, says: &'static str| {
+        let v = a.number(name).unwrap_or(default);
+        match v.is_finite() && (lo..=hi).contains(&v) {
+            true => Ok(v),
+            false => Err(a.invalid(name, says)),
+        }
+    };
+    Ok(match a.choice("mode").unwrap_or("art") {
+        "scatter" => Mode::Scatter(Scatter {
+            spacing: ranged("spacing", 1.2, 0.1, 10.0, "expected 0.1 to 10")?,
+            size: ranged("size", 0.8, 0.01, 10.0, "expected 0.01 to 10")?,
+            size_varies: ranged("size_varies", 0.3, 0.0, 1.0, "expected 0 to 1")?,
+            scatter: ranged("scatter", 0.2, 0.0, 5.0, "expected 0 to 5")?,
+            turn: match a.choice("turn") {
+                Some("fixed") => Turn::Fixed,
+                _ => Turn::Along,
+            },
+            seed: u32::try_from(a.index("seed").unwrap_or(1))
+                .map_err(|_| a.invalid("seed", "expected 0 to 4294967295"))?,
+        }),
+        _ => Mode::Art(Art {
+            width: ranged("width", 1.0, 0.01, 10.0, "expected 0.01 to 10")?,
+            stretch: match a.choice("stretch") {
+                Some("middle") => Stretch::Middle,
+                _ => Stretch::Whole,
+            },
+            flip: a.bool("flip").unwrap_or(false),
+        }),
+    })
+}
+
+/// A live brush link as `get_node` reports it and `set_brush` takes it: the
+/// brush as `of`, then `mode` and the mode's options, and `visible` only when
+/// the brush is hidden.
+pub fn brush_value(link: &crate::live_brush::BrushLink) -> Value {
+    let mut map = match serde_json::to_value(link.mode) {
+        Ok(Value::Object(m)) => m,
+        _ => Map::new(),
+    };
+    if let Some(kind) = map.remove("kind") {
+        map.insert("mode".into(), kind);
+    }
+    map.insert("of".into(), Value::from(link.of.to_wire()));
+    if !link.visible {
+        map.insert("visible".into(), Value::Bool(false));
+    }
+    Value::Object(map)
+}
+
 /// Why layer `id`'s element and link are not its own to set, as the identity
 /// card's Element row dims: a layer inside an instance takes its main's, and a
 /// shape takes none.
@@ -3466,7 +3519,7 @@ pub static VERBS: &[Verb] = &[
     },
     Verb {
         name: "apply_brush",
-        doc: "Bend a shape along a path (art) or repeat it along it (scatter), as paths in a group in the path's place; answers the group",
+        doc: "Bend a shape along a path (art) or repeat it along it (scatter), live in place of the path's strokes; with bake, paths in a group in the path's place, answered",
         params: &[
             req("path", NODE, "the path the brush runs along"),
             req("brush", NODE, "the shape bent or repeated; it stays"),
@@ -3512,49 +3565,148 @@ pub static VERBS: &[Verb] = &[
                 "scatter: along unless given",
             ),
             opt("seed", INDEX, "scatter: the random run; 1 unless given"),
-            opt("keep_path", BOOL, "keep the path in the group, hidden"),
+            opt("bake", BOOL, "bake into paths instead"),
+            opt("keep_path", BOOL, "bake: keep the path, hidden"),
         ],
         run: |ctx, a| {
-            use crate::apply_brush::{self as ab, ApplyBrush, Art, Mode, Scatter, Stretch, Turn};
-            let ranged =
-                |name: &'static str, default: f64, lo: f64, hi: f64, says: &'static str| {
-                    let v = a.number(name).unwrap_or(default);
-                    match v.is_finite() && (lo..=hi).contains(&v) {
-                        true => Ok(v),
-                        false => Err(a.invalid(name, says)),
-                    }
-                };
-            let mode = match a.choice("mode").unwrap_or("art") {
-                "scatter" => Mode::Scatter(Scatter {
-                    spacing: ranged("spacing", 1.2, 0.1, 10.0, "expected 0.1 to 10")?,
-                    size: ranged("size", 0.8, 0.01, 10.0, "expected 0.01 to 10")?,
-                    size_varies: ranged("size_varies", 0.3, 0.0, 1.0, "expected 0 to 1")?,
-                    scatter: ranged("scatter", 0.2, 0.0, 5.0, "expected 0 to 5")?,
-                    turn: match a.choice("turn") {
-                        Some("fixed") => Turn::Fixed,
-                        _ => Turn::Along,
-                    },
-                    seed: u32::try_from(a.index("seed").unwrap_or(1))
-                        .map_err(|_| a.invalid("seed", "expected 0 to 4294967295"))?,
-                }),
-                _ => Mode::Art(Art {
-                    width: ranged("width", 1.0, 0.01, 10.0, "expected 0.01 to 10")?,
-                    stretch: match a.choice("stretch") {
-                        Some("middle") => Stretch::Middle,
-                        _ => Stretch::Whole,
-                    },
-                    flip: a.bool("flip").unwrap_or(false),
-                }),
-            };
+            use crate::apply_brush::{self as ab, ApplyBrush};
+            let mode = brush_mode(a)?;
             let how = ApplyBrush {
                 path: a.layer(ctx.doc, "path")?,
                 brush: a.layer(ctx.doc, "brush")?,
                 mode,
                 keep_path: a.bool("keep_path").unwrap_or(false),
             };
+            if !a.bool("bake").unwrap_or(false) {
+                if let Some(r) = crate::live_brush::refusal(ctx.doc, ctx.res, how.path, how.brush) {
+                    return Err(VerbError::Nothing(r.says()));
+                }
+                let link = crate::live_brush::BrushLink::new(how.brush, how.mode);
+                return Ok(Done::edit(Transaction(vec![Operation::SetBrush {
+                    id: how.path,
+                    brush: Some(link),
+                }])));
+            }
             let (tx, group) = ab::apply(ctx.doc, ctx.res, ctx.ids, &how)
                 .map_err(|r| VerbError::Nothing(r.says()))?;
             Ok(Done::made(tx, vec![group]))
+        },
+    },
+    Verb {
+        name: "bake_brush",
+        doc: "Bake each layer's live brush into plain paths in a group in its place, as apply_brush with bake would; answers the groups",
+        params: &[req("nodes", NODES, "layers drawn with a live brush")],
+        run: |ctx, a| {
+            let mut ops = Vec::new();
+            let mut made = Vec::new();
+            for id in a.nodes("nodes")? {
+                if ctx.doc.get(id).and_then(|n| n.brush()).is_none() {
+                    return Err(a.invalid("nodes", "a layer has no live brush"));
+                }
+                let (baked, group) = crate::live_brush::bake(ctx.doc, ctx.res, ctx.ids, id)
+                    .ok_or_else(|| a.invalid("nodes", "a layer has no live brush"))?;
+                ops.extend(baked);
+                made.extend(group);
+            }
+            Ok(Done::made(Transaction(ops), made))
+        },
+    },
+    Verb {
+        name: "set_brush",
+        doc: "Link a path to a live brush with the card's options, as get_node reports it, or drop the link when brush is absent; visible false draws the path's strokes instead",
+        params: &[
+            req("node", NODE, "the path"),
+            opt(
+                "brush",
+                NODE,
+                "the shape drawn along it; absent drops the link",
+            ),
+            opt(
+                "mode",
+                ParamKind::Choice(&["art", "scatter"]),
+                "art unless given",
+            ),
+            opt(
+                "width",
+                ParamKind::Number,
+                "art: 0.01 to 10; 1 unless given",
+            ),
+            opt(
+                "stretch",
+                ParamKind::Choice(&["whole", "middle"]),
+                "art: whole unless given",
+            ),
+            opt("flip", BOOL, "art: mirror across the path"),
+            opt(
+                "spacing",
+                ParamKind::Number,
+                "scatter: 0.1 to 10; 1.2 unless given",
+            ),
+            opt(
+                "size",
+                ParamKind::Number,
+                "scatter: 0.01 to 10; 0.8 unless given",
+            ),
+            opt(
+                "size_varies",
+                ParamKind::Number,
+                "scatter: 0 to 1; 0.3 unless given",
+            ),
+            opt(
+                "scatter",
+                ParamKind::Number,
+                "scatter: 0 to 5; 0.2 unless given",
+            ),
+            opt(
+                "turn",
+                ParamKind::Choice(&["along", "fixed"]),
+                "scatter: along unless given",
+            ),
+            opt("seed", INDEX, "scatter: 1 unless given"),
+            opt(
+                "visible",
+                BOOL,
+                "false draws the path's strokes instead; true unless given",
+            ),
+        ],
+        run: |ctx, a| {
+            let id = a.layer(ctx.doc, "node")?;
+            let Some(_) = a.get("brush") else {
+                return Ok(Done::edit(Transaction(vec![Operation::SetBrush {
+                    id,
+                    brush: None,
+                }])));
+            };
+            let brush = a.layer(ctx.doc, "brush")?;
+            // Relinking a layer to the brush it has is no new link to check.
+            let kept = node(ctx, id)?.brush().is_some_and(|l| l.of == brush);
+            if !kept && let Some(r) = crate::live_brush::refusal(ctx.doc, ctx.res, id, brush) {
+                return Err(VerbError::Nothing(r.says()));
+            }
+            let link = crate::live_brush::BrushLink {
+                of: brush,
+                mode: brush_mode(a)?,
+                visible: a.bool("visible").unwrap_or(true),
+            };
+            Ok(Done::edit(Transaction(vec![Operation::SetBrush {
+                id,
+                brush: Some(link),
+            }])))
+        },
+    },
+    Verb {
+        name: "remove_brush",
+        doc: "Drop each layer's live brush, so its own strokes draw again",
+        params: &[req("nodes", NODES, "layers drawn with a live brush")],
+        run: |ctx, a| {
+            let mut ops = Vec::new();
+            for id in a.nodes("nodes")? {
+                if ctx.doc.get(id).and_then(|n| n.brush()).is_none() {
+                    return Err(a.invalid("nodes", "a layer has no live brush"));
+                }
+                ops.push(Operation::SetBrush { id, brush: None });
+            }
+            Ok(Done::edit(Transaction(ops)))
         },
     },
     Verb {
@@ -9422,6 +9574,9 @@ fn layer_tree(doc: &Document, id: NodeId, drawn: bool, deep: bool) -> Option<Val
     }
     if !n.href().is_empty() {
         put("link", Value::from(n.href()));
+    }
+    if let Some(link) = n.brush() {
+        put("brush", brush_value(&link));
     }
     if !n.grids().is_empty() {
         put("grids", values(n.grids()));

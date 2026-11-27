@@ -42,6 +42,13 @@ const COMPATIBILITY: u32 = 99;
 
 /// Write `doc` as a `.sketch` file named `name`.
 pub fn export(doc: &Document, res: &Resolved, name: &str) -> std::io::Result<SketchExport> {
+    // Sketch has no live brush: each is written as its bake, and said so.
+    let pages: Vec<NodeId> = doc.page_ids().collect();
+    let baked = mastik_core::live_brush::baked_view(doc, res, &pages);
+    let (doc, res) = match &baked {
+        Some((d, r, _)) => (d, r),
+        None => (doc, res),
+    };
     let mut w = Writer {
         doc,
         res,
@@ -56,6 +63,9 @@ pub fn export(doc: &Document, res: &Resolved, name: &str) -> std::io::Result<Ske
     let (swatches, text_styles) = w.library();
     if !doc.guides().is_empty() {
         w.approximate("Guides, left out");
+    }
+    if baked.is_some() {
+        w.approximate("Live brushes, baked into paths");
     }
     w.find_symbols();
     let mut pages = Vec::new();

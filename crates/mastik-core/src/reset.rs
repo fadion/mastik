@@ -102,6 +102,7 @@ pub fn state_ops(node: &Node) -> Vec<Operation> {
         origin: _,
         // Never on a copy: becoming one clears it.
         detached_from: _,
+        brush,
         modes,
         queries,
         corner_vars,
@@ -187,6 +188,7 @@ pub fn state_ops(node: &Node) -> Vec<Operation> {
             id,
             href: href.clone(),
         },
+        O::SetBrush { id, brush: *brush },
         O::SetLayoutGrids {
             id,
             grids: grids.clone(),

@@ -375,6 +375,13 @@ pub enum Operation {
         id: NodeId,
         from: Option<NodeId>,
     },
+    /// The live brush a path draws with in place of its strokes
+    /// (`crate::live_brush`); `None` draws its strokes again. Refused on a kind
+    /// with no outline to run along, and for a brush that is the layer itself.
+    SetBrush {
+        id: NodeId,
+        brush: Option<crate::live_brush::BrushLink>,
+    },
     /// The address a layer written as a link goes to, never drawn. Refused
     /// unless in [`crate::element::is_href`]'s form; empty is none.
     SetHref {
@@ -798,7 +805,8 @@ impl Operation {
             | Operation::SetLayoutStyle { id, .. }
             | Operation::SetChartStyle { id, .. }
             | Operation::SetOrigin { id, .. }
-            | Operation::SetDetachedFrom { id, .. } => Some(*id),
+            | Operation::SetDetachedFrom { id, .. }
+            | Operation::SetBrush { id, .. } => Some(*id),
             Operation::CreateNode { .. }
             | Operation::DeleteNode { .. }
             | Operation::InsertSubtree { .. }
@@ -1136,6 +1144,8 @@ impl Operation {
             | Operation::SetFillRule { .. }
             | Operation::SetFills { .. }
             | Operation::SetStrokes { .. }
+            // A brush draws in place of the strokes.
+            | Operation::SetBrush { .. }
             // **True, and the one paint op that can change what is drawn outside
             // its layer**: a drop shadow reaches past the node's box, which is why
             // `effect::stack_escape` exists and the bounds cache reads it.
@@ -1367,6 +1377,7 @@ impl Operation {
             Operation::SetDetachedFrom { id, from } => {
                 node(id).is_some_and(|n| n.detached_from == *from)
             }
+            Operation::SetBrush { id, brush } => node(id).is_some_and(|n| n.brush == *brush),
 
             // This arm and the pivot, stroke and layout arms below compare what
             // `apply` stores, which is clamped to the geometry and stroke limits:
@@ -1854,6 +1865,9 @@ pub enum OpError {
     /// An HTML element the layer's kind is not offered (`crate::element::offered`).
     #[error("this kind of layer cannot be written as that element")]
     ElementForKind,
+    /// A live brush on a kind with no outline to run along, or on its own brush.
+    #[error("this layer cannot take that brush")]
+    BrushForKind,
     /// A link address not in [`crate::element::is_href`]'s form.
     #[error("not an address a link can take")]
     BadHref,

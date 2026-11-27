@@ -10,6 +10,7 @@ use mastik_core::{
     Document, NodeId, NodeKind, Operation, Paint, Resolved, Transaction, build, text,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::sync::Arc;
 
 /// The visible region. `zoom` is derived from `view` vs `pixel_size` — it is
 /// not stored, so there is no redundant field to keep in sync (§6.2).
@@ -79,6 +80,14 @@ pub struct Ghost {
     pub node: GhostNode,
 }
 
+/// A live brush under a preview ([`RenderOverrides::brush_of`]): the brush a
+/// layer's strokes give way to, and its ink, `None` while it draws nothing.
+#[derive(Clone, Debug)]
+pub struct PreviewBrush {
+    pub of: NodeId,
+    pub ink: Option<Arc<mastik_core::apply_brush::Ink>>,
+}
+
 /// One place in a parent's drawn order ([`RenderOverrides::merged_children`]).
 #[derive(Clone, Copy)]
 pub(crate) enum Slot<'a> {
@@ -106,6 +115,8 @@ pub struct GhostNode {
     /// when the subtree is built: the scene walk is handed derived geometry, not
     /// asked to compute it per frame.
     pub path: Option<kurbo::BezPath>,
+    /// How its outline decides its interior, as `Node::fill_rule` does.
+    pub rule: mastik_core::FillRule,
     pub opacity: f32,
     /// How it mixes with what is beneath it, as `Node::blend` does.
     pub blend: mastik_core::BlendMode,
@@ -137,6 +148,7 @@ impl GhostNode {
             text,
             // No shape tool makes a boolean or a mask: both designate existing layers.
             path: None,
+            rule: mastik_core::FillRule::default(),
             opacity: 1.0,
             blend,
             visible: true,
@@ -235,6 +247,14 @@ pub struct RenderOverrides {
     /// id is in no document, so its bound paint reads in the modes in force at
     /// its chart ([`Self::paint_owner`]).
     chart_parts: FxHashMap<NodeId, NodeId>,
+    /// The live brush links this preview writes (`SetBrush`), `None` dropping one.
+    links: FxHashMap<NodeId, Option<mastik_core::live_brush::BrushLink>>,
+    /// Each brushed layer whose brush this preview draws differently: the brush
+    /// its strokes give way to and what it draws there, none for a brush that
+    /// draws nothing; `None` for the layer's own strokes. The preview's twin of
+    /// `Resolved::brush_ink` and `live_brush::hides_strokes`, built once per
+    /// preview ([`Self::rebrush`]).
+    brushes: FxHashMap<NodeId, Option<PreviewBrush>>,
 }
 
 impl RenderOverrides {
@@ -245,6 +265,88 @@ impl RenderOverrides {
             && self.ghosts.is_empty()
             && self.order.is_empty()
             && self.ground.is_none()
+            && self.brushes.is_empty()
+    }
+
+    /// What `id`'s live brush draws under this preview, when the preview changes
+    /// it: `Some(None)` for the layer's own strokes, `None` to read `Resolved`.
+    pub fn brush_of(&self, id: NodeId) -> Option<Option<&PreviewBrush>> {
+        self.brushes.get(&id).map(Option::as_ref)
+    }
+
+    /// Every brushed layer whose brush this preview reaches, its own link written
+    /// or its path or brush moved or reshaped, built again from the preview's
+    /// geometry. A layer whose brush ink moves is marked moved, so the walk does
+    /// not cull it against its committed ink.
+    fn rebrush(&mut self, doc: &Document, res: &Resolved) {
+        if self.is_empty() && self.links.is_empty() {
+            return;
+        }
+        let touched: FxHashSet<NodeId> = self.touched().collect();
+        // The touched nodes and their ancestors: a brush among them is itself
+        // touched, or holds a touched layer.
+        let mut up: FxHashSet<NodeId> = FxHashSet::default();
+        for id in &touched {
+            let mut at = Some(*id);
+            while let Some(a) = at {
+                if !up.insert(a) {
+                    break;
+                }
+                at = doc.get(a).and_then(|n| n.parent());
+            }
+        }
+        let moved = |mut at: Option<NodeId>| {
+            while let Some(a) = at {
+                if touched.contains(&a) {
+                    return true;
+                }
+                at = doc.get(a).and_then(|n| n.parent());
+            }
+            false
+        };
+        let users: Vec<(NodeId, Option<mastik_core::live_brush::BrushLink>)> = res
+            .brushed()
+            .filter(|(user, _)| !self.links.contains_key(user))
+            .map(|(user, _)| (user, doc.get(user).and_then(|n| n.brush())))
+            .chain(self.links.iter().map(|(u, l)| (*u, *l)))
+            .collect();
+        for (user, link) in users {
+            let written = self.links.contains_key(&user);
+            let reached = |l: &mastik_core::live_brush::BrushLink| {
+                up.contains(&l.of) || moved(Some(l.of)) || moved(Some(user))
+            };
+            if !written && !link.as_ref().is_some_and(reached) {
+                continue;
+            }
+            // As `live_brush::hides_strokes`: a shown link to a layer the
+            // document holds takes the strokes' place, drawing or not.
+            let drawn = link
+                .filter(|l| l.visible && doc.contains(l.of) && !doc.in_vault(l.of))
+                .map(|l| PreviewBrush {
+                    of: l.of,
+                    ink: mastik_core::live_brush::ink_with(
+                        doc,
+                        user,
+                        l,
+                        &|n| self.world_transform(doc, res, n),
+                        &|n| self.drawn_path(doc, res, n),
+                    )
+                    .map(Arc::new),
+                });
+            self.brushes.insert(user, drawn);
+            self.moved.insert(user);
+        }
+    }
+
+    /// `id`'s outline in its own space as this preview draws it.
+    fn drawn_path(&self, doc: &Document, res: &Resolved, id: NodeId) -> Option<kurbo::BezPath> {
+        if let Some(path) = self.boolean.get(&id) {
+            return Some(path.clone());
+        }
+        match self.get(id).and_then(|o| o.kind.as_ref()) {
+            Some(kind) => mastik_core::geometry::local_path(kind),
+            None => res.local_path(doc, id),
+        }
     }
 
     /// Every document node whose drawing this preview can change: the patched,
@@ -738,6 +840,8 @@ impl RenderOverrides {
             }
         }
         out.reevaluate_booleans(doc, res);
+        // Last: a brush reads the outlines and places everything above settles.
+        out.rebrush(doc, res);
         Some(out)
     }
 
@@ -1785,6 +1889,10 @@ impl RenderOverrides {
             | Operation::MovePage { .. } => {}
             // A page coming or going is structural, as the vault is.
             Operation::AddPage { .. } | Operation::RemovePage { .. } => return None,
+            // A link the walk draws once `rebrush` has built its ink.
+            Operation::SetBrush { id, brush } => {
+                self.links.insert(*id, *brush);
+            }
             // Nothing the renderer draws, absorbed as a no-op rather than refused so
             // the rest of the transaction still previews. Guides and layout grids are
             // egui chrome the app previews from its own gesture state, and so is the
@@ -2387,6 +2495,7 @@ pub fn ghost_as_drawn(
             transform: res.used_local(doc, id).unwrap_or_else(|| node.transform()),
             text: res.text_layout(id).cloned().or_else(|| shaped(&kind)),
             path: res.boolean_path(id).cloned(),
+            rule: node.fill_rule(),
             kind,
             paint,
             effects: doc.resolved_effects(id, node.effects()).into_owned(),
@@ -2501,6 +2610,7 @@ fn build_ghost(
         // Resolved at capture like the paint: nothing downstream resolves effects.
         effects: doc.resolved_effects(node.id(), node.effects()).into_owned(),
         path,
+        rule: node.fill_rule(),
         // A bound opacity resolved in the default mode, as `ghost_shown`: the id is
         // in no document, so `drawn_opacity` would answer 1 for every ghost.
         opacity: doc.opacity_drawn_in(

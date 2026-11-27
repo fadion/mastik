@@ -58,6 +58,7 @@ pub mod kit;
 pub mod knife;
 pub mod layout;
 pub mod list;
+pub mod live_brush;
 pub mod marker;
 pub mod matching;
 pub mod measure;

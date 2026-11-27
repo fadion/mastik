@@ -1445,6 +1445,9 @@ impl Walk<'_> {
         let doc = self.doc;
         let id = node.id();
         let kind = self.res.used_kind_of(node);
+        if mastik_core::live_brush::hides_strokes(doc, id) {
+            return Some("a live brush".into());
+        }
         match kind {
             NodeKind::Artboard { .. } | NodeKind::Group | NodeKind::Rect { .. } => {}
             // CSS has no arc: a wedge or a ring goes out as the outline.

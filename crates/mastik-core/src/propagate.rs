@@ -78,6 +78,9 @@ fn mode(op: &Operation) -> Mode {
         // differ, so every copy follows.
         | Operation::SetElement { .. }
         | Operation::SetHref { .. }
+        // A brushed layer in a main carries its link into every copy, and a
+        // copy's own brush is an override.
+        | Operation::SetBrush { .. }
         // A copy's mode is an override like any field (§5.3f), and so is a
         // corner's binding: overrides compare the binding (§5.3d).
         | Operation::SetModes { .. }
@@ -1276,6 +1279,7 @@ pub(crate) fn untouched(
         play,
         // Never on a copy: becoming one clears it.
         detached_from: _,
+        brush,
         origin: _,
         modes,
         queries,
@@ -1312,6 +1316,7 @@ pub(crate) fn untouched(
         && c.credit == *credit
         && c.element == *element
         && c.href == *href
+        && c.brush == *brush
         && c.queries == *queries
         // The bindings are overrides too (§5.3f): a copy differing from its
         // source by a binding alone — both literals canonical — is touched.

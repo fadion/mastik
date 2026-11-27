@@ -34,7 +34,8 @@ pub const CAP: f64 = 0.2;
 pub const TOLERANCE: f64 = 0.02;
 
 /// How an art brush stretches along the path.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Stretch {
     /// The whole shape spans the path.
     Whole,
@@ -44,7 +45,8 @@ pub enum Stretch {
 }
 
 /// How each scattered copy turns.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Turn {
     /// With the path's direction where it stands.
     Along,
@@ -53,7 +55,7 @@ pub enum Turn {
 }
 
 /// The brush bent along the whole path.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Art {
     /// The brush's height across the path, as a share of its own: 1 draws it as
     /// tall as it is.
@@ -72,7 +74,7 @@ impl Art {
 }
 
 /// The brush repeated along the path.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Scatter {
     /// From one copy's middle to the next, as a share of the brush's length.
     pub spacing: f64,
@@ -100,7 +102,8 @@ impl Scatter {
 }
 
 /// Which brush, and its settings.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Mode {
     Art(Art),
     Scatter(Scatter),
@@ -143,6 +146,11 @@ pub enum Refusal {
     Layout,
     /// More than [`MAX_COPIES`] copies.
     TooMany,
+    /// The brush is drawn along the path it would brush, through a chain of
+    /// live brushes.
+    Loop,
+    /// The brush sits in an instance, whose layers follow their main.
+    BrushInInstance,
 }
 
 impl Refusal {
@@ -162,12 +170,14 @@ impl Refusal {
             Refusal::Mask => "Apply brush can't take a mask",
             Refusal::Layout => "Apply brush can't work inside an auto layout",
             Refusal::TooMany => "The brush would make too many copies: space them out more",
+            Refusal::Loop => "A brush can't be drawn along a path it brushes",
+            Refusal::BrushInInstance => "A brush can't be inside an instance",
         }
     }
 }
 
 /// Whether `kind` has an outline a brush can run along or be made of.
-fn outlined(kind: &NodeKind) -> bool {
+pub(crate) fn outlined(kind: &NodeKind) -> bool {
     matches!(
         kind,
         NodeKind::Rect { .. }
@@ -225,8 +235,20 @@ pub fn brush_refusal(doc: &Document, res: &Resolved, brush: NodeId) -> Option<Re
     }
 }
 
-/// Why `brush` cannot be applied along `path`, if it cannot.
+/// Why `brush` cannot be baked along `path`, if it cannot.
 pub fn refusal(doc: &Document, res: &Resolved, path: NodeId, brush: NodeId) -> Option<Refusal> {
+    pair_refusal(doc, res, path, brush, true)
+}
+
+/// [`refusal`]'s tests; `bake` adds the two that hold only because a bake puts a
+/// group in the path's place: a mask stops clipping and a layout moves it.
+pub(crate) fn pair_refusal(
+    doc: &Document,
+    res: &Resolved,
+    path: NodeId,
+    brush: NodeId,
+    bake: bool,
+) -> Option<Refusal> {
     if path == brush {
         return Some(Refusal::Same);
     }
@@ -249,10 +271,10 @@ pub fn refusal(doc: &Document, res: &Resolved, path: NodeId, brush: NodeId) -> O
     if node.link().is_some() {
         return Some(Refusal::Inside);
     }
-    if node.mask() {
+    if bake && node.mask() {
         return Some(Refusal::Mask);
     }
-    if crate::container::lays_out_above(&crate::resolve::DocView(doc), path) {
+    if bake && crate::container::lays_out_above(&crate::resolve::DocView(doc), path) {
         return Some(Refusal::Layout);
     }
     if tracks(doc, res, path).is_empty() {
@@ -624,6 +646,75 @@ pub(crate) fn scatter_maps(
         .collect())
 }
 
+/// What a live brush draws along a layer (`crate::live_brush`): the bake's
+/// geometry, kept in the path layer's own space so moving the layer moves it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Ink {
+    /// Art's bent brush in the path layer's space, or Scatter's brush outline
+    /// in the brush's own space.
+    pub path: BezPath,
+    /// Where `path` is drawn in the path layer's space: the identity for Art,
+    /// one map per copy for Scatter.
+    pub places: Vec<Affine>,
+    /// What the brush's stroke widths are multiplied by for `path`'s units.
+    pub widths: f64,
+    /// The map carrying the brush's gradients from its own space onto `path`.
+    pub gradients: Affine,
+}
+
+/// The ink a brush outlined by `brush_path` under `brush_world` draws along a
+/// layer outlined by `layer_path` under `layer_world`, as [`apply`] would bake
+/// it, or why it draws none.
+pub fn ink(
+    layer_world: Affine,
+    layer_path: &BezPath,
+    brush_world: Affine,
+    brush_path: &BezPath,
+    mode: Mode,
+) -> Result<Ink, Refusal> {
+    let brush_runs = runs(&(brush_world * brush_path.clone()));
+    let bounds = (brush_world * brush_path.clone()).bounding_box();
+    if brush_runs.is_empty() || bounds.width() <= 1e-6 {
+        return Err(Refusal::Flat);
+    }
+    if layer_world.determinant().abs() < 1e-12 {
+        return Err(Refusal::Length);
+    }
+    let tracks: Vec<Track> = runs(&(layer_world * layer_path.clone()))
+        .into_iter()
+        .filter_map(Track::new)
+        .collect();
+    if tracks.is_empty() {
+        return Err(Refusal::Length);
+    }
+    let to_local = layer_world.inverse();
+    let size = |w: Affine| w.determinant().abs().sqrt();
+    match mode {
+        Mode::Art(art) => {
+            let mut world = BezPath::new();
+            for track in &tracks {
+                bend_onto(&brush_runs, bounds, track, art, &mut world);
+            }
+            let onto = box_onto(bounds, world.bounding_box());
+            Ok(Ink {
+                path: to_local * world,
+                places: vec![Affine::IDENTITY],
+                widths: size(brush_world) * size(to_local),
+                gradients: to_local * onto * brush_world,
+            })
+        }
+        Mode::Scatter(sc) => Ok(Ink {
+            path: brush_path.clone(),
+            places: scatter_maps(&tracks, bounds, sc)?
+                .into_iter()
+                .map(|m| to_local * m * brush_world)
+                .collect(),
+            widths: 1.0,
+            gradients: Affine::IDENTITY,
+        }),
+    }
+}
+
 /// The map of world space taking box `from` onto box `to`: centre onto centre,
 /// each side scaled to the other's, a side too thin to scale keeping its scale.
 fn box_onto(from: Rect, to: Rect) -> Affine {
@@ -639,6 +730,25 @@ fn box_onto(from: Rect, to: Rect) -> Affine {
         * Affine::translate(-from.center().to_vec2())
 }
 
+/// A resolved `paint` laid on new geometry: stroke widths times `k`, unbound,
+/// and every literal gradient carried by `by`.
+pub fn carried(mut paint: crate::Paint, k: f64, by: Affine) -> crate::Paint {
+    let carry = |src: &mut crate::variable::BrushSource| {
+        if let Some(b) = src.literal() {
+            *src = crate::variable::BrushSource::Literal(crate::paint_box::carry_brush(b, by));
+        }
+    };
+    for f in &mut paint.fills {
+        carry(&mut f.value.brush);
+    }
+    for s in &mut paint.strokes {
+        s.value.width *= k;
+        s.value.width_var = None;
+        carry(&mut s.value.brush);
+    }
+    paint
+}
+
 /// What one new path draws, as the brush did: its paint resolved and literal,
 /// stroke widths scaled by `k` and gradients carried by `by` (the brush's local
 /// space into the new path's), its fill rule, effects, opacity and mode.
@@ -646,20 +756,7 @@ fn look_ops(doc: &Document, brush: NodeId, id: NodeId, (k, by): (f64, Affine)) -
     let Some(node) = doc.get(brush) else {
         return Vec::new();
     };
-    let mut paint = doc.resolved_paint(brush, node.paint()).into_owned();
-    let carried = |src: &mut crate::variable::BrushSource| {
-        if let Some(b) = src.literal() {
-            *src = crate::variable::BrushSource::Literal(crate::paint_box::carry_brush(b, by));
-        }
-    };
-    for f in &mut paint.fills {
-        carried(&mut f.value.brush);
-    }
-    for s in &mut paint.strokes {
-        s.value.width *= k;
-        s.value.width_var = None;
-        carried(&mut s.value.brush);
-    }
+    let paint = carried(doc.resolved_paint(brush, node.paint()).into_owned(), k, by);
     let mut ops = vec![
         Operation::SetFillRule {
             id,
@@ -709,6 +806,18 @@ pub fn apply(
     if let Some(r) = refusal(doc, res, how.path, how.brush) {
         return Err(r);
     }
+    build(doc, res, ids, how)
+}
+
+/// [`apply`] without its refusals: a live brush's bake
+/// (`crate::live_brush::bake`) holds a path no bake is offered (in an auto
+/// layout, a mask), whose look it must keep all the same.
+pub(crate) fn build(
+    doc: &Document,
+    res: &Resolved,
+    ids: &mut IdSource,
+    how: &ApplyBrush,
+) -> Result<(Transaction, NodeId), Refusal> {
     let path_node = doc.get(how.path).ok_or(Refusal::Count)?;
     let brush_node = doc.get(how.brush).ok_or(Refusal::Count)?;
     let parent = path_node.parent().ok_or(Refusal::Count)?;

@@ -2253,6 +2253,7 @@ mod tests {
             reactions: Vec::new(),
             play: Default::default(),
             detached_from: None,
+            brush: None,
             origin: None,
             modes: Vec::new(),
             queries: Vec::new(),

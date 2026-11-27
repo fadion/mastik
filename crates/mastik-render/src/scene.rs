@@ -2204,7 +2204,21 @@ fn paint_node_pass<P: ScenePainter>(
     };
     reopen(painter, &mut open, &mut mask);
 
+    // A live brush draws in place of the strokes, over the fills; outline mode
+    // traces the path, not the ink.
+    let (brushed, brush_ink) = match ov.outline() {
+        Some(_) => (false, None),
+        None => drawn_brush(doc, res, ov, id),
+    };
+    if brushed {
+        let mut paint = painted.paint.clone().into_owned();
+        paint.strokes.clear();
+        painted.paint = std::borrow::Cow::Owned(paint);
+    }
     paint_shape(doc, &painted, shape_world, painter);
+    if let Some((brush, ink)) = brush_ink {
+        paint_brush(doc, ov, brush, ink, world, base, edges, painter);
+    }
 
     // A boolean's children are its inputs, not artwork: the walk stops here.
     if matches!(painted.kind, NodeKind::Boolean { .. }) {
@@ -3276,8 +3290,7 @@ fn paint_ghost<P: ScenePainter>(
         &Painted {
             kind: &ghost.kind,
             paint: std::borrow::Cow::Borrowed(&*paint),
-            // A `GhostNode` has no rule field; an even-odd ghost would need one.
-            rule: ClipRule::NonZero,
+            rule: ghost.rule.into(),
             text: ghost.text.as_ref(),
             path: ghost.path.as_ref(),
             // Never for a ghost: the original underneath carries the mark.
@@ -3381,6 +3394,81 @@ fn paint_ghost<P: ScenePainter>(
     }
     if blend_layer.is_some() {
         painter.pop_layer();
+    }
+}
+
+/// Whether `id`'s live brush takes its strokes' place, and what it draws there
+/// with the brush whose look it wears: the preview's answer first, then
+/// `Resolved`'s.
+fn drawn_brush<'a>(
+    doc: &Document,
+    res: &'a Resolved,
+    ov: &'a RenderOverrides,
+    id: NodeId,
+) -> (bool, Option<(NodeId, &'a mastik_core::apply_brush::Ink)>) {
+    match ov.brush_of(id) {
+        Some(Some(b)) => (true, b.ink.as_deref().map(|ink| (b.of, ink))),
+        Some(None) => (false, None),
+        None => {
+            let hides = mastik_core::live_brush::hides_strokes(doc, id);
+            let ink = res
+                .brush_ink(id)
+                .zip(doc.get(id).and_then(|n| n.brush()))
+                .filter(|_| hides)
+                .map(|(ink, l)| (l.of, ink.as_ref()));
+            (hides, ink)
+        }
+    }
+}
+
+/// `ink` drawn in `brush`'s whole look under the brushed layer's `world`: one
+/// copy per place, each with the brush's fills, strokes, effects, opacity and
+/// blend, its strokes and gradients carried onto the ink.
+#[allow(clippy::too_many_arguments)]
+fn paint_brush<P: ScenePainter>(
+    doc: &Document,
+    ov: &RenderOverrides,
+    brush: NodeId,
+    ink: &mastik_core::apply_brush::Ink,
+    world: Affine,
+    base: Affine,
+    edges: &Edges<'_>,
+    painter: &mut P,
+) {
+    let Some(node) = doc.get(brush) else { return };
+    let paint = mastik_core::apply_brush::carried(
+        doc.resolved_paint(brush, node.paint()).into_owned(),
+        ink.widths,
+        ink.gradients,
+    );
+    let mut ghost = GhostNode {
+        id: brush,
+        transform: Affine::IDENTITY,
+        kind: NodeKind::Path {
+            path: ink.path.clone(),
+            corner_radii: Vec::new(),
+            corner_smoothing: 0.0,
+            mirror: mastik_core::symmetry::PathMirror::NONE,
+        },
+        paint,
+        effects: doc.resolved_effects(brush, node.effects()).into_owned(),
+        text: None,
+        path: None,
+        rule: node.fill_rule(),
+        opacity: doc.drawn_opacity(brush),
+        blend: node.blend(),
+        visible: true,
+        clip: false,
+        mask: false,
+        mask_mode: mastik_core::MaskMode::default(),
+        mask_inverted: false,
+        children: Vec::new(),
+    };
+    for place in &ink.places {
+        ghost.transform = *place;
+        paint_ghost(
+            doc, ov, &ghost, false, false, world, base, edges, painter, None,
+        );
     }
 }
 

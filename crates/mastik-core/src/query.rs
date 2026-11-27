@@ -88,6 +88,9 @@ fn hits_own_shape(res: &Resolved, doc: &Document, id: NodeId, p: Point, slop: f6
         return false;
     };
     let local_p = world.inverse() * p;
+    if hits_brush(res, doc, id, local_p, slop) {
+        return true;
+    }
     // A boolean is tested against its derived outline, which only the `Resolved`
     // cache holds (`contains_local` cannot build it), and under the node's own fill
     // rule: an `Exclude` is even-odd, so a winding test would hit its holes.
@@ -111,6 +114,43 @@ fn hits_own_shape(res: &Resolved, doc: &Document, id: NodeId, p: Point, slop: f6
         res.text_layout(id),
         slop,
     )
+}
+
+/// Whether `id`'s live brush draws at `local_p`, in `id`'s own space: a click on
+/// the brush's ink picks the layer it brushes, never the brush.
+fn hits_brush(res: &Resolved, doc: &Document, id: NodeId, local_p: Point, slop: f64) -> bool {
+    let Some(ink) = res.brush_ink(id) else {
+        return false;
+    };
+    let Some(brush) = doc
+        .get(id)
+        .and_then(|n| n.brush())
+        .and_then(|l| doc.get(l.of))
+    else {
+        return false;
+    };
+    let paint = crate::apply_brush::carried(
+        doc.resolved_paint(brush.id(), brush.paint()).into_owned(),
+        ink.widths,
+        ink.gradients,
+    );
+    let kind = crate::NodeKind::Path {
+        path: ink.path.clone(),
+        corner_radii: Vec::new(),
+        corner_smoothing: 0.0,
+        mirror: crate::symmetry::PathMirror::NONE,
+    };
+    ink.places.iter().any(|place| {
+        let scale = place.determinant().abs().sqrt().max(1e-9);
+        geometry::contains_local(
+            brush,
+            &paint,
+            &kind,
+            place.inverse() * local_p,
+            None,
+            slop / scale,
+        )
+    })
 }
 
 /// Whether `id`'s shape touches the area of the closed loop `lasso` (world space,

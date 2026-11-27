@@ -209,6 +209,12 @@ fn svg_framed(
     at_zero: bool,
     style: Style,
 ) -> Export {
+    // A live brush is written as its bake, in the layer's place.
+    let baked = mastik_core::live_brush::baked_view(doc, res, origins);
+    let (doc, res, origins) = match &baked {
+        Some((d, r, o)) => (d, r, &o[..]),
+        None => (doc, res, origins),
+    };
     let _places = PrecisionScope::set(style.precision);
     // `crate::extent`, shared with the PNG writer so the two frame the same box.
     let view = view

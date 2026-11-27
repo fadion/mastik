@@ -1233,7 +1233,8 @@ fn card_of(op: &Operation) -> Option<&'static str> {
         // A card's style is that card's: *Reset fill* restores the main's style
         // with the main's list.
         O::SetFills { .. } | O::SetFillStyle { .. } => Some("Fill"),
-        O::SetStrokes { .. } | O::SetStrokeStyle { .. } => Some("Stroke"),
+        // The brush row heads the Stroke section.
+        O::SetStrokes { .. } | O::SetStrokeStyle { .. } | O::SetBrush { .. } => Some("Stroke"),
         O::SetEffects { .. } | O::SetEffectsStyle { .. } => Some("Effects"),
         O::SetExports { .. } => Some("Export"),
         O::SetLayoutGrids { .. } => Some("Layout grid"),

@@ -52,6 +52,13 @@ const FEATURES: [&str; 2] = ["components/v2", "fdata/shape-data-type"];
 
 /// Write `doc` as a `.penpot` file named `name`.
 pub fn export(doc: &Document, res: &Resolved, name: &str) -> std::io::Result<PenpotExport> {
+    // Penpot has no live brush: each is written as its bake, and said so.
+    let pages: Vec<NodeId> = doc.page_ids().collect();
+    let baked = mastik_core::live_brush::baked_view(doc, res, &pages);
+    let (doc, res) = match &baked {
+        Some((d, r, _)) => (d, r),
+        None => (doc, res),
+    };
     let file = uuid(&["file", name]);
     let mut w = Writer {
         doc,
@@ -68,6 +75,9 @@ pub fn export(doc: &Document, res: &Resolved, name: &str) -> std::io::Result<Pen
     w.library();
     if !doc.guides().is_empty() {
         w.approximate("Guides, left out");
+    }
+    if baked.is_some() {
+        w.approximate("Live brushes, baked into paths");
     }
     let mut pages = Vec::new();
     for (index, page) in doc.page_ids().enumerate() {

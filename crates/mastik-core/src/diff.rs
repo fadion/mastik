@@ -1121,7 +1121,7 @@ fn hex(v: &Value) -> String {
 /// zero, with that default as JSON. `skipped_keys_are_listed` holds every key
 /// skipped beside a `default = "…"` function, or by an `is_one`, to this list; a
 /// key a wire form defaults that skips by another test must be added by hand.
-const SKIPPED_AT: [(&str, &str); 26] = [
+const SKIPPED_AT: [(&str, &str); 27] = [
     ("alpha", "1"),
     // A shadow's; a node's `blend` is an `Option`, absent at its kind's default.
     ("blend", r#""Normal""#),
@@ -1161,6 +1161,8 @@ const SKIPPED_AT: [(&str, &str); 26] = [
         "transition",
         r#"{"kind":"Dissolve","direction":"Left","timing":{"Ease":{"curve":"EaseOut","ms":300}}}"#,
     ),
+    // A live brush link's, written only when the brush is hidden.
+    ("visible", "true"),
 ];
 
 impl Differ<'_> {

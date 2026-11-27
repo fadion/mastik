@@ -172,6 +172,9 @@ pub struct Node {
     /// (`crate::component::detach`), so a document can count its detached
     /// layers. Never drawn; a copy keeps it, and becoming an instance clears it.
     pub(crate) detached_from: Option<NodeId>,
+    /// The live brush this path draws with in place of its strokes
+    /// (`crate::live_brush`). A copy keeps it, remapped when its brush came too.
+    pub(crate) brush: Option<crate::live_brush::BrushLink>,
     /// Where this node was **vendored from**, when part of a kit main in the
     /// document's vault (§5.3e). A copy never keeps it (`remap_subtree`); only
     /// the kit verbs write one (`crate::kit::check`).
@@ -284,6 +287,10 @@ impl Node {
     /// The main component this layer was detached from, if it was.
     pub fn detached_from(&self) -> Option<NodeId> {
         self.detached_from
+    }
+    /// The live brush this layer draws with, if it has one.
+    pub fn brush(&self) -> Option<crate::live_brush::BrushLink> {
+        self.brush
     }
     /// The address a link goes to; empty is none.
     pub fn href(&self) -> &str {

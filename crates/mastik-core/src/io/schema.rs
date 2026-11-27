@@ -427,6 +427,11 @@ pub(crate) struct NodeDto {
     /// have been deleted, and the layer was still detached from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detached_from: Option<String>,
+    /// The live brush a path draws with, absent when none. New in v22. Its
+    /// brush is not checked against the document; one on a kind with no outline,
+    /// or naming the layer itself, is dropped on load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brush: Option<BrushLinkDto>,
     /// Where a vault node was vendored from (§15 D1012), absent on every node
     /// outside the vault — which `crate::kit::check` holds on load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -592,6 +597,11 @@ impl NodeDto {
             reactions: n.reactions.clone(),
             play: n.play.clone(),
             detached_from: n.detached_from.map(NodeId::to_wire),
+            brush: n.brush.map(|l| BrushLinkDto {
+                of: l.of.to_wire(),
+                mode: l.mode,
+                visible: l.visible,
+            }),
             origin: n.origin().map(|o| OriginDto {
                 kit: o.kit.clone(),
                 node: o.node.to_wire(),
@@ -628,6 +638,15 @@ impl NodeDto {
         let swap = self.swap.as_deref().map(parse_id).transpose()?;
         let lineage = self.lineage.as_deref().map(parse_id).transpose()?;
         let detached_from = self.detached_from.as_deref().map(parse_id).transpose()?;
+        let brush = match self.brush {
+            Some(b) => Some(crate::live_brush::BrushLink {
+                of: parse_id(&b.of)?,
+                mode: b.mode,
+                visible: b.visible,
+            })
+            .filter(|l| l.of != id && crate::live_brush::runs_along(&self.kind)),
+            None => None,
+        };
         let children = self
             .children
             .iter()
@@ -761,6 +780,7 @@ impl NodeDto {
                 },
             },
             detached_from,
+            brush,
             origin: self
                 .origin
                 .map(|o| -> Result<_, IoError> {
@@ -788,6 +808,24 @@ impl NodeDto {
             styles: self.styles,
         })
     }
+}
+
+/// A live brush link on disk: the brush as a wire id, the card's options as
+/// `{"kind": "art" | "scatter", …}`, and `visible` only when the brush is hidden.
+#[derive(Serialize, Deserialize)]
+pub struct BrushLinkDto {
+    pub of: String,
+    pub mode: crate::apply_brush::Mode,
+    #[serde(default = "shown", skip_serializing_if = "is_shown")]
+    pub visible: bool,
+}
+
+fn shown() -> bool {
+    true
+}
+
+fn is_shown(v: &bool) -> bool {
+    *v
 }
 
 /// A vendored node's provenance on disk (§15 D1012): the kit's `meta.id`, the

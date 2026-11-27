@@ -220,6 +220,7 @@ pub(crate) fn root_node(id: NodeId, name: String) -> Node {
         reactions: Vec::new(),
         play: Default::default(),
         detached_from: None,
+        brush: None,
         origin: None,
         modes: Vec::new(),
         queries: Vec::new(),
@@ -1936,6 +1937,21 @@ impl Document {
                 let old = std::mem::replace(&mut node.detached_from, *from);
                 Ok(Operation::SetDetachedFrom { id: *id, from: old })
             }
+            Operation::SetBrush { id, brush } => {
+                let node = self.nodes.get(id).ok_or(OpError::NoSuchNode(*id))?;
+                if let Some(link) = brush
+                    && (link.of == *id || !crate::live_brush::runs_along(node.kind()))
+                {
+                    return Err(OpError::BrushForKind);
+                }
+                let node = self.nodes.get_mut(id).expect("checked above");
+                let old = std::mem::replace(&mut node.brush, *brush);
+                dirty.0.insert(*id);
+                Ok(Operation::SetBrush {
+                    id: *id,
+                    brush: old,
+                })
+            }
             Operation::SetOrigin { id, origin } => {
                 let node = self.nodes.get_mut(id).ok_or(OpError::NoSuchNode(*id))?;
                 let old = std::mem::replace(&mut node.origin, origin.clone());
@@ -2776,6 +2792,7 @@ impl Document {
             reactions: Vec::new(),
             play: Default::default(),
             detached_from: None,
+            brush: None,
             origin: None,
             modes: Vec::new(),
             queries: Vec::new(),
@@ -4516,6 +4533,12 @@ pub fn remap_subtree(template: &[Node], ids: &mut IdSource) -> Option<(Vec<Node>
                 .map_layers(&mut |id| map.get(&id).copied().unwrap_or(id)),
             // A copy of a detached layer was detached from the same main.
             detached_from: n.detached_from,
+            // A brush copied along is the copy's brush; one left behind stays
+            // linked, and a paste where it is not bakes the layer instead.
+            brush: n.brush.map(|l| crate::live_brush::BrushLink {
+                of: map.get(&l.of).copied().unwrap_or(l.of),
+                ..l
+            }),
             // **Never carried** (§15 D1012): a copy of a vendored node does not live
             // in the vault, and `kit::check` refuses an origin outside it. The kit
             // verbs write the origin after minting their copies here.
@@ -4813,6 +4836,7 @@ mod tests {
             reactions: Vec::new(),
             play: Default::default(),
             detached_from: None,
+            brush: None,
             origin: None,
             modes: Vec::new(),
             queries: Vec::new(),

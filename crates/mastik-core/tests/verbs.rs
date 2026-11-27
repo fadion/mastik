@@ -5576,13 +5576,49 @@ fn apply_brush_bakes_into_a_group() {
         &mut doc,
         &mut ids,
         "apply_brush",
-        args(json!({ "mode": "scatter", "spacing": 1.0, "keep_path": true })),
+        args(json!({ "mode": "scatter", "spacing": 1.0, "keep_path": true, "bake": true })),
     )[0];
     let group = doc.get(g).unwrap();
     assert_eq!(group.name(), "Brushed · B");
     assert_eq!(group.children()[0], a, "the path kept");
     assert!(group.children().len() > 2, "copies round the rectangle");
     assert_eq!(doc.get(page).unwrap().children(), &[g, b]);
+}
+
+/// `apply_brush` links a live brush unless told to bake; `get_node`'s brush
+/// goes back through `set_brush`, and `remove_brush` drops it.
+#[test]
+fn apply_brush_links_a_live_brush() {
+    let (mut doc, mut ids, page) = blank();
+    let (a, b) = two_rects(&mut doc, &mut ids, page, 200.0, 0.0);
+    let made = run(
+        &mut doc,
+        &mut ids,
+        "apply_brush",
+        json!({ "path": a.to_wire(), "brush": b.to_wire(), "mode": "scatter", "seed": 4 }),
+    );
+    assert!(made.is_empty(), "a live brush makes no layer");
+    assert_eq!(doc.get(page).unwrap().children(), &[a, b], "the path stays");
+    let link = doc.get(a).and_then(|n| n.brush()).expect("linked");
+    assert_eq!(link.of, b);
+    // The reported form, written back with the brush hidden.
+    let mut v = verbs::brush_value(&link);
+    let m = v.as_object_mut().unwrap();
+    let of = m.remove("of").unwrap();
+    m.insert("brush".into(), of);
+    m.insert("node".into(), json!(a.to_wire()));
+    m.insert("visible".into(), json!(false));
+    run(&mut doc, &mut ids, "set_brush", v);
+    let back = doc.get(a).and_then(|n| n.brush()).expect("still linked");
+    assert_eq!(back.mode, link.mode, "the options round-trip");
+    assert!(!back.visible);
+    run(
+        &mut doc,
+        &mut ids,
+        "remove_brush",
+        json!({ "nodes": [a.to_wire()] }),
+    );
+    assert!(doc.get(a).and_then(|n| n.brush()).is_none());
 }
 
 /// `tidy_up` evens the gaps of a row, then answers that the row is tidy.

@@ -736,6 +736,23 @@ pub struct Resolved {
     /// [`TextMemo`]. Taken out into a `RefCell` for the length of a pass and put
     /// back, so `Resolved` holds no interior mutability.
     text_memo: FxHashMap<NodeId, TextMemo>,
+    /// Every layer outside the vault with a live brush link, and the brush it
+    /// names: an edit to the brush, or to anything inside it, reaches them.
+    brushed: FxHashMap<NodeId, NodeId>,
+    /// What each brushed layer's brush draws (`crate::live_brush`), and the
+    /// world transforms it was built at, so a brush moved by an ancestor's edit
+    /// is rebuilt though nothing dirtied it.
+    brush_ink: FxHashMap<NodeId, BrushEntry>,
+}
+
+/// One brushed layer's cached brush.
+#[derive(Clone, Debug, PartialEq)]
+struct BrushEntry {
+    ink: Option<Arc<crate::apply_brush::Ink>>,
+    /// The world box everything the ink paints covers, its effects included.
+    extent: Option<Rect>,
+    /// The layer's and the brush's world transforms when it was built.
+    at: (Option<Affine>, Option<Affine>),
 }
 
 impl Resolved {
@@ -787,8 +804,13 @@ impl Resolved {
                 },
             );
         }
-        let index = build_index(doc, &world_bounds);
+        let index = build_index(doc, &world_bounds, &FxHashMap::default());
         let indexed = held(&index);
+        let brushed: FxHashMap<NodeId, NodeId> = doc
+            .nodes_iter()
+            .filter(|n| !doc.in_vault(n.id()))
+            .filter_map(|n| n.brush().map(|l| (n.id(), l.of)))
+            .collect();
         let mut resolved = Self {
             world,
             world_bounds,
@@ -804,6 +826,8 @@ impl Resolved {
             indexed,
             used,
             text_memo: memo.into_inner(),
+            brushed,
+            brush_ink: FxHashMap::default(),
         };
         // Booleans in a second pass, through `update`, which already owns the
         // children-first ordering; the walk above cannot do them because a nested
@@ -818,6 +842,14 @@ impl Resolved {
             })
             .collect();
         resolved.update(doc, &DirtySet(booleans));
+        // Then every brush, once every outline it reads is built; the index is
+        // built again because a brush's ink is a click target.
+        if !resolved.brushed.is_empty() {
+            let users: Vec<NodeId> = resolved.brushed.keys().copied().collect();
+            resolved.rebrush(doc, users);
+            resolved.index = build_index(doc, &resolved.world_bounds, &resolved.brush_ink);
+            resolved.indexed = held(&resolved.index);
+        }
         resolved
     }
 
@@ -859,6 +891,9 @@ impl Resolved {
         if dirty.0.is_empty() {
             return;
         }
+        // A brush's users are dirty with it: they draw from its outline.
+        let expanded = self.sync_brushed(doc, dirty);
+        let dirty = expanded.as_ref().unwrap_or(dirty);
 
         // Drop nodes that no longer exist, and the vault's, which are never
         // resolved: `rebuild` never meets the vault, and resolving a dirtied
@@ -876,6 +911,7 @@ impl Resolved {
             self.boolean.remove(id);
             self.failed.remove(id);
             self.used.remove(id);
+            self.brush_ink.remove(id);
         }
 
         let existing: Vec<NodeId> = dirty
@@ -1009,8 +1045,167 @@ impl Resolved {
 
         // Every node whose world bounds this pass could have moved: the dirty ones
         // (the deleted among them), their recomputed subtrees, and the ancestors.
-        let touched = dirty.0.iter().chain(&ordered).chain(&seen).copied();
-        self.reindex(doc, touched.collect());
+        let mut touched: Vec<NodeId> = dirty
+            .0
+            .iter()
+            .chain(&ordered)
+            .chain(&seen)
+            .copied()
+            .collect();
+        // The brushes last, once every outline they read is fresh: the layers
+        // this pass reached, and those whose brush it did.
+        if !self.brushed.is_empty() {
+            let reached: FxHashSet<NodeId> = ordered.iter().copied().collect();
+            let users: Vec<NodeId> = self
+                .brushed
+                .iter()
+                .filter(|(user, brush)| {
+                    // `sync_brushed` dirtied the users of an edited brush; a brush
+                    // its layout resized without dirtying it is caught here.
+                    reached.contains(user)
+                        || reached.contains(brush)
+                        || self.brush_ink.get(user).is_none_or(|e| {
+                            e.at != (
+                                self.world.get(user).copied(),
+                                self.world.get(brush).copied(),
+                            )
+                        })
+                })
+                .map(|(user, _)| *user)
+                .collect();
+            touched.extend(self.rebrush(doc, users));
+        }
+        self.reindex(doc, touched);
+    }
+
+    /// `brushed` brought up to date for the nodes `dirty` names, and `dirty`
+    /// grown by every brushed layer whose brush, or a layer inside it, is dirty;
+    /// `None` when it gains none.
+    fn sync_brushed(&mut self, doc: &Document, dirty: &DirtySet) -> Option<DirtySet> {
+        for id in &dirty.0 {
+            match doc.get(*id).and_then(|n| n.brush()) {
+                Some(l) if !doc.in_vault(*id) => {
+                    self.brushed.insert(*id, l.of);
+                }
+                _ => {
+                    self.brushed.remove(id);
+                }
+            }
+        }
+        if self.brushed.is_empty() {
+            return None;
+        }
+        // The dirty nodes and their ancestors: a brush among them changed, or
+        // something inside it did.
+        let mut up: FxHashSet<NodeId> = FxHashSet::default();
+        for id in &dirty.0 {
+            let mut at = Some(*id);
+            while let Some(a) = at {
+                if !up.insert(a) {
+                    break;
+                }
+                at = doc.get(a).and_then(|n| n.parent());
+            }
+        }
+        let gained: Vec<NodeId> = self
+            .brushed
+            .iter()
+            .filter(|(user, brush)| up.contains(brush) && !dirty.0.contains(user))
+            .map(|(user, _)| *user)
+            .collect();
+        if gained.is_empty() {
+            return None;
+        }
+        let mut grown = dirty.clone();
+        grown.0.extend(gained);
+        Some(grown)
+    }
+
+    /// Each of `users`' brush ink built again, then its bounds and its
+    /// ancestors' measured again over it. Answers every node it measured.
+    fn rebrush(&mut self, doc: &Document, users: Vec<NodeId>) -> Vec<NodeId> {
+        let mut measured: Vec<NodeId> = Vec::new();
+        let mut seen: FxHashSet<NodeId> = FxHashSet::default();
+        for user in users {
+            let Some(brush) = self.brushed.get(&user).copied() else {
+                self.brush_ink.remove(&user);
+                continue;
+            };
+            let ink = crate::live_brush::ink(doc, self, user).map(Arc::new);
+            let extent = ink
+                .as_deref()
+                .and_then(|i| self.brush_extent(doc, user, brush, i));
+            self.brush_ink.insert(
+                user,
+                BrushEntry {
+                    ink,
+                    extent,
+                    at: (
+                        self.world.get(&user).copied(),
+                        self.world.get(&brush).copied(),
+                    ),
+                },
+            );
+            let mut at = Some(user);
+            while let Some(a) = at {
+                if !doc.contains(a) {
+                    break;
+                }
+                self.recompute_bounds(doc, a);
+                if seen.insert(a) {
+                    measured.push(a);
+                }
+                at = doc.get(a).and_then(|n| n.parent());
+            }
+        }
+        measured
+    }
+
+    /// The world box `ink`, drawn along `user` in `brush`'s look, covers: each
+    /// copy's outline grown by the brush's strokes, then by its effects.
+    fn brush_extent(
+        &self,
+        doc: &Document,
+        user: NodeId,
+        brush: NodeId,
+        ink: &crate::apply_brush::Ink,
+    ) -> Option<Rect> {
+        let b = doc.get(brush)?;
+        let world = self.world.get(&user).copied()?;
+        let paint = crate::apply_brush::carried(
+            doc.resolved_paint(brush, b.paint()).into_owned(),
+            ink.widths,
+            ink.gradients,
+        );
+        let local = geometry::world_ink_of_path(
+            &ink.path,
+            &paint,
+            kind_in(&self.used, b),
+            Affine::IDENTITY,
+        )?;
+        let escape = effect::stack_escape(&doc.resolved_effects(brush, b.effects()));
+        ink.places
+            .iter()
+            .filter_map(|p| {
+                let at = world * *p;
+                geometry::measurable(effect::escaped(
+                    geometry::transform_rect(at, local),
+                    escape,
+                    at,
+                ))
+            })
+            .reduce(|a, b| a.union(b))
+    }
+
+    /// Every brushed layer and the brush it names, in no order.
+    pub fn brushed(&self) -> impl Iterator<Item = (NodeId, NodeId)> + '_ {
+        self.brushed.iter().map(|(u, b)| (*u, *b))
+    }
+
+    /// What `id`'s live brush draws in place of its strokes, in its own space;
+    /// `None` when it has none or the brush draws nothing.
+    pub fn brush_ink(&self, id: NodeId) -> Option<&Arc<crate::apply_brush::Ink>> {
+        self.brush_ink.get(&id).and_then(|e| e.ink.as_ref())
     }
 
     pub fn world_transform(&self, id: NodeId) -> Option<Affine> {
@@ -1518,6 +1713,11 @@ impl Resolved {
                 self.text.get(&id).map(Arc::as_ref),
             ),
         };
+        // A live brush paints past the path's own box.
+        let ink = match self.brush_ink.get(&id).and_then(|e| e.extent) {
+            Some(e) => union_of(ink, Some(e)),
+            None => ink,
+        };
         match ink {
             Some(b) => {
                 self.inner_ink.insert(id, b);
@@ -1612,7 +1812,7 @@ impl Resolved {
     /// a bulk load once most entries move.
     fn reindex(&mut self, doc: &Document, ids: Vec<NodeId>) {
         if ids.len() * 4 >= self.indexed.len() {
-            self.index = build_index(doc, &self.world_bounds);
+            self.index = build_index(doc, &self.world_bounds, &self.brush_ink);
             self.indexed = held(&self.index);
             return;
         }
@@ -1631,10 +1831,8 @@ impl Resolved {
             let Some(page) = page_in(doc, id, &mut pages) else {
                 continue;
             };
-            let Some(r) = self
-                .world_bounds
-                .get(&id)
-                .and_then(|b| geometry::measurable(*b))
+            let Some(r) =
+                indexed_box(&self.world_bounds, &self.brush_ink, id).and_then(geometry::measurable)
             else {
                 continue;
             };
@@ -1644,6 +1842,20 @@ impl Resolved {
         }
         self.index.retain(|page, _| doc.is_page(*page));
     }
+}
+
+/// The box the spatial index holds `id` under: its world box, grown by what its
+/// live brush paints, since a click on the brush's ink picks the layer.
+fn indexed_box(
+    world_bounds: &FxHashMap<NodeId, Rect>,
+    brushes: &FxHashMap<NodeId, BrushEntry>,
+    id: NodeId,
+) -> Option<Rect> {
+    let own = world_bounds.get(&id).copied()?;
+    Some(match brushes.get(&id).and_then(|e| e.extent) {
+        Some(e) => own.union(e),
+        None => own,
+    })
 }
 
 /// Two optional rects unioned, either one standing alone when the other is
@@ -1869,6 +2081,7 @@ fn held(index: &FxHashMap<NodeId, RTree<BoundsEntry>>) -> FxHashMap<NodeId, (Nod
 fn build_index(
     doc: &Document,
     world_bounds: &FxHashMap<NodeId, Rect>,
+    brushes: &FxHashMap<NodeId, BrushEntry>,
 ) -> FxHashMap<NodeId, RTree<BoundsEntry>> {
     doc.page_ids()
         .map(|page| {
@@ -1876,7 +2089,7 @@ fn build_index(
                 .into_iter()
                 .filter(|id| doc.get(*id).is_some_and(|n| is_indexed(n.kind())))
                 .filter_map(|id| {
-                    let r = geometry::measurable(*world_bounds.get(&id)?)?;
+                    let r = geometry::measurable(indexed_box(world_bounds, brushes, id)?)?;
                     Some(entry(id, r))
                 })
                 .collect();
@@ -2031,7 +2244,7 @@ mod measurable_bounds_tests {
             let mut bounds = FxHashMap::default();
             bounds.insert(good, Rect::new(0.0, 0.0, 10.0, 10.0));
             bounds.insert(bad, r);
-            let index = build_index(&doc, &bounds);
+            let index = build_index(&doc, &bounds, &FxHashMap::default());
             let index = &index[&root];
             let hits: Vec<NodeId> = index
                 .locate_in_envelope_intersecting(AABB::from_corners(
