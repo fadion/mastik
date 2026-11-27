@@ -98,7 +98,7 @@ function, not bucketed by `build`.
 - **Lock**: editing rows dim with *"This layer is locked"*, or *"A group containing this layer is
   locked"* when only an ancestor is (§5.9).
 - **Length**, with the assistant *Off* (on, its group adds one row, two on a top-level frame): a primitive is 23 rows in three groups, text 25, a boolean 26, railed text 27, a main
-  frame 20, an instance frame 21; the long end is a bound text child on a rail at 29
+  frame 20, an instance frame 22 (*Make a list from data…* is its fourth); the long end is a bound text child on a rail at 29
   (`a_primitives_menu_is_twenty_two_rows_in_three_groups`, `the_menus_the_two_ends_do_not_count`,
   whose fixtures leave out the *Apply brush…* a layer with an outline and no brush adds).
   The ceiling is "needs neither a scrollbar nor a large monitor", which is why the alternate
