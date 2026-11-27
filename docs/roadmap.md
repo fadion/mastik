@@ -38,10 +38,10 @@ place, saved in the same shape so existing files load. It is matched in about 60
   on the GIF clock; the exported player plays it through a `<video>` element whose frames reach
   the WebAssembly drawing; still exports take a poster frame. Check H.264 patent coverage first:
   Cisco's licence covers its prebuilt binary, not a build from source. Large.
-- **Vector brushes.** Art and scatter brushes: another shape bent or repeated along the path.
-  Nothing exists; the pieces do (kurbo arc length, `mastik-core` `warp.rs` and `distort.rs`). An
-  *Apply brush* that bakes the result into paths comes first; a live brush follows, rebuilt when
-  its source changes, on top of variable width's ink path. Large.
+- **Live vector brushes.** *Apply brush…* bakes an art or scatter brush into paths
+  (`app-booleans.md`, *Apply brush*). What remains is a live brush: a stroke that keeps its
+  brush and source shape and is rebuilt from `apply_brush`'s geometry when either changes, laid
+  as a profiled stroke's ink is (`profile::ink`, filled). Large.
 - **Mesh gradients.** Mesh lines and colour points, blended across each patch (Coons patches). A
   mesh mode in the canvas's gradient editor (`gradient.rs`): click on a line to add one through the point,
   drag points and handles, pick a point's colour. peniko has linear, radial and sweep only, so the

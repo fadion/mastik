@@ -456,6 +456,92 @@ here* row says *Blend shapes needs two shapes, and a path to follow if you like*
 - **Commit**: one undo step, *Blend shapes*; the *Blend* group is selected and the status line
   says *Blended in 5 steps*, or *Blended in 5 steps along ‹name›*.
 
+## Apply brush
+
+`core::apply_brush` bakes one shape, the brush, along a path: *Art* bends it along the whole
+path, *Scatter* repeats it along it. It is computed once; nothing stays live (a live brush is
+open work in the roadmap).
+
+- **The pair** (`apply_brush::pair`): of two selected layers the lower is the path and the upper
+  the brush, unless only the upper has an outline to run along (a rect, ellipse, polygon, star,
+  line, spiral, arc, path or boolean), when the two swap. More than two layers, or two with no
+  outline between them, are `Count`, *Select a path, and the shape to run along it*.
+  `apply_brush::refusal(path, brush)` adds the rest, each a `Refusal::says()` sentence the dimmed
+  row and a refused commit both give: `Same` *A brush can't be the path it runs along*, `Text`
+  *A brush can't be text*, `Picture` *A brush can't be a picture*, `Flat` *A brush needs some
+  length to lay along the path* (a brush whose world box has no width), `Length` *The path has
+  no length to run along*, and for the path, which the group replaces, Blend's tests: `Locked`
+  *The path is locked*, `Inside` *Apply brush can't work inside a boolean, a component or an
+  instance*, `Mask` *Apply brush can't take a mask*, `Layout` *Apply brush can't work inside an
+  auto layout*. The brush is only read, so a locked brush or one elsewhere in the tree is fine.
+- **Geometry** is in world space: the path's every subpath with length is a track, measured by
+  a per-segment table of arc length at 32 steps of `t`. *Art* maps the brush's world box onto each
+  track: `x` to arc length (the box's left at the start, its right at the end), `y` to an offset
+  along the left-hand normal about the box's middle line, times *Width*; *Flip across* negates
+  it. *Middle only* (`Stretch::Middle`) keeps the box's first and last fifth (`CAP`) at their own
+  length times the width, shared between the two when the path is shorter, and stretches the
+  middle. Each brush cubic is cut where its `x` crosses a bend in the map (a track anchor, a
+  fifth's edge), then mapped as a cubic through the mapped ends with the mapped tangents there,
+  halved until it stays within `TOLERANCE` (0.02) of the exact map at its quarters, so curves stay
+  curves and a closed brush or one of several subpaths (a ring) bends whole. Where the path turns
+  a corner the brush's two sides part; a straight line joins them. *Scatter* places a copy every
+  *Spacing* × the brush's length along an open track, the leftover split between its ends, or a
+  whole number round a closed one; each copy is the brush scaled about its box's centre by *Size*,
+  varied ± *Size varies*, moved sideways off the path by up to ± *Scatter* × the brush's length,
+  and turned with the path's tangent (*Along the path*) or not (*Fixed*). The two random draws
+  per copy come from a splitmix stream seeded by *Seed* (`content_fill::Rng`), both drawn for
+  every copy so one setting at zero keeps the other's run. More than `MAX_COPIES` (2,000) is
+  refused, `TooMany`.
+- **The result** (`apply_brush::apply`): an `Operation::InsertSubtree` of a group named
+  *Brushed · ‹brush›* (`group_name`) in the path's slot of its parent, holding one path per copy
+  (one for Art), each named after the brush and wearing its look: fills and strokes resolved and
+  literal, stroke widths carried into the new units (an art stroke keeps its width however far
+  the brush stretches; a scattered one scales with its copy), gradients carried (over the bent
+  box for Art), and its fill rule, effects, drawn opacity and mode. Then the path is deleted, or
+  with *Keep the path* moved to the group's bottom, hidden and named *Path*
+  (`KEPT_PATH_NAME`), where it was drawn. The brush stays where it was. Built on a scratch
+  `Document` as Blend's steps are.
+
+### The card (`apply_brush.rs`)
+
+`menu::Item::ApplyBrush`, *Apply brush…*, glyph `brush` (a brushstroke pointed at both ends),
+group Structure, no chord; palette aliases art brush, scatter brush, along a path, bend. In the
+layer menu it follows *Blend shapes…* whenever two or more layers are selected, dimmed with
+`apply_brush::selection_refusal`'s sentence (`LayerState::brush_refusal`) or the lock sentence;
+otherwise the palette's *Not available here* row says *Select a path, and the shape to run along
+it* (`KIND_VERBS`).
+
+- **The card** sits in the inspector's popover lane as Blend's does, and holds it alone: opening
+  it closes the inspector's popovers, Repeat, Blend shapes and the warp envelope, and each of
+  those closes it. Rows: head *Apply brush*; *Brush*, a dropdown wearing the brush's kind glyph and
+  reading *Shape · ‹name›*, of `ui::menu_check` rows: the brush (ticked), a rule, *Pick a shape…*,
+  *Swap brush and path*; a segmented *Art | Scatter*; then the mode's rows in a body as tall as
+  Scatter's, so the footer stays put: Art's *Width* (%, default 100), *Stretch* segmented *Whole
+  shape | Middle only*, switch *Flip across*; Scatter's *Spacing* | *Size* (120%, 80%), *Size
+  varies* | *Scatter* (30%, 20%) as pairs (`repeat::pair`), *Turn* segmented *Along the path |
+  Fixed*, *Seed* (1); the switch *Keep the path* (off); foot *Cancel*, primary *Apply*. Its
+  settings live on the app and outlive a close. A right-click cancels a scrub of any of its
+  numbers (`InFlight::brush_scrub`).
+- **Path and brush** are taken from the selection when the card opens; the card closes when the
+  selection changes, when the two stop fitting (`refusal`), and when another document comes to
+  the front. *Swap brush and path* trades them, or says why the swapped pair cannot run. *Pick a
+  shape…* hides the card and makes the canvas wait as Blend's *Pick a path…* does
+  (`BrushCard::picking`, `brush_pick_at`): the status says *Click a shape to use as the brush ·
+  Esc to cancel*, kept up as Blend's is; the cursor is the crosshair, the hover outline gives way
+  to a 3pt ring in the selection blue round the shape under the pointer the card could take
+  (`MastikApp::brush_shape_at`: not the path, and passing `brush_refusal`). A click on one takes
+  it and brings the card back; a click on the path says *A brush can't be the path it runs
+  along*, left up for its hold while the wait goes on; anything else is passed over. While the
+  card is open its path is drawn dashed in the selection blue (`canvas::draw_brush_path`).
+- **The preview** is the commit's own group, minted from a copy of the id counter, with the path
+  hidden (a preview can neither delete nor reparent); rebuilt when the revision or the settings
+  change and put back after another gesture's preview cleared it. *Cancel* leaves everything as
+  it was.
+- **Keys.** `Enter` applies while the card is open; `Escape` calls off the wait for a shape, then
+  closes the card, the two rungs after Blend shapes'.
+- **Commit**: one undo step, *Apply brush*; the group is selected and the status says *Brushed
+  with ‹brush›*, or *Scattered 9 copies of ‹brush›*.
+
 ## The identity card's boolean row
 
 Four controls: the op dropdown plus three 28×28 icon buttons, `ACTION_GLYPH` 16.

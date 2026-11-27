@@ -711,8 +711,8 @@ Transform card (`MastikApp::transform_card`, recorded by `panel_full` each frame
 column's top when no Transform card is drawn), on `ui::menu_frame(ui::POPOVER_PAD)` at `POPOVER_W`,
 rows at `ui::POPOVER_SECTION_GAP`. It is no modal and has no click-away: the canvas stays live,
 because the pivot decides the ring and must stay draggable. It holds the lane alone: opening it
-closes the inspector's popovers (`close_inspector_popovers`) and the Blend shapes card
-(`app-booleans.md`), and an inspector popover opened after it closes it (`inspector_popover_open`).
+closes the inspector's popovers (`close_inspector_popovers`) and the Blend shapes and Apply brush
+cards (`app-booleans.md`), and an inspector popover opened after it closes it (`inspector_popover_open`).
 Find and Colour review are left open. If the pivot handle is down and anything is selected, lighting
 *Around* (on opening or on the strip) raises it (`show_pivot`, `set_repeat_way`); leaving *Around*, closing or
 committing puts it back down only if the card raised it (`RepeatCard::raised_pivot`).
