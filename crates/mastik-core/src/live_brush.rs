@@ -69,6 +69,50 @@ pub fn brushed_in(doc: &Document, selection: &[NodeId]) -> Vec<NodeId> {
         .collect()
 }
 
+/// A source's brush link as it reads on its copy `copy`: a brush the copy's
+/// instance holds a copy of is named by that copy, so each instance draws with
+/// its own; a brush outside it stays as named.
+pub(crate) fn link_at_copy(doc: &Document, copy: NodeId, link: BrushLink) -> BrushLink {
+    let of = crate::component::instance_root(doc, copy)
+        .and_then(|root| crate::propagate::counterpart(doc, root, link.of))
+        .unwrap_or(link.of);
+    BrushLink { of, ..link }
+}
+
+/// A copy's brush link in its source's terms, the inverse of [`link_at_copy`]:
+/// a brush in the copy's own instance is named by what it is a copy of. Links
+/// compare in these terms, so an instance drawing with its own copy of the
+/// main's brush overrides nothing.
+pub(crate) fn link_at_source(doc: &Document, copy: NodeId, link: BrushLink) -> BrushLink {
+    let root = |id| crate::component::instance_root(doc, id);
+    let of = doc
+        .get(link.of)
+        .and_then(|b| b.link())
+        .filter(|_| root(link.of).is_some() && root(link.of) == root(copy))
+        .unwrap_or(link.of);
+    BrushLink { of, ..link }
+}
+
+/// `op` with a `SetBrush`'s link read through `at` for the copy `copy`
+/// ([`link_at_copy`] or [`link_at_source`]); any other operation as it is.
+pub(crate) fn brush_op_at(
+    doc: &Document,
+    copy: NodeId,
+    op: Operation,
+    at: fn(&Document, NodeId, BrushLink) -> BrushLink,
+) -> Operation {
+    match op {
+        Operation::SetBrush {
+            id,
+            brush: Some(link),
+        } => Operation::SetBrush {
+            id,
+            brush: Some(at(doc, copy, link)),
+        },
+        op => op,
+    }
+}
+
 /// Whether `id` or one of its ancestors is part of an instance.
 fn in_instance(doc: &Document, id: NodeId) -> bool {
     let mut at = doc.get(id);

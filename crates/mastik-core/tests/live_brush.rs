@@ -307,3 +307,172 @@ fn the_save_file_keeps_the_link() {
     let res = Resolved::rebuild(&back);
     assert!(res.brush_ink(f.path).is_some());
 }
+
+/// The fixture's frame made a main, with an instance of it beside: answers the
+/// instance's path and its copy of *Leaf*.
+fn with_instance(f: &mut Fixture) -> (NodeId, NodeId) {
+    f.edit(vec![Operation::SetComponent {
+        id: f.frame,
+        component: true,
+    }]);
+    let root = f.doc.get(f.frame).and_then(|n| n.parent()).unwrap();
+    let (tx, made) = mastik_core::insert_subtrees(
+        &f.doc,
+        &mut f.ids,
+        &[mastik_core::Placement {
+            nodes: f.doc.capture_subtree(f.frame).unwrap(),
+            parent: root,
+            index: None,
+        }],
+        Default::default(),
+    );
+    f.edit(tx.0);
+    let copy_of = |src: NodeId| {
+        mastik_core::build::subtree_nodes(&f.doc, &[made[0]])
+            .into_iter()
+            .find(|n| f.doc.get(*n).and_then(|n| n.link()) == Some(src))
+            .expect("the instance's copy")
+    };
+    (copy_of(f.path), copy_of(f.leaf))
+}
+
+/// `ops` with everything the components owe them, applied: the commit's assembly.
+fn commit(f: &mut Fixture, ops: Vec<Operation>) {
+    let mut tx = Transaction(ops);
+    mastik_core::propagate::owed(&f.doc, &mut tx, &mut f.ids);
+    f.edit(tx.0);
+}
+
+fn link_of(f: &Fixture, id: NodeId) -> BrushLink {
+    f.doc.get(id).and_then(|n| n.brush()).expect("the link")
+}
+
+/// A brushed path whose brush sits in the same main: each instance draws with
+/// its own copy of the brush and shows no override for it.
+#[test]
+fn an_instance_draws_with_its_own_copy_of_the_brush() {
+    let mut f = Fixture::new();
+    f.link(Mode::Art(Art::DEFAULT));
+    let (path, leaf) = with_instance(&mut f);
+    assert_eq!(
+        link_of(&f, path).of,
+        leaf,
+        "the instance names its own brush"
+    );
+    assert!(f.res.brush_ink(path).is_some());
+    assert_eq!(
+        mastik_core::reset::overrides(&f.doc, path),
+        Vec::new(),
+        "the instance's brush is no override"
+    );
+    // An untouched copy goes with its source.
+    let main_path = f.path;
+    commit(&mut f, vec![Operation::DeleteNode { id: main_path }]);
+    assert!(f.doc.get(path).is_none(), "the instance's path went too");
+}
+
+/// The main's new brush options reach the instance, still naming the
+/// instance's brush; options the instance set itself are kept, and their reset
+/// puts the main's back on the instance's own brush.
+#[test]
+fn a_mains_brush_options_reach_its_instances() {
+    let mut f = Fixture::new();
+    f.link(Mode::Art(Art::DEFAULT));
+    let (path, leaf) = with_instance(&mut f);
+    let (main_path, main_leaf) = (f.path, f.leaf);
+    let scatter = Mode::Scatter(Scatter::DEFAULT);
+    commit(
+        &mut f,
+        vec![Operation::SetBrush {
+            id: main_path,
+            brush: Some(BrushLink::new(main_leaf, scatter)),
+        }],
+    );
+    assert_eq!(link_of(&f, path), BrushLink::new(leaf, scatter), "follows");
+    let seeded = Mode::Scatter(Scatter {
+        seed: 9,
+        ..Scatter::DEFAULT
+    });
+    commit(
+        &mut f,
+        vec![Operation::SetBrush {
+            id: path,
+            brush: Some(BrushLink::new(leaf, seeded)),
+        }],
+    );
+    assert_eq!(mastik_core::reset::overrides(&f.doc, path).len(), 1);
+    commit(
+        &mut f,
+        vec![Operation::SetBrush {
+            id: main_path,
+            brush: Some(BrushLink::new(main_leaf, Mode::Art(Art::DEFAULT))),
+        }],
+    );
+    assert_eq!(link_of(&f, path), BrushLink::new(leaf, seeded), "kept");
+    // Pushed, the main takes the options on its own brush.
+    let instance = f.doc.get(path).and_then(|n| n.parent()).unwrap();
+    let mut scratch = f.doc.clone();
+    let mut ids = IdSource::new(0xC4);
+    let kind = mastik_core::push::Kind::Fields;
+    let mut tx = Transaction(mastik_core::push::push(&f.doc, kind, instance, &mut ids));
+    mastik_core::propagate::owed(&scratch, &mut tx, &mut ids);
+    scratch.apply(&tx).expect("the push applies");
+    assert_eq!(
+        scratch.get(main_path).and_then(|n| n.brush()),
+        Some(BrushLink::new(main_leaf, seeded)),
+        "the push names the main's brush"
+    );
+    let reset = mastik_core::reset::overrides(&f.doc, path)
+        .pop()
+        .expect("one override")
+        .reset;
+    commit(&mut f, vec![reset]);
+    assert_eq!(
+        link_of(&f, path),
+        BrushLink::new(leaf, Mode::Art(Art::DEFAULT)),
+        "the reset names the instance's brush"
+    );
+}
+
+/// Deleting the main's brush, as the app commits it (its users baked first,
+/// then what the components owe), leaves no layer linked to nothing, though an
+/// instance's path holds options of its own: its brush copy stays with it.
+/// flip: `propagate_structure` without its spared-brush loop → fails at
+/// "linked to nothing".
+#[test]
+fn deleting_a_mains_brush_leaves_no_instance_linked_to_nothing() {
+    let mut f = Fixture::new();
+    f.link(Mode::Scatter(Scatter::DEFAULT));
+    let (path, leaf) = with_instance(&mut f);
+    let own = Mode::Scatter(Scatter {
+        seed: 9,
+        ..Scatter::DEFAULT
+    });
+    commit(
+        &mut f,
+        vec![Operation::SetBrush {
+            id: path,
+            brush: Some(BrushLink::new(leaf, own)),
+        }],
+    );
+    let main_leaf = f.leaf;
+    let delete = Transaction(vec![Operation::DeleteNode { id: main_leaf }]);
+    let mut ops = live_brush::baked_for_deletes(&f.doc, &f.res, &delete, &mut f.ids);
+    ops.extend(delete.0);
+    commit(&mut f, ops);
+    let dangling: Vec<NodeId> = mastik_core::build::subtree_nodes(&f.doc, &[f.frame])
+        .into_iter()
+        .chain([path])
+        .filter(|id| {
+            f.doc
+                .get(*id)
+                .and_then(|n| n.brush())
+                .is_some_and(|l| !f.doc.contains(l.of))
+        })
+        .collect();
+    assert!(dangling.is_empty(), "linked to nothing: {dangling:?}");
+    assert!(
+        f.doc.contains(leaf) && link_of(&f, path).of == leaf,
+        "the instance keeps the brush it draws with"
+    );
+}

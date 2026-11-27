@@ -14,6 +14,7 @@ use crate::component;
 use crate::document::Document;
 use crate::id::{IdSource, NodeId};
 use crate::item::ItemId;
+use crate::live_brush;
 use crate::op::{Operation, Transaction};
 use crate::reset::{self, source_of};
 use crate::variant::PropKind;
@@ -212,9 +213,12 @@ fn field_push(
             .into_iter()
             .find(|o| reset::field_key(o) == Some(key))
     };
-    let (mine, theirs) = (of(c)?, of(target)?);
+    // A brush link is pushed in the main's terms: the instance's copy of the
+    // main's brush is pushed as the main's brush.
+    let at_source = |op| live_brush::brush_op_at(doc, c, op, live_brush::link_at_source);
+    let (mine, theirs) = (at_source(of(c)?), of(target)?);
     let (Ok(r), Ok(m), Ok(t)) = (
-        serde_json::to_value(reset.retargeted(c)?),
+        serde_json::to_value(at_source(reset.retargeted(c)?)),
         serde_json::to_value(&mine),
         serde_json::to_value(theirs.retargeted(c)?),
     ) else {
@@ -794,7 +798,8 @@ pub fn outcome(before: &Document, after: &Document, root: NodeId, pushed: &[Oper
                     let b = theirs
                         .iter()
                         .find(|o| reset::field_key(o) == key)
-                        .and_then(|o| o.retargeted(*n));
+                        .and_then(|o| o.retargeted(*n))
+                        .map(|o| live_brush::brush_op_at(after, *n, o, live_brush::link_at_copy));
                     match a == b.as_ref() {
                         true => follows = true,
                         false => keeps = true,

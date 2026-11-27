@@ -922,6 +922,7 @@ impl Operation {
             | Operation::SetChart { id, .. }
             | Operation::SetChartParts { id, .. }
             | Operation::SetHref { id, .. }
+            | Operation::SetBrush { id, .. }
             | Operation::SetLayoutGrids { id, .. }
             | Operation::SetInsets { id, .. }
             | Operation::SetDisplay { id, .. }

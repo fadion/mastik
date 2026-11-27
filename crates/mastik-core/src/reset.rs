@@ -487,6 +487,9 @@ pub fn overrides(doc: &Document, id: NodeId) -> Vec<Override> {
         let Some(theirs) = theirs.retargeted(id) else {
             continue;
         };
+        // A main's brush reads as the instance's own copy of it.
+        let theirs =
+            crate::live_brush::brush_op_at(doc, id, theirs, crate::live_brush::link_at_copy);
         if let Some(o) = compare(&theirs, cur) {
             out.push(o);
         }

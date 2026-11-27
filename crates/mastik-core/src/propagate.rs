@@ -404,7 +404,22 @@ pub fn propagate(doc: &Document, tx: &Transaction) -> Vec<Operation> {
                 let Some(cur) = doc.peek(&probe) else {
                     continue; // a copy of another kind cannot take this edit
                 };
-                if let Some(follow) = follow(&new, &old, &cur, m)
+                // A brush link compares in the source's terms and lands in the copy's.
+                let cur_as_source = match &cur {
+                    Operation::SetBrush { .. } => {
+                        std::borrow::Cow::Owned(crate::live_brush::brush_op_at(
+                            doc,
+                            m,
+                            cur.clone(),
+                            crate::live_brush::link_at_source,
+                        ))
+                    }
+                    _ => std::borrow::Cow::Borrowed(&cur),
+                };
+                if let Some(follow) = follow(&new, &old, &cur_as_source, m)
+                    .map(|f| {
+                        crate::live_brush::brush_op_at(doc, m, f, crate::live_brush::link_at_copy)
+                    })
                     .and_then(|f| keep_own_bound_geometry(doc, src, m, f))
                 {
                     out.push(follow.clone());
@@ -1031,6 +1046,39 @@ pub fn propagate_structure(
             queue.push(c);
         }
     }
+    // A counterpart holding a brush that a layer which stays still draws with
+    // stays too, as its instance's own layer: deleting it would leave that layer
+    // (an instance's path with options of its own) linked to nothing.
+    let under = |id: NodeId, set: &FxHashSet<NodeId>| {
+        let mut at = Some(id);
+        while let Some(a) = at {
+            if set.contains(&a) {
+                return true;
+            }
+            at = after_nodes.get(&a).and_then(|n| n.parent);
+        }
+        false
+    };
+    loop {
+        let drawn: Vec<NodeId> = after_nodes
+            .values()
+            .filter(|n| !under(n.id, &deleted))
+            .filter_map(|n| n.brush.map(|l| l.of))
+            .collect();
+        let spared: FxHashSet<NodeId> = deletes
+            .iter()
+            .copied()
+            .filter(|d| {
+                let one = FxHashSet::from_iter([*d]);
+                drawn.iter().any(|b| under(*b, &one))
+            })
+            .collect();
+        if spared.is_empty() {
+            break;
+        }
+        deletes.retain(|d| !spared.contains(d));
+        deleted.retain(|d| !spared.contains(d));
+    }
     out.extend(deletes.iter().map(|id| Operation::DeleteNode { id: *id }));
     out.extend(
         cut.into_iter()
@@ -1316,7 +1364,7 @@ pub(crate) fn untouched(
         && c.credit == *credit
         && c.element == *element
         && c.href == *href
-        && c.brush == *brush
+        && c.brush.map(|l| crate::live_brush::link_at_source(doc, copy, l)) == *brush
         && c.queries == *queries
         // The bindings are overrides too (§5.3f): a copy differing from its
         // source by a binding alone — both literals canonical — is touched.

@@ -2240,8 +2240,11 @@ fn carry(doc: &Document, c: NodeId, s_old: NodeId, s_new: NodeId, keep: Keep) ->
         let Some(new) = new.retargeted(c) else {
             continue;
         };
+        // A brush link compares in the variant's terms and lands in the copy's.
+        use crate::live_brush::{brush_op_at, link_at_copy, link_at_source};
+        let cur = brush_op_at(doc, c, cur, link_at_source);
         if let Some(op) = crate::propagate::follow(&new, &old, &cur, c) {
-            out.push(op);
+            out.push(brush_op_at(doc, c, op, link_at_copy));
         }
     }
     out
