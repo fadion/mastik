@@ -1,13 +1,15 @@
 //! *Apply brush…* (`docs/design/app-booleans.md`, *Apply brush*): a popover in
-//! the inspector's lane that bends a shape along a path or scatters it along it
-//! (`mastik_core::apply_brush`), previewed live and committed as one *Apply brush*
-//! step.
+//! the inspector's lane that bends a shape along a path or scatters it along it,
+//! as a live brush on the path (`mastik_core::live_brush`) or baked into paths
+//! (`mastik_core::apply_brush`), previewed live and committed as one *Apply
+//! brush* step. *Edit brush…* reopens it on brushed layers.
 
 use crate::app::MastikApp;
 use crate::ui::{self, FieldButton, Prefix, Scrub};
 use eframe::egui;
 use mastik_core::apply_brush::{self, ApplyBrush, Art, Mode, Refusal, Scatter, Stretch, Turn};
-use mastik_core::{IdSource, NodeId, Transaction};
+use mastik_core::live_brush::{self, BrushLink};
+use mastik_core::{IdSource, NodeId, Operation, Transaction};
 
 /// The card's width: a popover's.
 const W: f32 = crate::app::POPOVER_W;
@@ -53,6 +55,15 @@ pub(crate) struct BrushCard {
     flip: bool,
     fixed: bool,
     keep_path: bool,
+    /// *Bake into paths*: a commit bakes the brush into plain paths rather than
+    /// linking it. Off by default.
+    bake: bool,
+    /// The brushed layers *Edit brush* is open on; empty while the card applies
+    /// a brush.
+    pub(crate) editing: Vec<NodeId>,
+    /// Whether *Pick a shape…* named a brush since the card opened: only then
+    /// does *Edit brush* relink the layers it edits.
+    relinked: bool,
     /// Whether the canvas is waiting for a click on a shape to use as the brush.
     pub(crate) picking: bool,
     /// The selection the card opened on: another closes it.
@@ -61,8 +72,9 @@ pub(crate) struct BrushCard {
     built: Option<(Key, Transaction)>,
 }
 
-/// What a preview was built from: the revision and the application.
-type Key = (u64, ApplyBrush);
+/// What a preview was built from: the revision, whether it links, and the
+/// application.
+type Key = (u64, bool, ApplyBrush);
 
 impl BrushCard {
     /// Put back the numbers a right-click cancelled the scrub of.
@@ -72,8 +84,52 @@ impl BrushCard {
 
     /// The application the card describes, while it has a path and a brush.
     fn how(&self) -> Option<ApplyBrush> {
+        Some(ApplyBrush {
+            path: self.path?,
+            brush: self.brush?,
+            mode: self.mode(),
+            keep_path: self.keep_path,
+        })
+    }
+
+    /// Whether a commit links the brush rather than baking it.
+    fn live(&self) -> bool {
+        !self.editing.is_empty() || !self.bake
+    }
+
+    /// The layers a commit writes the link onto: the edited ones, or the path.
+    fn targets(&self) -> Vec<NodeId> {
+        match self.editing.is_empty() {
+            true => self.path.into_iter().collect(),
+            false => self.editing.clone(),
+        }
+    }
+
+    /// The card's settings taken from `mode`, as *Edit brush* opens on a layer.
+    fn load(&mut self, mode: Mode) {
+        match mode {
+            Mode::Art(a) => {
+                self.scatter = false;
+                self.numbers.width = a.width * 100.0;
+                self.middle = a.stretch == Stretch::Middle;
+                self.flip = a.flip;
+            }
+            Mode::Scatter(s) => {
+                self.scatter = true;
+                self.numbers.spacing = s.spacing * 100.0;
+                self.numbers.size = s.size * 100.0;
+                self.numbers.size_varies = s.size_varies * 100.0;
+                self.numbers.scatter = s.scatter * 100.0;
+                self.numbers.seed = f64::from(s.seed);
+                self.fixed = s.turn == Turn::Fixed;
+            }
+        }
+    }
+
+    /// The brush and options the card says, as a link.
+    fn mode(&self) -> Mode {
         let n = self.numbers;
-        let mode = match self.scatter {
+        match self.scatter {
             false => Mode::Art(Art {
                 width: n.width / 100.0,
                 stretch: match self.middle {
@@ -93,13 +149,7 @@ impl BrushCard {
                 },
                 seed: n.seed.round().clamp(0.0, f64::from(u32::MAX)) as u32,
             }),
-        };
-        Some(ApplyBrush {
-            path: self.path?,
-            brush: self.brush?,
-            mode,
-            keep_path: self.keep_path,
-        })
+        }
     }
 
     /// The path the open card shows dashed on the canvas.
@@ -118,6 +168,9 @@ enum Act {
     Flip,
     Fixed(bool),
     KeepPath,
+    Bake,
+    BakeBrush,
+    RemoveBrush,
 }
 
 /// What the status line says while the canvas waits for a shape.
@@ -126,13 +179,31 @@ pub(crate) const PICK_STATUS: &str = "Click a shape to use as the brush · Esc t
 /// The undo step a commit makes.
 const STEP: &str = "Apply brush";
 
+/// The undo step *Edit brush*'s *Done* makes.
+const EDIT_STEP: &str = "Edit brush";
+
+/// The undo steps of the two acts on a live brush.
+pub(crate) const BAKE_STEP: &str = "Bake brush";
+pub(crate) const REMOVE_STEP: &str = "Remove brush";
+
 /// The row's and the palette's sentence when the selection cannot take a brush.
 pub(crate) const NEEDS: &str = "Select a path, and the shape to run along it";
 
+/// The sentence for *Edit brush…* and its two acts over layers without a brush.
+pub(crate) const NO_BRUSH: &str = "Select a layer drawn with a brush";
+
+/// Why *Keep the path* is dimmed while the card links the brush.
+const KEEPS_PATH: &str = "A live brush keeps the path: it is the layer";
+
+/// Why *Swap brush and path* is dimmed in *Edit brush*.
+const OWN_PATH: &str = "A live brush's path is its own layer";
+
 impl MastikApp {
     /// Why the selection cannot take a brush, if it cannot: the row's sentence.
+    /// A live brush's tests, since *Apply brush* links by default; a bake's own
+    /// are asked when it commits.
     pub(crate) fn brush_refusal(&self) -> Option<&'static str> {
-        apply_brush::selection_refusal(
+        live_brush::selection_refusal(
             &self.session.doc,
             &self.session.resolved,
             self.session.selection.ids(),
@@ -140,12 +211,29 @@ impl MastikApp {
         .map(|r| r.says())
     }
 
-    /// Why the card's own path and brush no longer fit, if they do not.
+    /// Why the selection offers no *Edit brush…*, if it does not.
+    pub(crate) fn edit_brush_refusal(&self) -> Option<&'static str> {
+        live_brush::brushed_in(&self.session.doc, self.session.selection.ids())
+            .is_empty()
+            .then_some(NO_BRUSH)
+    }
+
+    /// Why the card's own path and brush no longer fit, if they do not: a live
+    /// link's tests, which hold for a bake's card too, or each edited layer's.
     fn card_refusal(&self) -> Option<Refusal> {
-        let (Some(path), Some(brush)) = (self.brush.path, self.brush.brush) else {
+        let (doc, res) = (&self.session.doc, &self.session.resolved);
+        let Some(brush) = self.brush.brush else {
             return Some(Refusal::Count);
         };
-        apply_brush::refusal(&self.session.doc, &self.session.resolved, path, brush)
+        for path in self.brush.targets() {
+            if doc.get(path).and_then(|n| n.brush()).is_none() && !self.brush.editing.is_empty() {
+                return Some(Refusal::Count);
+            }
+            if let Some(r) = live_brush::refusal(doc, res, path, brush) {
+                return Some(r);
+            }
+        }
+        None
     }
 
     /// Open the card on the two selected layers, or say why it cannot.
@@ -165,10 +253,131 @@ impl MastikApp {
         let card = &mut self.brush;
         card.open = true;
         card.picking = false;
+        card.editing.clear();
+        card.relinked = false;
         card.path = Some(path);
         card.brush = Some(brush);
         card.opened_on = self.session.selection.ids().to_vec();
         card.built = None;
+    }
+
+    /// *Edit brush…*: the card on the selected brushed layers, headed *Edit
+    /// brush* and filled with the first one's brush and options.
+    pub(crate) fn open_edit_brush(&mut self) {
+        let doc = &self.session.doc;
+        let layers = live_brush::brushed_in(doc, self.session.selection.ids());
+        let Some(link) = layers.first().and_then(|id| doc.get(*id)?.brush()) else {
+            return self.session.info(NO_BRUSH);
+        };
+        self.close_inspector_popovers();
+        self.close_repeat();
+        self.close_blend();
+        self.close_warp();
+        let card = &mut self.brush;
+        card.open = true;
+        card.picking = false;
+        card.path = layers.first().copied();
+        card.brush = Some(link.of);
+        card.load(link.mode);
+        card.editing = layers;
+        card.relinked = false;
+        card.opened_on = self.session.selection.ids().to_vec();
+        card.built = None;
+    }
+
+    /// The links the card writes: each target linked to its brush with its
+    /// options, an edited layer keeping whether its brush shows.
+    fn card_links(&self) -> Vec<Operation> {
+        let Some(brush) = self.brush.brush else {
+            return Vec::new();
+        };
+        let mode = self.brush.mode();
+        self.brush
+            .targets()
+            .into_iter()
+            .map(|id| {
+                let own = self.session.doc.get(id).and_then(|n| n.brush());
+                // An edited layer keeps its own brush until *Pick a shape…*
+                // names another.
+                let of = match own {
+                    Some(l) if !self.brush.relinked => l.of,
+                    _ => brush,
+                };
+                Operation::SetBrush {
+                    id,
+                    brush: Some(BrushLink {
+                        of,
+                        mode,
+                        visible: own.is_none_or(|l| l.visible),
+                    }),
+                }
+            })
+            .collect()
+    }
+
+    /// *Bake brush*: each selected brushed layer's brush baked into paths, one
+    /// *Bake brush* step; the groups are selected.
+    pub(crate) fn bake_brushes(&mut self) {
+        let layers = live_brush::brushed_in(&self.session.doc, self.session.selection.ids());
+        if layers.is_empty() {
+            return self.session.info(NO_BRUSH);
+        }
+        let name = layers
+            .first()
+            .and_then(|id| self.session.doc.get(*id)?.brush())
+            .map(|l| crate::private::layer(&self.session.doc, l.of).into_owned())
+            .unwrap_or_default();
+        let mut ops = Vec::new();
+        let mut groups = Vec::new();
+        for id in layers {
+            let (doc, res) = (&self.session.doc, &self.session.resolved);
+            if let Some((baked, group)) = live_brush::bake(doc, res, &mut self.session.ids, id) {
+                ops.extend(baked);
+                groups.extend(group);
+            }
+        }
+        self.close_brush();
+        if !self.session.has_step_name() {
+            self.session
+                .name_step(BAKE_STEP, crate::menu::Item::BakeBrush.spec().glyph);
+        }
+        if !self.commit_edit(Transaction(ops)) {
+            return;
+        }
+        let paths: usize = groups
+            .iter()
+            .filter_map(|g| self.session.doc.get(*g))
+            .map(|g| g.children().len())
+            .sum();
+        if !groups.is_empty() {
+            self.session.selection.set(groups);
+        }
+        self.session.info(format!(
+            "Baked {name} into {}",
+            ui::count_as(paths, "path", "paths")
+        ));
+    }
+
+    /// *Remove brush*: each selected layer's link dropped, its own strokes
+    /// drawn again, one *Remove brush* step.
+    pub(crate) fn remove_brushes(&mut self) {
+        let layers = live_brush::brushed_in(&self.session.doc, self.session.selection.ids());
+        if layers.is_empty() {
+            return self.session.info(NO_BRUSH);
+        }
+        let ops = layers
+            .iter()
+            .map(|id| Operation::SetBrush {
+                id: *id,
+                brush: None,
+            })
+            .collect();
+        self.close_brush();
+        if !self.session.has_step_name() {
+            self.session
+                .name_step(REMOVE_STEP, crate::menu::Item::RemoveBrush.spec().glyph);
+        }
+        self.commit_edit(Transaction(ops));
     }
 
     /// Close the card and take its preview off the canvas.
@@ -177,6 +386,7 @@ impl MastikApp {
             self.brush.open = false;
             self.brush.picking = false;
             self.brush.built = None;
+            self.brush.editing.clear();
             self.session.clear_gesture_preview();
         }
     }
@@ -217,6 +427,7 @@ impl MastikApp {
     pub(crate) fn brush_pick_at(&mut self, world: mastik_core::kurbo::Point) {
         if let Some(id) = self.brush_shape_at(world) {
             self.brush.brush = Some(id);
+            self.brush.relinked = true;
             self.brush.picking = false;
             self.session.info("");
         } else if self.brush.path.is_some() && self.brush_hits(world).contains(&self.brush.path) {
@@ -230,7 +441,11 @@ impl MastikApp {
             return;
         };
         let (doc, res) = (&self.session.doc, &self.session.resolved);
-        match apply_brush::refusal(doc, res, brush, path) {
+        let refused = match self.brush.bake {
+            true => apply_brush::refusal(doc, res, brush, path),
+            false => live_brush::refusal(doc, res, brush, path),
+        };
+        match refused {
             Some(r) => self.session.info(r.says()),
             None => (self.brush.path, self.brush.brush) = (Some(brush), Some(path)),
         }
@@ -252,8 +467,13 @@ impl MastikApp {
         if !self.drag.is_none() {
             return;
         }
-        let key: Key = (self.session.revision(), how);
-        if self.brush.built.as_ref().is_none_or(|(k, _)| *k != key) {
+        let key: Key = (self.session.revision(), self.brush.live(), how);
+        if self.brush.built.as_ref().is_none_or(|(k, _)| *k != key) && self.brush.live() {
+            // The links themselves: the walk draws a previewed link as committed.
+            let tx = Transaction(self.card_links());
+            self.session.set_preview(&tx);
+            self.brush.built = Some((key, tx));
+        } else if self.brush.built.as_ref().is_none_or(|(k, _)| *k != key) {
             let mut minter = IdSource::new(self.session.ids.actor());
             minter.skip_to(self.session.ids.next_seq());
             let (doc, res) = (&self.session.doc, &self.session.resolved);
@@ -283,6 +503,9 @@ impl MastikApp {
         let Some(how) = self.brush.how() else {
             return self.session.info(NEEDS);
         };
+        if self.brush.live() {
+            return self.commit_link(how);
+        }
         let made = apply_brush::apply(
             &self.session.doc,
             &self.session.resolved,
@@ -319,6 +542,40 @@ impl MastikApp {
         self.brush.open = false;
         self.brush.picking = false;
         self.brush.built = None;
+    }
+
+    /// Link the brush as the card says: *Apply brush* on the path, which stays
+    /// selected, or *Edit brush*'s *Done* on the layers it edits.
+    fn commit_link(&mut self, how: ApplyBrush) {
+        if let Some(r) = self.card_refusal() {
+            return self.session.info(r.says());
+        }
+        let editing = !self.brush.editing.is_empty();
+        let targets = self.brush.targets();
+        let tx = Transaction(self.card_links());
+        let doc = &self.session.doc;
+        let brush = crate::private::layer(doc, how.brush).into_owned();
+        let path = crate::private::layer(doc, how.path).into_owned();
+        self.session.clear_gesture_preview();
+        if !self.session.has_step_name() {
+            let (step, item) = match editing {
+                true => (EDIT_STEP, crate::menu::Item::EditBrush),
+                false => (STEP, crate::menu::Item::ApplyBrush),
+            };
+            self.session.name_step(step, item.spec().glyph);
+        }
+        self.brush.open = false;
+        self.brush.picking = false;
+        self.brush.built = None;
+        if !self.commit_edit(tx) {
+            return;
+        }
+        self.session.selection.set(targets.clone());
+        self.session.info(match (how.mode, targets.len()) {
+            (_, n @ 2..) => format!("Brushed {} with {brush}", ui::count(n, "layer")),
+            (Mode::Art(_), _) => format!("Brushed {path} with {brush}"),
+            (Mode::Scatter(_), _) => format!("Scattered {brush} along {path}"),
+        });
     }
 
     /// Say [`PICK_STATUS`] again before it fades or once another message has
@@ -377,7 +634,9 @@ impl MastikApp {
                 let w = ui::menu_inner_w(W, ui::POPOVER_PAD);
                 ui.set_width(w);
                 ui.spacing_mut().item_spacing.y = ui::POPOVER_SECTION_GAP;
-                if ui::popover_head(ui, "Apply brush") {
+                let editing = !card.editing.is_empty();
+                let head = if editing { "Edit brush" } else { "Apply brush" };
+                if ui::popover_head(ui, head) {
                     act = Some(Act::Close);
                 }
                 ui::labelled(ui, "Brush", |ui| {
@@ -398,8 +657,25 @@ impl MastikApp {
                                 if ui::menu_check(ui, "Pick a shape…", false, row) {
                                     act = Some(Act::Pick);
                                 }
-                                if ui::menu_check(ui, "Swap brush and path", false, row) {
+                                let swap = ui::menu_row(
+                                    ui,
+                                    ui::MenuRow::new("", "Swap brush and path")
+                                        .checked(false)
+                                        .enabled(!editing),
+                                    row,
+                                );
+                                if swap.clicked() {
                                     act = Some(Act::Swap);
+                                }
+                                swap.on_disabled_hover_text(OWN_PATH);
+                                if editing {
+                                    ui::menu_sep(ui);
+                                    if ui::menu_check(ui, "Bake brush", false, row) {
+                                        act = Some(Act::BakeBrush);
+                                    }
+                                    if ui::menu_check(ui, "Remove brush", false, row) {
+                                        act = Some(Act::RemoveBrush);
+                                    }
                                 }
                             })
                             .response
@@ -539,22 +815,39 @@ impl MastikApp {
                         resp.on_hover_text("Which sizes and offsets: another number scatters anew");
                     });
                 });
-                if ui::switch_row(
-                    ui,
-                    "Keep the path",
-                    card.keep_path,
-                    crate::settings::SWITCH_H,
-                )
-                .on_hover_text("Keep the path in the group, hidden")
-                .clicked()
-                {
-                    act = Some(Act::KeepPath);
+                // Baking is an act in *Edit brush*, a row, not an option.
+                if !editing {
+                    if ui::switch_row(ui, "Bake into paths", card.bake, crate::settings::SWITCH_H)
+                        .on_hover_text("Bake the brush into plain paths instead of linking it")
+                        .clicked()
+                    {
+                        act = Some(Act::Bake);
+                    }
+                    let keep = ui
+                        .add_enabled_ui(card.bake, |ui| {
+                            ui::switch_row(
+                                ui,
+                                "Keep the path",
+                                card.keep_path && card.bake,
+                                crate::settings::SWITCH_H,
+                            )
+                        })
+                        .inner;
+                    if keep.clicked() {
+                        act = Some(Act::KeepPath);
+                    }
+                    if card.bake {
+                        keep.on_hover_text("Keep the path in the group, hidden");
+                    } else {
+                        keep.on_disabled_hover_text(KEEPS_PATH);
+                    }
                 }
+                let primary = if editing { "Done" } else { "Apply" };
                 match crate::settings::footer_row(
                     ui,
                     &[
                         ("Cancel", FieldButton::Off),
-                        ("Apply", FieldButton::Primary),
+                        (primary, FieldButton::Primary),
                     ],
                 ) {
                     Some(0) => act = Some(Act::Close),
@@ -584,6 +877,9 @@ impl MastikApp {
             Act::Flip => self.brush.flip = !self.brush.flip,
             Act::Fixed(on) => self.brush.fixed = on,
             Act::KeepPath => self.brush.keep_path = !self.brush.keep_path,
+            Act::Bake => self.brush.bake = !self.brush.bake,
+            Act::BakeBrush => self.bake_brushes(),
+            Act::RemoveBrush => self.remove_brushes(),
         }
         ctx.request_repaint();
     }
@@ -654,9 +950,9 @@ mod tests {
         (app, path, leaf)
     }
 
-    /// The card's commit puts a *Brushed · Leaf* group in the path's place and
-    /// selects it, keeps the brush, names the step *Apply brush*, and one undo
-    /// puts the path back.
+    /// With *Bake into paths* on, the card's commit puts a *Brushed · Leaf*
+    /// group in the path's place and selects it, keeps the brush, names the step
+    /// *Apply brush*, and one undo puts the path back.
     /// flip: `commit_brush` naming the step by the row's label → fails at the step
     /// name.
     #[test]
@@ -664,6 +960,7 @@ mod tests {
         let ctx = egui::Context::default();
         let (mut app, path, leaf) = path_and_leaf(&ctx);
         app.open_brush();
+        app.brush.bake = true;
         assert!(app.brush.open);
         app.refresh_brush_preview();
         assert!(app.session.has_gesture_preview(), "the result previews");
@@ -694,6 +991,7 @@ mod tests {
         let ctx = egui::Context::default();
         let (mut app, path, _) = path_and_leaf(&ctx);
         app.open_brush();
+        app.brush.bake = true;
         app.brush.keep_path = true;
         app.brush.scatter = true;
         app.commit_brush();
@@ -893,9 +1191,176 @@ mod tests {
         let ctx = egui::Context::default();
         let (mut app, _, _) = path_and_leaf(&ctx);
         app.open_brush();
+        app.brush.bake = true;
         let before = app.session.ids.next_seq();
         app.refresh_brush_preview();
         assert!(app.session.has_gesture_preview());
         assert_eq!(app.session.ids.next_seq(), before, "no ids spent");
+    }
+
+    /// By default the card links the brush: the path stays the layer, selected,
+    /// in its place, drawn with the brush; the step is *Apply brush*, and the
+    /// preview was the link itself.
+    /// flip: `BrushCard::live` answering `false` for a fresh card → fails at
+    /// "the preview draws the brush".
+    #[test]
+    fn applying_links_a_live_brush_by_default() {
+        let ctx = egui::Context::default();
+        let (mut app, path, leaf) = path_and_leaf(&ctx);
+        app.open_brush();
+        app.refresh_brush_preview();
+        let previewed = app
+            .session
+            .render_inputs()
+            .2
+            .brush_of(path)
+            .map(|b| b.is_some());
+        assert_eq!(previewed, Some(true), "the preview draws the brush");
+        app.commit_brush();
+        let page = app.session.doc.first_page();
+        assert_eq!(
+            app.session.doc.get(page).unwrap().children(),
+            &[path, leaf],
+            "the path stays"
+        );
+        let link = app.session.doc.get(path).and_then(|n| n.brush());
+        assert_eq!(link.map(|l| l.of), Some(leaf));
+        assert_eq!(app.session.selection.single(), Some(path));
+        assert_eq!(app.session.status().text, "Brushed Line with Leaf");
+        let step = app.session.history.done().last().expect("a step");
+        assert_eq!(step.note.label, STEP);
+        assert!(app.session.resolved.brush_ink(path).is_some());
+    }
+
+    /// *Edit brush* opens on the layer's own options, *Done* writes them as an
+    /// *Edit brush* step, and *Remove brush* drops the link as its own step.
+    #[test]
+    fn edit_brush_writes_the_options_and_remove_drops_them() {
+        let ctx = egui::Context::default();
+        let (mut app, path, leaf) = path_and_leaf(&ctx);
+        app.open_brush();
+        app.brush.scatter = true;
+        app.brush.numbers.seed = 5.0;
+        app.commit_brush();
+        app.brush.scatter = false;
+        app.brush.numbers.seed = 1.0;
+        app.open_edit_brush();
+        assert!(app.brush.open && !app.brush.editing.is_empty());
+        assert!(app.brush.scatter, "the layer's mode, not the card's last");
+        assert_eq!(app.brush.numbers.seed, 5.0, "the layer's seed");
+        app.brush.numbers.seed = 9.0;
+        app.commit_brush();
+        let link = app.session.doc.get(path).and_then(|n| n.brush()).unwrap();
+        assert!(matches!(link.mode, Mode::Scatter(s) if s.seed == 9));
+        assert_eq!(link.of, leaf);
+        let step = app.session.history.done().last().expect("a step");
+        assert_eq!(step.note.label, EDIT_STEP);
+        app.session.selection.set_one(path);
+        app.remove_brushes();
+        assert!(app.session.doc.get(path).and_then(|n| n.brush()).is_none());
+        let step = app.session.history.done().last().expect("a step");
+        assert_eq!(step.note.label, REMOVE_STEP);
+    }
+
+    /// *Edit brush* over two layers drawn with different brushes writes the
+    /// card's options to both and leaves each its own brush.
+    /// flip: `card_links` writing the card's brush to every edited layer →
+    /// fails at "each keeps its own brush".
+    #[test]
+    fn edit_brush_over_two_layers_keeps_each_ones_brush() {
+        let ctx = egui::Context::default();
+        let (mut app, path, leaf) = path_and_leaf(&ctx);
+        let (other, dot) = (app.session.ids.mint(), app.session.ids.mint());
+        let page = app.session.doc.first_page();
+        let mut line = BezPath::new();
+        line.move_to((0.0, 400.0));
+        line.line_to((600.0, 400.0));
+        let art = Mode::Art(Art::DEFAULT);
+        assert!(app.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: other,
+                parent: page,
+                index: 2,
+                kind: NodeKind::Path {
+                    path: line,
+                    corner_radii: Vec::new(),
+                    corner_smoothing: 0.0,
+                    mirror: Default::default(),
+                },
+                transform: None,
+                name: Some("Other".into()),
+            },
+            Operation::CreateNode {
+                id: dot,
+                parent: page,
+                index: 3,
+                kind: NodeKind::Ellipse {
+                    size: Size::new(20.0, 20.0),
+                    arc: Default::default(),
+                },
+                transform: None,
+                name: Some("Dot".into()),
+            },
+            Operation::SetBrush {
+                id: path,
+                brush: Some(BrushLink::new(leaf, art)),
+            },
+            Operation::SetBrush {
+                id: other,
+                brush: Some(BrushLink::new(dot, art)),
+            },
+        ])));
+        app.session.selection.set(vec![path, other]);
+        app.open_edit_brush();
+        app.brush.flip = true;
+        app.commit_brush();
+        let of = |id: NodeId| app.session.doc.get(id).and_then(|n| n.brush()).unwrap();
+        assert_eq!(
+            (of(path).of, of(other).of),
+            (leaf, dot),
+            "each keeps its own brush"
+        );
+        assert!(
+            matches!(of(other).mode, Mode::Art(a) if a.flip),
+            "the options"
+        );
+    }
+
+    /// Deleting the brush bakes the layer drawn with it in the same step, and
+    /// says so; one undo brings both back, linked.
+    /// flip: `commit_inner` without `live_brush::baked_for_deletes` → fails at
+    /// "the brushed path is baked".
+    #[test]
+    fn deleting_the_brush_bakes_its_user_in_one_step() {
+        let ctx = egui::Context::default();
+        let (mut app, path, leaf) = path_and_leaf(&ctx);
+        app.open_brush();
+        app.commit_brush();
+        app.session.selection.set_one(leaf);
+        let steps = app.session.history.done().len();
+        app.delete_selection();
+        assert_eq!(app.session.history.done().len(), steps + 1, "one step");
+        assert!(app.session.doc.get(leaf).is_none());
+        let page = app.session.doc.first_page();
+        let top = app.session.doc.get(page).unwrap().children().to_vec();
+        assert_eq!(top.len(), 1);
+        assert_eq!(
+            app.session.doc.get(top[0]).unwrap().name(),
+            "Brushed · Leaf",
+            "the brushed path is baked"
+        );
+        assert_eq!(
+            app.session.status().text,
+            "Deleted Leaf · baked the 1 layer it brushed"
+        );
+        app.undo();
+        assert_eq!(
+            app.session
+                .doc
+                .get(path)
+                .and_then(|n| n.brush())
+                .map(|l| l.of),
+            Some(leaf)
+        );
     }
 }

@@ -1879,6 +1879,20 @@ impl MastikApp {
         } else if let Some(tag) = element_tag(doc, node) {
             // What the layer is in code, where that is not a plain element.
             Some(RowBadge::Text(tag.to_string()))
+        } else if let Some(link) = node.brush().filter(|l| doc.contains(l.of)) {
+            // The brush it wears.
+            Some(RowBadge::Text(
+                crate::private::layer(doc, link.of).into_owned(),
+            ))
+        } else if let n @ 1.. = self
+            .session
+            .resolved
+            .brushed()
+            .filter(|(_, brush)| *brush == id)
+            .count()
+        {
+            // How many layers wear it.
+            Some(RowBadge::Text(format!("brush · {n}")))
         } else if node.list().is_some() {
             // A list's rows in its canvas tab's words, in place of its size.
             Some(RowBadge::Text(crate::list_data::list_count(doc, id).0))

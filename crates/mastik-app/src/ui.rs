@@ -431,11 +431,26 @@ pub fn note_line(
     text: &str,
     act: Option<&str>,
 ) -> bool {
+    note_line_acts(ui, glyph, ink, text, act.as_slice()).is_some()
+}
+
+/// A [`note_line`] whose [`word_link`] acts sit side by side under the words
+/// (the brush layer's *Select them* and *Bake them*). Answers which was
+/// clicked.
+pub fn note_line_acts(
+    ui: &mut egui::Ui,
+    glyph: &str,
+    ink: egui::Color32,
+    text: &str,
+    acts: &[&str],
+) -> Option<usize> {
     /// Between the glyph and the words.
     const GAP: f32 = 6.0;
-    /// Between the words and the act under them.
+    /// Between the words and the acts under them.
     const ACT_GAP: f32 = 2.0;
-    let mut clicked = false;
+    /// Between two acts.
+    const ACTS_GAP: f32 = 12.0;
+    let mut clicked = None;
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = GAP;
         ui.label(theme::icon_text(glyph, NOTE_GLYPH_PT, ink));
@@ -449,8 +464,15 @@ pub fn note_line(
                 )
                 .wrap(),
             );
-            if let Some(act) = act {
-                clicked = word_link(ui, act, false).clicked();
+            if !acts.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = ACTS_GAP;
+                    for (i, act) in acts.iter().enumerate() {
+                        if word_link(ui, act, false).clicked() {
+                            clicked = Some(i);
+                        }
+                    }
+                });
             }
         });
     });

@@ -1870,10 +1870,21 @@ impl EditorSession {
         // **While the browser's *Edit* is open, an edit of the style's users is an
         // edit of the style** — first, so every pass below reads the style's edit and
         // `style::settle` writes it back onto every user.
-        let tx = match self.style_edit {
+        let mut tx = match self.style_edit {
             Some(s) => mastik_core::style::edit_through(&self.doc, tx, s),
             None => tx,
         };
+        // A deleted brush's layers are baked in this same step, before the
+        // deletes run, so the document never holds a link to nothing.
+        let baked = mastik_core::live_brush::baked_for_deletes(
+            &self.doc,
+            &self.resolved,
+            &tx,
+            &mut self.ids,
+        );
+        if !baked.is_empty() {
+            tx.0.splice(0..0, baked);
+        }
         // **Every placement a tool writes is where it wants the layer drawn**, and
         // for a layer pinned by insets that has to become new insets — here, once,
         // rather than in every tool. Before the no-op test below, because the

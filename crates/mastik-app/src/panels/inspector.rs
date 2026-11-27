@@ -2006,11 +2006,148 @@ impl MastikApp {
             self.identity_boolean_row(ui);
             self.identity_kind_row(ui, id);
             self.identity_element_row(ui, id);
+            self.brush_users_note(ui, id);
             // What the layer is inside a component, in the same card.
             self.inspector_component(ui, super::component::ComponentPart::Identity);
             // What the drawing cannot say, last.
             self.annotation_field(ui, id);
         });
+    }
+    /// The Stroke section's head row on a layer drawn with a live brush: the
+    /// brush's kind glyph, *Brush · ‹name›* and its mode, amber while it draws
+    /// nothing; a click opens *Edit brush*, ✕ is *Remove brush* and the eye
+    /// hides the brush for the strokes. Answers whether the strokes give way.
+    fn brush_row(&mut self, ui: &mut egui::Ui, id: NodeId) -> bool {
+        let doc = &self.session.doc;
+        let Some(link) = doc.get(id).and_then(|n| n.brush()) else {
+            return false;
+        };
+        let Some(brush) = doc.get(link.of) else {
+            return false;
+        };
+        let name = crate::private::layer(doc, link.of).into_owned();
+        let glyph = super::layers::kind_glyph(brush.kind()).0;
+        let broken = mastik_core::live_brush::broken(doc, &self.session.resolved, id);
+        let mode = match link.mode {
+            mastik_core::apply_brush::Mode::Art(_) => "Art",
+            mastik_core::apply_brush::Mode::Scatter(_) => "Scatter",
+        };
+        let editing = self.brush.open && self.brush.editing.contains(&id);
+        let (mut open, mut remove, mut toggle) = (false, false, false);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+            let size = egui::vec2(ui.available_width() - 28.0 - ui::CARD_COL_GAP, 28.0);
+            field_row_active(ui, size, editing, |ui| {
+                ui.spacing_mut().item_spacing.x = 9.0;
+                let ink = match broken {
+                    Some(_) => color::warn(),
+                    None => theme::text::strong(),
+                };
+                ui.label(theme::icon_text(glyph, ui::CONTROL_GLYPH_PT, ink));
+                let label = ui
+                    .add(
+                        egui::Label::new(
+                            egui::RichText::new(format!("Brush · {name}"))
+                                .size(ui::CONTROL_PT)
+                                .color(ink),
+                        )
+                        .sense(egui::Sense::click())
+                        .truncate(),
+                    )
+                    .on_hover_text(match broken {
+                        Some(mastik_core::apply_brush::Refusal::Flat) => {
+                            format!("{name} has no length to lay along the path")
+                        }
+                        Some(r) => r.says().to_owned(),
+                        None => "Edit brush".to_owned(),
+                    });
+                open = label.clicked();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if icon_button(ui, icon::X, 18.0, 13.0, false, true)
+                        .on_hover_text("Remove brush")
+                        .clicked()
+                    {
+                        remove = true;
+                    }
+                    ui.label(
+                        egui::RichText::new(mode)
+                            .size(ui::SMALL_PT)
+                            .color(theme::text::faint()),
+                    );
+                });
+            });
+            let (glyph, tip) = match link.visible {
+                true => (icon::EYE, "Hide the brush and draw the strokes"),
+                false => (icon::EYE_SLASH, "Show the brush"),
+            };
+            toggle = ui::field_button(ui, glyph, 28.0, ui::FieldButton::Off)
+                .on_hover_text(tip)
+                .clicked();
+        });
+        // The canvas's own test, so the dimmed strokes are the hidden ones.
+        let hides = mastik_core::live_brush::hides_strokes(&self.session.doc, id);
+        if hides {
+            ui::selection_note(
+                ui,
+                "The brush draws in place of the strokes. Remove it to draw them again",
+            );
+        }
+        if open {
+            self.session.selection.set_one(id);
+            self.open_edit_brush();
+        } else if remove {
+            self.session.selection.set_one(id);
+            self.remove_brushes();
+        } else if toggle {
+            let step = match link.visible {
+                true => "Hide brush",
+                false => "Show brush",
+            };
+            self.session.name_step(step, icon::BRUSH);
+            self.commit_edit(Transaction(vec![Operation::SetBrush {
+                id,
+                brush: Some(mastik_core::live_brush::BrushLink {
+                    visible: !link.visible,
+                    ..link
+                }),
+            }]));
+        }
+        hides
+    }
+    /// On a layer other layers draw as their live brush: how many, and *Select
+    /// them* and *Bake them*. Nothing while no layer uses it.
+    fn brush_users_note(&mut self, ui: &mut egui::Ui, id: NodeId) {
+        // From `Resolved`'s short list of brushed layers, not a walk of the
+        // document, since this runs every frame the brush is selected.
+        let users: Vec<NodeId> = self
+            .session
+            .resolved
+            .brushed()
+            .filter(|(_, brush)| *brush == id)
+            .map(|(user, _)| user)
+            .collect();
+        if users.is_empty() {
+            return;
+        }
+        let users = mastik_core::build::in_document_order(&self.session.doc, &users);
+        let said = format!(
+            "The brush of {}. Editing it redraws them.",
+            ui::count(users.len(), "layer")
+        );
+        match ui::note_line_acts(
+            ui,
+            icon::BRUSH,
+            theme::text::dim(),
+            &said,
+            &["Select them", "Bake them"],
+        ) {
+            Some(0) => self.session.selection.set(users),
+            Some(_) => {
+                self.session.selection.set(users);
+                self.bake_brushes();
+            }
+            None => {}
+        }
     }
     /// A group's or a frame's kind row on its identity card, under the boolean row:
     /// a dropdown, *Frame* / *Group*, turning one into the other
@@ -6143,7 +6280,11 @@ impl MastikApp {
     ) {
         let strokes = shown.list();
         let ghosts = self.has_ghosts(scope.node(), |n| &n.paint().strokes);
-        self.sync_paint_collapse("Stroke", shown.unpainted() && !ghosts, fresh);
+        let brushed = match scope {
+            PaintScope::Node(id) => self.session.doc.get(id).and_then(|n| n.brush()).is_some(),
+            PaintScope::Selection => false,
+        };
+        self.sync_paint_collapse("Stroke", shown.unpainted() && !ghosts && !brushed, fresh);
         let action = Some(if shown.is_mixed() {
             ui::HeadAction::inert(
                 icon::PLUS,
@@ -6160,6 +6301,15 @@ impl MastikApp {
             &targets,
             action,
             |app, ui| {
+                // A live brush heads the section; the strokes it stands in for
+                // stay, dimmed, so removing it gives them back as they were.
+                let dimmed = match scope {
+                    PaintScope::Node(id) => app.brush_row(ui, id),
+                    PaintScope::Selection => false,
+                };
+                if dimmed {
+                    ui.multiply_opacity(HIDDEN_OPACITY);
+                }
                 if shown.is_mixed() {
                     paint_unit(
                         ui,
@@ -6175,6 +6325,9 @@ impl MastikApp {
                     PaintScope::Selection => None,
                 };
                 if strokes.is_empty() && source.as_ref().is_none_or(Vec::is_empty) {
+                    if brushed {
+                        return;
+                    }
                     ui.label(
                         egui::RichText::new("No stroke")
                             .size(ui::SMALL_PT)

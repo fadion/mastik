@@ -104,7 +104,7 @@ pub(super) fn set(
     let known: Vec<&str> = SET_PROPS
         .iter()
         .map(|p| p.0)
-        .chain(["size", "at"])
+        .chain(["size", "at", "brush"])
         .chain(SET_ALIASES)
         .collect();
     if let Some(k) = props.keys().find(|k| !known.contains(&k.as_str())) {
@@ -169,6 +169,21 @@ pub(super) fn set(
             for id in &wire {
                 step(verb, with("node", id.clone()));
             }
+        }
+    }
+    // A live brush as `get_node` reports it, `{of, mode, …}`, spread into
+    // `set_brush`'s own parameters; `null` drops the link.
+    if let Some(v) = props.get("brush") {
+        for id in &wire {
+            let mut m = match v {
+                Value::Object(o) => o.clone(),
+                _ => Map::new(),
+            };
+            if let Some(of) = m.remove("of") {
+                m.insert("brush".into(), of);
+            }
+            m.insert("node".into(), id.clone());
+            step("set_brush", Value::Object(m));
         }
     }
     // A text draws in its style's colour over its fills, so new fills clear it.

@@ -62,6 +62,9 @@ pub(crate) struct Clip {
     /// One subtree per copied layer, ids still the originals' until
     /// `insert_subtrees` remaps them.
     pub(crate) subtrees: Vec<Vec<Node>>,
+    /// Beside each subtree, its twin with every live brush whose brush was not
+    /// copied baked (`live_brush::baked_copies`), for a paste where it is not.
+    pub(crate) baked: Vec<Option<Vec<Node>>>,
     /// The vault mains those subtrees reach (`mastik_core::kit::carried`); a paste
     /// vendors them so a kit instance lands linked.
     pub(crate) kits: Vec<Vec<Node>>,
@@ -5144,6 +5147,7 @@ impl MastikApp {
         self.clipboard_from = payload.from;
         self.clipboard = Some(Clip {
             subtrees: payload.subtrees,
+            baked: payload.baked,
             kits: payload.kits,
             images: payload.images,
             vars: payload.vars,
@@ -5160,6 +5164,19 @@ impl MastikApp {
     fn stamp_clipboard(&mut self, ctx: &egui::Context, text: String) {
         self.clipboard_stamp = Some(ClipStamp::of(&text));
         ctx.copy_text(text);
+    }
+
+    /// The clipboard as a paste into this document takes it: a subtree whose
+    /// live brush is neither copied nor here pastes as its baked twin
+    /// (`live_brush::fitted`).
+    fn clip_here(&self) -> Option<Clip> {
+        let mut clip = self.clipboard.clone()?;
+        if !clip.baked.is_empty() {
+            let (subtrees, _) =
+                mastik_core::live_brush::fitted(&self.session.doc, &clip.subtrees, &clip.baked);
+            clip.subtrees = subtrees;
+        }
+        Some(clip)
     }
 
     /// Copy the selection into the in-app clipboard, and put a text stand-in on the
@@ -5203,10 +5220,21 @@ impl MastikApp {
             .collect();
         // Only this document can say what a binding draws.
         let vars = mastik_core::variable::carried(&self.session.doc, &templates);
+        // Nor what a live brush left behind draws. Minted from a copy of the
+        // counter: a paste mints its own ids.
+        let mut minter = mastik_core::IdSource::new(self.session.ids.actor());
+        minter.skip_to(self.session.ids.next_seq());
+        let baked = mastik_core::live_brush::baked_copies(
+            &self.session.doc,
+            &self.session.resolved,
+            &ids,
+            &mut minter,
+        );
         // The names alone if `write` fails: only the cross-window paste is lost.
         let heading = names.join(", ");
-        let text = mastik_core::io::clip::write_carrying(
+        let text = mastik_core::io::clip::write_baking(
             &templates,
+            &baked,
             &kits,
             &images,
             &vars,
@@ -5221,6 +5249,7 @@ impl MastikApp {
         ));
         self.clipboard = Some(Clip {
             subtrees: templates,
+            baked,
             kits,
             images,
             vars,
@@ -5661,7 +5690,7 @@ impl MastikApp {
         if self.paste_guides(GUIDE_PASTE_OFFSET) {
             return true;
         }
-        let Some(clip) = self.clipboard.clone() else {
+        let Some(clip) = self.clip_here() else {
             return false;
         };
         let templates = &clip.subtrees;
@@ -5789,7 +5818,7 @@ impl MastikApp {
     /// not a nesting), every layer copied from inside it already, or a paste the
     /// component rules refuse there.
     fn paste_into_selected_frame(&mut self, offset: Vec2, centre: bool) -> bool {
-        let Some(clip) = self.clipboard.clone() else {
+        let Some(clip) = self.clip_here() else {
             return false;
         };
         let doc = &self.session.doc;
@@ -5872,7 +5901,7 @@ impl MastikApp {
         if self.paste_guides(GUIDE_PASTE_OFFSET) {
             return true;
         }
-        let Some(clip) = self.clipboard.clone() else {
+        let Some(clip) = self.clip_here() else {
             return false;
         };
         let templates = &clip.subtrees;
@@ -6174,9 +6203,25 @@ impl MastikApp {
             self.remove_selected_guides();
             return;
         }
+        // Counted before the delete, which bakes them (`live_brush::orphaned`).
+        let baked = mastik_core::live_brush::orphaned(
+            &self.session.doc,
+            &build::outermost(&self.session.doc, self.session.selection.ids()),
+        )
+        .len();
         let Some(d) = self.delete_layers() else {
             return;
         };
+        if baked > 0 {
+            let what = match &d.name {
+                Some(name) => name.clone(),
+                None => crate::ui::count(d.count, "layer"),
+            };
+            return self.session.info(format!(
+                "Deleted {what} · baked the {} it brushed",
+                crate::ui::count(baked, "layer")
+            ));
+        }
         self.session.info(match (d.guides, d.detached, d.name) {
             (_, n @ 1.., Some(name)) => format!(
                 "Deleted “{name}” — {} detached · Ctrl+Z to undo",
@@ -6208,7 +6253,7 @@ impl MastikApp {
 
     /// [`Self::paste_to_replace`] once the clipboard is known to hold layers.
     fn replace_with_clipboard(&mut self) {
-        let Some(clip) = self.clipboard.clone() else {
+        let Some(clip) = self.clip_here() else {
             return;
         };
         let Some(from) = self.clip_box(&clip) else {

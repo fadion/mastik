@@ -337,6 +337,12 @@ pub enum Item {
     /// *Apply brush…*: the card that bends or scatters one shape along a path
     /// (`crate::apply_brush`).
     ApplyBrush,
+    /// *Edit brush…*: the same card on layers drawn with a live brush.
+    EditBrush,
+    /// *Bake brush*: a live brush baked into plain paths.
+    BakeBrush,
+    /// *Remove brush*: a live brush dropped, the path's own strokes back.
+    RemoveBrush,
     /// *Warp…*: an envelope round the selection, baked into paths
     /// (`crate::warp`). Among the conversions because it ends as a path.
     Warp,
@@ -756,6 +762,9 @@ impl Item {
         Item::Divide,
         Item::BlendShapes,
         Item::ApplyBrush,
+        Item::EditBrush,
+        Item::BakeBrush,
+        Item::RemoveBrush,
         Item::Warp,
         Item::OutlineShape,
         Item::OutlineStroke,
@@ -1054,6 +1063,11 @@ impl Item {
             // *Blend shapes*, since *Blend* already names the blend mode.
             Item::BlendShapes => s("Blend shapes…", icon::BLEND_SHAPES, None, Group::Structure),
             Item::ApplyBrush => s("Apply brush…", icon::BRUSH, None, Group::Structure),
+            Item::EditBrush => s("Edit brush…", icon::BRUSH, None, Group::Structure),
+            // Plain layers from a live thing, as *Detach list*.
+            Item::BakeBrush => s("Bake brush", icon::STACK_SIMPLE, None, Group::Structure),
+            // A link dropped, as *Detach instance*.
+            Item::RemoveBrush => s("Remove brush", icon::LINK_BREAK, None, Group::Structure),
             Item::Warp => s("Warp…", icon::WARP, None, Group::Structure),
             Item::OutlineShape => s("Outline shape", icon::POLYGON, None, Group::Structure),
             Item::OutlineStroke => s("Outline stroke", icon::POLYGON, None, Group::Structure),
@@ -1556,6 +1570,9 @@ impl Item {
             Item::Divide => &["boolean", "split", "cut", "pieces"],
             Item::BlendShapes => &["morph", "tween", "steps", "interpolate"],
             Item::ApplyBrush => &["art brush", "scatter brush", "along a path", "bend"],
+            Item::EditBrush => &["brush options", "live brush"],
+            Item::BakeBrush => &["expand brush", "brush to paths"],
+            Item::RemoveBrush => &["unlink brush", "clear brush"],
             Item::Warp => &[
                 "distort",
                 "envelope",
@@ -2156,8 +2173,10 @@ pub struct LayerState {
     /// Why *Blend shapes…* cannot take the selection (`blend::refusal`), if not.
     pub blend_refusal: Option<&'static str>,
     /// Why *Apply brush…* cannot take the selection
-    /// (`apply_brush::selection_refusal`), if not.
+    /// (`live_brush::selection_refusal`), if not.
     pub brush_refusal: Option<&'static str>,
+    /// Whether the selection holds a layer drawn with a live brush.
+    pub brushed: bool,
     /// Why *Warp…* cannot take the selection (`MastikApp::warp_refusal`), if not.
     pub warp_refusal: Option<&'static str>,
     /// Why *Trace image…* cannot place a trace where the picture stands
@@ -2673,6 +2692,12 @@ fn layer_menu(cx: &Context<'_>) -> Vec<Row> {
                 .dim_if(locked, why),
         );
     }
+    // A layer drawn with a live brush: its three acts, after Apply brush.
+    if st.brushed {
+        for item in [Item::EditBrush, Item::BakeBrush, Item::RemoveBrush] {
+            rows.push(Row::new(item).dim_if(locked, why));
+        }
+    }
     // Outline rows sit in Structure, not the text head: §3 groups by what a verb
     // does. *Convert to path* and *Outline shape* are mutually exclusive by kind,
     // and neither is Flatten's (a boolean or set) since `one` excludes a set.
@@ -3055,6 +3080,9 @@ pub const KIND_VERBS: &[(Item, &str)] = &[
         "Blend shapes needs two shapes, and a path to follow if you like",
     ),
     (Item::ApplyBrush, crate::apply_brush::NEEDS),
+    (Item::EditBrush, crate::apply_brush::NO_BRUSH),
+    (Item::BakeBrush, crate::apply_brush::NO_BRUSH),
+    (Item::RemoveBrush, crate::apply_brush::NO_BRUSH),
     (Item::Warp, "Select layers to warp"),
     (Item::OutlineShape, "Needs one shape"),
     (Item::OutlineStroke, "Needs one stroked shape"),
@@ -3908,6 +3936,7 @@ impl MastikApp {
             )
             .map(|r| r.says()),
             brush_refusal: self.brush_refusal(),
+            brushed: self.edit_brush_refusal().is_none(),
             warp_refusal: self.warp_refusal(),
             trace_refusal: mastik_core::trace::refusal(&self.session.doc, id),
             mirrored: build::is_mirrored_path(&self.session.doc, id),
@@ -4067,6 +4096,9 @@ impl MastikApp {
             Item::Divide => self.divide_selection(),
             Item::BlendShapes => self.open_blend(),
             Item::ApplyBrush => self.open_brush(),
+            Item::EditBrush => self.open_edit_brush(),
+            Item::BakeBrush => self.bake_brushes(),
+            Item::RemoveBrush => self.remove_brushes(),
             Item::Warp => self.open_warp(),
             // No chord, so no `Action`. `hit` rather than the selection (C3); the
             // verb re-checks its own kind, so a stale row refuses.

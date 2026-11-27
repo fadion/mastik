@@ -130,6 +130,10 @@ impl MastikApp {
         let [id] = self.session.selection.ids() else {
             return None;
         };
+        // A live brush draws in place of the stroke the handles would shape.
+        if mastik_core::live_brush::hides_strokes(&self.session.doc, *id) {
+            return None;
+        }
         let node = self.session.display_node(*id)?;
         let stroke = node.paint().strokes.get(index)?;
         stroke.drawn_profile(node.kind())?;
