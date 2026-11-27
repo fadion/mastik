@@ -4175,7 +4175,7 @@ impl Document {
     /// absent, returns just `[root]`. Safe on any document `apply`/IO produced:
     /// both enforce that each node is listed as a child exactly once, so the
     /// walk cannot revisit a node.
-    fn subtree_ids(&self, root: NodeId) -> Vec<NodeId> {
+    pub(crate) fn subtree_ids(&self, root: NodeId) -> Vec<NodeId> {
         let mut out = Vec::new();
         let mut stack = vec![root];
         while let Some(id) = stack.pop() {

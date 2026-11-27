@@ -2012,6 +2012,42 @@ pub(crate) fn rewrite(
         inserts.push((host, *s_new, copy));
     }
 
+    // **A brush link names the instance's own copy of the brush, as it will be
+    // after this rewrite**: the matched layers and the copies inserted above.
+    // Read off the document as it stands, a brush the switch copies in the same
+    // step has no copy yet, and the path would draw from the variant's own.
+    let mut copy_of_new: FxHashMap<NodeId, NodeId> = new_to_c
+        .iter()
+        .filter(|(_, c)| !deleted.contains(c))
+        .map(|(n, c)| (*n, *c))
+        .collect();
+    for (_, s_new, copy) in &inserts {
+        // `capture_subtree`'s order, which the copy keeps.
+        let template = doc.subtree_ids(*s_new);
+        copy_of_new.extend(template.into_iter().zip(copy.iter().map(|k| k.id)));
+    }
+    let at_copy = |link: crate::live_brush::BrushLink| crate::live_brush::BrushLink {
+        of: copy_of_new
+            .get(&link.of)
+            .copied()
+            .or_else(|| crate::propagate::counterpart(doc, root, link.of))
+            .unwrap_or(link.of),
+        ..link
+    };
+    for op in &mut fields {
+        if let Operation::SetBrush {
+            brush: Some(link), ..
+        } = op
+        {
+            *link = at_copy(*link);
+        }
+    }
+    for (_, _, copy) in &mut inserts {
+        for k in copy.iter_mut() {
+            k.brush = k.brush.map(at_copy);
+        }
+    }
+
     // Each parent's final order: the survivors, the new main's order where the
     // instance still had the old main's, and the inserts at their anchors.
     let mut ops: Vec<Operation> = Vec::new();
@@ -2240,12 +2276,11 @@ fn carry(doc: &Document, c: NodeId, s_old: NodeId, s_new: NodeId, keep: Keep) ->
         let Some(new) = new.retargeted(c) else {
             continue;
         };
-        // A brush link compares in the variant's terms and lands in the copy's.
-        use crate::live_brush::{brush_op_at, link_at_copy, link_at_source};
+        // A brush link compares in the variant's terms; `rewrite` lands it in the
+        // copy's once it knows which of the instance's layers copies which.
+        use crate::live_brush::{brush_op_at, link_at_source};
         let cur = brush_op_at(doc, c, cur, link_at_source);
-        if let Some(op) = crate::propagate::follow(&new, &old, &cur, c) {
-            out.push(brush_op_at(doc, c, op, link_at_copy));
-        }
+        out.extend(crate::propagate::follow(&new, &old, &cur, c));
     }
     out
 }

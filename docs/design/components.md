@@ -75,10 +75,12 @@ difference *is* the override.
   no override. `live_brush::link_at_source` names a brush in the copy's own instance by what it is a
   copy of; `link_at_copy` is the inverse (`propagate::counterpart` under `component::instance_root`;
   a brush outside the instance stays as named); `brush_op_at` applies either to a `SetBrush`.
-  Propagation, `untouched` and `variant::carry` compare in the source's terms and the follow and the
-  carry write the instance's brush; `reset::overrides` reads the source's link as the copy's, so the
-  reset names the instance's brush; a push names the main's. Limit: a variant switch whose new brush
-  counterpart the same transaction creates names the variant main's brush, which still draws.
+  Propagation, `untouched` and `variant::carry` compare in the source's terms and the follow writes
+  the instance's brush; `reset::overrides` reads the source's link as the copy's, so the reset names
+  the instance's brush; a push names the main's. A variant switch or swap (`variant::rewrite`) lands
+  the carried link and every inserted copy's on the instance's layers as they will be after the
+  rewrite — a kept layer's counterpart or a copy inserted in the same step — since the document as it
+  stands has no copy of the new variant's brush yet.
 - **An instance root's transform is never linked** — it is where the instance sits. Precisely: the
   transform of a node whose source is a component root, so a nested copy inside an outer main still
   passes its place within that main to the outer instances. Every other root field, size included,
