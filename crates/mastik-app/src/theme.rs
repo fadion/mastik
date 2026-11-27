@@ -1369,6 +1369,11 @@ pub mod icon {
     /// *Apply brush…*: a brushstroke, a swoosh pointed at both ends and full in
     /// the middle. Not [`WARP`], whose arch is an envelope.
     pub const BRUSH: &str = "\u{f09c}";
+    /// *Remove brush*: [`BRUSH`] struck through, as [`EYE_SLASH`] is [`EYE`].
+    pub const BRUSH_SLASH: &str = "\u{f09d}";
+    /// *Bake brush*: [`BRUSH`]'s outline with a path's point at each tip, as
+    /// [`OUTLINE_VIEW`] marks a shape seen as paths.
+    pub const BRUSH_BAKE: &str = "\u{f09e}";
     /// The **glass** effect's row glyph: a rounded pane with a highlight arc in
     /// its top-left corner. Not [`SQUARE_DOTS`], the background blur it extends.
     pub const GLASS: &str = "\u{f099}";
@@ -1699,6 +1704,8 @@ pub mod icon {
         ("glass", GLASS),
         ("comb", COMB),
         ("brush", BRUSH),
+        ("brush-slash", BRUSH_SLASH),
+        ("brush-bake", BRUSH_BAKE),
         ("table", TABLE),
         ("visual-centre", VISUAL_CENTRE),
         ("size-preview", SIZE_PREVIEW),

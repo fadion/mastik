@@ -1064,10 +1064,8 @@ impl Item {
             Item::BlendShapes => s("Blend shapes…", icon::BLEND_SHAPES, None, Group::Structure),
             Item::ApplyBrush => s("Apply brush…", icon::BRUSH, None, Group::Structure),
             Item::EditBrush => s("Edit brush…", icon::BRUSH, None, Group::Structure),
-            // Plain layers from a live thing, as *Detach list*.
-            Item::BakeBrush => s("Bake brush", icon::STACK_SIMPLE, None, Group::Structure),
-            // A link dropped, as *Detach instance*.
-            Item::RemoveBrush => s("Remove brush", icon::LINK_BREAK, None, Group::Structure),
+            Item::BakeBrush => s("Bake brush", icon::BRUSH_BAKE, None, Group::Structure),
+            Item::RemoveBrush => s("Remove brush", icon::BRUSH_SLASH, None, Group::Structure),
             Item::Warp => s("Warp…", icon::WARP, None, Group::Structure),
             Item::OutlineShape => s("Outline shape", icon::POLYGON, None, Group::Structure),
             Item::OutlineStroke => s("Outline stroke", icon::POLYGON, None, Group::Structure),

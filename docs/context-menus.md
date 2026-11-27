@@ -157,8 +157,8 @@ In emitted order. Kind-gated; the component rows are gated by role (`menu::Role`
 | Blend shapes… | — | exactly two layers; dims with `blend::pair`'s refusal (*"Blend shapes needs exactly two shapes"*, *"… can't take a picture"*, *"… can't take text"*, or the parts sentence); dims on lock. Opens the Blend shapes card (`app-booleans.md`) |
 | Apply brush… | — | two or more layers; dims with `live_brush::selection_refusal`'s sentence (*"Select a path, and the shape to run along it"* for more than two or none to run along, or the brush's or path's own), since the card links a live brush by default; a bake's own refusals are said when it commits; dims on lock. Opens the Apply brush card (`app-booleans.md`) |
 | Edit brush… | — | the selection holds a layer drawn with a live brush (`LayerState::brushed`); dims on lock. Opens the card as *Edit brush* on the selected brushed layers |
-| Bake brush | — | as *Edit brush…*; `STACK_SIMPLE` glyph, as *Detach list*. Bakes each selected live brush into paths |
-| Remove brush | — | as *Edit brush…*; `LINK_BREAK` glyph, as *Detach instance*. Drops each selected live brush, the path's strokes drawn again |
+| Bake brush | — | as *Edit brush…*; `BRUSH_BAKE` glyph. Bakes each selected live brush into paths |
+| Remove brush | — | as *Edit brush…*; `BRUSH_SLASH` glyph. Drops each selected live brush, the path's strokes drawn again |
 | Convert to path | — | one text layer; dims *"This text has no glyphs to convert"*; dims on lock |
 | Flip to other side ✓ | — | one text layer on a rail; ticked when flipped; dims on lock |
 | Detach from path | — | one text layer on a rail; dims on lock |
