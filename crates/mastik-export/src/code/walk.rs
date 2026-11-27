@@ -1607,6 +1607,9 @@ impl Walk<'_> {
         if !s.dashes.is_empty() {
             return Some("a dashed stroke".into());
         }
+        if s.drawn_profile(kind).is_some() {
+            return Some("a stroke with a width profile".into());
+        }
         // An outline offsets an ellipse's radii, which is its parallel curve
         // only for a circle.
         if let NodeKind::Ellipse { size, .. } = kind

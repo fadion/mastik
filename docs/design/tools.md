@@ -401,6 +401,30 @@ chrome hides, and the box handles, a lone line's ends and the rail handle do not
   plain arrow over the bare guide, where the ghost dot is the affordance. A locked layer draws the handles and arms none
   of them.
 
+### Width handles (`width_handles.rs`)
+
+**The open stroke popover is the mode**, as the picker is for a gradient. `MastikApp::edited_profile`
+answers while a selecting tool is up, the popover is open on a stroke that draws with its profile
+(`Stroke::drawn_profile`), and that layer is the whole selection; `gradient_handles_up` then counts it,
+so the selection chrome steps aside as for a gradient.
+
+- **Marks.** Each profile point is a white dot on the path (laid along `geometry::stroked_path`, so
+  under the heads' trim) and a white diamond on each edge at the drawn width, joined by a line, each
+  rimmed in `color::SELECT`. A ghost dot follows the pointer over the bare path.
+- **Diamond drag**: both sides of the point scale together; Alt moves only its own side; Shift holds
+  the point's whole width to whole units. **Dot drag**: slides the point along the path, held between
+  its neighbours. A click on the bare path adds a point at the width drawn there, so nothing changes
+  (`width_click`, after the gradient's); a right-click on a point removes it while another remains
+  (`width_secondary`, claiming it from the context menu). There is no key that removes a point.
+- **The width stays the widest it draws.** Every edit renormalises the points so the widest is 1 and
+  `width` takes the factor, so the weight field reads the widest point. A width bound to a variable
+  cannot move, so there the fractions are held at 1 instead.
+- **The press** is the rung after the gradient's in `begin_select_drag` (`begin_width_drag`), and
+  `chrome_claims` asks `width_claims`, as does the popover's click-away so it stays open.
+  `Drag::WidthPoint { id, index, grab, from }` re-derives from the stroke at the press each frame,
+  previews, and commits one *Stroke* step. A pill (`paint_label`) reads *Width N*, the point's whole
+  width, while dragging. Cursor and lock as for gradient handles.
+
 ### Shape handles (`shape_handles.rs`)
 
 Under Select, one selected rect or ellipse that is unlocked and shown draws dots while the pointer is

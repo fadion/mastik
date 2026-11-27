@@ -2370,6 +2370,10 @@ impl MastikApp {
         if self.gradient_secondary(screen, rect, ppp) {
             return;
         }
+        // So do the width handles: a point is removed by it.
+        if self.width_secondary(screen, rect, ppp) {
+            return;
+        }
         // A flow's chip sits over its frame and takes its own menu.
         if let Some(flow) = self.flow_chip_at(ui, screen, rect, ppp) {
             self.open_context_menu(&ctx, crate::menu::Target::Flow(flow), Some(world));
@@ -2798,6 +2802,9 @@ impl MastikApp {
         if let Some(c) = self.gradient_cursor(resp.hover_pos(), rect, ppp) {
             return Some(c);
         }
+        if let Some(c) = self.width_cursor(resp.hover_pos(), rect, ppp) {
+            return Some(c);
+        }
         // Mid-gesture the cursor reports the gesture, so a resize dragged past the
         // opposite corner does not flicker.
         let handles = self.selection_handles(rect, ppp);
@@ -3076,6 +3083,13 @@ impl MastikApp {
         if clicked
             && let Some(p) = resp.interact_pointer_pos()
             && self.gradient_click(p, rect, ppp)
+        {
+            return;
+        }
+        // The edited stroke's bare path adds a width point.
+        if clicked
+            && let Some(p) = resp.interact_pointer_pos()
+            && self.width_click(p, rect, ppp)
         {
             return;
         }
@@ -3477,6 +3491,7 @@ impl MastikApp {
             || self.ghost_at(screen)
             || self.proto_mark_at(screen).is_some()
             || self.gradient_claims(screen, rect, ppp)
+            || self.width_claims(screen, rect, ppp)
             || self.set_plus_at(screen, rect, ppp).is_some()
             || self.shape_handle_at(screen, rect, ppp).is_some()
             || (self.line_ends(rect, ppp).is_some()
@@ -3548,6 +3563,10 @@ impl MastikApp {
 
         // The edited gradient's handles and stops, over the artwork they sit on.
         if self.begin_gradient_drag(grab, rect, ppp) {
+            return;
+        }
+        // The edited stroke's width handles, likewise.
+        if self.begin_width_drag(grab, rect, ppp) {
             return;
         }
 
@@ -3685,6 +3704,11 @@ impl MastikApp {
         }
         if matches!(self.drag, Drag::BlurRamp { .. }) {
             self.update_ramp_drag(world, shift);
+            ui.ctx().request_repaint();
+            return;
+        }
+        if matches!(self.drag, Drag::WidthPoint { .. }) {
+            self.update_width_drag(world, shift, alt);
             ui.ctx().request_repaint();
             return;
         }
@@ -3828,9 +3852,10 @@ impl MastikApp {
             }
             // Guide and crop drags are owned by `guide_input`/`image_edit_input`;
             // a pivot drag has nothing to preview through the renderer; a gradient's
-            // returned above, and so did a ramp's.
+            // returned above, and so did a ramp's and a width handle's.
             Drag::Gradient { .. }
             | Drag::BlurRamp { .. }
+            | Drag::WidthPoint { .. }
             | Drag::CropPan { .. }
             | Drag::CropResize { .. }
             | Drag::Pivot { .. }
@@ -3924,6 +3949,12 @@ impl MastikApp {
                 grab,
                 from,
             } => self.finish_ramp_drag((id, index, grab), &from, world, shift),
+            Drag::WidthPoint {
+                id,
+                index,
+                grab,
+                from,
+            } => self.finish_width_drag((id, index, grab), &from, world, (shift, alt)),
             // A release where every slot already draws the value commits nothing,
             // compared against the drawn value so a bound slot is right.
             drag @ Drag::Spacing { id, band, .. } => {
@@ -7822,16 +7853,21 @@ impl MastikApp {
         };
         tools::reverse_subpaths(&mut subpaths, &which);
         let mut tx = tools::rewrite_path(id, world, &subpaths, self.drawn_path(id));
-        // A whole one-run path's ends trade places, so its markers go with them and
-        // an arrow still points where it did.
+        // A whole one-run path's ends trade places, so its markers, caps and
+        // width profile go with them and the stroke draws as it did.
         if subpaths.len() == 1
             && !tx.0.is_empty()
             && let Some(node) = self.session.doc.get(id)
-            && node.paint().strokes.iter().any(|s| s.start != s.end)
+            && node
+                .paint()
+                .strokes
+                .iter()
+                .any(|s| !s.ends_alike() || s.profile.is_some())
         {
             let mut strokes = node.paint().strokes.clone();
             for s in &mut strokes {
-                std::mem::swap(&mut s.value.start, &mut s.value.end);
+                s.value = s.value.swapped_ends();
+                s.value.profile = s.value.profile.as_ref().map(|p| p.reversed());
             }
             tx.0.push(mastik_core::Operation::SetStrokes { id, strokes });
         }
@@ -11973,6 +12009,7 @@ impl MastikApp {
         self.draw_crop_box(painter, rect, ppp);
 
         self.draw_gradient_handles(painter, rect, ppp);
+        self.draw_width_handles(painter, rect, ppp);
 
         // Find and replace's matches, under the edited text's own highlight.
         self.paint_find_marks(painter, rect, ppp);
@@ -22071,6 +22108,34 @@ mod locked_path_verb_tests {
             "the ends swap"
         );
         assert_eq!(app.session.history.undo_depth(), depth + 1, "in one step");
+    }
+
+    /// Reversing a one-run path mirrors a width profile with it, even with
+    /// bare ends: a taper at the start is still at the same end of the line.
+    /// flip: `reverse_subpaths` without `WidthProfile::reversed` → fails at
+    /// "the taper stays put".
+    #[test]
+    fn reversing_a_path_mirrors_its_width_profile() {
+        use mastik_core::profile::Preset;
+        let ctx = egui::Context::default();
+        let (mut app, id) = app_with_a_path(&ctx);
+        app.tool = Tool::Select;
+        app.session
+            .try_commit(Transaction(vec![Operation::SetStrokes {
+                id,
+                strokes: mastik_core::keyed_by_position([mastik_core::Stroke {
+                    profile: Some(Preset::TaperStart.profile()),
+                    ..Default::default()
+                }]),
+            }]))
+            .expect("a taper");
+        app.reverse_subpaths();
+        let s = &app.session.doc.get(id).unwrap().paint().strokes[0];
+        assert_eq!(
+            s.profile.as_ref().and_then(|p| p.preset()),
+            Some(Preset::TaperEnd),
+            "the taper stays put"
+        );
     }
 }
 

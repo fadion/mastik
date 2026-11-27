@@ -6815,6 +6815,38 @@ impl MastikApp {
         let tx = self.strokes_tx(scope, next);
         self.named_valve("Stroke", icon::STROKE, resp, tx);
     }
+    /// A cap dropdown `width` wide keyed by `salt`, its face the cap glyph and
+    /// `current`'s name, with `tip` on hover. Answers the cap picked.
+    fn cap_combo(
+        ui: &mut egui::Ui,
+        salt: impl std::hash::Hash + std::fmt::Debug,
+        width: f32,
+        current: Cap,
+        tip: Option<&str>,
+    ) -> Option<Cap> {
+        let mut cap = current;
+        let h = ui.spacing().interact_size.y;
+        let resp = ui
+            .allocate_ui(egui::vec2(width, h), |ui| {
+                egui::ComboBox::from_id_salt(salt)
+                    .icon(ui::combo_chevron)
+                    .width(width)
+                    .truncate()
+                    .selected_text(ui::glyph_and_text(icon::STROKE_CAP, cap_label(cap)))
+                    .show_ui(ui, |ui| {
+                        ui::menu_rows(ui);
+                        for c in [Cap::Butt, Cap::Round, Cap::Square] {
+                            ui.selectable_value(&mut cap, c, cap_label(c));
+                        }
+                    })
+                    .response
+            })
+            .inner;
+        if let Some(tip) = tip {
+            resp.on_hover_text(tip);
+        }
+        (cap != current).then_some(cap)
+    }
     /// One end's dropdown: its face `face`, `width` wide, its list every marker as
     /// its glyph pointing the way that end does and its name. `at_end` picks the
     /// end, which also keys the dropdown with `salt`. Answers the marker picked.
@@ -6851,7 +6883,8 @@ impl MastikApp {
     }
 
     /// The stroke popover's Ends group: the start and end dropdowns with their
-    /// words, a button that swaps them, and the Size both are drawn at. Dimmed,
+    /// words, a button that swaps them (caps too), each end's cap under its
+    /// marker, and the Size both are drawn at. Dimmed, without the cap row,
     /// with its reason, on a shape with no open end, so the popover keeps one
     /// height; Size is dimmed while both ends are bare.
     fn stroke_popover_ends(
@@ -6884,7 +6917,7 @@ impl MastikApp {
                 if let Some(st) = end(ui, false, s.start) {
                     out = Some(st);
                 }
-                let bare = s.start == s.end;
+                let bare = s.ends_alike();
                 let swap = ui::field_button(
                     ui,
                     icon::ARROWS_LEFT_RIGHT,
@@ -6900,16 +6933,41 @@ impl MastikApp {
                     false => "Swap the ends",
                 });
                 if swap.clicked() && !bare {
-                    out = Some(Stroke {
-                        start: s.end,
-                        end: s.start,
-                        ..s.clone()
-                    });
+                    out = Some(s.swapped_ends());
                 }
                 if let Some(st) = end(ui, true, s.end) {
                     out = Some(st);
                 }
             });
+            // Each end's cap under its marker; the swap button's column stays
+            // empty. Only where there are ends: a closed shape's one cap sits
+            // above the Join row.
+            if applies {
+                ui.add_space(ui::CARD_ROW_GAP - ui::SECTION_LABEL_GAP);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                    ui::combo_height(ui);
+                    let w = (inner - CELL - ui::CARD_COL_GAP * 2.0) / 2.0;
+                    let (start_cap, end_cap) = s.caps();
+                    let salt = |at_end: bool| ("stroke-end-cap", index, at_end);
+                    let tip = Some("Cap at the start");
+                    if let Some(cap) = Self::cap_combo(ui, salt(false), w, start_cap, tip) {
+                        out = Some(Stroke {
+                            cap,
+                            end_cap: (cap != end_cap).then_some(end_cap),
+                            ..s.clone()
+                        });
+                    }
+                    ui.allocate_exact_size(egui::vec2(CELL, CELL), egui::Sense::hover());
+                    let tip = Some("Cap at the end");
+                    if let Some(cap) = Self::cap_combo(ui, salt(true), w, end_cap, tip) {
+                        out = Some(Stroke {
+                            end_cap: (cap != start_cap).then_some(cap),
+                            ..s.clone()
+                        });
+                    }
+                });
+            }
             ui.add_space(ui::CARD_ROW_GAP - ui::SECTION_LABEL_GAP);
             // Under the group's own gate, which a second `disable` would fade twice.
             ui::disable_unless(ui, !(s.start.is_none() && s.end.is_none()), |ui| {
@@ -6937,6 +6995,97 @@ impl MastikApp {
                 egui::Sense::empty(),
             )
             .on_hover_text("Only a line, an arc, a spiral or an open path has ends");
+        }
+        out
+    }
+
+    /// The stroke popover's Width group: *Even* or *Profile*, and under Profile
+    /// the profile's preset (or *Custom*, once a handle on the canvas has moved
+    /// it) and how to edit it there (`crate::width_handles`). Dimmed, with its
+    /// reason, on a stroke laid side by side, which draws even.
+    fn stroke_popover_width(
+        &mut self,
+        ui: &mut egui::Ui,
+        inner: f32,
+        scope: PaintScope,
+        index: usize,
+        s: &Stroke,
+    ) -> Option<Stroke> {
+        use mastik_core::profile::Preset;
+        let per_side =
+            !s.sides.is_all() && self.stroke_rule(scope, mastik_core::geometry::stroke_sides_apply);
+        let mut out = None;
+        let group = ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.y = ui::SECTION_LABEL_GAP;
+            if per_side {
+                ui.disable();
+            }
+            ui.label(ui::eyebrow("Width"));
+            let current = usize::from(s.profile.is_some());
+            if let Some(i) = segmented(
+                ui,
+                inner,
+                ui::SEGMENT_CELL_H,
+                2,
+                current,
+                |p, i, rect, on| segment_label(p, rect, ["Even", "Profile"][i], on),
+            ) && i != current
+            {
+                // A new profile starts as *Taper both*.
+                out = Some(Stroke {
+                    profile: (i == 1).then(|| Preset::TaperBoth.profile()),
+                    ..s.clone()
+                });
+            }
+            let Some(profile) = &s.profile else {
+                return;
+            };
+            ui.add_space(ui::CARD_ROW_GAP - ui::SECTION_LABEL_GAP);
+            ui.scope(|ui| {
+                ui::combo_height(ui);
+                let shown = profile.preset();
+                let mut chosen = shown;
+                egui::ComboBox::from_id_salt(("stroke-profile", index))
+                    .icon(ui::combo_chevron)
+                    .width(inner)
+                    .selected_text(ui::glyph_and_text(
+                        icon::STROKE,
+                        shown.map_or("Custom", Preset::label),
+                    ))
+                    .show_ui(ui, |ui| {
+                        ui::menu_rows(ui);
+                        for p in Preset::ALL {
+                            ui.selectable_value(&mut chosen, Some(p), p.label());
+                        }
+                    });
+                // A preset is a starting point, not a link: picking one replaces
+                // the points.
+                if chosen != shown
+                    && let Some(p) = chosen
+                {
+                    out = Some(Stroke {
+                        profile: Some(p.profile()),
+                        ..s.clone()
+                    });
+                }
+            });
+            ui.add_space(ui::CARD_ROW_GAP - ui::SECTION_LABEL_GAP);
+            ui::note_line(
+                ui,
+                icon::CURSOR,
+                theme::text::dim(),
+                "Drag the width handles on the path. Click the path to add one.",
+                None,
+            );
+        });
+        // Through a claimant of its own, as the Ends group's reason is.
+        if per_side {
+            ui.interact(
+                group.response.rect,
+                ui.id().with("dimmed-width-group"),
+                egui::Sense::empty(),
+            )
+            .on_hover_text("A stroke with a width per side can't take a profile");
         }
         out
     }
@@ -7100,24 +7249,28 @@ impl MastikApp {
                         });
                     }
 
-                    // --- the ends and the corners, common to all four ----------
-                    ui.scope(|ui| {
-                        ui::combo_height(ui);
-                        let mut cap = s.cap;
-                        egui::ComboBox::from_id_salt(("stroke-cap", index))
-                            .icon(ui::combo_chevron)
-                            .width(inner)
-                            .selected_text(ui::glyph_and_text(icon::STROKE_CAP, cap_label(cap)))
-                            .show_ui(ui, |ui| {
-                                ui::menu_rows(ui);
-                                for c in [Cap::Butt, Cap::Round, Cap::Square] {
-                                    ui.selectable_value(&mut cap, c, cap_label(c));
-                                }
-                            });
-                        if cap != s.cap {
-                            out = Some(Stroke { cap, ..s.clone() });
-                        }
-                    });
+                    // --- the width along the path ------------------------------
+                    if let Some(st) = self.stroke_popover_width(ui, inner, scope, index, s) {
+                        out = Some(st);
+                    }
+
+                    // --- the caps and the corners, common to all four ----------
+                    // An open shape's caps sit under Ends, one per end; a closed
+                    // one keeps one cap here, for its dashes, and writes both.
+                    if !self.stroke_rule(scope, mastik_core::marker::applies) {
+                        ui.scope(|ui| {
+                            ui::combo_height(ui);
+                            let picked =
+                                Self::cap_combo(ui, ("stroke-cap", index), inner, s.cap, None);
+                            if let Some(cap) = picked {
+                                out = Some(Stroke {
+                                    cap,
+                                    end_cap: None,
+                                    ..s.clone()
+                                });
+                            }
+                        });
+                    }
 
                     let join_row = ui.scope(|ui| {
                         // The label's gap; the miter field is topped up to `CARD_ROW_GAP` below.
@@ -7194,10 +7347,16 @@ impl MastikApp {
         // `on_picker` matters: a stroke row's swatch opens the detached picker, an
         // `egui::Window` at `Order::Middle` — below this `Area`, so the overlay term
         // says no, and a separate layer, so `on_menu` says no too.
+        // A press on the stroke's width handles or its path keeps it open too, as
+        // the picker's gradient handles keep the picker.
+        let (rect, ppp) = (self.canvas_rect, self.canvas_ppp);
         let on_picker = ctx
             .pointer_interact_pos()
-            .and_then(|p| ctx.layer_id_at(p))
-            .is_some_and(|l| l.id == super::picker::layer_id());
+            .is_some_and(|p| self.width_claims(p, rect, ppp))
+            || ctx
+                .pointer_interact_pos()
+                .and_then(|p| ctx.layer_id_at(p))
+                .is_some_and(|l| l.id == super::picker::layer_id());
         // Recorded every frame, never from inside the short-circuiting `&&`.
         let press_away = super::press_began_away(&ctx, menu.layer_id.id, menu.rect, head.rect);
         if close

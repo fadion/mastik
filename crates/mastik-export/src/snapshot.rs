@@ -929,6 +929,11 @@ pub struct StrokeSummary {
     /// The markers' size as a fraction, absent at 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub marker_size: Option<f64>,
+    /// The width profile's preset name (`"taper_both"`), or `"custom"`; absent
+    /// on an even stroke, whose `width` is everywhere. A profiled one's `width`
+    /// is its widest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 /// Project a document + resolved layer into the public snapshot schema.
@@ -1108,6 +1113,10 @@ fn node_snapshot(
                 marker_size: Some(s.marker_size)
                     .filter(|z| *z != 1.0 && !(s.start.is_none() && s.end.is_none()))
                     .map(round4),
+                profile: s.profile.as_ref().map(|p| match p.preset() {
+                    Some(preset) => preset.key().to_string(),
+                    None => "custom".to_string(),
+                }),
             })
             .collect(),
         effects: doc

@@ -719,33 +719,28 @@ impl Builder<'_> {
                     || !(plain("strokeCapEnd") || marked("strokeCapEnd"))
                 {
                     self.count("Unknown caps", 1, "strokes", "Drawn without them");
-                } else if plain("strokeCapStart")
-                    && plain("strokeCapEnd")
-                    && str_of(s, "strokeCapStart") != str_of(s, "strokeCapEnd")
-                {
-                    self.count(
-                        "Different caps at each end",
-                        1,
-                        "strokes",
-                        "Both drawn as the end's",
-                    );
                 }
-                let end_cap = match marked("strokeCapEnd") {
-                    true => str_of(s, "strokeCapStart"),
-                    false => str_of(s, "strokeCapEnd"),
+                // A marked end takes the other end's cap, which is all it shows.
+                let (start_key, end_key) = match (marked("strokeCapStart"), marked("strokeCapEnd"))
+                {
+                    (true, false) => ("strokeCapEnd", "strokeCapEnd"),
+                    (false, true) => ("strokeCapStart", "strokeCapStart"),
+                    _ => ("strokeCapStart", "strokeCapEnd"),
                 };
-                let cap = match end_cap {
+                let cap_of = |k: &str| match str_of(s, k) {
                     _ if dotted => crate::kurbo::Cap::Round,
                     "round" => crate::kurbo::Cap::Round,
                     "square" => crate::kurbo::Cap::Square,
                     _ => crate::kurbo::Cap::Butt,
                 };
+                let (cap, end_cap) = (cap_of(start_key), cap_of(end_key));
                 Some(Stroke {
                     brush,
                     width,
                     width_var: None,
                     join: crate::kurbo::Join::Miter,
                     cap,
+                    end_cap: (end_cap != cap).then_some(end_cap),
                     dashes,
                     dash_offset: 0.0,
                     miter_limit: 4.0,
@@ -759,6 +754,7 @@ impl Builder<'_> {
                     start: penpot_marker(str_of(s, "strokeCapStart")).unwrap_or_default(),
                     end: penpot_marker(str_of(s, "strokeCapEnd")).unwrap_or_default(),
                     marker_size: 1.0,
+                    profile: None,
                     visible: true,
                 })
             })

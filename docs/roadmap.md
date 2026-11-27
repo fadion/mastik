@@ -38,18 +38,6 @@ place, saved in the same shape so existing files load. It is matched in about 60
   on the GIF clock; the exported player plays it through a `<video>` element whose frames reach
   the WebAssembly drawing; still exports take a poster frame. Check H.264 patent coverage first:
   Cisco's licence covers its prebuilt binary, not a build from source. Large.
-- **Separate start and end caps.** `kurbo::Stroke` and the outline engine (`build::stroke_polygons`)
-  already take two caps; the renderer sets both from `Stroke.cap`. Missing are the model field
-  and the SVG boundary, which has one `stroke-linecap`: a stroke with two caps exports as outlined
-  ink, as a tight open stroke does (`tight_stroke::union_outline`). Small.
-- **Variable width.** A width profile along the path, edited with handles on the path (pen
-  pressure is a non-goal). No backend draws a varying width, so a profiled stroke is outlined to a fill:
-  `build::stroke_ink` already lays one line at several widths (per-side strokes), and the profile
-  replaces its constant-width step with an offset whose half-width follows arc length, written by
-  us since i_overlay strokes at one width. An optional profile on `Stroke`, `width` kept as its
-  maximum so `geometry::stroke_expansion` stays conservative; every reader (bounds, hit test,
-  booleans, render, export) then takes the one cached ink path. Lost: an editable width in SVG,
-  CSS borders, and round trips through Penpot and Sketch, which have no profiles. Medium to large.
 - **Vector brushes.** Art and scatter brushes: another shape bent or repeated along the path.
   Nothing exists; the pieces do (kurbo arc length, `mastik-core` `warp.rs` and `distort.rs`). An
   *Apply brush* that bakes the result into paths comes first; a live brush follows, rebuilt when

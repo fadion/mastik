@@ -47,7 +47,7 @@ it as a gap. Open work is in `roadmap.md`, and multiplayer is one of its conside
 
 - **A per-operand boolean cache** — measured, nothing to win (§15 D239).
 - **`Flatten` on a lone non-boolean** other than a mirrored path, which it makes plain — *Outline shape* (`build::outline`) is that verb (§15 D230).
-- **Pressure, tilt, an eraser or a smoothing setting on the pencil** — it makes geometry, not ink; *Simplify path* already smooths after the fact. Pressure is an illustration tool's feature, and winit reports none from a pen on macOS or Linux. Variable width and vector brushes apply to any stroke (`roadmap.md`, *Next*).
+- **Pressure, tilt, an eraser or a smoothing setting on the pencil** — it makes geometry, not ink; *Simplify path* already smooths after the fact. Pressure is an illustration tool's feature, and winit reports none from a pen on macOS or Linux. A width profile varies any stroke's width instead (`core-model.md`), as vector brushes would (`roadmap.md`, *Next*).
 - **Vector networks** — a model change with no half-step, since every reader and export takes a `BezPath`; the shape builder, point snapping and path cutting cover the same needs with plain paths.
 
 ## Effects and paint

@@ -1814,11 +1814,23 @@ fn report_node(
     }
     // `resolved_dashes` keeps a round dot as a zero-length dash, which SVG draws;
     // a butt or square one is written as a dash one width long.
+    // A stroke written as its ink (`outlined`) has no dashes to report.
+    let kind = res.used_kind_of(node);
+    let profiled = |s: &Stroke| s.drawn_profile(kind).is_some();
     let squared_dot = visible_strokes(node.paint()).any(|(_, s)| {
-        s.cap != mastik_core::kurbo::Cap::Round && s.dashes.iter().any(|d| *d <= 0.0)
+        !s.two_caps()
+            && !profiled(s)
+            && s.cap != mastik_core::kurbo::Cap::Round
+            && s.dashes.iter().any(|d| *d <= 0.0)
     });
     if squared_dot {
         report.round_trip("a square-dotted stroke, written as short dashes");
+    }
+    if visible_strokes(node.paint()).any(|(_, s)| s.two_caps()) {
+        report.round_trip("a stroke with two caps, written as a shape");
+    }
+    if visible_strokes(node.paint()).any(|(_, s)| profiled(s)) {
+        report.round_trip("a stroke with a width profile, written as a shape");
     }
     // Square-kernel `feMorphology` (see `shadow_graph`), only if it is in the file:
     // nonzero spread, visible effect, and the `<filter>` written.
@@ -2317,7 +2329,12 @@ fn emit_shape(
         && match strokes.as_slice() {
             [] => true,
             // Outlined, a stroke is an element of its own (`emit_strokes`).
-            _ if defs.style.outline_strokes => false,
+            _ if strokes
+                .iter()
+                .any(|(_, s)| outlined(defs, res.used_kind_of(node), s)) =>
+            {
+                false
+            }
             // A per-side stroke or a fitted multi-subpath dash is several
             // `<path>`s, so neither can ride the shape's own element.
             [(_, s)] => {
@@ -2636,6 +2653,14 @@ fn with_fill_rule(fill: String, node: &Node) -> String {
     }
 }
 
+/// Whether `s` is written as the ink it lays rather than as a stroke: when the
+/// export asks for outlines, when its two ends wear different caps, which one
+/// `stroke-linecap` cannot say, and when its width runs by a profile on a layer
+/// of `kind`, which SVG cannot draw.
+fn outlined(defs: &Defs, kind: &NodeKind, s: &Stroke) -> bool {
+    defs.style.outline_strokes || s.two_caps() || s.drawn_profile(kind).is_some()
+}
+
 /// Every visible stroke of `node`, one after another, inside a group that is already
 /// carrying the transform and the opacity.
 ///
@@ -2660,7 +2685,7 @@ fn emit_strokes(
     for (i, s) in strokes {
         // Outlined, the stroke is the ink it lays filled with its paint, which
         // already holds its sides, dashes and alignment, so nothing below applies.
-        if defs.style.outline_strokes
+        if outlined(defs, res.used_kind_of(node), s)
             && let Some(ink) = shape
                 .as_ref()
                 .and_then(|shape| mastik_core::build::stroke_ink(res.used_kind_of(node), shape, s))
@@ -2864,7 +2889,7 @@ fn emit_marker(
     defs: &Defs,
 ) {
     let m = s.markers();
-    let Some(head) = p.marker.outline(m.size, m.cap, m.join) else {
+    let Some(head) = p.marker.outline(m.size, m.cap_at(p.at_end), m.join) else {
         return;
     };
     // The trimmed end in the marker's own space, which `refX`/`refY` pin to it.

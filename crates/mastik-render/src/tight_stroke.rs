@@ -266,10 +266,13 @@ fn lay_subpath(
     if c.closed {
         return;
     }
-    for (at, d) in [(p[0], p[0] - p[1]), (p[n - 1], p[n - 1] - p[n - 2])] {
+    for (at, d, cap) in [
+        (p[0], p[0] - p[1], paint.cap),
+        (p[n - 1], p[n - 1] - p[n - 2], paint.end_cap),
+    ] {
         let out_dir = d / d.hypot();
         let nv = normal(d) * half;
-        match paint.cap {
+        match cap {
             Cap::Butt => {}
             Cap::Square => {
                 let ahead = out_dir * half;
@@ -310,6 +313,7 @@ mod tests {
             width,
             join,
             cap,
+            end_cap: cap,
             miter_limit: 4.0,
             dashes: Vec::new(),
             dash_offset: 0.0,

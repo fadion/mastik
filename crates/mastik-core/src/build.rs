@@ -2599,7 +2599,37 @@ pub fn stroke_ink(kind: &NodeKind, shape: &kurbo::BezPath, s: &Stroke) -> Option
             laid_paths.push((laid_path, laid));
         }
     };
+    // A profile lays its own pieces along the whole path (`crate::profile`); it
+    // is never laid per side.
+    let profiled: Option<Vec<Vec<[f64; 2]>>> = match s.drawn_profile(kind) {
+        Some(profile) => {
+            let path = crate::geometry::stroked_path(kind, shape, s.width, markers);
+            let dashes = crate::geometry::resolved_dashes(s, s.width, &path);
+            let laid = crate::profile::Laid {
+                width: if align == StrokeAlign::Center {
+                    s.width
+                } else {
+                    s.width * 2.0
+                },
+                profile,
+                caps: s.caps(),
+                join: s.join,
+                miter_limit: s.miter_limit,
+                dashes: &dashes,
+                dash_offset: s.dash_offset,
+            };
+            let ink = crate::profile::ink(&path, &laid, OFFSET_FLATTEN.min(s.width / 32.0));
+            Some(
+                crate::geometry::subpaths(&ink)
+                    .iter()
+                    .filter_map(|sub| polyline(sub, Flatten::chords(OFFSET_FLATTEN), 3))
+                    .collect(),
+            )
+        }
+        None => None,
+    };
     match crate::geometry::effective_sides(kind, s).per_side(s.width) {
+        _ if profiled.is_some() => {}
         None => lay(
             &crate::geometry::stroked_path(kind, shape, s.width, markers),
             s.width,
@@ -2627,7 +2657,7 @@ pub fn stroke_ink(kind: &NodeKind, shape: &kurbo::BezPath, s: &Stroke) -> Option
         .unwrap_or_default();
     // i_overlay asserts on bounds it cannot scale, so a panic draws nothing.
     let shapes = std::panic::catch_unwind(|| {
-        let mut band: Vec<Vec<[f64; 2]>> = Vec::new();
+        let mut band: Vec<Vec<[f64; 2]>> = profiled.unwrap_or_default();
         for (path, width) in &laid_paths {
             band.extend(stroke_polygons(path, width / 2.0, s));
         }
@@ -2683,8 +2713,8 @@ fn stroke_polygons(path: &kurbo::BezPath, h: f64, s: &Stroke) -> Vec<Vec<[f64; 2
         _ => LineJoin::Bevel,
     };
     let style = StrokeStyle::new(2.0 * h)
-        .start_cap(cap(s.cap))
-        .end_cap(cap(s.cap))
+        .start_cap(cap(s.caps().0))
+        .end_cap(cap(s.caps().1))
         .line_join(join);
     let mut out: Vec<Vec<[f64; 2]>> = Vec::new();
     for sub in crate::geometry::subpaths(path) {

@@ -263,7 +263,8 @@ impl ScenePainter for GpuScenePainter<'_> {
     fn stroke_path(&mut self, transform: Affine, path: &BezPath, stroke: &StrokePaint<'_>) {
         let mut k = Stroke::new(stroke.width)
             .with_join(stroke.join)
-            .with_caps(stroke.cap)
+            .with_start_cap(stroke.cap)
+            .with_end_cap(stroke.end_cap)
             .with_miter_limit(stroke.miter_limit);
         if !stroke.dashes.is_empty() {
             k = k.with_dashes(stroke.dash_offset, stroke.dashes.iter().copied());

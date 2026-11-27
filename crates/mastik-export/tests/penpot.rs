@@ -317,6 +317,37 @@ fn line_ends_go_out_as_caps_and_read_back() {
     assert_eq!(ends("Bars").1, Marker::Circle);
 }
 
+/// Two different caps go out as Penpot's two cap slots and read back as they
+/// were.
+/// flip: the writer setting both slots from the start cap → fails at the read.
+#[test]
+fn two_caps_go_out_and_read_back() {
+    use mastik_core::kurbo::Cap;
+    use mastik_core::{Operation, Transaction};
+    let mut f = rich::line_ends();
+    let id = named(&f.doc, "Arrows");
+    let mut strokes = f.doc.get(id).unwrap().paint().strokes.clone();
+    let st = &mut strokes[0].value;
+    (st.start, st.end) = Default::default();
+    (st.cap, st.end_cap) = (Cap::Round, Some(Cap::Square));
+    f.doc
+        .apply(&Transaction(vec![Operation::SetStrokes { id, strokes }]))
+        .expect("the caps");
+    f.res = mastik_core::Resolved::rebuild(&f.doc);
+    let out = mastik_export::penpot::export(&f.doc, &f.res, "Lines").unwrap();
+    let mut ids = IdSource::new(0x9F);
+    let back = mastik_core::penpot_in::read(&mut Zip::of(out.bytes), &mut ids, &mut Pictures)
+        .expect("read back");
+    let st = &back
+        .doc
+        .get(named(&back.doc, "Arrows"))
+        .unwrap()
+        .paint()
+        .strokes[0]
+        .value;
+    assert_eq!(st.caps(), (Cap::Round, Cap::Square));
+}
+
 /// An Oklab ramp, which Penpot mixes in sRGB, goes as the dense stops that draw
 /// it.
 /// flip: `gradient` writing the ramp's own stops → fails.

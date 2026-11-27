@@ -287,8 +287,9 @@ exceptions as the mirror's leave an edit as it is.
   disarms the bias one rung above the points.
 - `Shift+D` (`canvas::reverse_subpaths`) reverses the runs the selected points are on, or every run;
   also works on a selected path outside point editing (non-zero fill makes winding matter). On a
-  one-run path it swaps each stroke's start and end markers in the same step, so an arrow still
-  points where it did.
+  one-run path it swaps each stroke's start and end markers and caps in the same step
+  (`Stroke::swapped_ends`) and mirrors its width profile (`WidthProfile::reversed`), so an arrow
+  still points where it did and a taper stays at its end.
 - **Join paths** (layer menu, `canvas::join_layers`; subject `join_layers_subject`) joins two path
   layers: exactly two `NodeKind::Path` selected, both unlocked, each with an open subpath of two or
   more anchors (a line-tool `Line` is not offered). The key layer, else the first selected, is kept

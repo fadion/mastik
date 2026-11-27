@@ -133,6 +133,15 @@ pub enum Drag {
         grab: crate::gradient::Grab,
         from: Box<mastik_core::Effect>,
     },
+    /// Dragging a width handle of stroke `index` of `id`, a profiled stroke whose
+    /// popover is open (`crate::width_handles`). Each frame re-derives from
+    /// `from`, the stroke as stored at the press.
+    WidthPoint {
+        id: NodeId,
+        index: usize,
+        grab: crate::width_handles::Grab,
+        from: Box<mastik_core::Stroke>,
+    },
     /// Dragging a laid container's gap or padding band: `band` is what was
     /// grabbed, `anchor` the press in the container's local space, and `base` the
     /// value the band drew there — the delta along the band's axis is added to it.

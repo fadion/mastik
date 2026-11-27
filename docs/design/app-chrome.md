@@ -217,6 +217,7 @@ mastik-app/src/
 ├─ cursor.rs        the canvas cursors, drawn and rasterized (tools.md)
 ├─ eyedropper.rs    the eyedropper: arming, the frozen window, the pending pick, the write, the loupe (§9.4)
 ├─ gradient.rs      the edited gradient's canvas handles: marks, press, click, right-click, drag, drawing (§9.4)
+├─ width_handles.rs the edited stroke's width profile handles on the path: marks, press, click, right-click, drag, drawing (tools.md)
 ├─ grid.rs          pixel grid (one-world-unit lattice)
 ├─ input.rs         Mode + Action: mode-aware keyboard routing
 ├─ measure.rs       the measure pill's padding; the geometry (Axis + Measure, Alt-hover measure and spacing-snap gaps) is mastik_core::measure, shared with the exported player's inspect mode

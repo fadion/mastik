@@ -695,14 +695,16 @@ impl Writer<'_> {
         if st.dash_offset != 0.0 && !st.dashes.is_empty() {
             self.approximate("Dash offsets");
         }
-        let cap = match st.cap {
-            mastik_core::kurbo::Cap::Round => Some("round"),
-            mastik_core::kurbo::Cap::Square => Some("square"),
-            mastik_core::kurbo::Cap::Butt => None,
-        };
-        if let Some(cap) = cap {
-            v["strokeCapStart"] = json!(cap);
-            v["strokeCapEnd"] = json!(cap);
+        if st.profile.is_some() {
+            self.approximate("Width profiles, drawn at their widest");
+        }
+        let (start_cap, end_cap) = st.caps();
+        for (key, cap) in [("strokeCapStart", start_cap), ("strokeCapEnd", end_cap)] {
+            match cap {
+                mastik_core::kurbo::Cap::Round => v[key] = json!("round"),
+                mastik_core::kurbo::Cap::Square => v[key] = json!("square"),
+                mastik_core::kurbo::Cap::Butt => {}
+            }
         }
         if st.join != mastik_core::kurbo::Join::Miter {
             self.approximate("Round and bevel stroke joins, drawn mitred");

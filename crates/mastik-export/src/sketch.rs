@@ -1000,6 +1000,12 @@ impl Writer<'_> {
         {
             self.approximate("Borders with different dashes, caps or joins, drawn as the first");
         }
+        if all.iter().any(|s| s.two_caps()) {
+            self.approximate("Different caps at each end, drawn as the start's");
+        }
+        if all.iter().any(|s| s.profile.is_some()) {
+            self.approximate("Width profiles, drawn at their widest");
+        }
         if first.dash_offset != 0.0 && !first.dashes.is_empty() {
             self.approximate("Dash offsets");
         }

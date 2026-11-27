@@ -182,10 +182,12 @@ impl MastikApp {
         Some((id, index, effect.value.clone()))
     }
 
-    /// Whether gradient or ramp handles are on the canvas, which the selection's
-    /// own handles step aside for.
+    /// Whether gradient, ramp or width handles (`crate::width_handles`) are on
+    /// the canvas, which the selection's own handles step aside for.
     pub(crate) fn gradient_handles_up(&self) -> bool {
-        self.edited_gradient().is_some() || self.edited_ramp().is_some()
+        self.edited_gradient().is_some()
+            || self.edited_ramp().is_some()
+            || self.edited_profile().is_some()
     }
 
     /// The handles on screen this frame: the picker's gradient's, else the open

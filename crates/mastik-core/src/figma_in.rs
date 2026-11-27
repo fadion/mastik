@@ -961,6 +961,7 @@ impl Builder<'_> {
                     width_var: None,
                     join,
                     cap,
+                    end_cap: None,
                     dashes: dashes.clone(),
                     dash_offset: 0.0,
                     miter_limit: miter,
@@ -970,6 +971,7 @@ impl Builder<'_> {
                     start: marker,
                     end: marker,
                     marker_size: 1.0,
+                    profile: None,
                     visible: p.get("visible").and_then(Value::as_bool) != Some(false),
                 })
             })

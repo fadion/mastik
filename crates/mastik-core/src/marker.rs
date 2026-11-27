@@ -185,8 +185,11 @@ pub struct Markers {
     pub end: Marker,
     /// [`crate::Stroke::marker_size`].
     pub size: f64,
-    /// The stroke's cap and join, which the open arrow and the bar are drawn with.
+    /// The stroke's start cap and join, which the open arrow and the bar are
+    /// drawn with.
     pub cap: kurbo::Cap,
+    /// The stroke's end cap, which the end's head is drawn with.
+    pub end_cap: kurbo::Cap,
     pub join: kurbo::Join,
 }
 
@@ -197,8 +200,14 @@ impl Markers {
         end: Marker::None,
         size: 1.0,
         cap: kurbo::Cap::Butt,
+        end_cap: kurbo::Cap::Butt,
         join: kurbo::Join::Miter,
     };
+
+    /// The cap of the end a head sits on.
+    pub fn cap_at(&self, at_end: bool) -> kurbo::Cap {
+        if at_end { self.end_cap } else { self.cap }
+    }
 
     /// Whether neither end is marked.
     pub fn is_none(&self) -> bool {
@@ -251,9 +260,9 @@ impl Placed {
     /// The marker's outline for a stroke `width` wide with `markers`, in the
     /// path's own space.
     pub fn ink(&self, width: f64, markers: Markers) -> Option<BezPath> {
-        let mut path = self
-            .marker
-            .outline(markers.size, markers.cap, markers.join)?;
+        let mut path =
+            self.marker
+                .outline(markers.size, markers.cap_at(self.at_end), markers.join)?;
         path.apply_affine(self.transform(width));
         Some(path)
     }
@@ -359,7 +368,9 @@ pub fn placed(shape: &BezPath, width: f64, markers: Markers) -> Vec<Placed> {
     }
     let subs = crate::geometry::subpaths(shape);
     let (first, last) = marked_ends(&subs);
-    let trim = |m: Marker| m.trim(markers.size, markers.cap, markers.join) * width;
+    let trim = |m: Marker, at_end: bool| {
+        m.trim(markers.size, markers.cap_at(at_end), markers.join) * width
+    };
     let mut out = Vec::new();
     let mut place = |i: usize, marker: Marker, at_end: bool| {
         if marker.is_none() {
@@ -371,11 +382,11 @@ pub fn placed(shape: &BezPath, width: f64, markers: Markers) -> Vec<Placed> {
             return;
         }
         let other = match (at_end, first == last) {
-            (true, true) => trim(markers.start),
-            (false, true) => trim(markers.end),
+            (true, true) => trim(markers.start, false),
+            (false, true) => trim(markers.end, true),
             _ => 0.0,
         };
-        let (own, _) = fitted_trims(trim(marker), other, len);
+        let (own, _) = fitted_trims(trim(marker, at_end), other, len);
         let Some(dir) = tangent_out(&segs, at_end) else {
             return;
         };
@@ -423,8 +434,10 @@ pub fn ink(shape: &BezPath, width: f64, markers: Markers) -> Option<BezPath> {
 /// `shape` cut back under the heads that trim ([`Marker::trim`]) at `width`. A
 /// subpath both heads would wholly cover is left out.
 pub fn trimmed(shape: &BezPath, width: f64, markers: Markers) -> Cow<'_, BezPath> {
-    let trim = |m: Marker| m.trim(markers.size, markers.cap, markers.join) * width;
-    let (start, end) = (trim(markers.start), trim(markers.end));
+    let trim = |m: Marker, at_end: bool| {
+        m.trim(markers.size, markers.cap_at(at_end), markers.join) * width
+    };
+    let (start, end) = (trim(markers.start, false), trim(markers.end, true));
     if !width.is_finite() || width <= 0.0 || (start <= 0.0 && end <= 0.0) {
         return Cow::Borrowed(shape);
     }
@@ -580,7 +593,7 @@ mod tests {
             let markers = Markers {
                 end: Marker::Arrow,
                 size: 0.25,
-                cap,
+                end_cap: cap,
                 ..Markers::NONE
             };
             // Two wide: the cap reaches a width's half, 1, past the stroke's end.
@@ -593,6 +606,30 @@ mod tests {
                 assert!((end - (100.0 - 0.75)).abs() < 1e-6, "half the head: {end}");
             }
         }
+    }
+
+    /// Each head trims by its own end's cap: a round start reaches past its tip
+    /// where a butt end does not.
+    /// flip: `Markers::cap_at` answering the start's cap for both → fails at
+    /// "the end".
+    #[test]
+    fn each_head_trims_by_its_own_end_s_cap() {
+        let path = line(Point::new(100.0, 0.0));
+        let markers = Markers {
+            start: Marker::Arrow,
+            end: Marker::Arrow,
+            size: 0.25,
+            cap: kurbo::Cap::Round,
+            end_cap: kurbo::Cap::Butt,
+            ..Markers::NONE
+        };
+        let b = trimmed(&path, 2.0, markers).bounding_box();
+        assert!((b.x1 - (100.0 - 0.75)).abs() < 1e-6, "the end: {}", b.x1);
+        assert!(
+            b.x0 >= 1.0 - 1e-9,
+            "the start keeps its round cap behind: {}",
+            b.x0
+        );
     }
 
     /// A closed outline has no end: nothing is placed and nothing trimmed.

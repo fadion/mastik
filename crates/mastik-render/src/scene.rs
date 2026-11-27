@@ -38,7 +38,10 @@ pub struct StrokePaint<'a> {
     pub framing: Option<Framing>,
     pub width: f64,
     pub join: kurbo::Join,
+    /// The cap at each subpath's and dash's start.
     pub cap: kurbo::Cap,
+    /// The cap at each subpath's and dash's end.
+    pub end_cap: kurbo::Cap,
     /// Mitre limit as a ratio, kurbo's own unit.
     pub miter_limit: f64,
     pub dashes: Vec<f64>,
@@ -537,6 +540,7 @@ impl<P: ScenePainter> OutlinePainter<'_, P> {
             width: 1.0 / scale,
             join: kurbo::Join::Round,
             cap: kurbo::Cap::Butt,
+            end_cap: kurbo::Cap::Butt,
             miter_limit: 4.0,
             dashes: Vec::new(),
             dash_offset: 0.0,
@@ -1051,7 +1055,9 @@ fn snapped_stroke(
         || s.width.is_nan()
         || s.width <= 0.0
         || !s.dashes.is_empty()
-        || s.cap == Cap::Round
+        || s.has_cap(Cap::Round)
+        || s.two_caps()
+        || s.profile.is_some()
     {
         return None;
     }
@@ -1372,6 +1378,7 @@ fn paint_missing<P: ScenePainter>(painter: &mut P, world: Affine, path: &BezPath
         width: m.width,
         join: kurbo::Join::Miter,
         cap: kurbo::Cap::Butt,
+        end_cap: kurbo::Cap::Butt,
         miter_limit: 4.0,
         dashes: Vec::new(),
         dash_offset: 0.0,
@@ -3975,7 +3982,10 @@ fn lay_sides<P: ScenePainter>(
     match geometry::effective_sides(kind, s).per_side(s.width) {
         None => {
             let laid = geometry::stroked_path(kind, shape, s.width, s.markers());
-            lay_dashed(painter, at, &laid, s, s.width, framing, doubled);
+            match s.drawn_profile(kind) {
+                Some(profile) => lay_profiled(painter, at, &laid, s, profile, framing, doubled),
+                None => lay_dashed(painter, at, &laid, s, s.width, framing, doubled),
+            }
         }
         Some(sides) => {
             for (side, width) in sides {
@@ -3986,6 +3996,36 @@ fn lay_sides<P: ScenePainter>(
             }
         }
     }
+}
+
+/// Lay `s`, whose width runs by `profile`, along `path`: no backend strokes a
+/// varying width, so its ink (`mastik_core::profile::ink`) is filled, flattened
+/// through `world` and the painter's [`ScenePainter::flatten_base`] so its facets
+/// stay under a tenth of a device pixel at any zoom. Doubled under an inside or
+/// outside alignment, as an even stroke is.
+fn lay_profiled<P: ScenePainter>(
+    painter: &mut P,
+    (world, base): (Affine, Affine),
+    path: &BezPath,
+    s: &Stroke,
+    profile: &mastik_core::profile::WidthProfile,
+    framing: Option<Framing>,
+    doubled: bool,
+) {
+    let dashes = geometry::resolved_dashes(s, s.width, path);
+    let laid = mastik_core::profile::Laid {
+        width: if doubled { s.width * 2.0 } else { s.width },
+        profile,
+        caps: s.caps(),
+        join: s.join,
+        miter_limit: s.miter_limit,
+        dashes: &dashes,
+        dash_offset: s.dash_offset,
+    };
+    let to_device = painter.flatten_base(base) * world;
+    let tolerance = crate::tight_stroke::tolerance_through(to_device, TOLERANCE);
+    let ink = mastik_core::profile::ink(path, &laid, tolerance);
+    painter.fill_path(world, &ink, s.brush.drawn(), framing, ClipRule::NonZero);
 }
 
 /// Lay `s` along `path` at `width`, its dash pattern resolved against the path and
@@ -4006,7 +4046,8 @@ fn lay_dashed<P: ScenePainter>(
         framing,
         width: laid,
         join: s.join,
-        cap: s.cap,
+        cap: s.caps().0,
+        end_cap: s.caps().1,
         miter_limit: s.miter_limit,
         dashes,
         dash_offset: s.dash_offset,
@@ -4076,7 +4117,7 @@ fn lay_stroke<P: ScenePainter>(
         join: paint.join,
         miter_limit: paint.miter_limit,
         start_cap: paint.cap,
-        end_cap: paint.cap,
+        end_cap: paint.end_cap,
         dash_pattern: paint.dashes.iter().copied().collect(),
         dash_offset: paint.dash_offset,
     };

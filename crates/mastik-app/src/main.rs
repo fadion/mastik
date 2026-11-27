@@ -196,6 +196,7 @@ mod versions;
 mod view;
 mod vision;
 mod warp;
+mod width_handles;
 
 use mastik_core::{ExportScale, ExportText};
 

@@ -1348,15 +1348,18 @@ pub fn resolved_dashes_for(stroke: &Stroke, width: f64, path: &BezPath, dots: Do
         return Vec::new();
     }
     let mut pattern = stroke.dashes.clone();
-    let substitutes = !(dots == Dots::KeepRound && stroke.cap == Cap::Round);
+    // A dot rounds only when both of its caps do.
+    let round = stroke.caps() == (Cap::Round, Cap::Round);
+    let substitutes = !(dots == Dots::KeepRound && round);
     if substitutes {
         // Doubled, every entry of an odd pattern is ink once.
         if pattern.len() % 2 == 1 && pattern.iter().any(|d| *d <= 0.0) {
             pattern.extend_from_within(..);
         }
-        let dot = match stroke.cap {
-            Cap::Round => width * ROUND_DOT_LENGTH,
-            _ => width,
+        let dot = if round {
+            width * ROUND_DOT_LENGTH
+        } else {
+            width
         };
         for [length, gap] in pattern.as_chunks_mut::<2>().0 {
             if *length <= 0.0 {
@@ -1632,7 +1635,8 @@ fn stroke_points(kind: &NodeKind, paint: &Paint, path: &BezPath) -> Option<Rect>
     for s in paint.strokes.iter().filter(|s| s.visible) {
         let reach = effective_sides(kind, s).max_width(s.width) * outward_fraction(kind, s);
         let mitred = s.join == Join::Miter && stroke_join_applies(kind);
-        let square = s.cap == Cap::Square;
+        let square = s.has_cap(Cap::Square);
+        let (start_cap, end_cap) = s.caps();
         if reach <= 0.0 || !(mitred || square) {
             continue;
         }
@@ -1658,10 +1662,13 @@ fn stroke_points(kind: &NodeKind, paint: &Paint, path: &BezPath) -> Option<Rect>
                 }
             }
             if square && !closed {
-                for (at, along) in [
-                    (first.start(), -start_tangent(*first)),
-                    (last.end(), end_tangent(*last)),
-                ] {
+                for (at, along, _) in [
+                    (first.start(), -start_tangent(*first), start_cap),
+                    (last.end(), end_tangent(*last), end_cap),
+                ]
+                .into_iter()
+                .filter(|(_, _, cap)| *cap == Cap::Square)
+                {
                     let Some(t) = unit(along) else {
                         continue;
                     };
@@ -1873,7 +1880,7 @@ pub fn world_ink_of_parts(
         NodeKind::Rect { .. } | NodeKind::Artboard { .. } => {
             for s in paint.strokes.iter().filter(|s| {
                 s.visible
-                    && s.cap == Cap::Square
+                    && s.has_cap(Cap::Square)
                     && (!s.dashes.is_empty() || effective_sides(kind, s) != StrokeSides::All)
             }) {
                 let w = effective_sides(kind, s).max_width(s.width);
@@ -1885,7 +1892,7 @@ pub fn world_ink_of_parts(
         _ if paint
             .strokes
             .iter()
-            .any(|s| s.visible && (s.join == Join::Miter || s.cap == Cap::Square)) =>
+            .any(|s| s.visible && (s.join == Join::Miter || s.has_cap(Cap::Square))) =>
         {
             if let Some(points) = local_path(kind).and_then(|p| stroke_points(kind, paint, &p)) {
                 ink = ink.union(points);

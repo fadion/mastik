@@ -1751,7 +1751,14 @@ pub struct Stroke {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub width_var: Option<crate::variable::VarId>,
     pub join: kurbo::Join,
+    /// The cap at an open outline's start, and at its end too while
+    /// [`Self::end_cap`] is `None`. Dashes wear the start cap where each dash
+    /// starts and the end cap where it ends, as kurbo lays two caps.
     pub cap: kurbo::Cap,
+    /// The end's cap where it differs from the start's; read both through
+    /// [`Self::caps`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_cap: Option<kurbo::Cap>,
     /// The dash pattern, as kurbo and `stroke-dasharray` take it: on, off, on…
     /// Empty is a solid stroke.
     ///
@@ -1799,6 +1806,11 @@ pub struct Stroke {
     /// to `crate::marker::SIZE_RANGE`.
     #[serde(default = "unit_size", skip_serializing_if = "is_unit_size")]
     pub marker_size: f64,
+    /// How the width runs along the path (`crate::profile`); `None` is even.
+    /// [`Self::width`] stays the widest it draws, so every reader that grows a
+    /// box by the width stays conservative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<crate::profile::WidthProfile>,
     pub visible: bool,
 }
 
@@ -2005,11 +2017,12 @@ impl DashStyle {
 }
 
 impl Stroke {
-    /// The width, per-side widths and dashes held to ±[`MAX_STROKE_WIDTH`]. Not
-    /// the dash offset: it is a phase along the pattern, which no value of it
-    /// widens, and a clamp would shift the dashes. Asked after the finite check:
-    /// a clamp passes `NaN` through.
+    /// The width, per-side widths and dashes held to ±[`MAX_STROKE_WIDTH`], and
+    /// the profile to its own ranges. Not the dash offset: it is a phase along
+    /// the pattern, which no value of it widens, and a clamp would shift the
+    /// dashes. Asked after the finite check: a clamp passes `NaN` through.
     pub fn clamp_lengths(&mut self) {
+        self.profile = self.profile.take().and_then(|p| p.clamped());
         let c = |v: &mut f64| *v = v.clamp(-MAX_STROKE_WIDTH, MAX_STROKE_WIDTH);
         c(&mut self.width);
         self.dashes.iter_mut().for_each(c);
@@ -2033,8 +2046,57 @@ impl Stroke {
             end: self.end,
             size: self.marker_size,
             cap: self.cap,
+            end_cap: self.caps().1,
             join: self.join,
         }
+    }
+
+    /// The caps at the start and at the end.
+    pub fn caps(&self) -> (kurbo::Cap, kurbo::Cap) {
+        (self.cap, self.end_cap.unwrap_or(self.cap))
+    }
+
+    /// Whether the two ends wear different caps, which SVG's one
+    /// `stroke-linecap` cannot say.
+    pub fn two_caps(&self) -> bool {
+        let (start, end) = self.caps();
+        start != end
+    }
+
+    /// Whether the two ends wear the same marker and cap, so swapping them
+    /// changes nothing.
+    pub fn ends_alike(&self) -> bool {
+        self.start == self.end && !self.two_caps()
+    }
+
+    /// The stroke with its ends traded: markers and caps both.
+    pub fn swapped_ends(&self) -> Stroke {
+        let (start_cap, end_cap) = self.caps();
+        Stroke {
+            start: self.end,
+            end: self.start,
+            cap: end_cap,
+            end_cap: (start_cap != end_cap).then_some(start_cap),
+            ..self.clone()
+        }
+    }
+
+    /// Whether, on a layer of `kind`, this stroke is laid side by side rather
+    /// than along the whole outline.
+    pub fn sides_apply(&self, kind: &NodeKind) -> bool {
+        !crate::geometry::effective_sides(kind, self).is_all()
+    }
+
+    /// The profile this stroke draws with on a layer of `kind`: a stroke laid
+    /// side by side draws even.
+    pub fn drawn_profile(&self, kind: &NodeKind) -> Option<&crate::profile::WidthProfile> {
+        self.profile.as_ref().filter(|_| !self.sides_apply(kind))
+    }
+
+    /// Whether either end wears `cap`.
+    pub fn has_cap(&self, cap: kurbo::Cap) -> bool {
+        let (start, end) = self.caps();
+        start == cap || end == cap
     }
 
     /// Which of the panel's four dash cells this stroke's pattern is.
@@ -2075,6 +2137,7 @@ impl Default for Stroke {
             width_var: None,
             join: kurbo::Join::Miter,
             cap: kurbo::Cap::Butt,
+            end_cap: None,
             dashes: Vec::new(),
             dash_offset: 0.0,
             align: StrokeAlign::default(),
@@ -2084,6 +2147,7 @@ impl Default for Stroke {
             start: crate::marker::Marker::None,
             end: crate::marker::Marker::None,
             marker_size: unit_size(),
+            profile: None,
             visible: true,
         }
     }

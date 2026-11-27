@@ -5260,6 +5260,71 @@ fn a_lines_heads_export_as_markers() {
     );
 }
 
+/// A stroke whose ends wear different caps, and one whose width runs by a
+/// profile, have no `stroke-linecap` or SVG stroke to say them: each is written
+/// as its ink, a filled path, and reported.
+/// flip: `outlined` without `two_caps` → fails at "two caps: no stroke".
+#[test]
+fn two_caps_and_a_profile_export_as_ink() {
+    use mastik_core::kurbo::Cap;
+    use mastik_core::{NodeKind, Stroke};
+    for (name, stroke) in [
+        (
+            "two caps",
+            Stroke {
+                width: 4.0,
+                cap: Cap::Round,
+                end_cap: Some(Cap::Butt),
+                ..Default::default()
+            },
+        ),
+        (
+            "a profile",
+            Stroke {
+                width: 4.0,
+                profile: Some(mastik_core::profile::Preset::TaperBoth.profile()),
+                ..Default::default()
+            },
+        ),
+    ] {
+        let mut f = common::fixture();
+        let line = f
+            .doc
+            .node_ids()
+            .find(|id| matches!(f.doc.get(*id).unwrap().kind(), NodeKind::Line { .. }))
+            .expect("the fixture's line");
+        f.doc
+            .apply(&Transaction(vec![Operation::SetStrokes {
+                id: line,
+                strokes: keyed_by_position([Stroke {
+                    brush: mastik_core::peniko::Brush::Solid(mastik_core::peniko::Color::BLACK)
+                        .into(),
+                    ..stroke
+                }]),
+            }]))
+            .expect("the stroke");
+        f.res = Resolved::rebuild(&f.doc);
+        let out = mastik_export::svg::svg_of_reported(&f.doc, &f.res, &[line]);
+        assert!(
+            !out.svg.contains("stroke-width"),
+            "{name}: no stroke\n{}",
+            out.svg
+        );
+        assert!(
+            out.svg.contains(r##"fill="#000000""##),
+            "{name}: the ink\n{}",
+            out.svg
+        );
+        assert!(
+            out.round_trip
+                .iter()
+                .any(|s| s.contains("written as a shape")),
+            "{name}: reported {:?}",
+            out.round_trip
+        );
+    }
+}
+
 /// A path whose first subpath is shorter than its start arrow's trim loses that
 /// subpath from the stroke, so `marker-start` would land on the next one's
 /// start; the head is written as a filled path at the outline's own start
