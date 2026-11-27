@@ -70,6 +70,15 @@ difference *is* the override.
 - A bound field compares its **binding**, not its resolved value (§5.3f). A card's style likewise: a
   copy on the main's style is no override; another style or detached is, and the reset writes the
   main's binding beside its list.
+- **A live brush link compares in the source's terms and lands in the copy's.** A brushed path whose
+  brush lies in the same main links, in each instance, to that instance's copy of the brush, so it is
+  no override. `live_brush::link_at_source` names a brush in the copy's own instance by what it is a
+  copy of; `link_at_copy` is the inverse (`propagate::counterpart` under `component::instance_root`;
+  a brush outside the instance stays as named); `brush_op_at` applies either to a `SetBrush`.
+  Propagation, `untouched` and `variant::carry` compare in the source's terms and the follow and the
+  carry write the instance's brush; `reset::overrides` reads the source's link as the copy's, so the
+  reset names the instance's brush; a push names the main's. Limit: a variant switch whose new brush
+  counterpart the same transaction creates names the variant main's brush, which still draws.
 - **An instance root's transform is never linked** — it is where the instance sits. Precisely: the
   transform of a node whose source is a component root, so a nested copy inside an outer main still
   passes its place within that main to the outer instances. Every other root field, size included,
@@ -93,7 +102,7 @@ copies at every depth through the reverse link map, each level compared against 
   op writing its node alone.
 - `propagate::mode`, wildcard-free, picks the comparison:
   - **whole** — transform, geometry, text with spans, the span ops, name, visibility, opacity, blend mode, pivot,
-    clip, fill in exports, mask, mask mode, mask inversion, fill rule, a frame's mode set (`SetModes`, one field for every collection), its width queries (`SetQueries`, likewise; `reset::state_ops` writes them back), the variable bindings (`SetCornerVars`,
+    clip, fill in exports, mask, mask mode, mask inversion, fill rule, a live brush link, a frame's mode set (`SetModes`, one field for every collection), its width queries (`SetQueries`, likewise; `reset::state_ops` writes them back), the variable bindings (`SetCornerVars`,
     `SetSpacingVars`, `SetVisibleVar`, `SetSizeVars`, `SetOpacityVar`) and the card
     styles (`SetFillStyle`, `SetStrokeStyle`, `SetEffectsStyle`, `SetTypeStyle`, `SetLayoutStyle`);
   - **fields** — text/paragraph/block style, insets, display, layout item, a layer's prototype
@@ -200,6 +209,11 @@ link map:
   recursively, no local additions; a deleted counterpart is a lost child for its own copies.
   `untouched` destructures `Node` with no `..`, so a new field does not build until its author says
   whether a copy differing by it is touched.
+- **A lost counterpart that a staying layer draws with is kept**: a live brush link never names
+  nothing, so a counterpart holding a brush that a layer which stays still links to (an instance's
+  path with options of its own, after the main's brush and its user's bake) is spared, to a fixed
+  point, and stays as its instance's own layer, its link cut by `component::settle_links` as for any
+  changed counterpart (`deleting_a_mains_brush_leaves_no_instance_linked_to_nothing`).
 - Reorders go down the copy chain; the pass lays every linked child of each copy in the main's new
   order in the linked slots.
 - No arm acts on a copy the edit itself deleted. No gained child is copied into a copy holding a
@@ -940,7 +954,8 @@ override. Kit mains not yet vendored are offered to a swap only (`kit::swap_offe
   `draw_key_outline` (`draw_set_plus`).
 - **Layers**: the badge slot shows *N variants* on a collapsed set, `icon::PROPERTY_BOUND` on a layer bound
   to a property of the owner above; priority mask → set count → bound → element tag → a brushed
-  layer's brush name → a brush's *brush · N* (its users, from `Resolved::brushed`) → a list's rows
+  layer's brush name → a brush's *brush · N* (its users, from `Resolved::brushed`; tip *The brush
+  of N layers*) → a list's rows
   (`lists.md`) → frame size / subtract base. A variant row is
   named by its values and wears the filled hexagon.
 - Values are renamed, moved and deleted from a chip's popup, never edited in place or dragged;

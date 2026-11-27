@@ -38,12 +38,6 @@ place, saved in the same shape so existing files load. It is matched in about 60
   on the GIF clock; the exported player plays it through a `<video>` element whose frames reach
   the WebAssembly drawing; still exports take a poster frame. Check H.264 patent coverage first:
   Cisco's licence covers its prebuilt binary, not a build from source. Large.
-- **Live brush finish** (`app-booleans.md`, *Apply brush*). Small.
-  - A paste that baked a brush says so: *Pasted · ‹brush› isn't in this document, so its brush
-    was baked*; the paste doors keep their own words today.
-  - *Edit brush* over several brushed layers shows the options they differ in as *Mixed*; today it
-    shows the first layer's.
-  - The layers tree's *brush · N* badge carries a hover tip, *The brush of N layers*.
 - **Mesh gradients.** Mesh lines and colour points, blended across each patch (Coons patches). A
   mesh mode in the canvas's gradient editor (`gradient.rs`): click on a line to add one through the point,
   drag points and handles, pick a point's colour. peniko has linear, radial and sweep only, so the

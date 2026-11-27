@@ -515,7 +515,8 @@ path, the brush or the options change. *Bake into paths* instead computes it onc
   options (`apply_brush::Mode`), and whether the brush shows (hidden, the path's strokes draw
   again). It is written by `Operation::SetBrush`, refused (`OpError::BrushForKind`) on a kind
   `runs_along` refuses and for a link to the layer itself. Copies of a main follow it, a copy's
-  own is an override, and reset puts back the main's.
+  own is an override, and reset puts back the main's; a brush inside the same main is read as each
+  instance's own copy of it (`components.md`, *Overrides are found by comparing values*).
 - **What draws** (`apply_brush::ink`): the bake's geometry kept in the path layer's own space, so
   moving the layer moves it. An `Ink` is a path, the places it is drawn at (the identity for Art,
   one map per copy for Scatter, whose path is the brush's own outline), the factor on the brush's
@@ -533,7 +534,10 @@ path, the brush or the options change. *Bake into paths* instead computes it onc
   layers it brushed*. A copy carries, beside each subtree, a twin with every brush whose brush
   stayed behind baked (`live_brush::baked_copies`); a paste into a document without the brush
   takes the twin (`live_brush::fitted`, `MastikApp::clip_here`), one into the same document keeps
-  the link, remapped when the brush came along.
+  the link, remapped when the brush came along. `fitted` answers the names of the brushes it baked
+  (read off the *Brushed · ‹brush›* groups the twins hold and their originals do not), and the paste
+  doors and *Replace with clipboard* append to their sentence *· ‹brush› isn't in this document, so
+  its brush was baked* (*· N brushes aren't in this document, so they were baked*).
 - **The bake** (`live_brush::bake`): the *Brushed · ‹brush›* group in the path's place, the path
   kept at the group's bottom, shown under its own name with its strokes and link dropped, while
   it has a visible fill, and deleted otherwise. A brush that draws nothing just drops the link.
@@ -550,8 +554,9 @@ said when it commits) or the lock sentence; otherwise the palette's *Not availab
 *Select a path, and the shape to run along it* (`KIND_VERBS`). Whenever the selection holds a
 brushed layer (`LayerState::brushed`) three rows follow it, group Structure, no chords, dimmed only
 by the lock: *Edit brush…* (`Item::EditBrush`, glyph `brush`; aliases brush options, live brush),
-*Bake brush* (`stack-simple`, as *Detach list*; expand brush, brush to paths) and *Remove brush*
-(`link-break`, as *Detach instance*; unlink brush, clear brush). Their palette sentence is *Select
+*Bake brush* (`brush-bake`, the brush's outline with a filled path point at each tip, the outline
+view's language; expand brush, brush to paths) and *Remove brush* (`brush-slash`, the brush struck
+through as `eye-slash` is `eye`; unlink brush, clear brush). Their palette sentence is *Select
 a layer drawn with a brush*.
 
 - **The card** sits in the inspector's popover lane as Blend's does, and holds it alone: opening
@@ -591,6 +596,16 @@ a layer drawn with a brush*.
   from the first one's link; *Done* (`Enter`) writes the card's options to every one of them as
   one *Edit brush* step, each keeping its own brush (unless *Pick a shape…* named another,
   `BrushCard::relinked`) and whether it shows. It has no bake switches.
+- **What the layers differ in reads *Mixed*** (`apply_brush::Mixed`): the brush (the dropdown
+  reads *Shape · Mixed* until *Pick a shape…* names one); the kind (the *Art | Scatter* segment
+  shows `ui::segment_mixed`'s dash with nothing raised, and a `ui::selection_note`, *These layers'
+  brushes are Art and Scatter; pick one to set them all*, stands in place of the option rows); and
+  each option, compared among the layers of its kind (number fields read `ui::MIXED_WORD`, *Stretch*
+  and *Turn* show the dash, *Flip across* is `ui::switch_row_mixed` and a click turns it on).
+  Untouched, a mixed option keeps each layer's own value (`BrushCard::mode_for`); setting it
+  (typing, a scrub, a click) writes it to every layer. A kind picked over a mixed one shows each
+  kind's fields from the first layer of that kind. A right-click that cancels a scrub puts back the
+  mixed flags with the numbers.
   The Brush dropdown dims *Swap brush and path* (*A live brush's path is its own layer*) and adds,
   under a rule, *Bake brush* and *Remove brush*. Its doors are the layer menu and the inspector's
   brush row (`inspector.md`, *Fill and Stroke*).
