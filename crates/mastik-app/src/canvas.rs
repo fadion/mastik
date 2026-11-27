@@ -2479,8 +2479,9 @@ impl MastikApp {
         } else if self.dropper_armed().is_some() {
             // The loupe is the cursor; its ringed middle pixel is the hotspot.
             (egui::CursorIcon::None, None)
-        } else if self.blend_picking() {
-            // *Blend shapes* waits for a path: a click takes one.
+        } else if self.blend_picking() || self.brush_picking() {
+            // *Blend shapes* waits for a path, *Apply brush* for a shape: a click
+            // takes one.
             (egui::CursorIcon::Crosshair, None)
         } else if self.text.is_some()
             && (resp.dragged() || pointer.is_some_and(|p| self.over_edited_text(p, rect, ppp)))
@@ -2959,6 +2960,17 @@ impl MastikApp {
             {
                 let world = self.to_world(p, rect, ppp);
                 self.blend_pick_at(world);
+            }
+            return;
+        }
+
+        // *Apply brush* waiting for a shape owns presses the same way.
+        if self.brush_picking() && !panning_armed && !matches!(self.drag, Drag::Pan) {
+            if resp.clicked()
+                && let Some(p) = resp.interact_pointer_pos()
+            {
+                let world = self.to_world(p, rect, ppp);
+                self.brush_pick_at(world);
             }
             return;
         }
@@ -9058,8 +9070,9 @@ impl MastikApp {
         ppp: f32,
         resp: &egui::Response,
     ) {
-        // Waiting for a path, only a path rings (`draw_blend_spine`).
-        if !self.hover_chrome_live() || self.blend_picking() {
+        // Waiting for a path or a brush, only what the click would take rings
+        // (`draw_blend_spine`, `draw_brush_path`).
+        if !self.hover_chrome_live() || self.blend_picking() || self.brush_picking() {
             return;
         }
         if self.tool == Tool::Text {
@@ -9116,6 +9129,34 @@ impl MastikApp {
             && let Some(id) = self.blend_spine_at(self.to_world(p, rect, ppp))
         {
             let stroke = egui::Stroke::new(3.0, color::accent());
+            self.stroke_outlines(painter, id, rect, ppp, stroke, self.outline_view(stroke));
+        }
+    }
+
+    /// The path the open *Apply brush* card runs along, dashed in the selection
+    /// blue, and while it waits for a shape, the shape under the pointer it would
+    /// take, ringed as the hover outline rings a layer.
+    fn draw_brush_path(
+        &self,
+        painter: &egui::Painter,
+        rect: egui::Rect,
+        ppp: f32,
+        resp: &egui::Response,
+    ) {
+        if let Some(id) = self.brush.shown_path()
+            && let Some(path) = self.session.resolved.local_path(&self.session.doc, id)
+            && let Some(world) = self.session.preview_world_transform(id)
+        {
+            let stroke = egui::Stroke::new(1.5, color::SELECT);
+            for sub in self.flatten_to_screen(&(world * path), rect, ppp) {
+                painter.extend(sub.dashed(stroke, 6.0, 4.0));
+            }
+        }
+        if self.brush_picking()
+            && let Some(p) = resp.hover_pos()
+            && let Some(id) = self.brush_shape_at(self.to_world(p, rect, ppp))
+        {
+            let stroke = egui::Stroke::new(3.0, color::SELECT);
             self.stroke_outlines(painter, id, rect, ppp, stroke, self.outline_view(stroke));
         }
     }
@@ -11585,6 +11626,7 @@ impl MastikApp {
         self.draw_shape_handles(painter, rect, ppp);
         self.draw_warp(painter, rect, ppp);
         self.draw_blend_spine(painter, rect, ppp, resp);
+        self.draw_brush_path(painter, rect, ppp, resp);
 
         // Before the hover outline, which rings the layer whose link dots show.
         self.note_link_hover(ui, rect, ppp, resp);

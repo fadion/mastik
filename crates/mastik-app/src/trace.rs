@@ -581,7 +581,7 @@ fn unread(card: &TraceCard) -> &'static str {
 }
 
 /// A percent field's number: whole, with a percent sign.
-fn percent(d: egui::DragValue<'_>) -> egui::DragValue<'_> {
+pub(crate) fn percent(d: egui::DragValue<'_>) -> egui::DragValue<'_> {
     d.custom_formatter(|v, _| format!("{v:.0}%"))
 }
 

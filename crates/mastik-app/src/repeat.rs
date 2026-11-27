@@ -228,6 +228,7 @@ impl MastikApp {
         // One card in the popover lane at a time.
         self.close_inspector_popovers();
         self.close_blend();
+        self.close_brush();
         self.close_warp();
         if self.repeat.gaps.is_none() {
             let roots = build::outermost(&self.session.doc, self.session.selection.ids());
@@ -843,7 +844,7 @@ fn body_height(ui: &egui::Ui) -> f32 {
 
 /// Two labelled fields side by side at the card's column gap: `add` draws the
 /// left one, then the right.
-fn pair(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui, bool)) {
+pub(crate) fn pair(ui: &mut egui::Ui, mut add: impl FnMut(&mut egui::Ui, bool)) {
     let fw = (ui.available_width() - ui::CARD_COL_GAP) / 2.0;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;

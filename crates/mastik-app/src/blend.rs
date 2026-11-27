@@ -114,6 +114,7 @@ impl MastikApp {
         // One card in the popover lane at a time.
         self.close_inspector_popovers();
         self.close_repeat();
+        self.close_brush();
         self.close_warp();
         self.blend.open = true;
         self.blend.picking = false;

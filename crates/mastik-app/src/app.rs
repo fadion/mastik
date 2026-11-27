@@ -190,6 +190,8 @@ pub(crate) struct InFlight {
     pub(crate) repeat_scrub: Option<crate::repeat::Numbers>,
     /// *Blend shapes…*'s step count as it was when its scrub began, likewise.
     pub(crate) blend_scrub: Option<f64>,
+    /// *Apply brush…*'s numbers as they were when a scrub of one began, likewise.
+    pub(crate) brush_scrub: Option<crate::apply_brush::Numbers>,
     /// The warp card's bend as it was when its scrub began, likewise.
     pub(crate) warp_scrub: Option<f64>,
     /// The trace card's numbers as they were when a scrub of one began, likewise.
@@ -310,6 +312,13 @@ mod in_flight_tests {
                 "blend_scrub",
                 InFlight {
                     blend_scrub: Some(5.0),
+                    ..Default::default()
+                },
+            ),
+            (
+                "brush_scrub",
+                InFlight {
+                    brush_scrub: Some(Default::default()),
                     ..Default::default()
                 },
             ),
@@ -1319,6 +1328,8 @@ pub struct MastikApp {
     pub(crate) repeat: crate::repeat::RepeatCard,
     /// *Blend shapes…*'s card (`crate::blend`).
     pub(crate) blend: crate::blend::BlendCard,
+    /// *Apply brush…*'s card (`crate::apply_brush`).
+    pub(crate) brush: crate::apply_brush::BrushCard,
     /// *Warp…*'s envelope while it is open (`crate::warp`).
     pub(crate) warp: Option<crate::warp::WarpSession>,
     /// *Trace image…*'s card while it is open (`crate::trace`).
@@ -2123,6 +2134,7 @@ impl MastikApp {
             coverage_cache: Default::default(),
             repeat: Default::default(),
             blend: Default::default(),
+            brush: Default::default(),
             warp: None,
             trace: None,
             mirror_open: false,
@@ -2750,6 +2762,7 @@ impl MastikApp {
         self.assistant_pass(&ctx);
         self.repeat_ui(&ctx);
         self.blend_ui(&ctx);
+        self.brush_ui(&ctx);
         // Unguarded: a prototype plays on over the canvas in focus mode.
         self.player_ui(&ctx);
         self.prototype_export_ui(&ctx, canvas);
@@ -3058,6 +3071,7 @@ impl MastikApp {
             // The pen reads Enter itself in `pen_input`.
             Action::Enter if self.repeat.open => self.commit_repeat(),
             Action::Enter if self.blend.open => self.commit_blend(),
+            Action::Enter if self.brush.open => self.commit_brush(),
             Action::Enter if self.warp.is_some() => self.commit_warp(),
             Action::Enter if self.pen.is_some() => {}
             Action::Enter => self.enter_action(),
@@ -3379,6 +3393,7 @@ impl MastikApp {
         self.in_flight.rename_scrub = None;
         self.in_flight.repeat_scrub = None;
         self.in_flight.blend_scrub = None;
+        self.in_flight.brush_scrub = None;
         self.in_flight.warp_scrub = None;
         self.in_flight.trace_scrub = None;
         self.in_flight.cleanup_scrub = None;
@@ -3413,6 +3428,7 @@ impl MastikApp {
         // right-click must still open its menu.
         let standing = self.repeat_preview_standing()
             || self.blend_preview_standing()
+            || self.brush_preview_standing()
             || self.warp_preview_standing()
             || self.cleanup_preview_standing()
             || self.distort_preview_standing();
@@ -3525,6 +3541,9 @@ impl MastikApp {
         if let Some(steps) = self.in_flight.blend_scrub.take() {
             self.blend.restore_scrub(steps);
         }
+        if let Some(numbers) = self.in_flight.brush_scrub.take() {
+            self.brush.restore_scrub(numbers);
+        }
         if let Some(bend) = self.in_flight.warp_scrub.take() {
             self.restore_warp_bend(bend);
         }
@@ -3634,6 +3653,10 @@ impl MastikApp {
             // Back to the card, which the next press closes.
         } else if self.blend.open {
             self.close_blend();
+        } else if self.cancel_brush_pick() {
+            // Back to the card, which the next press closes.
+        } else if self.brush.open {
+            self.close_brush();
         } else if self.warp.is_some() {
             self.close_warp();
         } else if self.mirror_open {
@@ -7030,6 +7053,7 @@ impl MastikApp {
         // Their previews are of the document leaving.
         self.close_repeat();
         self.close_blend();
+        self.close_brush();
         self.text = None;
         self.mode = Mode::Normal;
         self.name_edit = None;
@@ -9953,6 +9977,7 @@ impl MastikApp {
         self.inspector_popover_open()
             || self.repeat.open
             || self.blend.open
+            || self.brush.open
             || self.edited_image().is_some()
     }
 

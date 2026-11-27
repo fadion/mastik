@@ -1841,6 +1841,36 @@ fn sweep_on(theme: Theme) {
     }
     let found = opened(&ctx, &mut app, |_, a| a.open_blend());
     check("blend shapes", app, found);
+    // *Apply brush…* with the second box as the brush along the first, in each
+    // mode: its dropdown, segments, fields, switches and foot.
+    for (scatter, name) in [(false, "apply brush art"), (true, "apply brush scatter")] {
+        let mut app = with_a_rect(&ctx);
+        {
+            let a = &mut app;
+            let page = a.session.doc.first_page();
+            let first = a.session.doc.get(page).unwrap().children()[0];
+            let second = a.session.ids.mint();
+            assert!(a.session.commit(Transaction(vec![Operation::CreateNode {
+                id: second,
+                parent: page,
+                index: 1,
+                kind: NodeKind::Rect {
+                    size: Size::new(40.0, 20.0),
+                    corner_radii: Default::default(),
+                    corner_smoothing: 0.0,
+                },
+                transform: Some(Affine::translate((300.0, 0.0))),
+                name: None,
+            }])));
+            a.session.selection.set(vec![first, second]);
+        }
+        let found = opened(&ctx, &mut app, |_, a| {
+            a.open_brush();
+            a.brush.scatter = scatter;
+        });
+        assert!(app.brush.open, "fixture: the card opened ({name})");
+        check(name, app, found);
+    }
     // *Warp…* on the box with a preset picked: the bend card's field and segments.
     let mut app = with_a_rect(&ctx);
     {

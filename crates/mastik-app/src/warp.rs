@@ -118,6 +118,7 @@ impl MastikApp {
         self.close_inspector_popovers();
         self.close_repeat();
         self.close_blend();
+        self.close_brush();
         self.warp = Some(WarpSession {
             selection,
             revision: self.session.revision(),

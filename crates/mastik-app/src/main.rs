@@ -88,6 +88,7 @@
 
 mod again;
 mod app;
+mod apply_brush;
 mod assets;
 mod assistant;
 mod atomic;

@@ -1366,6 +1366,9 @@ pub mod icon {
     /// *Curvature combs*: an arch with three teeth on its normals, their tips
     /// joined.
     pub const COMB: &str = "\u{f09b}";
+    /// *Apply brush…*: a brushstroke, a swoosh pointed at both ends and full in
+    /// the middle. Not [`WARP`], whose arch is an envelope.
+    pub const BRUSH: &str = "\u{f09c}";
     /// The **glass** effect's row glyph: a rounded pane with a highlight arc in
     /// its top-left corner. Not [`SQUARE_DOTS`], the background blur it extends.
     pub const GLASS: &str = "\u{f099}";
@@ -1695,6 +1698,7 @@ pub mod icon {
         ("texture", TEXTURE),
         ("glass", GLASS),
         ("comb", COMB),
+        ("brush", BRUSH),
         ("table", TABLE),
         ("visual-centre", VISUAL_CENTRE),
         ("size-preview", SIZE_PREVIEW),

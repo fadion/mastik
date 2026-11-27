@@ -334,6 +334,9 @@ pub enum Item {
     /// *Blend shapes…*: the card that makes the steps between two shapes
     /// (`crate::blend`).
     BlendShapes,
+    /// *Apply brush…*: the card that bends or scatters one shape along a path
+    /// (`crate::apply_brush`).
+    ApplyBrush,
     /// *Warp…*: an envelope round the selection, baked into paths
     /// (`crate::warp`). Among the conversions because it ends as a path.
     Warp,
@@ -752,6 +755,7 @@ impl Item {
         Item::Flatten,
         Item::Divide,
         Item::BlendShapes,
+        Item::ApplyBrush,
         Item::Warp,
         Item::OutlineShape,
         Item::OutlineStroke,
@@ -1049,6 +1053,7 @@ impl Item {
             Item::Divide => s("Divide", icon::DIVIDE, None, Group::Structure),
             // *Blend shapes*, since *Blend* already names the blend mode.
             Item::BlendShapes => s("Blend shapes…", icon::BLEND_SHAPES, None, Group::Structure),
+            Item::ApplyBrush => s("Apply brush…", icon::BRUSH, None, Group::Structure),
             Item::Warp => s("Warp…", icon::WARP, None, Group::Structure),
             Item::OutlineShape => s("Outline shape", icon::POLYGON, None, Group::Structure),
             Item::OutlineStroke => s("Outline stroke", icon::POLYGON, None, Group::Structure),
@@ -1550,6 +1555,7 @@ impl Item {
             Item::Boolean(_) | Item::Flatten => &["boolean", "combine"],
             Item::Divide => &["boolean", "split", "cut", "pieces"],
             Item::BlendShapes => &["morph", "tween", "steps", "interpolate"],
+            Item::ApplyBrush => &["art brush", "scatter brush", "along a path", "bend"],
             Item::Warp => &[
                 "distort",
                 "envelope",
@@ -2149,6 +2155,9 @@ pub struct LayerState {
     pub divisible: bool,
     /// Why *Blend shapes…* cannot take the selection (`blend::refusal`), if not.
     pub blend_refusal: Option<&'static str>,
+    /// Why *Apply brush…* cannot take the selection
+    /// (`apply_brush::selection_refusal`), if not.
+    pub brush_refusal: Option<&'static str>,
     /// Why *Warp…* cannot take the selection (`MastikApp::warp_refusal`), if not.
     pub warp_refusal: Option<&'static str>,
     /// Why *Trace image…* cannot place a trace where the picture stands
@@ -2652,6 +2661,18 @@ fn layer_menu(cx: &Context<'_>) -> Vec<Row> {
                 .dim_if(locked, why),
         );
     }
+    // After Blend shapes for two layers or more: more than two dims with the
+    // sentence that says what it takes.
+    if cx.selection.len() >= 2 {
+        rows.push(
+            Row::new(Item::ApplyBrush)
+                .dim_if(
+                    st.brush_refusal.is_some(),
+                    st.brush_refusal.unwrap_or_default(),
+                )
+                .dim_if(locked, why),
+        );
+    }
     // Outline rows sit in Structure, not the text head: §3 groups by what a verb
     // does. *Convert to path* and *Outline shape* are mutually exclusive by kind,
     // and neither is Flatten's (a boolean or set) since `one` excludes a set.
@@ -3033,6 +3054,7 @@ pub const KIND_VERBS: &[(Item, &str)] = &[
         Item::BlendShapes,
         "Blend shapes needs two shapes, and a path to follow if you like",
     ),
+    (Item::ApplyBrush, crate::apply_brush::NEEDS),
     (Item::Warp, "Select layers to warp"),
     (Item::OutlineShape, "Needs one shape"),
     (Item::OutlineStroke, "Needs one stroked shape"),
@@ -3885,6 +3907,7 @@ impl MastikApp {
                 self.session.selection.ids(),
             )
             .map(|r| r.says()),
+            brush_refusal: self.brush_refusal(),
             warp_refusal: self.warp_refusal(),
             trace_refusal: mastik_core::trace::refusal(&self.session.doc, id),
             mirrored: build::is_mirrored_path(&self.session.doc, id),
@@ -4043,6 +4066,7 @@ impl MastikApp {
             Item::Flatten => self.dispatch(ctx, Action::Flatten),
             Item::Divide => self.divide_selection(),
             Item::BlendShapes => self.open_blend(),
+            Item::ApplyBrush => self.open_brush(),
             Item::Warp => self.open_warp(),
             // No chord, so no `Action`. `hit` rather than the selection (C3); the
             // verb re-checks its own kind, so a stale row refuses.
