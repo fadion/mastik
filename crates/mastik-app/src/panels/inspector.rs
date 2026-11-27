@@ -7319,87 +7319,102 @@ impl MastikApp {
                     });
 
                     // --- the numbers this kind of pattern needs ----------------
-                    match style {
-                        DashStyle::Solid => {}
-                        DashStyle::Dotted => {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                                let mut spacing = s.dot_spacing();
-                                let resp = value_field(
-                                    ui,
-                                    egui::vec2(inner - CELL - ui::CARD_COL_GAP, CELL),
-                                    Prefix::Icon(icon::ARROWS_OUT_LINE_HORIZONTAL),
-                                    &mut spacing,
-                                    Scrub::whole(0.5).range(0.0..=ui::MAX_STROKE_WIDTH),
-                                    |d| d.custom_formatter(ui::number(2)),
-                                )
-                                .on_hover_text("Centre-to-centre spacing");
-                                // A dot is a zero-length dash, so the gap is centre-to-centre.
-                                self.stroke_valve(&resp, scope, index, move |st| {
-                                    st.dashes = vec![0.0, spacing.max(0.0)];
+                    // Solid shows Dashed's rows disabled, so every tab is one height:
+                    // the popover is placed against the window's edge by last frame's
+                    // size, and a taller tab would draw clipped for a frame, then jump.
+                    let solid = style == DashStyle::Solid;
+                    let pattern = ui::disable_unless(ui, !solid, |ui| {
+                        match style {
+                            DashStyle::Dotted => {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                                    let mut spacing = s.dot_spacing();
+                                    let resp = value_field(
+                                        ui,
+                                        egui::vec2(inner - CELL - ui::CARD_COL_GAP, CELL),
+                                        Prefix::Icon(icon::ARROWS_OUT_LINE_HORIZONTAL),
+                                        &mut spacing,
+                                        Scrub::whole(0.5).range(0.0..=ui::MAX_STROKE_WIDTH),
+                                        |d| d.custom_formatter(ui::number(2)),
+                                    )
+                                    .on_hover_text("Centre-to-centre spacing");
+                                    // A dot is a zero-length dash, so the gap is centre-to-centre.
+                                    self.stroke_valve(&resp, scope, index, move |st| {
+                                        st.dashes = vec![0.0, spacing.max(0.0)];
+                                    });
+                                    if let Some(st) = self.dash_fit_button(ui, CELL, s) {
+                                        out = Some(st);
+                                    }
                                 });
-                                if let Some(st) = self.dash_fit_button(ui, CELL, s) {
+                            }
+                            DashStyle::Solid | DashStyle::Dashed => {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
+                                    let (mut length, mut spacing) = s.dash_length_spacing();
+                                    let fw = (inner - CELL - ui::CARD_COL_GAP * 2.0) / 2.0;
+                                    let rl = value_field(
+                                        ui,
+                                        egui::vec2(fw, CELL),
+                                        Prefix::Icon(icon::DASH_LENGTH),
+                                        &mut length,
+                                        Scrub::whole(0.5).range(0.0..=ui::MAX_STROKE_WIDTH),
+                                        |d| d.custom_formatter(ui::number(2)),
+                                    )
+                                    .on_hover_text("Dash length");
+                                    let held = spacing;
+                                    self.stroke_valve(&rl, scope, index, move |st| {
+                                        st.dashes = vec![length.max(0.0), held];
+                                    });
+                                    let rs = value_field(
+                                        ui,
+                                        egui::vec2(fw, CELL),
+                                        Prefix::Icon(icon::ARROWS_OUT_LINE_HORIZONTAL),
+                                        &mut spacing,
+                                        Scrub::whole(0.5).range(0.0..=ui::MAX_STROKE_WIDTH),
+                                        |d| d.custom_formatter(ui::number(2)),
+                                    )
+                                    .on_hover_text("Gap between dashes");
+                                    self.stroke_valve(&rs, scope, index, move |st| {
+                                        st.dashes = vec![length.max(0.0), spacing.max(0.0)];
+                                    });
+                                    if let Some(st) = self.dash_fit_button(ui, CELL, s) {
+                                        out = Some(st);
+                                    }
+                                });
+                            }
+                            DashStyle::Custom => {
+                                if let Some(st) = self.dash_list_field(ui, inner, CELL, index, s) {
                                     out = Some(st);
                                 }
-                            });
-                        }
-                        DashStyle::Dashed => {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = ui::CARD_COL_GAP;
-                                let (mut length, mut spacing) = s.dash_length_spacing();
-                                let fw = (inner - CELL - ui::CARD_COL_GAP * 2.0) / 2.0;
-                                let rl = value_field(
-                                    ui,
-                                    egui::vec2(fw, CELL),
-                                    Prefix::Icon(icon::DASH_LENGTH),
-                                    &mut length,
-                                    Scrub::whole(0.5).range(0.0..=ui::MAX_STROKE_WIDTH),
-                                    |d| d.custom_formatter(ui::number(2)),
-                                )
-                                .on_hover_text("Dash length");
-                                let held = spacing;
-                                self.stroke_valve(&rl, scope, index, move |st| {
-                                    st.dashes = vec![length.max(0.0), held];
-                                });
-                                let rs = value_field(
-                                    ui,
-                                    egui::vec2(fw, CELL),
-                                    Prefix::Icon(icon::ARROWS_OUT_LINE_HORIZONTAL),
-                                    &mut spacing,
-                                    Scrub::whole(0.5).range(0.0..=ui::MAX_STROKE_WIDTH),
-                                    |d| d.custom_formatter(ui::number(2)),
-                                )
-                                .on_hover_text("Gap between dashes");
-                                self.stroke_valve(&rs, scope, index, move |st| {
-                                    st.dashes = vec![length.max(0.0), spacing.max(0.0)];
-                                });
-                                if let Some(st) = self.dash_fit_button(ui, CELL, s) {
-                                    out = Some(st);
-                                }
-                            });
-                        }
-                        DashStyle::Custom => {
-                            if let Some(st) = self.dash_list_field(ui, inner, CELL, index, s) {
-                                out = Some(st);
                             }
                         }
-                    }
-                    // Where along the path the pattern starts, for every patterned style;
-                    // signed, as SVG's `stroke-dashoffset` is.
-                    if style != DashStyle::Solid {
-                        let mut offset = s.dash_offset;
-                        let resp = value_field(
-                            ui,
-                            egui::vec2(inner, CELL),
-                            Prefix::Icon(icon::DASH_OFFSET),
-                            &mut offset,
-                            Scrub::whole(0.5).range(-ui::MAX_STROKE_WIDTH..=ui::MAX_STROKE_WIDTH),
-                            |d| d.custom_formatter(ui::number(2)),
+                        // Where along the path the pattern starts, for every patterned style;
+                        // signed, as SVG's `stroke-dashoffset` is.
+                        {
+                            let mut offset = s.dash_offset;
+                            let resp = value_field(
+                                ui,
+                                egui::vec2(inner, CELL),
+                                Prefix::Icon(icon::DASH_OFFSET),
+                                &mut offset,
+                                Scrub::whole(0.5)
+                                    .range(-ui::MAX_STROKE_WIDTH..=ui::MAX_STROKE_WIDTH),
+                                |d| d.custom_formatter(ui::number(2)),
+                            )
+                            .on_hover_text("Dash offset — slides the pattern along the path");
+                            self.stroke_valve(&resp, scope, index, move |st| {
+                                st.dash_offset = offset;
+                            });
+                        }
+                    });
+                    // Through a claimant of its own, as the Ends group's reason is.
+                    if solid {
+                        ui.interact(
+                            pattern.response.rect,
+                            ui.id().with("dimmed-pattern"),
+                            egui::Sense::empty(),
                         )
-                        .on_hover_text("Dash offset — slides the pattern along the path");
-                        self.stroke_valve(&resp, scope, index, move |st| {
-                            st.dash_offset = offset;
-                        });
+                        .on_hover_text("A solid stroke has no pattern");
                     }
 
                     // --- the width along the path ------------------------------
@@ -21721,6 +21736,37 @@ mod rhythm_tests {
             });
         }
         out
+    }
+
+    /// The stroke popover is one height on every dash tab, Solid included, so it
+    /// never grows under the window edge it was placed against. flip:
+    /// `stroke_menu_popup` drawing no rows under Solid → fails at the height assertion.
+    #[test]
+    fn the_stroke_popover_keeps_one_height_across_dash_tabs() {
+        let ctx = egui::Context::default();
+        crate::theme::install(&ctx);
+        let _ = ctx.run_ui(Default::default(), |_| {});
+        let mut app = MastikApp::headless(&ctx);
+        let id = painted_rect(&mut app);
+        let _ = pass(&mut app, &ctx);
+        app.stroke_menu = Some(0);
+        let area = egui::Id::new(("stroke-menu", 0usize));
+        let mut heights = Vec::new();
+        for style in DashStyle::ALL {
+            let mut strokes = app.session.doc.get(id).unwrap().paint().strokes.to_vec();
+            strokes[0].dashes = pattern_for(style, &strokes[0]);
+            let tx = app.strokes_tx(PaintScope::Node(id), strokes);
+            app.session.commit(tx);
+            let _ = pass(&mut app, &ctx);
+            let now = app.session.doc.get(id).unwrap().paint().strokes[0].dash_style();
+            assert_eq!(now, style, "fixture: the stroke is {}", style.label());
+            let size = egui::AreaState::load(&ctx, area).and_then(|s| s.size);
+            heights.push((style.label(), size.expect("the popover is drawn").y));
+        }
+        let first = heights[0].1;
+        for (label, h) in &heights {
+            assert_eq!(*h, first, "{label} is as tall as the others: {heights:?}");
+        }
     }
 
     /// A rect painted before its first frame: `sync_paint_collapse` shuts the Fill and Stroke cards when a node arrives unpainted.
