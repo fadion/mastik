@@ -252,6 +252,12 @@ pub(crate) fn pair_refusal(
     if path == brush {
         return Some(Refusal::Same);
     }
+    path_refusal(doc, res, path, bake).or_else(|| brush_refusal(doc, res, brush))
+}
+
+/// Why `path` cannot take any brush, if it cannot: [`pair_refusal`]'s tests of
+/// the path alone, for a card opened on the path before its brush is picked.
+pub fn path_refusal(doc: &Document, res: &Resolved, path: NodeId, bake: bool) -> Option<Refusal> {
     let Some(node) = doc.get(path) else {
         return Some(Refusal::Count);
     };
@@ -277,10 +283,7 @@ pub(crate) fn pair_refusal(
     if bake && crate::container::lays_out_above(&crate::resolve::DocView(doc), path) {
         return Some(Refusal::Layout);
     }
-    if tracks(doc, res, path).is_empty() {
-        return Some(Refusal::Length);
-    }
-    brush_refusal(doc, res, brush)
+    tracks(doc, res, path).is_empty().then_some(Refusal::Length)
 }
 
 // --- geometry --------------------------------------------------------------------

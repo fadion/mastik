@@ -479,7 +479,10 @@ path, the brush or the options change. *Bake into paths* instead computes it onc
   drops those two and adds `BrushInInstance` *A brush can't be inside an instance* and `Loop` *A
   brush can't be drawn along a path it brushes* (the brush or anything inside it reaches the path
   through a chain of links). The brush is otherwise only read, so a locked brush or one elsewhere
-  in the tree is fine.
+  in the tree is fine. The path's half of these (`apply_brush::path_refusal(doc, res, path,
+  bake)`: no outline, `Locked`, `Inside`, a bake's `Mask` and `Layout`, `Length`) stands alone for
+  a card opened on one layer before its brush is picked; `live_brush::selection_refusal` of a
+  one-layer selection is that, live.
 - **Geometry** is in world space: the path's every subpath with length is a track, measured by
   a per-segment table of arc length at 32 steps of `t`. *Art* maps the brush's world box onto each
   track: `x` to arc length (the box's left at the start, its right at the end), `y` to an offset
@@ -548,7 +551,8 @@ path, the brush or the options change. *Bake into paths* instead computes it onc
 
 `menu::Item::ApplyBrush`, *Apply brush…*, glyph `brush` (a brushstroke pointed at both ends),
 group Structure, no chord; palette aliases art brush, scatter brush, along a path, bend. In the
-layer menu it follows *Blend shapes…* whenever two or more layers are selected, dimmed with
+layer menu it follows *Blend shapes…* whenever two or more layers are selected, or one with an
+outline to run along (`LayerState::runs_along`) and no brush (a brushed one has *Edit brush…*), dimmed with
 `live_brush::selection_refusal`'s sentence (`LayerState::brush_refusal`; a bake's own two are
 said when it commits) or the lock sentence; otherwise the palette's *Not available here* row says
 *Select a path, and the shape to run along it* (`KIND_VERBS`). Whenever the selection holds a
@@ -571,7 +575,10 @@ a layer drawn with a brush*.
   while baking is off with *A live brush keeps the path: it is the layer*; foot *Cancel*, primary
   *Apply*. Its settings live on the app and outlive a close. A right-click cancels a scrub of any
   of its numbers (`InFlight::brush_scrub`).
-- **Path and brush** are taken from the selection when the card opens; the card closes when the
+- **Path and brush** are taken from the selection when the card opens. Opened on one layer, it
+  has a path and no brush: the dropdown reads *None* (its ticked row too), nothing previews, and
+  *Apply* and *Swap brush and path* are disabled with *Pick a shape to use as the brush*; once
+  *Pick a shape…* names one it is the pair's card. The card closes when the
   selection changes, when the two stop fitting (the live link's tests, which a bake's card is held
   to as well), and when another document comes to the front. *Swap brush and path* trades them,
   or says why the swapped pair cannot run. *Pick a shape…* hides the card and makes the canvas wait as Blend's *Pick a path…* does
@@ -613,7 +620,9 @@ a layer drawn with a brush*.
   the groups and says *Baked ‹brush› into N paths*. **Remove brush** drops each link, one *Remove
   brush* step.
 - Width handles do not show on a brushed layer (`width_handles::edited_profile`): its strokes do
-  not draw.
+  not draw. For the same reason, while its points are edited a path whose live brush is shown is
+  outlined in a 1 pt `color::SELECT` line (`canvas::draw_points`), so the path being edited can be
+  seen; leaving point editing hides it.
 
 ## The identity card's boolean row
 

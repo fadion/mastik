@@ -51,9 +51,13 @@ pub fn refusal(doc: &Document, res: &Resolved, path: NodeId, brush: NodeId) -> O
     loops(doc, path, brush).then_some(Refusal::Loop)
 }
 
-/// Why the selection cannot take a live brush, if it cannot: the pair
-/// (`apply_brush::pair`), then [`refusal`] for it.
+/// Why the selection cannot take a live brush, if it cannot: one layer is a path
+/// whose brush is still to be picked, held to the path's half of [`refusal`];
+/// two are the pair (`apply_brush::pair`), held to [`refusal`].
 pub fn selection_refusal(doc: &Document, res: &Resolved, selection: &[NodeId]) -> Option<Refusal> {
+    if let [path] = selection {
+        return apply_brush::path_refusal(doc, res, *path, false);
+    }
     match apply_brush::pair(doc, selection) {
         Ok((path, brush)) => refusal(doc, res, path, brush),
         Err(r) => Some(r),

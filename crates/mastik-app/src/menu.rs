@@ -2175,6 +2175,9 @@ pub struct LayerState {
     pub brush_refusal: Option<&'static str>,
     /// Whether the selection holds a layer drawn with a live brush.
     pub brushed: bool,
+    /// Whether the layer has an outline a brush could run along
+    /// (`live_brush::runs_along`), so *Apply brush…* opens on it alone.
+    pub runs_along: bool,
     /// Why *Warp…* cannot take the selection (`MastikApp::warp_refusal`), if not.
     pub warp_refusal: Option<&'static str>,
     /// Why *Trace image…* cannot place a trace where the picture stands
@@ -2679,8 +2682,9 @@ fn layer_menu(cx: &Context<'_>) -> Vec<Row> {
         );
     }
     // After Blend shapes for two layers or more: more than two dims with the
-    // sentence that says what it takes.
-    if cx.selection.len() >= 2 {
+    // sentence that says what it takes. One shape with an outline and no brush
+    // yet opens it too, the brush to be picked on the card.
+    if cx.selection.len() >= 2 || (one && st.runs_along && !st.brushed) {
         rows.push(
             Row::new(Item::ApplyBrush)
                 .dim_if(
@@ -3935,6 +3939,7 @@ impl MastikApp {
             .map(|r| r.says()),
             brush_refusal: self.brush_refusal(),
             brushed: self.edit_brush_refusal().is_none(),
+            runs_along: mastik_core::live_brush::runs_along(node.kind()),
             warp_refusal: self.warp_refusal(),
             trace_refusal: mastik_core::trace::refusal(&self.session.doc, id),
             mirrored: build::is_mirrored_path(&self.session.doc, id),
@@ -5279,6 +5284,36 @@ mod tests {
         };
         let groups = build(&cx);
         assert_eq!(flat(&groups).len(), 25, "{:?}", labels(&groups));
+    }
+
+    /// One layer with an outline offers *Apply brush…*, the brush to be picked on
+    /// the card; one drawn with a brush offers *Edit brush…* instead, and one with
+    /// no outline neither. flip: the row's gate kept at two layers → fails at "a
+    /// path alone".
+    #[test]
+    fn one_path_offers_apply_brush() {
+        let sel = [id(1)];
+        let kinds = [Kind::Path];
+        let target = Target::Layer {
+            id: id(1),
+            door: Door::Canvas,
+        };
+        let has = |state: LayerState| {
+            let mut cx = open(target, &sel, &kinds);
+            cx.state = state;
+            flat(&build(&cx)).contains(&Item::ApplyBrush)
+        };
+        let path = LayerState {
+            runs_along: true,
+            ..LayerState::default()
+        };
+        assert!(has(path), "a path alone");
+        let brushed = LayerState {
+            brushed: true,
+            ..path
+        };
+        assert!(!has(brushed), "a brushed path edits its brush instead");
+        assert!(!has(LayerState::default()), "nothing to run along");
     }
 
     /// The component rows sit in Structure directly after *Slice selection*, the

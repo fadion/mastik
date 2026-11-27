@@ -9297,6 +9297,15 @@ impl MastikApp {
         let Some((_, subpaths)) = self.preview_subpaths(id) else {
             return;
         };
+        // A live brush draws in place of the path's strokes, so the path being
+        // edited would show nowhere: it is outlined while its points are edited.
+        if mastik_core::live_brush::hides_strokes(&self.session.doc, id) {
+            let path = mastik_core::edit::pen_path(&subpaths);
+            let stroke = egui::Stroke::new(1.0, color::SELECT);
+            for sub in self.flatten_to_screen(&path, rect, ppp) {
+                painter.add(sub.stroked(stroke));
+            }
+        }
         // A pen gesture in flight owns the run it holds: overlaid, its circles and
         // these squares would contradict each other. The path's other runs keep
         // their plain markers, so a new run is drawn against the points around it.
@@ -18112,6 +18121,40 @@ mod headless_app_tests {
         };
         app.pen_verb_press(id, at(100.0, 100.0), false, PenVerb::Continue(edit));
         assert_eq!(squares(&app), 0, "the held run wears no squares");
+    }
+
+    /// A path drawn with a live brush, which hides its strokes, is outlined while
+    /// its points are edited; a plain path is not. flip: `draw_points` without the
+    /// brushed outline → fails at "outlined".
+    #[test]
+    fn a_brushed_path_is_outlined_while_its_points_are_edited() {
+        use mastik_core::apply_brush::{Art, Mode};
+        let ctx = egui::Context::default();
+        let (mut app, id) = app_editing_an_open_path(&ctx);
+        let outlines = |app: &MastikApp| {
+            ctx.run_ui(Default::default(), |ui| {
+                let rect = ui.max_rect();
+                let resp = ui.allocate_rect(rect, egui::Sense::hover());
+                app.draw_points(ui.painter(), rect, 1.0, &resp);
+            })
+            .shapes
+            .into_iter()
+            .filter(|c| {
+                matches!(&c.shape, egui::Shape::Path(p)
+                    if p.stroke.color == egui::epaint::ColorMode::Solid(color::SELECT))
+            })
+            .count()
+        };
+        assert_eq!(outlines(&app), 0, "a plain path draws its own strokes");
+        let page = app.session.doc.first_page();
+        let rect = app.session.doc.get(page).unwrap().children()[0];
+        let link = mastik_core::live_brush::BrushLink::new(rect, Mode::Art(Art::DEFAULT));
+        assert!(app.session.commit(Transaction(vec![Operation::SetBrush {
+            id,
+            brush: Some(link),
+        }])));
+        assert_eq!(app.edited_path(), Some(id), "fixture: still edited");
+        assert_eq!(outlines(&app), 1, "outlined");
     }
 
     /// Auto-scroll moves the view toward the pointer, and `autopan_total` records

@@ -312,6 +312,12 @@ const KINDS_DIFFER: &str = "These layers' brushes are Art and Scatter; pick one 
 /// Why *Swap brush and path* is dimmed in *Edit brush*.
 const OWN_PATH: &str = "A live brush's path is its own layer";
 
+/// The Brush dropdown's face while the card has no brush, opened on a path alone.
+const NONE: &str = "None";
+
+/// Why *Apply* and *Swap brush and path* are dimmed while the card has no brush.
+const NO_SHAPE: &str = "Pick a shape to use as the brush";
+
 impl MastikApp {
     /// Why the selection cannot take a brush, if it cannot: the row's sentence.
     /// A live brush's tests, since *Apply brush* links by default; a bake's own
@@ -334,10 +340,14 @@ impl MastikApp {
 
     /// Why the card's own path and brush no longer fit, if they do not: a live
     /// link's tests, which hold for a bake's card too, or each edited layer's.
+    /// A card with no brush yet is held to the path's half.
     fn card_refusal(&self) -> Option<Refusal> {
         let (doc, res) = (&self.session.doc, &self.session.resolved);
         let Some(brush) = self.brush.brush else {
-            return Some(Refusal::Count);
+            return match (self.brush.path, self.brush.editing.is_empty()) {
+                (Some(path), true) => apply_brush::path_refusal(doc, res, path, false),
+                _ => Some(Refusal::Count),
+            };
         };
         for path in self.brush.targets() {
             if doc.get(path).and_then(|n| n.brush()).is_none() && !self.brush.editing.is_empty() {
@@ -350,14 +360,18 @@ impl MastikApp {
         None
     }
 
-    /// Open the card on the two selected layers, or say why it cannot.
+    /// Open the card on the two selected layers, or on one path with no brush
+    /// yet for *Pick a shape…* to name, or say why it cannot.
     pub(crate) fn open_brush(&mut self) {
         if let Some(why) = self.brush_refusal() {
             return self.session.info(why);
         }
-        let Ok((path, brush)) = apply_brush::pair(&self.session.doc, self.session.selection.ids())
-        else {
-            return self.session.info(NEEDS);
+        let (path, brush) = match self.session.selection.ids() {
+            [path] => (*path, None),
+            ids => match apply_brush::pair(&self.session.doc, ids) {
+                Ok((path, brush)) => (path, Some(brush)),
+                Err(_) => return self.session.info(NEEDS),
+            },
         };
         // One card in the popover lane at a time.
         self.close_inspector_popovers();
@@ -371,7 +385,7 @@ impl MastikApp {
         card.mixed = Mixed::default();
         card.relinked = false;
         card.path = Some(path);
-        card.brush = Some(brush);
+        card.brush = brush;
         card.opened_on = self.session.selection.ids().to_vec();
         card.built = None;
     }
@@ -641,7 +655,11 @@ impl MastikApp {
     /// selected.
     pub(crate) fn commit_brush(&mut self) {
         let Some(how) = self.brush.how() else {
-            return self.session.info(NEEDS);
+            // `Enter` reaches here past the dimmed *Apply*, and says what it says.
+            return self.session.info(match self.brush.path {
+                Some(_) => NO_SHAPE,
+                None => NEEDS,
+            });
         };
         if self.brush.live() {
             return self.commit_link(how);
@@ -786,9 +804,11 @@ impl MastikApp {
                 }
                 ui::labelled(ui, "Brush", |ui| {
                     ui.scope(|ui| {
-                        ui.spacing_mut().interact_size.y = ui::CONTROL_H;
-                        ui.spacing_mut().button_padding.y = 0.0;
-                        let shown = format!("Shape · {brush_name}");
+                        ui::combo_height(ui);
+                        let shown = match card.brush.is_some() || brushes_differ {
+                            true => format!("Shape · {brush_name}"),
+                            false => NONE.to_owned(),
+                        };
                         egui::ComboBox::from_id_salt("apply-brush-shape")
                             .icon(ui::combo_chevron)
                             .width(w)
@@ -806,13 +826,16 @@ impl MastikApp {
                                     ui,
                                     ui::MenuRow::new("", "Swap brush and path")
                                         .checked(false)
-                                        .enabled(!editing),
+                                        .enabled(!editing && card.brush.is_some()),
                                     row,
                                 );
                                 if swap.clicked() {
                                     act = Some(Act::Swap);
                                 }
-                                swap.on_disabled_hover_text(OWN_PATH);
+                                swap.on_disabled_hover_text(match editing {
+                                    true => OWN_PATH,
+                                    false => NO_SHAPE,
+                                });
                                 if editing {
                                     ui::menu_sep(ui);
                                     if ui::menu_check(ui, "Bake brush", false, row) {
@@ -987,16 +1010,15 @@ impl MastikApp {
                     {
                         act = Some(Act::Bake);
                     }
-                    let keep = ui
-                        .add_enabled_ui(card.bake, |ui| {
-                            ui::switch_row(
-                                ui,
-                                "Keep the path",
-                                card.keep_path && card.bake,
-                                crate::settings::SWITCH_H,
-                            )
-                        })
-                        .inner;
+                    let keep = ui::disable_unless(ui, card.bake, |ui| {
+                        ui::switch_row(
+                            ui,
+                            "Keep the path",
+                            card.keep_path && card.bake,
+                            crate::settings::SWITCH_H,
+                        )
+                    })
+                    .inner;
                     if keep.clicked() {
                         act = Some(Act::KeepPath);
                     }
@@ -1007,12 +1029,14 @@ impl MastikApp {
                     }
                 }
                 let primary = if editing { "Done" } else { "Apply" };
-                match crate::settings::footer_row(
+                let (state, why) = match card.brush {
+                    Some(_) => (FieldButton::Primary, None),
+                    None => (FieldButton::Disabled, Some(NO_SHAPE)),
+                };
+                match crate::settings::footer_row_noted(
                     ui,
-                    &[
-                        ("Cancel", FieldButton::Off),
-                        (primary, FieldButton::Primary),
-                    ],
+                    &[("Cancel", FieldButton::Off), (primary, state)],
+                    why,
                 ) {
                     Some(0) => act = Some(Act::Close),
                     Some(_) => act = Some(Act::Commit),
@@ -1203,16 +1227,44 @@ mod tests {
         assert_eq!(app.session.doc.get(page).unwrap().children(), &[path, leaf]);
     }
 
-    /// More than two layers, and two with nothing to run along, are refused with
-    /// the row's sentence, and no card opens.
+    /// A path alone opens the card with no brush: *None*, nothing previewed and
+    /// *Apply* refused, until *Pick a shape…* names one; then it links as a pair's
+    /// card does. flip: `open_brush` asking `apply_brush::pair` of one layer →
+    /// fails at "the card opens".
+    #[test]
+    fn a_path_alone_opens_the_card_for_a_brush_to_be_picked() {
+        let ctx = egui::Context::default();
+        let (mut app, path, leaf) = path_and_leaf(&ctx);
+        app.session.selection.set_one(path);
+        assert_eq!(app.brush_refusal(), None, "one path can take a brush");
+        let revision = app.session.revision();
+        app.open_brush();
+        assert!(
+            app.brush.open && app.brush.brush.is_none(),
+            "the card opens"
+        );
+        app.refresh_brush_preview();
+        assert!(!app.session.has_gesture_preview(), "nothing drawn yet");
+        app.commit_brush();
+        assert_eq!(app.session.revision(), revision, "nothing to apply");
+        assert_eq!(
+            app.session.status().text,
+            NO_SHAPE,
+            "as the dimmed Apply says"
+        );
+        app.brush.picking = true;
+        app.brush_pick_at(Point::new(130.0, 10.0));
+        assert_eq!(app.brush.brush, Some(leaf), "the picked shape");
+        app.commit_brush();
+        let link = app.session.doc.get(path).and_then(|n| n.brush());
+        assert_eq!(link.map(|l| l.of), Some(leaf), "linked");
+    }
+
+    /// More than two layers are refused with the row's sentence, and no card opens.
     #[test]
     fn a_selection_without_a_path_is_refused_by_name() {
         let ctx = egui::Context::default();
         let (mut app, path, leaf) = path_and_leaf(&ctx);
-        app.session.selection.set_one(leaf);
-        app.open_brush();
-        assert!(!app.brush.open);
-        assert_eq!(app.session.status().text, NEEDS);
         let third = app.session.ids.mint();
         let page = app.session.doc.first_page();
         assert!(app.session.commit(Transaction(vec![Operation::CreateNode {

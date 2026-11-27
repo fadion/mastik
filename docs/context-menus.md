@@ -97,9 +97,10 @@ function, not bucketed by `build`.
   Head rows: see §5.8.
 - **Lock**: editing rows dim with *"This layer is locked"*, or *"A group containing this layer is
   locked"* when only an ancestor is (§5.9).
-- **Length**, with the assistant *Off* (on, its group adds one row, two on a top-level frame): a primitive is 22 rows in three groups, text 25, a boolean 25, railed text 27, a main
+- **Length**, with the assistant *Off* (on, its group adds one row, two on a top-level frame): a primitive is 23 rows in three groups, text 25, a boolean 26, railed text 27, a main
   frame 20, an instance frame 21; the long end is a bound text child on a rail at 29
-  (`a_primitives_menu_is_twenty_two_rows_in_three_groups`, `the_menus_the_two_ends_do_not_count`).
+  (`a_primitives_menu_is_twenty_two_rows_in_three_groups`, `the_menus_the_two_ends_do_not_count`,
+  whose fixtures leave out the *Apply brush…* a layer with an outline and no brush adds).
   The ceiling is "needs neither a scrollbar nor a large monitor", which is why the alternate
   clipboards, the boolean operations, the aligns and the restacks sit behind submenus and Flip H/V
   and *Zoom to selection* are left to their other doors (§7).
@@ -155,7 +156,7 @@ In emitted order. Kind-gated; the component rows are gated by role (`menu::Role`
 | Boolean ▸ | — | `Item::BooleanMenu`, `UNITE_SQUARE` glyph; two or more layers, or a lone boolean; a submenu of the four operations and *Divide* (below); dims on lock |
 | Flatten | `Ctrl+E` | two or more layers, or one path mirrored across its own axes (`LayerState::mirrored`), which it makes plain (on a lone boolean it is in the head); dims on lock |
 | Blend shapes… | — | exactly two layers; dims with `blend::pair`'s refusal (*"Blend shapes needs exactly two shapes"*, *"… can't take a picture"*, *"… can't take text"*, or the parts sentence); dims on lock. Opens the Blend shapes card (`app-booleans.md`) |
-| Apply brush… | — | two or more layers; dims with `live_brush::selection_refusal`'s sentence (*"Select a path, and the shape to run along it"* for more than two or none to run along, or the brush's or path's own), since the card links a live brush by default; a bake's own refusals are said when it commits; dims on lock. Opens the Apply brush card (`app-booleans.md`) |
+| Apply brush… | — | two or more layers, or one with an outline to run along (`LayerState::runs_along`: a rect, ellipse, polygon, star, line, spiral, arc, path or boolean) and no live brush, which opens the card with its brush still to pick; dims with `live_brush::selection_refusal`'s sentence (*"Select a path, and the shape to run along it"* for more than two or none to run along, or the brush's or path's own), since the card links a live brush by default; a bake's own refusals are said when it commits; dims on lock. Opens the Apply brush card (`app-booleans.md`) |
 | Edit brush… | — | the selection holds a layer drawn with a live brush (`LayerState::brushed`); dims on lock. Opens the card as *Edit brush* on the selected brushed layers |
 | Bake brush | — | as *Edit brush…*; `BRUSH_BAKE` glyph. Bakes each selected live brush into paths |
 | Remove brush | — | as *Edit brush…*; `BRUSH_SLASH` glyph. Drops each selected live brush, the path's strokes drawn again |
