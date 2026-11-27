@@ -3465,6 +3465,99 @@ pub static VERBS: &[Verb] = &[
         },
     },
     Verb {
+        name: "apply_brush",
+        doc: "Bend a shape along a path (art) or repeat it along it (scatter), as paths in a group in the path's place; answers the group",
+        params: &[
+            req("path", NODE, "the path the brush runs along"),
+            req("brush", NODE, "the shape bent or repeated; it stays"),
+            opt(
+                "mode",
+                ParamKind::Choice(&["art", "scatter"]),
+                "art unless given",
+            ),
+            opt(
+                "width",
+                ParamKind::Number,
+                "art: height across the path, a share of the brush's, 0.01 to 10; 1 unless given",
+            ),
+            opt(
+                "stretch",
+                ParamKind::Choice(&["whole", "middle"]),
+                "art: middle keeps the first and last fifth unstretched; whole unless given",
+            ),
+            opt("flip", BOOL, "art: mirror across the path"),
+            opt(
+                "spacing",
+                ParamKind::Number,
+                "scatter: copy to copy, a share of the brush's length, 0.1 to 10; 1.2 unless given",
+            ),
+            opt(
+                "size",
+                ParamKind::Number,
+                "scatter: a share of the brush's size, 0.01 to 10; 0.8 unless given",
+            ),
+            opt(
+                "size_varies",
+                ParamKind::Number,
+                "scatter: how far size strays either way, 0 to 1; 0.3 unless given",
+            ),
+            opt(
+                "scatter",
+                ParamKind::Number,
+                "scatter: how far a copy strays sideways, a share of the brush's length, 0 to 5; 0.2 unless given",
+            ),
+            opt(
+                "turn",
+                ParamKind::Choice(&["along", "fixed"]),
+                "scatter: along unless given",
+            ),
+            opt("seed", INDEX, "scatter: the random run; 1 unless given"),
+            opt("keep_path", BOOL, "keep the path in the group, hidden"),
+        ],
+        run: |ctx, a| {
+            use crate::apply_brush::{self as ab, ApplyBrush, Art, Mode, Scatter, Stretch, Turn};
+            let ranged =
+                |name: &'static str, default: f64, lo: f64, hi: f64, says: &'static str| {
+                    let v = a.number(name).unwrap_or(default);
+                    match v.is_finite() && (lo..=hi).contains(&v) {
+                        true => Ok(v),
+                        false => Err(a.invalid(name, says)),
+                    }
+                };
+            let mode = match a.choice("mode").unwrap_or("art") {
+                "scatter" => Mode::Scatter(Scatter {
+                    spacing: ranged("spacing", 1.2, 0.1, 10.0, "expected 0.1 to 10")?,
+                    size: ranged("size", 0.8, 0.01, 10.0, "expected 0.01 to 10")?,
+                    size_varies: ranged("size_varies", 0.3, 0.0, 1.0, "expected 0 to 1")?,
+                    scatter: ranged("scatter", 0.2, 0.0, 5.0, "expected 0 to 5")?,
+                    turn: match a.choice("turn") {
+                        Some("fixed") => Turn::Fixed,
+                        _ => Turn::Along,
+                    },
+                    seed: u32::try_from(a.index("seed").unwrap_or(1))
+                        .map_err(|_| a.invalid("seed", "expected 0 to 4294967295"))?,
+                }),
+                _ => Mode::Art(Art {
+                    width: ranged("width", 1.0, 0.01, 10.0, "expected 0.01 to 10")?,
+                    stretch: match a.choice("stretch") {
+                        Some("middle") => Stretch::Middle,
+                        _ => Stretch::Whole,
+                    },
+                    flip: a.bool("flip").unwrap_or(false),
+                }),
+            };
+            let how = ApplyBrush {
+                path: a.layer(ctx.doc, "path")?,
+                brush: a.layer(ctx.doc, "brush")?,
+                mode,
+                keep_path: a.bool("keep_path").unwrap_or(false),
+            };
+            let (tx, group) = ab::apply(ctx.doc, ctx.res, ctx.ids, &how)
+                .map_err(|r| VerbError::Nothing(r.says()))?;
+            Ok(Done::made(tx, vec![group]))
+        },
+    },
+    Verb {
         name: "warp",
         doc: "Bend layers through an envelope over their box and bake them into paths: a preset bent by `bend`, or the box's corners moved to `corners`; answers the paths that replaced layers",
         params: &[

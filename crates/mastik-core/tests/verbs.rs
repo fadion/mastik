@@ -5542,6 +5542,49 @@ fn blend_shapes_follows_a_spine_and_turns_with_it() {
     }
 }
 
+/// `apply_brush` bends or scatters the brush along the path into a group in the
+/// path's place, keeping the path hidden under `keep_path`, and refuses a width
+/// out of range and a brush that is the path.
+/// flip: `apply_brush` ignoring `keep_path` → fails at "the path kept".
+#[test]
+fn apply_brush_bakes_into_a_group() {
+    let (mut doc, mut ids, page) = blank();
+    let (a, b) = two_rects(&mut doc, &mut ids, page, 200.0, 0.0);
+    let args = |extra: Value| {
+        let mut v = json!({ "path": a.to_wire(), "brush": b.to_wire() });
+        v.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        v
+    };
+    assert_eq!(
+        refused_param(&doc, &mut ids, "apply_brush", args(json!({ "width": 0 }))),
+        "width"
+    );
+    assert!(matches!(
+        answer(
+            &doc,
+            &mut ids,
+            "apply_brush",
+            json!({ "path": a.to_wire(), "brush": a.to_wire() })
+        ),
+        Err(VerbError::Nothing(
+            "A brush can't be the path it runs along"
+        ))
+    ));
+    let g = run(
+        &mut doc,
+        &mut ids,
+        "apply_brush",
+        args(json!({ "mode": "scatter", "spacing": 1.0, "keep_path": true })),
+    )[0];
+    let group = doc.get(g).unwrap();
+    assert_eq!(group.name(), "Brushed · B");
+    assert_eq!(group.children()[0], a, "the path kept");
+    assert!(group.children().len() > 2, "copies round the rectangle");
+    assert_eq!(doc.get(page).unwrap().children(), &[g, b]);
+}
+
 /// `tidy_up` evens the gaps of a row, then answers that the row is tidy.
 ///
 /// flip: `tidy_up` answering an empty edit as done → fails at "already tidy".
