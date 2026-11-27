@@ -40,6 +40,7 @@ Decided non-goals are in `docs/non-goals.md`.
 - **D868** Specified and used values are two numbers. Used boxes are derived in `Resolved` and never saved.
 - **An inserted icon or photo carries its credit on its layer** (`Node::credit`): written once by the insert, never edited or drawn, kept by every copy and by an ungroup, dropped when a photo's picture is replaced. Exports write it once per file (SVG metadata, a comment atop code export's page), not per element.
 - **An annotation is specification, not conversation**: one text per layer (`Node::note`), with no authors, replies or resolved state, which keeps it apart from the comment tool `non-goals.md` declines. It is the layer's own: copies keep it and a main's never reaches its instances.
+- **A live brush is a link on the path layer** (`Node::brush`), drawn from the brush layer's whole look in place of the path's strokes, its fills still drawn, and no copy of the brush kept; so it cannot be a stroke paint. **A link never names nothing**: deleting the brush bakes its users in the same step, and a paste where the brush is not takes a baked twin.
 
 ## Operations and the commit
 

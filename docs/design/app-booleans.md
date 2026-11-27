@@ -73,8 +73,8 @@ Mask card, and how a failed boolean draws. Part of §9.4.
   `Operation::Reorder` to index 0 (`canvas::designate_key`).
 - `layers::subtract_base` marks `children[0]` of a `Subtract` with a faint `diamond` glyph in the
   row's badge slot (shared `RowBadge`, `BADGE_BASE`), derived every frame. Only `Subtract`.
-- Badge slot priority: mask (`icon::MASK`) > element tag > frame size badge > subtract base mark
-  (the whole order is in `components.md`, *Layers*).
+- Badge slot priority: mask (`icon::MASK`) > element tag > live brush name > frame size badge >
+  subtract base mark (the whole order is in `components.md`, *Layers*).
 - **Switching the operation is a `GeometryPatch`**: children and paint stay, undo restores the previous
   op, re-picking is an empty transaction. Travels the normal preview→commit valve.
 - The dropdown is **disabled, never hidden**, with one layer selected. Its enabled test is a dry run of
@@ -458,22 +458,28 @@ here* row says *Blend shapes needs two shapes, and a path to follow if you like*
 
 ## Apply brush
 
-`core::apply_brush` bakes one shape, the brush, along a path: *Art* bends it along the whole
-path, *Scatter* repeats it along it. It is computed once; nothing stays live (a live brush is
-open work in the roadmap).
+One shape, the brush, runs along a path: *Art* bends it along the whole path, *Scatter* repeats it
+along it. By default it is a **live brush** (`core::live_brush`): the path stays the layer, linked
+to the brush and the options, and the brush draws in place of its strokes, redrawn whenever the
+path, the brush or the options change. *Bake into paths* instead computes it once into plain paths
+(`core::apply_brush`). Both share one geometry.
 
 - **The pair** (`apply_brush::pair`): of two selected layers the lower is the path and the upper
   the brush, unless only the upper has an outline to run along (a rect, ellipse, polygon, star,
-  line, spiral, arc, path or boolean), when the two swap. More than two layers, or two with no
-  outline between them, are `Count`, *Select a path, and the shape to run along it*.
-  `apply_brush::refusal(path, brush)` adds the rest, each a `Refusal::says()` sentence the dimmed
-  row and a refused commit both give: `Same` *A brush can't be the path it runs along*, `Text`
-  *A brush can't be text*, `Picture` *A brush can't be a picture*, `Flat` *A brush needs some
-  length to lay along the path* (a brush whose world box has no width), `Length` *The path has
-  no length to run along*, and for the path, which the group replaces, Blend's tests: `Locked`
-  *The path is locked*, `Inside` *Apply brush can't work inside a boolean, a component or an
-  instance*, `Mask` *Apply brush can't take a mask*, `Layout` *Apply brush can't work inside an
-  auto layout*. The brush is only read, so a locked brush or one elsewhere in the tree is fine.
+  line, spiral, arc, path or boolean; `live_brush::runs_along`), when the two swap. More than two
+  layers, or two with no outline between them, are `Count`, *Select a path, and the shape to run
+  along it*. The refusals add the rest, each a `Refusal::says()` sentence the dimmed row and a
+  refused commit both give: `Same` *A brush can't be the path it runs along*, `Text` *A brush
+  can't be text*, `Picture` *A brush can't be a picture*, `Flat` *A brush needs some length to lay
+  along the path* (a brush whose world box has no width), `Length` *The path has no length to run
+  along*, and for the path Blend's tests: `Locked` *The path is locked*, `Inside` *Apply brush
+  can't work inside a boolean, a component or an instance*. A bake (`apply_brush::refusal`) adds
+  the two it owes the group that replaces the path: `Mask` *Apply brush can't take a mask*,
+  `Layout` *Apply brush can't work inside an auto layout*. A live link (`live_brush::refusal`)
+  drops those two and adds `BrushInInstance` *A brush can't be inside an instance* and `Loop` *A
+  brush can't be drawn along a path it brushes* (the brush or anything inside it reaches the path
+  through a chain of links). The brush is otherwise only read, so a locked brush or one elsewhere
+  in the tree is fine.
 - **Geometry** is in world space: the path's every subpath with length is a track, measured by
   a per-segment table of arc length at 32 steps of `t`. *Art* maps the brush's world box onto each
   track: `x` to arc length (the box's left at the start, its right at the end), `y` to an offset
@@ -500,16 +506,53 @@ open work in the roadmap).
   box for Art), and its fill rule, effects, drawn opacity and mode. Then the path is deleted, or
   with *Keep the path* moved to the group's bottom, hidden and named *Path*
   (`KEPT_PATH_NAME`), where it was drawn. The brush stays where it was. Built on a scratch
-  `Document` as Blend's steps are.
+  `Document` as Blend's steps are. `apply_brush::apply` is `refusal` then `build`; a live brush's
+  bake calls `build` alone, since it holds paths no bake is offered (a mask, in an auto layout).
+
+### The live brush (`live_brush`)
+
+- **The link** is `Node::brush`, a `BrushLink { of, mode, visible }`: the brush layer, the card's
+  options (`apply_brush::Mode`), and whether the brush shows (hidden, the path's strokes draw
+  again). It is written by `Operation::SetBrush`, refused (`OpError::BrushForKind`) on a kind
+  `runs_along` refuses and for a link to the layer itself. Copies of a main follow it, a copy's
+  own is an override, and reset puts back the main's.
+- **What draws** (`apply_brush::ink`): the bake's geometry kept in the path layer's own space, so
+  moving the layer moves it. An `Ink` is a path, the places it is drawn at (the identity for Art,
+  one map per copy for Scatter, whose path is the brush's own outline), the factor on the brush's
+  stroke widths and the map carrying its gradients; `apply_brush::carried` lays the brush's paint
+  on it for the bake, the walk and the hit test alike. The brush's whole look draws: fills,
+  strokes, gradients, fill rule, effects, drawn opacity and blend. The path's fills still draw;
+  its strokes give way (`live_brush::hides_strokes`) while the link is shown and names a layer
+  outside the vault, even when the brush draws nothing, so a broken brush shows as broken
+  (`live_brush::broken` gives the reason); a link to a layer that is gone draws the strokes.
+  Hiding the brush layer does not change its users.
+- **The link never names nothing.** Deleting a brush, or a layer holding one, bakes every layer
+  it brushed that is not deleted too (`live_brush::orphaned`, `baked_for_deletes`), put in front of
+  the transaction at the app's commit door (`EditorSession::commit_inner`, before
+  `propagate::owed`), so it is one undo step; the status says *Deleted ‹name› · baked the N
+  layers it brushed*. A copy carries, beside each subtree, a twin with every brush whose brush
+  stayed behind baked (`live_brush::baked_copies`); a paste into a document without the brush
+  takes the twin (`live_brush::fitted`, `MastikApp::clip_here`), one into the same document keeps
+  the link, remapped when the brush came along.
+- **The bake** (`live_brush::bake`): the *Brushed · ‹brush›* group in the path's place, the path
+  kept at the group's bottom, shown under its own name with its strokes and link dropped, while
+  it has a visible fill, and deleted otherwise. A brush that draws nothing just drops the link.
+- **Writers that cannot draw it live** take `live_brush::baked_view`, a copy of the document with
+  the brushes baked (`export.md`).
 
 ### The card (`apply_brush.rs`)
 
 `menu::Item::ApplyBrush`, *Apply brush…*, glyph `brush` (a brushstroke pointed at both ends),
 group Structure, no chord; palette aliases art brush, scatter brush, along a path, bend. In the
 layer menu it follows *Blend shapes…* whenever two or more layers are selected, dimmed with
-`apply_brush::selection_refusal`'s sentence (`LayerState::brush_refusal`) or the lock sentence;
-otherwise the palette's *Not available here* row says *Select a path, and the shape to run along
-it* (`KIND_VERBS`).
+`live_brush::selection_refusal`'s sentence (`LayerState::brush_refusal`; a bake's own two are
+said when it commits) or the lock sentence; otherwise the palette's *Not available here* row says
+*Select a path, and the shape to run along it* (`KIND_VERBS`). Whenever the selection holds a
+brushed layer (`LayerState::brushed`) three rows follow it, group Structure, no chords, dimmed only
+by the lock: *Edit brush…* (`Item::EditBrush`, glyph `brush`; aliases brush options, live brush),
+*Bake brush* (`stack-simple`, as *Detach list*; expand brush, brush to paths) and *Remove brush*
+(`link-break`, as *Detach instance*; unlink brush, clear brush). Their palette sentence is *Select
+a layer drawn with a brush*.
 
 - **The card** sits in the inspector's popover lane as Blend's does, and holds it alone: opening
   it closes the inspector's popovers, Repeat, Blend shapes and the warp envelope, and each of
@@ -519,13 +562,14 @@ it* (`KIND_VERBS`).
   Scatter's, so the footer stays put: Art's *Width* (%, default 100), *Stretch* segmented *Whole
   shape | Middle only*, switch *Flip across*; Scatter's *Spacing* | *Size* (120%, 80%), *Size
   varies* | *Scatter* (30%, 20%) as pairs (`repeat::pair`), *Turn* segmented *Along the path |
-  Fixed*, *Seed* (1); the switch *Keep the path* (off); foot *Cancel*, primary *Apply*. Its
-  settings live on the app and outlive a close. A right-click cancels a scrub of any of its
-  numbers (`InFlight::brush_scrub`).
+  Fixed*, *Seed* (1); the switch *Bake into paths* (off), and under it *Keep the path*, dimmed
+  while baking is off with *A live brush keeps the path: it is the layer*; foot *Cancel*, primary
+  *Apply*. Its settings live on the app and outlive a close. A right-click cancels a scrub of any
+  of its numbers (`InFlight::brush_scrub`).
 - **Path and brush** are taken from the selection when the card opens; the card closes when the
-  selection changes, when the two stop fitting (`refusal`), and when another document comes to
-  the front. *Swap brush and path* trades them, or says why the swapped pair cannot run. *Pick a
-  shape…* hides the card and makes the canvas wait as Blend's *Pick a path…* does
+  selection changes, when the two stop fitting (the live link's tests, which a bake's card is held
+  to as well), and when another document comes to the front. *Swap brush and path* trades them,
+  or says why the swapped pair cannot run. *Pick a shape…* hides the card and makes the canvas wait as Blend's *Pick a path…* does
   (`BrushCard::picking`, `brush_pick_at`): the status says *Click a shape to use as the brush ·
   Esc to cancel*, kept up as Blend's is; the cursor is the crosshair, the hover outline gives way
   to a 3pt ring in the selection blue round the shape under the pointer the card could take
@@ -533,14 +577,28 @@ it* (`KIND_VERBS`).
   it and brings the card back; a click on the path says *A brush can't be the path it runs
   along*, left up for its hold while the wait goes on; anything else is passed over. While the
   card is open its path is drawn dashed in the selection blue (`canvas::draw_brush_path`).
-- **The preview** is the commit's own group, minted from a copy of the id counter, with the path
-  hidden (a preview can neither delete nor reparent); rebuilt when the revision or the settings
-  change and put back after another gesture's preview cleared it. *Cancel* leaves everything as
-  it was.
+- **The preview** of a live brush is the `SetBrush` itself, drawn as committed. A bake's is the
+  commit's own group, minted from a copy of the id counter, with the path hidden (a preview can
+  neither delete nor reparent). Either is rebuilt when the revision or the settings change and put
+  back after another gesture's preview cleared it. *Cancel* leaves everything as it was.
 - **Keys.** `Enter` applies while the card is open; `Escape` calls off the wait for a shape, then
   closes the card, the two rungs after Blend shapes'.
-- **Commit**: one undo step, *Apply brush*; the group is selected and the status says *Brushed
-  with ‹brush›*, or *Scattered 9 copies of ‹brush›*.
+- **Commit**: one undo step, *Apply brush*. Live, the path stays selected and the status says
+  *Brushed ‹path› with ‹brush›* (Art) or *Scattered ‹brush› along ‹path›* (Scatter). Baked, the
+  group is selected and the status says *Brushed with ‹brush›*, or *Scattered 9 copies of
+  ‹brush›*.
+- **Edit brush** is the same card on the selected brushed layers, headed *Edit brush* and filled
+  from the first one's link; *Done* (`Enter`) writes the card's options to every one of them as
+  one *Edit brush* step, each keeping its own brush (unless *Pick a shape…* named another,
+  `BrushCard::relinked`) and whether it shows. It has no bake switches.
+  The Brush dropdown dims *Swap brush and path* (*A live brush's path is its own layer*) and adds,
+  under a rule, *Bake brush* and *Remove brush*. Its doors are the layer menu and the inspector's
+  brush row (`inspector.md`, *Fill and Stroke*).
+- **Bake brush** bakes each selected link (`live_brush::bake`) as one *Bake brush* step, selects
+  the groups and says *Baked ‹brush› into N paths*. **Remove brush** drops each link, one *Remove
+  brush* step.
+- Width handles do not show on a brushed layer (`width_handles::edited_profile`): its strokes do
+  not draw.
 
 ## The identity card's boolean row
 
@@ -623,6 +681,11 @@ the balanced fold; per-operand caching is not to be built. Pixel tests live in
 - *Blend shapes* must pair by arc length, not by matching anchor counts, though the latter looks
   simpler. `the_middle_step_is_half_way_in_place_size_and_paint` (`mastik-core/tests/blend_shapes.rs`,
   a circle against a rounded square) checks the middle step's width.
+- A live brush's ink is rebuilt by three tests in `Resolved::update`'s `rebrush` that each look
+  covered by the dirty set: the users `sync_brushed` added, users whose brush the pass reached,
+  and users whose layer's or brush's world transform moved off the entry's. A layout resizing the
+  brush, or an ancestor moving it, dirties neither layer, so dropping either of the last two leaves
+  stale ink.
 - `cancel_gesture` must not take the Blend card's standing preview for a gesture
   (`blend_preview_standing`, beside `repeat_preview_standing`), or a right-click on the canvas
   cancels it instead of opening the menu.

@@ -38,27 +38,12 @@ place, saved in the same shape so existing files load. It is matched in about 60
   on the GIF clock; the exported player plays it through a `<video>` element whose frames reach
   the WebAssembly drawing; still exports take a poster frame. Check H.264 patent coverage first:
   Cisco's licence covers its prebuilt binary, not a build from source. Large.
-- **Live vector brushes.** *Apply brush…* bakes an art or scatter brush into paths
-  (`app-booleans.md`, *Apply brush*). A live brush keeps the path as the layer: the layer links
-  to the brush layer and its card's options (a `Node::brush`), and the brush draws in place of
-  the path's stroke, its fill still drawn. The brush's whole look draws on the bent geometry,
-  with its fills, strokes, gradients and effects, as `look_ops` carries them into a bake, so the
-  link cannot be a stroke paint. It is rebuilt from `bend_onto` / `scatter_maps` in the layer's
-  own space whenever the path, the brush or the options change, with no copy kept.
-  - **Editing**: the path is edited as any path, the brush redrawn live as points move.
-    *Edit brush…* (layer menu, and the inspector's stroke row reading *Brush · ‹name›*) reopens
-    the card with that layer's options, headed *Edit brush*, previewed live; *Pick a shape…*
-    relinks. The card adds *Remove brush* (back to the path's own stroke) and *Bake brush*
-    (today's result).
-  - **The link**: deleting the brush bakes every layer using it, in the same undo step, as
-    deleting a variant detaches its instances. Pasting a brushed layer where its brush is not
-    bakes it too. A link that would loop (a brush drawn by the layer it brushes) is refused.
-    Hiding the brush layer does not change its users.
-  - **Readers**: bounds and hit tests take the brush's drawn extent along the path, not the
-    stroke width; SVG and PDF write the baked result, the save format keeps the link; code
-    export reports it as a shape, as a profiled stroke. Scatter's up-to-2,000 copies need the
-    geometry cached against the path and the options.
-  Large.
+- **Live brush finish** (`app-booleans.md`, *Apply brush*). Small.
+  - A paste that baked a brush says so: *Pasted · ‹brush› isn't in this document, so its brush
+    was baked*; the paste doors keep their own words today.
+  - *Edit brush* over several brushed layers shows the options they differ in as *Mixed*; today it
+    shows the first layer's.
+  - The layers tree's *brush · N* badge carries a hover tip, *The brush of N layers*.
 - **Mesh gradients.** Mesh lines and colour points, blended across each patch (Coons patches). A
   mesh mode in the canvas's gradient editor (`gradient.rs`): click on a line to add one through the point,
   drag points and handles, pick a point's colour. peniko has linear, radial and sweep only, so the

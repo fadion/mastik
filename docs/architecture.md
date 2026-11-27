@@ -55,7 +55,7 @@ Read the file for the exact wording before relying on one.
 | `app-selection.md` | 9.4 | Selection on the canvas and in the layers panel |
 | `app-create-gestures.md` | 9.4 | Creation gestures |
 | `app-pen-and-nodes.md` | 9.4 | Pen, pencil and node tools, *Pixel-fit* |
-| `app-booleans.md` | 9.4 | Booleans, flatten, outline, the shape builder and Divide, Blend shapes, Apply brush, masks |
+| `app-booleans.md` | 9.4 | Booleans, flatten, outline, the shape builder and Divide, Blend shapes, Apply brush and live brushes, masks |
 | `app-frames-and-copies.md` | 9.4 | Frames on the canvas, reparenting, copies |
 | `app-snapping.md` | 9.4 | Snapping |
 | `app-rulers-guides.md` | 9.4 | Rulers and guides |

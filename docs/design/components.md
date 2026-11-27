@@ -939,7 +939,8 @@ override. Kit mains not yet vendored are offered to a swap only (`kit::swap_offe
   `chrome_claims` keeps guides off it; `begin_select_drag` starts nothing on it), drawn after
   `draw_key_outline` (`draw_set_plus`).
 - **Layers**: the badge slot shows *N variants* on a collapsed set, `icon::PROPERTY_BOUND` on a layer bound
-  to a property of the owner above; priority mask → set count → bound → element tag → a list's rows
+  to a property of the owner above; priority mask → set count → bound → element tag → a brushed
+  layer's brush name → a brush's *brush · N* (its users, from `Resolved::brushed`) → a list's rows
   (`lists.md`) → frame size / subtract base. A variant row is
   named by its values and wears the filled hexagon.
 - Values are renamed, moved and deleted from a chip's popup, never edited in place or dragged;

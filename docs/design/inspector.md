@@ -278,6 +278,18 @@ lights no cell, both falling out of `Option<StrokeAlign>`; weight is *Mixed*, ab
 0, written through `set_stroke_weight`; the dash, cap, join and ends popup and sides selector are present and
 `FieldButton::Disabled`, with tooltips.
 
+**A live brush heads the Stroke section** of a single brushed layer (`brush_row`;
+`app-booleans.md`, *Apply brush*), which then does not collapse for want of strokes: the brush's
+kind glyph, *Brush · ‹name›*, and its mode (*Art* / *Scatter*) at the end. While it draws nothing
+the row is amber with `live_brush::broken`'s reason as its tooltip (*Flat* reads *‹name› has no
+length to lay along the path*). A click opens *Edit brush*, ✕ is *Remove brush*, and the eye beside
+it hides or shows the brush (steps *Hide brush* / *Show brush*). While the brush shows, the note
+*The brush draws in place of the strokes. Remove it to draw them again* sits under it, and the
+path's own strokes stay below at `HIDDEN_OPACITY`, so removing the brush gives them back as they
+were. On the brush layer itself the identity card carries a `ui::note_line_acts` line, *The brush
+of N layers. Editing it redraws them.*, with *Select them* and *Bake them*, counted from
+`Resolved::brushed`.
+
 **Paint rows** carry a grip and an eye. `RowCtx::grip: Option<(PaintList, usize)>`: canvas ground,
 guide colour, decorations and Group Colors pass `None`; a frame's fill is a real list entry.
 

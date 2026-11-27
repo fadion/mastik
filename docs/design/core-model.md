@@ -94,6 +94,7 @@ pub struct Node {
     note: String,              // the layer's annotation, empty = none; never drawn
     reactions: Vec<Keyed<Reaction>>, // prototype triggers and their actions; never drawn (prototyping-model.md)
     play: LayerPlay,           // a frame's scroll and snap, a child's pin, an input, following a drag, a scroll effect; never drawn
+    brush: Option<BrushLink>,  // a LIVE BRUSH drawn in place of the strokes: { of, mode, visible }; outlined kinds only — app-booleans.md
     modes: Vec<ModeId>,        // the modes a FRAME or page sets for itself and contents, at most one per
                                // collection, id order; a collection with none inherits — §5.3f
     queries: Vec<Breakpoints>, // a FRAME's width queries: per collection, each mode's minimum width,
