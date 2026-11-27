@@ -494,22 +494,31 @@ fn deleting_a_mains_brush_leaves_no_instance_linked_to_nothing() {
     );
 }
 
-/// The fixture's frame and a copy of it, brushed with its own *Leaf* (renamed
-/// `brush_name`), combined into a set; an instance of the first switched to the
-/// second. Answers the instance's root and the second variant.
-fn switched_to_second_variant(f: &mut Fixture, brush_name: &str) -> (NodeId, NodeId) {
+/// The fixture's frame, brushed with *Leaf*, and a copy of it with each layer
+/// named in `renames` renamed, combined into a set, with an instance of the
+/// first. Answers the instance's root and the second variant.
+fn two_variants(f: &mut Fixture, renames: &[(&str, &str)]) -> (NodeId, NodeId) {
     use mastik_core::variant;
     f.link(Mode::Art(Art::DEFAULT));
     let root = f.doc.get(f.frame).and_then(|n| n.parent()).unwrap();
     let (nodes, second) =
         mastik_core::remap_subtree(&f.doc.capture_subtree(f.frame).unwrap(), &mut f.ids).unwrap();
-    let second_leaf = nodes.iter().find(|n| n.name() == "Leaf").unwrap().id();
-    f.edit(vec![
+    let mut ops: Vec<Operation> = renames
+        .iter()
+        .map(|(from, to)| Operation::SetName {
+            id: nodes.iter().find(|n| n.name() == *from).unwrap().id(),
+            name: (*to).into(),
+        })
+        .collect();
+    ops.insert(
+        0,
         Operation::InsertSubtree {
             nodes,
             parent: root,
             index: 1,
         },
+    );
+    ops.extend([
         Operation::SetName {
             id: f.frame,
             name: "Card/On".into(),
@@ -518,11 +527,8 @@ fn switched_to_second_variant(f: &mut Fixture, brush_name: &str) -> (NodeId, Nod
             id: second,
             name: "Card/Off".into(),
         },
-        Operation::SetName {
-            id: second_leaf,
-            name: brush_name.into(),
-        },
     ]);
+    f.edit(ops);
     for main in [f.frame, second] {
         f.edit(vec![Operation::SetComponent {
             id: main,
@@ -542,30 +548,38 @@ fn switched_to_second_variant(f: &mut Fixture, brush_name: &str) -> (NodeId, Nod
         Default::default(),
     );
     f.edit(tx.0);
-    let tx = variant::switch(&f.doc, made[0], second, &mut f.ids).expect("a switch");
-    commit(f, tx.0);
     (made[0], second)
+}
+
+/// The instance rooted at `instance` switched to `to`, with what it owes.
+fn switch_to(f: &mut Fixture, instance: NodeId, to: NodeId) {
+    let tx = mastik_core::variant::switch(&f.doc, instance, to, &mut f.ids).expect("a switch");
+    commit(f, tx.0);
+}
+
+/// The layer named `name` in the instance rooted at `instance`.
+fn named_in(f: &Fixture, instance: NodeId, name: &str) -> NodeId {
+    mastik_core::build::subtree_nodes(&f.doc, &[instance])
+        .into_iter()
+        .find(|id| f.doc.get(*id).is_some_and(|n| n.name() == name))
+        .unwrap_or_else(|| panic!("no {name} in the instance"))
 }
 
 /// A switch to a variant draws the instance's path with the instance's copy of
 /// that variant's brush, whether the switch keeps the brush layer (same name) or
 /// copies the variant's in (another name).
 /// flip: `rewrite`'s `at_copy` as the identity → fails at "Leaf: … own copy";
-/// `copy_of_new` without the inserted copies → fails at "Petal: … own copy".
+/// `copy_of_new` without the inserted copies → fails at "Petal: … own copy";
+/// the spared-brush loop counting rebrushed paths → fails at "Petal: … goes with
+/// the switch".
 #[test]
 fn a_variant_switch_draws_with_the_instances_own_brush() {
     for brush_name in ["Leaf", "Petal"] {
         let mut f = Fixture::new();
-        let (instance, second) = switched_to_second_variant(&mut f, brush_name);
-        let in_instance = mastik_core::build::subtree_nodes(&f.doc, &[instance]);
-        let named = |name: &str| {
-            in_instance
-                .iter()
-                .copied()
-                .find(|id| f.doc.get(*id).is_some_and(|n| n.name() == name))
-                .unwrap_or_else(|| panic!("{brush_name}: no {name} in the instance"))
-        };
-        let (path, brush) = (named("Stroke line"), named(brush_name));
+        let (instance, second) = two_variants(&mut f, &[("Leaf", brush_name)]);
+        switch_to(&mut f, instance, second);
+        let path = named_in(&f, instance, "Stroke line");
+        let brush = named_in(&f, instance, brush_name);
         assert_eq!(
             f.doc.get(instance).and_then(|n| n.link()),
             Some(second),
@@ -581,5 +595,50 @@ fn a_variant_switch_draws_with_the_instances_own_brush() {
             Vec::new(),
             "{brush_name}: the switched path's brush is no override"
         );
+        let leaves = mastik_core::build::subtree_nodes(&f.doc, &[instance])
+            .into_iter()
+            .filter(|id| f.doc.get(*id).is_some_and(|n| n.name() == "Leaf"))
+            .count();
+        assert_eq!(
+            leaves,
+            usize::from(brush_name == "Leaf"),
+            "{brush_name}: the old variant's brush goes with the switch"
+        );
     }
+}
+
+/// A switch leaves no layer linked to nothing: an instance's path set to draw
+/// with its own copy of *Bud*, a layer the target variant does not have, keeps
+/// that copy, which an untouched counterpart with no match would lose.
+/// flip: `rewrite` skipping its spared-brush loop → fails at "linked to nothing".
+#[test]
+fn a_variant_switch_keeps_a_brush_the_instance_still_draws_with() {
+    let mut f = Fixture::new();
+    let bud = f.ids.mint();
+    f.edit(vec![Operation::CreateNode {
+        id: bud,
+        parent: f.frame,
+        index: 2,
+        kind: NodeKind::Ellipse {
+            size: Size::new(40.0, 40.0),
+            arc: Default::default(),
+        },
+        transform: Some(Affine::translate((300.0, 250.0))),
+        name: Some("Bud".into()),
+    }]);
+    let (instance, second) = two_variants(&mut f, &[("Bud", "Bloom")]);
+    let path = named_in(&f, instance, "Stroke line");
+    let own_bud = named_in(&f, instance, "Bud");
+    commit(
+        &mut f,
+        vec![Operation::SetBrush {
+            id: path,
+            brush: Some(BrushLink::new(own_bud, Mode::Art(Art::DEFAULT))),
+        }],
+    );
+    switch_to(&mut f, instance, second);
+    let of = link_of(&f, path).of;
+    assert!(f.doc.contains(of), "the path is linked to nothing");
+    assert_eq!(of, own_bud, "the path keeps the instance's Bud");
+    assert!(f.res.brush_ink(path).is_some(), "the path still draws");
 }

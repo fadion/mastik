@@ -1980,6 +1980,47 @@ pub(crate) fn rewrite(
             }
         }
     }
+    // **A deletion that would take a brush a staying layer draws with is kept
+    // and cut instead**, as an overridden counterpart is: an instance's path set
+    // to its own copy of a layer the target lacks would be left linked to
+    // nothing. A path whose link the carry rewrites names the target's brush.
+    // Repeated, since a kept layer may draw with another deletion's brush.
+    let rebrushed: FxHashSet<NodeId> = fields
+        .iter()
+        .filter_map(|op| match op {
+            Operation::SetBrush { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect();
+    loop {
+        let gone: FxHashSet<NodeId> = crate::build::subtree_nodes(doc, &deletes)
+            .into_iter()
+            .collect();
+        let drawn: FxHashSet<NodeId> = crate::build::subtree_nodes(doc, &[root])
+            .into_iter()
+            .filter(|id| !gone.contains(id) && !rebrushed.contains(id))
+            .filter_map(|id| doc.get(id).and_then(|n| n.brush).map(|l| l.of))
+            .filter(|of| gone.contains(of))
+            .collect();
+        let (spared, kept): (Vec<NodeId>, Vec<NodeId>) = deletes.iter().partition(|d| {
+            crate::build::subtree_nodes(doc, &[**d])
+                .iter()
+                .any(|k| drawn.contains(k))
+        });
+        if spared.is_empty() {
+            break;
+        }
+        deletes = kept;
+        cuts.extend(
+            crate::build::subtree_nodes(doc, &spared)
+                .into_iter()
+                .filter(|k| {
+                    doc.get(*k)
+                        .and_then(|n| n.link)
+                        .is_some_and(|l| old_sources.contains(&l))
+                }),
+        );
+    }
     let deleted: FxHashSet<NodeId> = crate::build::subtree_nodes(doc, &deletes)
         .into_iter()
         .collect();

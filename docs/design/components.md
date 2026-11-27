@@ -80,7 +80,8 @@ difference *is* the override.
   the instance's brush; a push names the main's. A variant switch or swap (`variant::rewrite`) lands
   the carried link and every inserted copy's on the instance's layers as they will be after the
   rewrite — a kept layer's counterpart or a copy inserted in the same step — since the document as it
-  stands has no copy of the new variant's brush yet.
+  stands has no copy of the new variant's brush yet. A counterpart the rewrite would delete is kept and
+  cut instead while a staying layer still draws with it, so no link names nothing.
 - **An instance root's transform is never linked** — it is where the instance sits. Precisely: the
   transform of a node whose source is a component root, so a nested copy inside an outer main still
   passes its place within that main to the outer instances. Every other root field, size included,
