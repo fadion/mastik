@@ -65,6 +65,9 @@ pub(crate) struct Clip {
     /// Beside each subtree, its twin with every live brush whose brush was not
     /// copied baked (`live_brush::baked_copies`), for a paste where it is not.
     pub(crate) baked: Vec<Option<Vec<Node>>>,
+    /// The brushes a paste here bakes, by name: filled by
+    /// [`MastikApp::clip_here`] for the paste's sentence, empty on the clipboard.
+    pub(crate) baked_brushes: Vec<String>,
     /// The vault mains those subtrees reach (`mastik_core::kit::carried`); a paste
     /// vendors them so a kit instance lands linked.
     pub(crate) kits: Vec<Vec<Node>>,
@@ -193,8 +196,9 @@ pub(crate) struct InFlight {
     pub(crate) repeat_scrub: Option<crate::repeat::Numbers>,
     /// *Blend shapes…*'s step count as it was when its scrub began, likewise.
     pub(crate) blend_scrub: Option<f64>,
-    /// *Apply brush…*'s numbers as they were when a scrub of one began, likewise.
-    pub(crate) brush_scrub: Option<crate::apply_brush::Numbers>,
+    /// *Apply brush…*'s numbers, and which were mixed, as they were when a scrub
+    /// of one began, likewise.
+    pub(crate) brush_scrub: Option<crate::apply_brush::Scrubbed>,
     /// The warp card's bend as it was when its scrub began, likewise.
     pub(crate) warp_scrub: Option<f64>,
     /// The trace card's numbers as they were when a scrub of one began, likewise.
@@ -5148,6 +5152,7 @@ impl MastikApp {
         self.clipboard = Some(Clip {
             subtrees: payload.subtrees,
             baked: payload.baked,
+            baked_brushes: Vec::new(),
             kits: payload.kits,
             images: payload.images,
             vars: payload.vars,
@@ -5168,13 +5173,14 @@ impl MastikApp {
 
     /// The clipboard as a paste into this document takes it: a subtree whose
     /// live brush is neither copied nor here pastes as its baked twin
-    /// (`live_brush::fitted`).
+    /// (`live_brush::fitted`), the brushes it bakes named for the sentence.
     fn clip_here(&self) -> Option<Clip> {
         let mut clip = self.clipboard.clone()?;
         if !clip.baked.is_empty() {
-            let (subtrees, _) =
+            let (subtrees, names) =
                 mastik_core::live_brush::fitted(&self.session.doc, &clip.subtrees, &clip.baked);
             clip.subtrees = subtrees;
+            clip.baked_brushes = names;
         }
         Some(clip)
     }
@@ -5250,6 +5256,7 @@ impl MastikApp {
         self.clipboard = Some(Clip {
             subtrees: templates,
             baked,
+            baked_brushes: Vec::new(),
             kits,
             images,
             vars,
@@ -5732,6 +5739,7 @@ impl MastikApp {
             &clip.images,
             &clip.kits,
             &clip.vars.tokens,
+            &clip.baked_brushes,
         );
         true
     }
@@ -5874,6 +5882,7 @@ impl MastikApp {
             &clip.images,
             &clip.kits,
             &clip.vars.tokens,
+            &clip.baked_brushes,
         );
         true
     }
@@ -5932,6 +5941,7 @@ impl MastikApp {
             &clip.images,
             &clip.kits,
             &clip.vars.tokens,
+            &clip.baked_brushes,
         );
         true
     }
@@ -6020,6 +6030,7 @@ impl MastikApp {
             &[],
             &[],
             &Default::default(),
+            &[],
         );
 
         let mut made = build::outermost(&self.session.doc, self.session.selection.ids());
@@ -6063,6 +6074,8 @@ impl MastikApp {
     /// space, and select the results. `images` and `kits` are what nodes cannot carry
     /// themselves (image-table entries, vendored kit mains); only what this document is
     /// missing is added.
+    /// `baked_brushes` names the brushes the paste baked, for its sentence.
+    #[expect(clippy::too_many_arguments, reason = "each is a part of the clipboard")]
     fn insert_all(
         &mut self,
         placements: Vec<build::Placement>,
@@ -6071,6 +6084,7 @@ impl MastikApp {
         images: &[(mastik_core::ImageId, mastik_core::ImageEntry)],
         kits: &[Vec<Node>],
         tokens: &mastik_core::tokens::Tokens,
+        baked_brushes: &[String],
     ) {
         if placements.is_empty() {
             return;
@@ -6109,6 +6123,9 @@ impl MastikApp {
                         "their mains are"
                     },
                 ));
+            }
+            if let Some(note) = baked_note(baked_brushes) {
+                said.push_str(&format!(" · {note}"));
             }
             self.session.info(said);
             self.session.selection.set(created);
@@ -6309,10 +6326,11 @@ impl MastikApp {
         ops.extend(targets.iter().map(|id| Operation::DeleteNode { id: *id }));
         ops.extend(mastik_core::component::relink_for_delete(doc, &targets));
         if self.session.commit(Transaction(ops)) {
-            self.session.info(match targets.len() {
-                1 => "Replaced 1 layer".to_string(),
-                n => format!("Replaced {n} layers"),
-            });
+            let mut said = format!("Replaced {}", crate::ui::count(targets.len(), "layer"));
+            if let Some(note) = baked_note(&clip.baked_brushes) {
+                said.push_str(&format!(" · {note}"));
+            }
+            self.session.info(said);
             self.session.selection.set(created);
         }
     }
@@ -8431,6 +8449,21 @@ pub(crate) fn status_color(status: &crate::session::Status) -> egui::Color32 {
 fn width_to_store(width: f32, room: f32, stored: f32, down: bool) -> Option<f32> {
     let user_did_it = !down && width < room - 0.5;
     (user_did_it && (width - stored).abs() >= 0.5).then_some(width)
+}
+
+/// What a paste says of the live brushes it baked because their brushes are not in
+/// this document, or `None` when it baked none.
+fn baked_note(brushes: &[String]) -> Option<String> {
+    match brushes {
+        [] => None,
+        [one] => Some(format!(
+            "{one} isn't in this document, so its brush was baked"
+        )),
+        many => Some(format!(
+            "{} aren't in this document, so they were baked",
+            crate::ui::count_as(many.len(), "brush", "brushes")
+        )),
+    }
 }
 
 /// How many instances a paste landed detached (linked in what was copied, no link where
@@ -19367,6 +19400,72 @@ mod clipboard_crossing_tests {
                 crate::session::StatusKind::Error
             ),
             "and the user is told, because nothing else in the paste path will"
+        );
+    }
+
+    /// A path drawn with a live brush, copied without its brush and pasted into a
+    /// document that lacks it, lands baked and the status line names the brush.
+    /// flip: `insert_all` without `baked_note` → fails at "names the brush".
+    #[test]
+    fn a_paste_that_bakes_a_brush_says_so() {
+        use mastik_core::apply_brush::{Art, Mode};
+        use mastik_core::kurbo::{BezPath, Size};
+        let ctx = egui::Context::default();
+        let mut source = MastikApp::headless(&ctx);
+        let page = source.session.doc.first_page();
+        let (path, leaf) = (source.session.ids.mint(), source.session.ids.mint());
+        let mut line = BezPath::new();
+        line.move_to((0.0, 300.0));
+        line.line_to((600.0, 300.0));
+        assert!(source.session.commit(Transaction(vec![
+            Operation::CreateNode {
+                id: path,
+                parent: page,
+                index: 0,
+                kind: NodeKind::Path {
+                    path: line,
+                    corner_radii: Vec::new(),
+                    corner_smoothing: 0.0,
+                    mirror: Default::default(),
+                },
+                transform: None,
+                name: Some("Line".into()),
+            },
+            Operation::CreateNode {
+                id: leaf,
+                parent: page,
+                index: 1,
+                kind: NodeKind::Ellipse {
+                    size: Size::new(60.0, 20.0),
+                    arc: Default::default(),
+                },
+                transform: None,
+                name: Some("Leaf".into()),
+            },
+            Operation::SetBrush {
+                id: path,
+                brush: Some(mastik_core::live_brush::BrushLink::new(
+                    leaf,
+                    Mode::Art(Art::DEFAULT),
+                )),
+            },
+        ])));
+        source.session.selection.set(vec![path]);
+        let text = source.copy_selection(&ctx).expect("a layer copy");
+        let mut target = MastikApp::headless(&ctx);
+        assert!(matches!(target.adopt_clip_text(text), Clipboard::Layers));
+        assert!(target.paste_clipboard_at(mastik_core::kurbo::Vec2::ZERO));
+        let pasted =
+            mastik_core::build::subtree_nodes(&target.session.doc, target.session.selection.ids());
+        assert!(
+            !pasted.is_empty()
+                && mastik_core::live_brush::brushed_in(&target.session.doc, &pasted).is_empty(),
+            "the paste is baked"
+        );
+        assert_eq!(
+            target.session.status().text,
+            "Pasted 1 layer · Leaf isn't in this document, so its brush was baked",
+            "names the brush"
         );
     }
 

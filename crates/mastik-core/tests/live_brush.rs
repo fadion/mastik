@@ -434,6 +434,23 @@ fn a_mains_brush_options_reach_its_instances() {
     );
 }
 
+/// A copy of the brushed path pastes as its baked twin where *Leaf* is not,
+/// naming the brush it baked, and as itself where it is.
+#[test]
+fn a_paste_where_the_brush_is_not_bakes_and_names_it() {
+    let mut f = Fixture::new();
+    f.link(Mode::Art(Art::DEFAULT));
+    let copied = vec![f.doc.capture_subtree(f.path).unwrap()];
+    let baked = live_brush::baked_copies(&f.doc, &f.res, &[f.path], &mut f.ids);
+    let elsewhere = Document::new(IdSource::new(0xD1).mint());
+    let (subtrees, names) = live_brush::fitted(&elsewhere, &copied, &baked);
+    assert_eq!(names, vec!["Leaf".to_string()]);
+    assert_ne!(subtrees, copied, "the twin is pasted");
+    let (subtrees, names) = live_brush::fitted(&f.doc, &copied, &baked);
+    assert!(names.is_empty(), "{names:?}");
+    assert_eq!(subtrees, copied, "the link is pasted where its brush is");
+}
+
 /// Deleting the main's brush, as the app commits it (its users baked first,
 /// then what the components owe), leaves no layer linked to nothing, though an
 /// instance's path holds options of its own: its brush copy stays with it.

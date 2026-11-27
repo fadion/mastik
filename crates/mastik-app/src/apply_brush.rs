@@ -40,6 +40,83 @@ impl Default for Numbers {
     }
 }
 
+/// The options *Edit brush*'s layers differ in, each shown as *Mixed* until it
+/// is set; untouched, each layer keeps its own. `kind` is Art against Scatter,
+/// and while it stands each layer keeps its whole mode.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct Mixed {
+    /// The brush layer itself, until *Pick a shape…* names one.
+    brush: bool,
+    kind: bool,
+    width: bool,
+    middle: bool,
+    flip: bool,
+    spacing: bool,
+    size: bool,
+    size_varies: bool,
+    scatter: bool,
+    seed: bool,
+    fixed: bool,
+}
+
+impl Mixed {
+    /// What `modes` differ in, each option compared among the modes of its kind.
+    fn of(modes: &[Mode]) -> Mixed {
+        let arts: Vec<Art> = modes
+            .iter()
+            .filter_map(|m| match m {
+                Mode::Art(a) => Some(*a),
+                Mode::Scatter(_) => None,
+            })
+            .collect();
+        let scatters: Vec<Scatter> = modes
+            .iter()
+            .filter_map(|m| match m {
+                Mode::Scatter(s) => Some(*s),
+                Mode::Art(_) => None,
+            })
+            .collect();
+        fn differ<T, V: PartialEq>(all: &[T], f: impl Fn(&T) -> V) -> bool {
+            all.windows(2).any(|w| f(&w[0]) != f(&w[1]))
+        }
+        Mixed {
+            brush: false,
+            kind: !arts.is_empty() && !scatters.is_empty(),
+            width: differ(&arts, |a| a.width),
+            middle: differ(&arts, |a| a.stretch),
+            flip: differ(&arts, |a| a.flip),
+            spacing: differ(&scatters, |s| s.spacing),
+            size: differ(&scatters, |s| s.size),
+            size_varies: differ(&scatters, |s| s.size_varies),
+            scatter: differ(&scatters, |s| s.scatter),
+            seed: differ(&scatters, |s| s.seed),
+            fixed: differ(&scatters, |s| s.turn),
+        }
+    }
+
+    /// The number fields `after` moved off `before` set, no longer mixed.
+    fn settle(&mut self, before: Numbers, after: Numbers) {
+        self.width &= before.width == after.width;
+        self.spacing &= before.spacing == after.spacing;
+        self.size &= before.size == after.size;
+        self.size_varies &= before.size_varies == after.size_varies;
+        self.scatter &= before.scatter == after.scatter;
+        self.seed &= before.seed == after.seed;
+    }
+}
+
+/// A value field's formatter showing *Mixed* in place of the number while
+/// `mixed`, `plain` otherwise.
+fn mixed_or(
+    mixed: bool,
+    plain: impl Fn(egui::DragValue<'_>) -> egui::DragValue<'_>,
+) -> impl Fn(egui::DragValue<'_>) -> egui::DragValue<'_> {
+    move |d| match mixed {
+        true => d.custom_formatter(|_, _| ui::MIXED_WORD.into()),
+        false => plain(d),
+    }
+}
+
 /// The card's settings, kept closed so it reopens on the brush last applied.
 #[derive(Default)]
 pub(crate) struct BrushCard {
@@ -61,6 +138,8 @@ pub(crate) struct BrushCard {
     /// The brushed layers *Edit brush* is open on; empty while the card applies
     /// a brush.
     pub(crate) editing: Vec<NodeId>,
+    /// What the edited layers differ in; nothing while the card applies a brush.
+    mixed: Mixed,
     /// Whether *Pick a shape…* named a brush since the card opened: only then
     /// does *Edit brush* relink the layers it edits.
     relinked: bool,
@@ -72,14 +151,19 @@ pub(crate) struct BrushCard {
     built: Option<(Key, Transaction)>,
 }
 
-/// What a preview was built from: the revision, whether it links, and the
-/// application.
-type Key = (u64, bool, ApplyBrush);
+/// What a preview was built from: the revision, whether it links, the
+/// application and what is still mixed.
+type Key = (u64, bool, ApplyBrush, Mixed);
+
+/// What a right-click puts back when it cancels a scrub: the numbers, and which
+/// of them were mixed.
+pub(crate) type Scrubbed = (Numbers, Mixed);
 
 impl BrushCard {
     /// Put back the numbers a right-click cancelled the scrub of.
-    pub(crate) fn restore_scrub(&mut self, numbers: Numbers) {
+    pub(crate) fn restore_scrub(&mut self, (numbers, mixed): Scrubbed) {
         self.numbers = numbers;
+        self.mixed = mixed;
     }
 
     /// The application the card describes, while it has a path and a brush.
@@ -123,6 +207,32 @@ impl BrushCard {
                 self.numbers.seed = f64::from(s.seed);
                 self.fixed = s.turn == Turn::Fixed;
             }
+        }
+    }
+
+    /// The options a commit writes on a layer whose own are `own`: the card's,
+    /// but where they are still mixed, which keep the layer's own.
+    fn mode_for(&self, own: Option<Mode>) -> Mode {
+        fn pick<T>(mixed: bool, own: T, card: T) -> T {
+            if mixed { own } else { card }
+        }
+        let (x, card) = (self.mixed, self.mode());
+        match (own, card) {
+            (Some(own), _) if x.kind => own,
+            (Some(Mode::Art(o)), Mode::Art(c)) => Mode::Art(Art {
+                width: pick(x.width, o.width, c.width),
+                stretch: pick(x.middle, o.stretch, c.stretch),
+                flip: pick(x.flip, o.flip, c.flip),
+            }),
+            (Some(Mode::Scatter(o)), Mode::Scatter(c)) => Mode::Scatter(Scatter {
+                spacing: pick(x.spacing, o.spacing, c.spacing),
+                size: pick(x.size, o.size, c.size),
+                size_varies: pick(x.size_varies, o.size_varies, c.size_varies),
+                scatter: pick(x.scatter, o.scatter, c.scatter),
+                turn: pick(x.fixed, o.turn, c.turn),
+                seed: pick(x.seed, o.seed, c.seed),
+            }),
+            _ => card,
         }
     }
 
@@ -195,6 +305,10 @@ pub(crate) const NO_BRUSH: &str = "Select a layer drawn with a brush";
 /// Why *Keep the path* is dimmed while the card links the brush.
 const KEEPS_PATH: &str = "A live brush keeps the path: it is the layer";
 
+/// *Edit brush*'s note in place of the options while its layers' brushes are of
+/// both kinds.
+const KINDS_DIFFER: &str = "These layers' brushes are Art and Scatter; pick one to set them all";
+
 /// Why *Swap brush and path* is dimmed in *Edit brush*.
 const OWN_PATH: &str = "A live brush's path is its own layer";
 
@@ -254,6 +368,7 @@ impl MastikApp {
         card.open = true;
         card.picking = false;
         card.editing.clear();
+        card.mixed = Mixed::default();
         card.relinked = false;
         card.path = Some(path);
         card.brush = Some(brush);
@@ -262,13 +377,19 @@ impl MastikApp {
     }
 
     /// *Edit brush…*: the card on the selected brushed layers, headed *Edit
-    /// brush* and filled with the first one's brush and options.
+    /// brush* and filled with the first one's brush and options; an option the
+    /// layers differ in shows *Mixed*.
     pub(crate) fn open_edit_brush(&mut self) {
         let doc = &self.session.doc;
         let layers = live_brush::brushed_in(doc, self.session.selection.ids());
         let Some(link) = layers.first().and_then(|id| doc.get(*id)?.brush()) else {
             return self.session.info(NO_BRUSH);
         };
+        let links: Vec<BrushLink> = layers
+            .iter()
+            .filter_map(|id| doc.get(*id)?.brush())
+            .collect();
+        let modes: Vec<Mode> = links.iter().map(|l| l.mode).collect();
         self.close_inspector_popovers();
         self.close_repeat();
         self.close_blend();
@@ -278,7 +399,21 @@ impl MastikApp {
         card.picking = false;
         card.path = layers.first().copied();
         card.brush = Some(link.of);
+        // Each kind's fields from the first layer of that kind, so either kind
+        // picked over a mixed one shows a layer's numbers; the first layer's last.
+        let first_of = |scatter: bool| {
+            modes
+                .iter()
+                .find(|m| matches!(m, Mode::Scatter(_)) == scatter)
+        };
+        for m in [first_of(false), first_of(true)].into_iter().flatten() {
+            card.load(*m);
+        }
         card.load(link.mode);
+        card.mixed = Mixed {
+            brush: links.iter().any(|l| l.of != link.of),
+            ..Mixed::of(&modes)
+        };
         card.editing = layers;
         card.relinked = false;
         card.opened_on = self.session.selection.ids().to_vec();
@@ -291,12 +426,12 @@ impl MastikApp {
         let Some(brush) = self.brush.brush else {
             return Vec::new();
         };
-        let mode = self.brush.mode();
         self.brush
             .targets()
             .into_iter()
             .map(|id| {
                 let own = self.session.doc.get(id).and_then(|n| n.brush());
+                let mode = self.brush.mode_for(own.map(|l| l.mode));
                 // An edited layer keeps its own brush until *Pick a shape…*
                 // names another.
                 let of = match own {
@@ -467,7 +602,12 @@ impl MastikApp {
         if !self.drag.is_none() {
             return;
         }
-        let key: Key = (self.session.revision(), self.brush.live(), how);
+        let key: Key = (
+            self.session.revision(),
+            self.brush.live(),
+            how,
+            self.brush.mixed,
+        );
         if self.brush.built.as_ref().is_none_or(|(k, _)| *k != key) && self.brush.live() {
             // The links themselves: the walk draws a previewed link as committed.
             let tx = Transaction(self.card_links());
@@ -614,8 +754,11 @@ impl MastikApp {
             return;
         }
         let area = self.transform_popover_area(ctx, egui::Id::new("apply-brush"));
+        let brushes_differ = self.brush.mixed.brush && !self.brush.relinked;
         let (brush_name, brush_glyph) = match self.brush.brush.and_then(|b| self.session.doc.get(b))
         {
+            // Each layer keeps its own brush until a shape is picked.
+            _ if brushes_differ => (ui::MIXED_WORD.to_owned(), ""),
             Some(n) => (
                 crate::private::layer(&self.session.doc, n.id()).into_owned(),
                 crate::panels::layers::kind_glyph(n.kind()).0,
@@ -626,6 +769,8 @@ impl MastikApp {
         // Before the fields: `value_field` applies this frame's drag delta inside
         // the call that reports the drag.
         let before = card.numbers;
+        let before_mixed = card.mixed;
+        let mixed = card.mixed;
         let mut scrubbing = false;
         let mut act = None;
         area.show(ctx, |ui| {
@@ -682,15 +827,28 @@ impl MastikApp {
                             .on_hover_text("The shape bent or repeated along the path");
                     });
                 });
-                if let Some(i) = ui::segmented(
-                    ui,
-                    w,
-                    ui::SEGMENT_CELL_H,
-                    2,
-                    usize::from(card.scatter),
-                    |p, i, r, on| ui::segment_label(p, r, ["Art", "Scatter"][i], on),
-                ) {
-                    act = Some(Act::Scatter(i == 1));
+                // Mixed: nothing raised (an index past the last cell) and the
+                // first cell's word traded for `ui::segment_mixed`'s dash.
+                let segment = |ui: &mut egui::Ui,
+                               words: [&'static str; 2],
+                               on: bool,
+                               mixed: bool|
+                 -> Option<bool> {
+                    ui::segmented(
+                        ui,
+                        w,
+                        ui::SEGMENT_CELL_H,
+                        2,
+                        if mixed { 2 } else { usize::from(on) },
+                        |p, i, r, lit| match mixed && i == 0 {
+                            true => ui::segment_mixed(p, r),
+                            false => ui::segment_label(p, r, words[i], lit),
+                        },
+                    )
+                    .map(|i| i == 1)
+                };
+                if let Some(on) = segment(ui, ["Art", "Scatter"], card.scatter, mixed.kind) {
+                    act = Some(Act::Scatter(on));
                 }
                 // Both modes' rows take Scatter's height, so the footer stays put
                 // and the card keeps its size as the mode changes.
@@ -703,6 +861,7 @@ impl MastikApp {
                     let mut field = |ui: &mut egui::Ui,
                                      width: f32,
                                      value: &mut f64,
+                                     mixed: bool,
                                      range: std::ops::RangeInclusive<f64>,
                                      tip: &str| {
                         let resp = ui::value_field(
@@ -711,36 +870,45 @@ impl MastikApp {
                             Prefix::Text(""),
                             value,
                             Scrub::whole(0.5).range(range),
-                            crate::trace::percent,
+                            mixed_or(mixed, crate::trace::percent),
                         );
                         scrubbing |= resp.dragged();
                         resp.on_hover_text(tip);
                     };
+                    // Each layer keeps its own kind until one is picked.
+                    if mixed.kind {
+                        ui::selection_note(ui, KINDS_DIFFER);
+                        return;
+                    }
                     if !card.scatter {
                         ui::labelled(ui, "Width", |ui| {
                             field(
                                 ui,
                                 w,
                                 &mut n.width,
+                                mixed.width,
                                 1.0..=1000.0,
                                 "How tall the shape draws across the path",
                             );
                         });
                         ui::labelled(ui, "Stretch", |ui| {
-                            if let Some(i) = ui::segmented(
-                                ui,
-                                w,
-                                ui::SEGMENT_CELL_H,
-                                2,
-                                usize::from(card.middle),
-                                |p, i, r, on| {
-                                    ui::segment_label(p, r, ["Whole shape", "Middle only"][i], on)
-                                },
-                            ) {
-                                act = Some(Act::Middle(i == 1));
+                            let words = ["Whole shape", "Middle only"];
+                            if let Some(on) = segment(ui, words, card.middle, mixed.middle) {
+                                act = Some(Act::Middle(on));
                             }
                         });
-                        if ui::switch_row(ui, "Flip across", card.flip, crate::settings::SWITCH_H)
+                        let flip = match mixed.flip {
+                            true => {
+                                ui::switch_row_mixed(ui, "Flip across", crate::settings::SWITCH_H)
+                            }
+                            false => ui::switch_row(
+                                ui,
+                                "Flip across",
+                                card.flip,
+                                crate::settings::SWITCH_H,
+                            ),
+                        };
+                        if flip
                             .on_hover_text("Mirror the shape over the path")
                             .clicked()
                         {
@@ -754,6 +922,7 @@ impl MastikApp {
                                 ui,
                                 fw,
                                 &mut n.spacing,
+                                mixed.spacing,
                                 10.0..=1000.0,
                                 "From one copy to the next, of the shape's length",
                             );
@@ -763,6 +932,7 @@ impl MastikApp {
                                 ui,
                                 fw,
                                 &mut n.size,
+                                mixed.size,
                                 1.0..=1000.0,
                                 "Each copy's size, of the shape's",
                             );
@@ -774,6 +944,7 @@ impl MastikApp {
                                 ui,
                                 fw,
                                 &mut n.size_varies,
+                                mixed.size_varies,
                                 0.0..=100.0,
                                 "How far a copy's size strays either way",
                             );
@@ -783,23 +954,16 @@ impl MastikApp {
                                 ui,
                                 fw,
                                 &mut n.scatter,
+                                mixed.scatter,
                                 0.0..=500.0,
                                 "How far a copy strays off the path, of the shape's length",
                             );
                         }),
                     });
                     ui::labelled(ui, "Turn", |ui| {
-                        if let Some(i) = ui::segmented(
-                            ui,
-                            w,
-                            ui::SEGMENT_CELL_H,
-                            2,
-                            usize::from(card.fixed),
-                            |p, i, r, on| {
-                                ui::segment_label(p, r, ["Along the path", "Fixed"][i], on)
-                            },
-                        ) {
-                            act = Some(Act::Fixed(i == 1));
+                        let words = ["Along the path", "Fixed"];
+                        if let Some(on) = segment(ui, words, card.fixed, mixed.fixed) {
+                            act = Some(Act::Fixed(on));
                         }
                     });
                     ui::labelled(ui, "Seed", |ui| {
@@ -809,7 +973,7 @@ impl MastikApp {
                             Prefix::Text(""),
                             &mut n.seed,
                             Scrub::whole(0.25).range(0.0..=f64::from(u32::MAX)),
-                            |d| d.custom_formatter(ui::number(0)),
+                            mixed_or(mixed.seed, |d| d.custom_formatter(ui::number(0))),
                         );
                         scrubbing |= resp.dragged();
                         resp.on_hover_text("Which sizes and offsets: another number scatters anew");
@@ -859,8 +1023,11 @@ impl MastikApp {
         // Armed after a right-click's cancel is answered, so the frame it lands on
         // cannot re-arm it.
         if scrubbing && !self.gesture_cancelled && self.in_flight.brush_scrub.is_none() {
-            self.in_flight.brush_scrub = Some(before);
+            self.in_flight.brush_scrub = Some((before, before_mixed));
         }
+        // A number typed or scrubbed is set on every layer.
+        let after = self.brush.numbers;
+        self.brush.mixed.settle(before, after);
         let Some(act) = act else {
             return;
         };
@@ -872,10 +1039,23 @@ impl MastikApp {
                 self.session.info(PICK_STATUS);
             }
             Act::Swap => self.swap_brush(),
-            Act::Scatter(on) => self.brush.scatter = on,
-            Act::Middle(on) => self.brush.middle = on,
-            Act::Flip => self.brush.flip = !self.brush.flip,
-            Act::Fixed(on) => self.brush.fixed = on,
+            Act::Scatter(on) => {
+                self.brush.scatter = on;
+                self.brush.mixed.kind = false;
+            }
+            Act::Middle(on) => {
+                self.brush.middle = on;
+                self.brush.mixed.middle = false;
+            }
+            // A mixed switch turns on, as every mixed switch does.
+            Act::Flip => {
+                self.brush.flip = self.brush.mixed.flip || !self.brush.flip;
+                self.brush.mixed.flip = false;
+            }
+            Act::Fixed(on) => {
+                self.brush.fixed = on;
+                self.brush.mixed.fixed = false;
+            }
             Act::KeepPath => self.brush.keep_path = !self.brush.keep_path,
             Act::Bake => self.brush.bake = !self.brush.bake,
             Act::BakeBrush => self.bake_brushes(),
@@ -1262,20 +1442,16 @@ mod tests {
         assert_eq!(step.note.label, REMOVE_STEP);
     }
 
-    /// *Edit brush* over two layers drawn with different brushes writes the
-    /// card's options to both and leaves each its own brush.
-    /// flip: `card_links` writing the card's brush to every edited layer →
-    /// fails at "each keeps its own brush".
-    #[test]
-    fn edit_brush_over_two_layers_keeps_each_ones_brush() {
-        let ctx = egui::Context::default();
-        let (mut app, path, leaf) = path_and_leaf(&ctx);
+    /// [`path_and_leaf`] with a second path, *Other*, drawn with a brush *Dot*:
+    /// the path linked to *Leaf* with `a`, *Other* to *Dot* with `b`, and *Edit
+    /// brush* opened on the two. Answers the app, the paths and the brushes.
+    fn two_brushed(ctx: &egui::Context, a: Mode, b: Mode) -> (MastikApp, [NodeId; 4]) {
+        let (mut app, path, leaf) = path_and_leaf(ctx);
         let (other, dot) = (app.session.ids.mint(), app.session.ids.mint());
         let page = app.session.doc.first_page();
         let mut line = BezPath::new();
         line.move_to((0.0, 400.0));
         line.line_to((600.0, 400.0));
-        let art = Mode::Art(Art::DEFAULT);
         assert!(app.session.commit(Transaction(vec![
             Operation::CreateNode {
                 id: other,
@@ -1303,26 +1479,108 @@ mod tests {
             },
             Operation::SetBrush {
                 id: path,
-                brush: Some(BrushLink::new(leaf, art)),
+                brush: Some(BrushLink::new(leaf, a)),
             },
             Operation::SetBrush {
                 id: other,
-                brush: Some(BrushLink::new(dot, art)),
+                brush: Some(BrushLink::new(dot, b)),
             },
         ])));
         app.session.selection.set(vec![path, other]);
         app.open_edit_brush();
+        (app, [path, other, leaf, dot])
+    }
+
+    fn link_of(app: &MastikApp, id: NodeId) -> BrushLink {
+        app.session.doc.get(id).and_then(|n| n.brush()).unwrap()
+    }
+
+    /// *Edit brush* over two layers drawn with different brushes writes the
+    /// card's options to both and leaves each its own brush.
+    /// flip: `card_links` writing the card's brush to every edited layer →
+    /// fails at "each keeps its own brush".
+    #[test]
+    fn edit_brush_over_two_layers_keeps_each_ones_brush() {
+        let ctx = egui::Context::default();
+        let art = Mode::Art(Art::DEFAULT);
+        let (mut app, [path, other, leaf, dot]) = two_brushed(&ctx, art, art);
+        assert!(app.brush.mixed.brush, "the brushes differ");
         app.brush.flip = true;
         app.commit_brush();
-        let of = |id: NodeId| app.session.doc.get(id).and_then(|n| n.brush()).unwrap();
         assert_eq!(
-            (of(path).of, of(other).of),
+            (link_of(&app, path).of, link_of(&app, other).of),
             (leaf, dot),
             "each keeps its own brush"
         );
         assert!(
-            matches!(of(other).mode, Mode::Art(a) if a.flip),
+            matches!(link_of(&app, other).mode, Mode::Art(a) if a.flip),
             "the options"
+        );
+    }
+
+    /// *Edit brush* over two Scatter brushes that differ in their seed shows
+    /// the seed *Mixed* and the spacing they share as it is; the spacing set,
+    /// *Done* writes it to both and leaves each its own seed.
+    /// flip: `mode_for` ignoring the mixed flags → fails at "each keeps its
+    /// own seed".
+    #[test]
+    fn edit_brush_keeps_each_layers_mixed_options() {
+        let ctx = egui::Context::default();
+        let seeded = |seed| {
+            Mode::Scatter(Scatter {
+                seed,
+                ..Scatter::DEFAULT
+            })
+        };
+        let (mut app, [path, other, ..]) = two_brushed(&ctx, seeded(3), seeded(8));
+        let x = app.brush.mixed;
+        assert!(x.seed && !x.spacing && !x.kind, "{x:?}");
+        let before = app.brush.numbers;
+        app.brush.numbers.spacing = 300.0;
+        app.brush.mixed.settle(before, app.brush.numbers);
+        app.commit_brush();
+        let scatter_of = |id| match link_of(&app, id).mode {
+            Mode::Scatter(s) => (s.spacing, s.seed),
+            Mode::Art(_) => panic!("still a scatter"),
+        };
+        assert_eq!(
+            (scatter_of(path), scatter_of(other)),
+            ((3.0, 3), (3.0, 8)),
+            "each keeps its own seed"
+        );
+    }
+
+    /// Art and Scatter brushes together: the kind is mixed and *Done* leaves
+    /// each layer's whole mode alone; picking Scatter sets both to it.
+    /// flip: `mode_for` ignoring the mixed flags → fails at "each keeps its own
+    /// kind".
+    #[test]
+    fn edit_brush_over_two_kinds_keeps_each_ones_until_one_is_picked() {
+        let ctx = egui::Context::default();
+        let art = Mode::Art(Art {
+            width: 2.0,
+            ..Art::DEFAULT
+        });
+        let scatter = Mode::Scatter(Scatter::DEFAULT);
+        let (mut app, [path, other, ..]) = two_brushed(&ctx, art, scatter);
+        assert!(app.brush.mixed.kind);
+        let links = app.card_links();
+        let modes: Vec<_> = links
+            .iter()
+            .map(|op| match op {
+                Operation::SetBrush { brush: Some(l), .. } => l.mode,
+                _ => unreachable!("the card writes links"),
+            })
+            .collect();
+        assert_eq!(modes, vec![art, scatter], "each keeps its own kind");
+        app.brush.scatter = true;
+        app.brush.mixed.kind = false;
+        app.commit_brush();
+        assert!(
+            [path, other]
+                .iter()
+                .all(|id| matches!(link_of(&app, *id).mode, Mode::Scatter(_))),
+            "both scatter"
         );
     }
 

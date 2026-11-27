@@ -1867,6 +1867,13 @@ impl MastikApp {
         let bound = mastik_core::variant::owner_above(doc, id)
             .and_then(|o| doc.get(o))
             .is_some_and(|o| o.props().iter().any(|p| p.bound.contains(&id)));
+        let wearers = self
+            .session
+            .resolved
+            .brushed()
+            .filter(|(_, brush)| *brush == id)
+            .count();
+        let mut brush_tip = None;
         let badge = if node.mask() {
             Some(RowBadge::Icon(icon::MASK, BADGE_MASK))
         } else if let Some(n) = set_count {
@@ -1884,15 +1891,13 @@ impl MastikApp {
             Some(RowBadge::Text(
                 crate::private::layer(doc, link.of).into_owned(),
             ))
-        } else if let n @ 1.. = self
-            .session
-            .resolved
-            .brushed()
-            .filter(|(_, brush)| *brush == id)
-            .count()
-        {
+        } else if wearers > 0 {
             // How many layers wear it.
-            Some(RowBadge::Text(format!("brush · {n}")))
+            brush_tip = Some(match wearers {
+                1 => "The brush of 1 layer".to_string(),
+                n => format!("The brush of {n} layers"),
+            });
+            Some(RowBadge::Text(format!("brush · {wearers}")))
         } else if node.list().is_some() {
             // A list's rows in its canvas tab's words, in place of its size.
             Some(RowBadge::Text(crate::list_data::list_count(doc, id).0))
@@ -1915,19 +1920,24 @@ impl MastikApp {
                     .then_some(RowBadge::Icon(icon::DIAMOND, BADGE_BASE)),
             }
         };
-        // A glyph badge's words, for the row's tooltip: hovered, the eye and lock
-        // take its slot, so the badge itself is never under the pointer.
-        let badge_tip = match &badge {
-            Some(RowBadge::Icon(g, _)) if *g == icon::MASK => Some("A mask"),
+        // A glyph badge's words, and a brush's count, for the row's tooltip:
+        // hovered, the eye and lock take the badge's slot, so the badge itself is
+        // never under the pointer.
+        let badge_tip: Option<String> = match &badge {
+            Some(RowBadge::Icon(g, _)) if *g == icon::MASK => Some("A mask".into()),
             Some(RowBadge::Icon(g, _)) if *g == icon::PROPERTY_BOUND => {
-                Some("Bound to a component property")
+                Some("Bound to a component property".into())
             }
-            Some(RowBadge::Icon(g, _)) if *g == icon::DIAMOND => Some("The subtraction's base"),
-            Some(RowBadge::Icon(g, _)) if *g == icon::FLIP_HORIZONTAL => Some("Mirrored path"),
+            Some(RowBadge::Icon(g, _)) if *g == icon::DIAMOND => {
+                Some("The subtraction's base".into())
+            }
+            Some(RowBadge::Icon(g, _)) if *g == icon::FLIP_HORIZONTAL => {
+                Some("Mirrored path".into())
+            }
             Some(RowBadge::Icon(g, _)) if *g == icon::RADIAL_SYMMETRY => {
-                Some("Path repeated around a centre")
+                Some("Path repeated around a centre".into())
             }
-            _ => None,
+            _ => brush_tip,
         };
         // (node borrow ends here — safe to mutate self below)
 
@@ -1977,7 +1987,7 @@ impl MastikApp {
         let tip = match (&children_tip, badge_tip) {
             (Some(m), Some(b)) => Some(format!("{b}\n{m}")),
             (Some(m), None) => Some(m.clone()),
-            (None, Some(b)) => Some(b.to_string()),
+            (None, Some(b)) => Some(b),
             (None, None) => None,
         };
         let resp = match &tip {

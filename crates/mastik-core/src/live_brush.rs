@@ -380,13 +380,14 @@ pub fn baked_view(
 
 /// `subtrees` as a paste into `doc` takes them: each holding a live brush
 /// whose brush neither came along nor is in `doc` swapped for its twin in
-/// `baked`. Answers whether any was.
+/// `baked`. Answers the names of the brushes baked, each once, read off the
+/// `Brushed · ‹brush›` groups the twins hold that their originals do not.
 pub fn fitted(
     doc: &Document,
     subtrees: &[Vec<crate::Node>],
     baked: &[Option<Vec<crate::Node>>],
-) -> (Vec<Vec<crate::Node>>, bool) {
-    let mut swapped = false;
+) -> (Vec<Vec<crate::Node>>, Vec<String>) {
+    let mut names: Vec<String> = Vec::new();
     let out = subtrees
         .iter()
         .enumerate()
@@ -397,14 +398,23 @@ pub fn fitted(
             });
             match baked.get(i).and_then(Option::as_ref) {
                 Some(twin) if dangles => {
-                    swapped = true;
+                    let prefix = apply_brush::group_name("");
+                    let made = twin
+                        .iter()
+                        .filter(|t| !nodes.iter().any(|n| n.id() == t.id()))
+                        .filter_map(|t| t.name().strip_prefix(prefix.as_str()));
+                    for name in made {
+                        if !names.iter().any(|n| n == name) {
+                            names.push(name.to_owned());
+                        }
+                    }
                     twin.clone()
                 }
                 _ => nodes.clone(),
             }
         })
         .collect();
-    (out, swapped)
+    (out, names)
 }
 
 /// Every layer whose brush is among `deleted` or inside one of them, the layer
